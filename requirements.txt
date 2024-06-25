@@ -1,0 +1,11 @@
+# Sphinx extensions
+sphinx
+sphinx-tabs
+sphinx-copybutton
+myst-parser
+linkify-it-py
+
+# Sphinx themes
+pydata-sphinx-theme
+sphinx-book-theme
+sphinx-rtd-theme
