@@ -12,13 +12,7 @@ def find_trim_angle(aoa_curve,CL_curve,CD_curve, wind_speed=10,azimuth = 0, elev
 
     return aoa_trim
 
-def calculate_kite_speed(aoa_trim,azimuth, elevation, reelout_speed, wind_speed, heading =0):
-    """
-    Calculate the kite speed.
-    """
-    radial_speed = calculate_radial_speed(azimuth, elevation, reelout_speed, wind_speed)
-    kite_speed = radial_speed/ np.tan(aoa_trim) + wind_speed * np.sin(azimuth)*np.cos(heading)
-    return kite_speed
+
 
 def find_zero_crossings(x, y):
     # Ensure x is sorted in ascending order (important if the data is not sorted)
