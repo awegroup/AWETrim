@@ -2,7 +2,7 @@ from QSM.forces import calculate_tangential_force
 from QSM.velocities import calculate_radial_speed
 import numpy as np
 
-def find_trim_angle(aoa_curve,CL_curve,CD_curve, wind_speed=10,azimuth = 0, elevation = 0, reelout_speed =0, wing_area=20, mass = 15, heading = 0):
+def find_trim_angle(aoa_curve,CL_curve,CD_curve, wind_speed=10,azimuth = 0, elevation = 0, reelout_speed =0, wing_area=20, mass = 15, heading = 90):
     """
     Find the trim angle of attack.
     """
