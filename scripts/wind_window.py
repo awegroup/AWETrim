@@ -1,18 +1,16 @@
-import casadi as ca
+
 import numpy as np
-from Kite import KiteSystem
-from Environment import Environment
-from Control import Control
+from picawe import KiteSystem, Environment, Control
 import pandas as pd
 import matplotlib.pyplot as plt
 import time
-
+import casadi as ca
 
 
 aero_dict = {'oswald_efficiency': 0.9, 'aspect_ratio': 10, 'steering_coefficient': 0.2, 'CD0': 0.05}
 aero_input = ["inviscid", aero_dict]
 
-csv_file = './data/VSM_results_alpha_sweep.csv'
+csv_file = './processed_data/VSM_results_alpha_sweep.csv'
 v3_polar_data = pd.read_csv(csv_file)
 
 aero_dict = {'CL': v3_polar_data['CL'].values, 
