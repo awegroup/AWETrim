@@ -1,14 +1,40 @@
 import casadi as ca
 import numpy as np
 class KiteSystem:
-    def __init__(self, m, A, aero_input):
+    def __init__(self, m, A, aero_input, m_kcu = 0):
         """
         Initialize the kite system with its parameters.
         """
         self.m = m  # Mass
         self.A = A  # Reference area
-        self.theta_t_0 = aero_input[1]["theta_t_0"] # Powered angle kite - tether
-        self.delta_theta_up = aero_input[1]["delta_theta_up"] # Change in angle kite - tether per unit of depowered input
+        if "theta_t_0" in aero_input[1]:
+            self.theta_t_0 = aero_input[1]["theta_t_0"]
+        else:
+            self.theta_t_0 = ca.SX.sym('theta_t_0')
+        if "delta_theta_up" in aero_input[1]:
+            self.delta_theta_up = aero_input[1]["delta_theta_up"]
+        else:
+            self.delta_theta_up = ca.SX.sym('delta_theta_up')
+        if "CD0" in aero_input[1]:
+            self.CD0 = aero_input[1]["CD0"]
+        else:
+            self.CD0 = 0
+        if "k_cd_us" in aero_input[1]:
+            self.k_cd_us = aero_input[1]["k_cd_us"]
+        else:
+            self.k_cd_us = 0
+        if "k_cl_us" in aero_input[1]:
+            self.k_cl_us = aero_input[1]["k_cl_us"]
+        else:
+            self.k_cl_us = 0
+        if "k_cd_up" in aero_input[1]:
+            self.k_cd_up = aero_input[1]["k_cd_up"]
+        else:
+            self.k_cd_up = 0
+        if "k_cl_up" in aero_input[1]:
+            self.k_cl_up = aero_input[1]["k_cl_up"]
+        else:
+            self.k_cl_up = 0
         self.aero_func = self.aerodynamic_coeffs_function(aero_input)
         # Define symbolic variables for the function inputs
         self.dot_v_tau = ca.SX.sym('dot_v_tau')
@@ -26,6 +52,7 @@ class KiteSystem:
         self.v_w = ca.SX.sym('v_w')
         self.g = ca.SX.sym('g')
         self.rho = ca.SX.sym('rho')
+        self.mass_kcu = m_kcu
 
     @property
     def wind_velocity(self):
@@ -50,6 +77,11 @@ class KiteSystem:
         """
         
         C_L, C_D, C_S = self.aero_func(self.angle_of_attack, self.u_s, self.u_p)
+        C_D += self.CD0
+        C_D += self.k_cd_us * ca.fabs(self.u_s)
+        C_L += self.k_cl_us * ca.fabs(self.u_s)
+        C_D += self.k_cd_up * self.u_p
+        C_L += self.k_cl_up * self.u_p
 
         return C_L, C_D, C_S
     
@@ -104,19 +136,6 @@ class KiteSystem:
             C_D = ca.if_else(ca.logic_and(alpha >= alpha_min, alpha <= alpha_max), C_D, 1)
             # C_S = ca.if_else(ca.logic_and(alpha >= alpha_min, alpha <= alpha_max), C_S, 0.0)
 
-        if "k_cl_us" in aero_input[1]:
-            k_cl_us = aero_input[1]["k_cl_us"]
-            C_L += k_cl_us * u_s
-        if "k_cd_us" in aero_input[1]:
-            k_cd_us = aero_input[1]["k_cd_us"]
-            C_D += k_cd_us * u_s
-        if "k_cl_up" in aero_input[1]:
-            k_cl_up = aero_input[1]["k_cl_up"]
-            C_L += k_cl_up * u_p
-        if "k_cd_up" in aero_input[1]:
-            k_cd_up = aero_input[1]["k_cd_up"]
-            C_D += k_cd_up * u_p
-
         # Return CasADi function
         return ca.Function(
             'aerodynamic_coeffs',
@@ -127,12 +146,17 @@ class KiteSystem:
         )
 
     @property
+    def pitch_kcu(self):
+        return np.arctan((self.mass_kcu*9.81 * np.cos(self.beta) * np.cos(self.chi) -self.v_tau*self.v_r/self.r)/
+                           (self.T + self.mass_kcu*9.81 * np.sin(self.beta) - (self.mass_kcu*self.v_tau**2 / self.r)))
+
+    @property
     def angle_of_attack(self):
         """
         Compute the angle of attack based on the air velocity vector and tether angle.
         """
 
-        alpha = self.theta_a + self.theta_t
+        alpha = self.theta_a + self.theta_t - self.pitch_kcu
 
         return alpha
     
@@ -155,7 +179,7 @@ class KiteSystem:
         """
         Compute the residual for the kite system dynamics.
         """
-        theta_t = self.theta_t
+
         g = self.g
         rho = self.rho
         dot_v_tau = self.dot_v_tau
@@ -178,6 +202,7 @@ class KiteSystem:
         chi_a = ca.atan(v_a_vec[1]/ v_a_vec[0])
 
         C_L, C_D, C_S = self.aerodynamic_coeffs
+        
 
         # Aerodynamic forces
         D = 0.5 * rho * V_a_sq * self.A * C_D
@@ -222,5 +247,25 @@ class KiteSystem:
             [self.dot_v_tau, self.dot_chi, self.dot_v_r, self.v_tau, self.v_r, self.r, self.chi, self.beta, self.u_s, self.u_p, self.T, self.phi, self.v_w, self.g, self.rho],
             [residual],
             ['dot_v_tau', 'dot_chi', 'dot_v_r', 'v_tau', 'v_r', 'r', 'chi', 'beta', 'u_s', 'u_p', 'T', 'phi', 'v_w', 'g', 'rho'],
+            ['residual']
+        )
+    
+    def get_residual_function_aero_iden(self):
+        """
+        Returns a CasADi function for the residual.
+        """
+
+
+        # Call compute_residual with the symbolic variables
+        residual = self.compute_residual()
+
+        # Return a CasADi function
+        return ca.Function(
+            'residual_func',
+            [self.dot_v_tau, self.dot_chi, self.dot_v_r, self.v_tau, self.v_r, self.r, self.chi, self.beta, self.u_s, self.u_p, self.T, self.phi, self.v_w, 
+             self.g, self.rho, self.delta_theta_up, self.theta_t_0, self.CD0, self.k_cd_us, self.k_cl_us, self.k_cd_up, self.k_cl_up],
+            [residual],
+            ['dot_v_tau', 'dot_chi', 'dot_v_r', 'v_tau', 'v_r', 'r', 'chi', 'beta', 'u_s', 'u_p', 'T', 'phi', 'v_w', 
+             'g', 'rho', 'delta_theta_up', 'theta_t_0', 'CD0', 'k_cd_us', 'k_cl_us', 'k_cd_up', 'k_cl_up'],
             ['residual']
         )

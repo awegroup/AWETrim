@@ -4,7 +4,7 @@ class Environment:
     """
     A class to manage environmental parameters and substitute them in CasADi functions.
     """
-    def __init__(self, v_w=5.0, g=9.81, rho=1.225):
+    def __init__(self, v_w=None, g=9.81, rho=1.225):
         """
         Initialize the environment with default or specified parameters.
 
@@ -36,11 +36,17 @@ class Environment:
 
         # Substitute the parameters
         output_expr = func.call(symbolic_inputs)[0]
+        false_names = []
         for name, value in substitutions.items():
             if name in symbolic_names:
-                index = symbolic_names.index(name)
-                output_expr = ca.substitute(output_expr, symbolic_inputs[index], value)
-
+                if value is None:
+                    false_names.append(name)
+                else:
+                    index = symbolic_names.index(name)
+                    output_expr = ca.substitute(output_expr, symbolic_inputs[index], value)
+            
+        for false_name in false_names:
+            substitutions.pop(false_name)
         # Remove substituted variables from inputs
         remaining_inputs = [sym for i, sym in enumerate(symbolic_inputs) if symbolic_names[i] not in substitutions]
         remaining_names = [name for name in symbolic_names if name not in substitutions]
