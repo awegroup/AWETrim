@@ -7,19 +7,55 @@ Generic Python template for AWE Group
 
 - Sphinx Dependencies, see [requirements](requirements.txt)
 
-### User Installation
-Use the package manager [pip](https://pip.pypa.io/en/stable/) to install foobar.
+## Installation Instructions
 
-```bash
-pip install .
-```
+1. **Clone the repository**:
+    ```bash
+    git clone https://github.com/ocayon/EKF-AWE
+    ```
 
-### Developer Installation
-Use the package manager [pip](https://pip.pypa.io/en/stable/) to install foobar.
+2. **Navigate to the repository folder**:
+    ```bash
+    cd quasi-steady-awes
+    ```
 
-```bash
-pip install -e .[dev]
-```
+3. **Create a virtual environment**:
+
+   - **Linux or Mac**:
+     ```bash
+     python3 -m venv venv
+     ```
+   - **Windows**:
+     ```bash
+     python -m venv venv
+     ```
+
+4. **Activate the virtual environment**:
+
+   - **Linux or Mac**:
+     ```bash
+     source venv/bin/activate
+     ```
+   - **Windows**:
+     ```bash
+     .\venv\Scripts\activate
+     ```
+
+5. **Install the required dependencies**:
+
+   - For users:
+     ```bash
+     pip install .
+     ```
+   - For developers:
+     ```bash
+     pip install -e .[dev]
+     ```
+
+6. **To deactivate the virtual environment**:
+    ```bash
+    deactivate
+    ```
 
 ## :eyes: Usage
 
