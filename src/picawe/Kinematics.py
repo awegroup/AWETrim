@@ -25,7 +25,7 @@ class KiteKinematics:
 
     @property
     def timeder_angle_elevation(self):
-        return self.speed_tangential * ca.cos(self.angle_course) / self.r
+        return self.speed_tangential * ca.cos(self.angle_course) / self.distance_radial
     
     @property
     def timeder_angle_azimuth(self):
@@ -51,3 +51,25 @@ class KiteKinematics:
         )
 
         return angle_elevation_dot
+    
+    @property
+    def acceleration_azimuth(self):
+        r = self.distance_radial
+        r_dot = self.speed_radial
+        v_tau = self.speed_tangential
+        v_tau_dot = self.timeder_speed_tangential
+        beta = self.angle_elevation
+        beta_dot = self.timeder_angle_elevation
+        chi = self.angle_course
+        chi_dot = self.timeder_angle_course
+
+        phi_ddot = (
+            (
+                r*ca.cos(beta) * (v_tau_dot * ca.sin(chi) + v_tau * chi_dot * ca.cos(chi)) -
+                v_tau * ca.sin(chi) * (r_dot * ca.cos(beta) - r * beta_dot * ca.sin(beta))
+            ) / (
+                r**2 * ca.cos(beta)**2
+            )
+        )
+
+        return phi_ddot
