@@ -25,6 +25,8 @@ class State(KiteKinematics, Tether, Wind, Kite):
         'angle_sideslip': ['angle_yaw', 'angle_yaw_aerodynamic'],
         'CL': ['angle_of_attack', 'velocity_apparent_wind', 'input_steering', 'input_depower'],
         'CD': ['angle_of_attack', 'velocity_apparent_wind', 'input_steering', 'input_depower'],
+        'timeder_angle_elevation': ['speed_tangential', 'distance_radial', 'angle_course'],
+        'timeder_angle_azimuth': ['speed_tangential', 'distance_radial', 'angle_course', 'angle_elevation'],
     }
     def __init__(self, mass_wing, area_wing, aero_input, mass_kcu = 0, g=9.81, rho=1.225, center_aerodynamic_wing = [0,0,10], center_gravity_wing = [0,0,10], E = 132e9, diameter = 0.014):
         """
@@ -36,16 +38,18 @@ class State(KiteKinematics, Tether, Wind, Kite):
         Wind.__init__(self)
         Kite.__init__(self, mass_wing, area_wing, aero_input, mass_kcu, g, rho, center_aerodynamic_wing, center_gravity_wing)
         
+    @property
+    def ode(self):
 
-    def forward_euler(self, dt):
-        self.distance_radial+= self.speed_radial * dt + 0.5 * self.timeder_speed_radial * dt ** 2
-        self.speed_tangential += self.timeder_speed_tangential * dt
-        self.speed_radial = self.timeder_speed_radial * dt
+        dot_r = self.speed_radial
+        dot_vr = self.timeder_speed_radial
+        dot_vt = self.timeder_speed_tangential
+        dot_chi = self.timeder_angle_course
+        dot_theta = self.timeder_angle_azimuth
+        dot_beta = self.timeder_angle_elevation
 
-        self.angle_course += self.timeder_angle_course * dt
-        self.angle_azimuth += self.timeder_angle_azimuth * dt + 0.5 * self.acceleration_azimuth * dt ** 2
-        self.angle_elevation += self.timeder_angle_elevation * dt + 0.5 * self.acceleration_elevation * dt ** 2
-        self.time += dt
+        ode = ca.vertcat(dot_r, dot_vr, dot_vt, dot_chi, dot_theta, dot_beta)
+        return ode
 
     def resolve_dependencies(self, property_name):
         """
