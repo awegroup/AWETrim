@@ -1,0 +1,117 @@
+import casadi as ca
+import numpy as np
+from picawe.Tether import Tether
+from picawe.Kinematics import KiteKinematics
+from picawe.Wind import Wind
+from picawe.Kite import Kite
+
+
+class State(KiteKinematics, Tether, Wind, Kite):
+    
+    # Property-level dependencies (mapped to other properties or symbolic variables)
+    property_dependencies = {
+        'wind_velocity': ['angle_elevation', 'angle_course', 'angle_azimuth', 'speed_wind'],
+        'aerodynamic_coeffs': ['angle_of_attack', 'input_steering', 'input_depower'],
+        'angle_pitch_depower': ['input_depower'],
+        'angle_of_attack': ['angle_pitch_aerodynamic', 'angle_pitch_depower', 'angle_pitch'],
+        'velocity_apparent_wind': ['speed_tangential', 'speed_radial', 'angle_elevation', 'angle_course', 'angle_azimuth', 'speed_wind'],
+        'angle_pitch_aerodynamic': ['velocity_apparent_wind'],
+        'angle_yaw_aerodynamic': ['velocity_apparent_wind'],
+        'force_aerodynamic': ['angle_pitch_aerodynamic', 'angle_yaw_aerodynamic', 'velocity_apparent_wind', 'aerodynamic_coeffs'],
+        'force_gravity': ['angle_elevation', 'angle_course', 'mass_wing'],
+        'tension_tether': ['distance_radial', 'length_tether'],
+        'acceleration': ['speed_tangential', 'speed_radial', 'distance_radial', 'angle_course', 'angle_elevation', 'timeder_speed_tangential', 'timeder_angle_course', 'timeder_speed_radial'],
+        'force_residual': ['force_aerodynamic', 'force_gravity', 'force_tether', 'acceleration', 'mass_wing'],
+        'angle_sideslip': ['angle_yaw', 'angle_yaw_aerodynamic'],
+        'CL': ['angle_of_attack', 'velocity_apparent_wind', 'input_steering', 'input_depower'],
+        'CD': ['angle_of_attack', 'velocity_apparent_wind', 'input_steering', 'input_depower'],
+    }
+    def __init__(self, mass_wing, area_wing, aero_input, mass_kcu = 0, g=9.81, rho=1.225, center_aerodynamic_wing = [0,0,10], center_gravity_wing = [0,0,10], E = 132e9, diameter = 0.014):
+        """
+        Initialize the kite system with its parameters.
+        """
+        # Define symbolic variables for the function inputs
+        Tether.__init__(self, E, diameter)
+        KiteKinematics.__init__(self)
+        Wind.__init__(self)
+        Kite.__init__(self, mass_wing, area_wing, aero_input, mass_kcu, g, rho, center_aerodynamic_wing, center_gravity_wing)
+        
+
+    def forward_euler(self, dt):
+        self.distance_radial+= self.speed_radial * dt + 0.5 * self.timeder_speed_radial * dt ** 2
+        self.speed_tangential += self.timeder_speed_tangential * dt
+        self.speed_radial = self.timeder_speed_radial * dt
+
+        self.angle_course += self.timeder_angle_course * dt
+        self.angle_azimuth += self.timeder_angle_azimuth * dt + 0.5 * self.acceleration_azimuth * dt ** 2
+        self.angle_elevation += self.timeder_angle_elevation * dt + 0.5 * self.acceleration_elevation * dt ** 2
+        self.time += dt
+
+    def resolve_dependencies(self, property_name):
+        """
+        Recursively resolve dependencies to find all symbolic variables required for a property.
+
+        :param property_name: The name of the property (e.g., 'force_aerodynamic').
+        :return: Set of symbolic variables required for the property.
+        """
+        # Check if the property exists in the class
+        if not hasattr(self, property_name):
+            raise ValueError(f"Property '{property_name}' not found in the class.")
+
+        prop = getattr(self, property_name)
+
+        # If it is a symbolic variable or expression, return it directly
+        if isinstance(prop, ca.SX):
+            if prop.is_symbolic():  # Direct symbolic variable
+                return {property_name}
+            else:  # Expression
+                if property_name in self.property_dependencies:
+                    resolved_deps = set()
+                    for dep in self.property_dependencies[property_name]:
+                        # Recursively resolve dependencies
+                        resolved_deps.update(self.resolve_dependencies(dep))
+                    return resolved_deps
+                else:
+                    raise ValueError(
+                        f"Property '{property_name}' is a symbolic expression but not in the dependency map."
+                    )
+
+        # If the property is not symbolic or an expression, raise an error
+        raise ValueError(f"Property '{property_name}' is not a symbolic variable or expression.")
+
+
+    def get_symbolic_dependencies(self, property_name):
+        """
+        Get the actual symbolic variables required for a property.
+
+        :param property_name: The name of the property (e.g., 'force_aerodynamic').
+        :return: List of CasADi symbolic variables required for the property.
+        """
+        dependencies = self.resolve_dependencies(property_name)
+        return [getattr(self, dep) for dep in dependencies if dep in self.base_symbolic_variables]
+
+    def extract_parameter_function(self, parameter_name):
+        """
+        Creates a CasADi function to compute a specific parameter from the kite state.
+
+        :param parameter_name: The name of the parameter to extract (e.g., 'alpha').
+        :return: CasADi function to compute the parameter.
+        """
+        # Check if the parameter is defined
+        if parameter_name not in self.property_dependencies:
+            raise ValueError(f"Parameter {parameter_name} is not defined.")
+
+        # Get the symbolic expression for the parameter
+        parameter_expr = getattr(self, parameter_name)
+
+        # Get the required inputs for this parameter
+        required_inputs = list(self.resolve_dependencies(parameter_name))  # Ensure it's a list
+
+        print(f"Required inputs for {parameter_name}: {required_inputs}")
+
+        # Map required inputs to symbolic variables
+        input_symbols = [getattr(self, var) for var in required_inputs]
+        print(f"Input symbols for {parameter_name}: {input_symbols}")
+
+        # Create and return the CasADi function
+        return ca.Function(f'compute_{parameter_name}', input_symbols, [parameter_expr], required_inputs, [parameter_name])

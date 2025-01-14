@@ -1,7 +1,7 @@
 import h5py
 import pandas as pd
 import numpy as np
-from picawe import KiteSystem, Environment, Control
+from picawe import State
 import casadi as ca
 import time
 def read_results(year, month, day, kite_model, addition="", path_to_main=""):
@@ -44,7 +44,7 @@ def read_dict_from_group(group):
     return config_dict
 
 results, flight_data,config_data = read_results("2019", "10", "08", "v3",addition='')
-mask = (flight_data.cycle.isin([64,65])) 
+mask = (flight_data.cycle.isin([62,63,64,65])) 
 
 flight_data = flight_data[mask]
 results = results[mask]
@@ -54,6 +54,10 @@ flight_data = flight_data.reset_index(drop=True)
 csv_file = './processed_data/VSM_results_alpha_sweep.csv'
 v3_polar_data = pd.read_csv(csv_file)
 
+#-----------------------------------------
+# Define the system
+#-----------------------------------------
+
 aero_input = {
     "model": "polars",
     "params": {
@@ -61,9 +65,9 @@ aero_input = {
         'CL': v3_polar_data['CL'].values, 
         'CD': v3_polar_data['CD'].values, 
         'alpha': np.radians(v3_polar_data['aoa'].values), 
-        'theta_t_0': np.radians(-10),
-        'delta_theta_up': np.radians(-15.0),
-        "Cn_base": 0.05,
+        'angle_pitch_depower_0': np.radians(-10),
+        'delta_pitch_depower': np.radians(-10.0),
+        "Cn_base": -0.01,
         # Add other aerodynamic parameters
     },
     "dependencies": {
@@ -71,26 +75,24 @@ aero_input = {
         "u_s": {"k_cl": 0, "k_cd": 0.15, "k_cs": 0.23, "k_cm": 0.005},
         "yaw_rate": {"k_cl": 0, "k_cd": 0, "k_cs": -0.01, "k_cm": -0.02},
         "sideslip": {"k_cl": 0, "k_cd": 0, "k_cs": 0.01, "k_cm": -0.05},
-        "u_p": {"k_cl": 0, "k_cd": 0, "k_cs": 0, "k_cn": -0.05},
+        "u_p": {"k_cl": 0, "k_cd": 0., "k_cs": 0, "k_cn": 0.04},
         # Add other dependencies as needed
     },
 }
 
-
 # Example Usage
-kite = KiteSystem(m_wing=15, A=20, m_kcu = 25, aero_input=aero_input)
+state = State(mass_wing=15, area_wing=20, mass_kcu = 25, aero_input=aero_input)
 
-
-sideslip_func = kite.extract_parameter_function('sideslip')
-cl_func = kite.extract_parameter_function('CL')
-cd_func = kite.extract_parameter_function('CD')
+sideslip_func = state.extract_parameter_function('angle_sideslip')
+cl_func = state.extract_parameter_function('CL')
+cd_func = state.extract_parameter_function('CD')
+T_func = state.extract_parameter_function('tension_tether')
 
 speed_tangential = []
 # Unknown inputs
 solutions = []
-T_guess = 10000
 u_s_guess = 0
-v_tau_guess = 20
+speed_tangential_guess = 20
 theta_guess = 1e-3
 phi_guess = 1e-3
 psi_guess = 1e-3
@@ -99,27 +101,27 @@ vw_window = []
 vw_averaged = []
 wdir_window = []
 
-residual = kite.rb_residual
-known_state = {
-    'dot_v_tau': 0.0,
-    'dot_v_r': 0.0,
+residual = state.rb_residual
+qs_state = {
+    'timeder_speed_tangential': 0.0,
+    'timeder_speed_radial': 0.0,
 }
-for name, value in known_state.items():
-    variable = getattr(kite, name)
+for name, value in qs_state.items():
+    variable = getattr(state, name)
     residual = ca.substitute(residual, variable, value)
-unknown_vars = ['T', 'u_s', 'v_tau', 'theta_k', 'phi_k','psi_k']
+unknown_vars = ['length_tether', 'input_steering', 'speed_tangential', 'angle_roll', 'angle_pitch', 'angle_yaw']
 # Define variables to solve for
-sym_list = [getattr(kite, name) for name in unknown_vars]
+sym_list = [getattr(state, name) for name in unknown_vars]
 solver_options = {
     'ipopt': {
         'print_level': 0,  # Suppresses IPOPT output
-        # 'max_iter': 1000,  # Maximum number of iterations
+        # 'max_iter': 200,  # Maximum number of iterations
         'sb': 'yes'        # Suppresses more detailed solver information
     },
     'print_time': False    # Disables CasADi's internal timing output
 }
 # Sliding window size
-window_size = 10
+window_size = 5
 for i, row in flight_data.iterrows():
     position = np.array([results.kite_position_x[i], results.kite_position_y[i], results.kite_position_z[i]])
     velocity = np.array([results.kite_velocity_x[i], results.kite_velocity_y[i], results.kite_velocity_z[i]])
@@ -140,26 +142,26 @@ for i, row in flight_data.iterrows():
     angle_azimuth = np.arctan2(position[1], position[0])-np.mean(wdir_window)
 
     current_state = {
-        'v_w': vw,
-        'r': distance_radial,
-        'chi': row.kite_course,
-        'dot_chi': row.kite_yaw_rate_1,
-        'v_r': speed_radial,
-        'u_p': row.up,
-        'phi': row.kite_azimuth,
-        'beta': row.kite_elevation,
+        'speed_wind': vw,
+        'distance_radial': distance_radial,
+        'angle_course': row.kite_course,
+        'timeder_angle_course': row.kite_yaw_rate_1,
+        'speed_radial': speed_radial,
+        'input_depower': row.up,
+        'angle_azimuth': row.kite_azimuth,
+        'angle_elevation': row.kite_elevation,
     }
     current_residual = residual
     # Substitute known values into the residual function
     for name, value in current_state.items():
-        variable = getattr(kite, name)
+        variable = getattr(state, name)
         current_residual = ca.substitute(current_residual, variable, value)
 
 
     g = current_residual  # This is the vector of equations to solve
     # Bounds for the variables
-    lbx = [0, -1, 0, -np.pi / 4, -np.pi / 4, -np.pi / 4]  # Lower bounds for T, u_s, v_tau, phi_k, theta_k
-    ubx = [1e6, 1, 500, np.pi / 4, np.pi / 4, np.pi / 4]  # Upper bounds for T, u_s, v_tau, phi_k, theta_k
+    lbx = [distance_radial-5, -1, 0, -np.pi / 4, -np.pi / 4, -np.pi / 4]  # Lower bounds for T, u_s, speed_tangential, phi_k, theta_k
+    ubx = [distance_radial+5, 1, 500, np.pi / 4, np.pi / 4, np.pi / 4]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
     
     # NLP problem definition
     nlp = {'x': ca.vertcat(*sym_list), 'f': 0, 'g': g}  # 'f' is set to 0 for root-finding
@@ -171,48 +173,50 @@ for i, row in flight_data.iterrows():
     lbg = [0] * g.size1()  # Lower bounds (0 for residuals)
     ubg = [0] * g.size1()  # Upper bounds (0 for residuals)
 
-    try:
-        # Solve the system
-        # Solve the system
-        sol = solver(
-            x0=[T_guess, u_s_guess, v_tau_guess, theta_guess, phi_guess, psi_guess],  # Initial guess
-            lbg=lbg,
-            ubg=ubg,
-            lbx=lbx,
-            ubx=ubx
-        )
-        solution = sol['x']
-        solution_dict = {
-            'T': float(solution[0]),
-            'u_s': float(solution[1]),
-            'v_tau': float(solution[2]),
-            'v_r': speed_radial,
-            'theta_k': float(solution[3]),
-            'phi_k': float(solution[4]),
-            'psi_k': float(solution[5]),
-        }
-        state_combined = {**current_state, **known_state, **solution_dict}
-        sideslip = sideslip_func(*[state_combined[name] for name in sideslip_func.name_in()])
-        CL = cl_func(*[state_combined[name] for name in cl_func.name_in()])
-        CD = cd_func(*[state_combined[name] for name in cd_func.name_in()])
-        solution_dict['sideslip'] = float(sideslip)
-        solution_dict['CL'] = float(CL)
-        solution_dict['CD'] = float(CD)
-        solutions.append(solution_dict)
-        # print(f"Solution: {solution}")
-        T_guess = float(solution[0])
-        u_s_guess = float(solution[1])
-        v_tau_guess = float(solution[2])
-        theta_guess = float(solution[3])
-        phi_guess = float(solution[4])
-        psi_guess = float(solution[5])
-    except RuntimeError as e: 
-        # Handle solver failure
-        solutions.append({
-            'T': None,
-            'u_s': None,
-            'v_tau': None
-        })
+    # try:
+    # Solve the system
+    sol = solver(
+        x0=[distance_radial, u_s_guess, speed_tangential_guess, theta_guess, phi_guess, psi_guess],  # Initial guess
+        lbg=lbg,
+        ubg=ubg,
+        lbx=lbx,
+        ubx=ubx
+    )
+    solution = sol['x']
+    solution_dict = {
+        'length_tether': float(solution[0]),
+        'input_steering': float(solution[1]),
+        'speed_tangential': float(solution[2]),
+        'speed_radial': speed_radial,
+        'angle_roll': float(solution[3]),
+        'angle_pitch': float(solution[4]),
+        'angle_yaw': float(solution[5]),
+    }
+    state_combined = {**current_state, **qs_state, **solution_dict}
+    sideslip = sideslip_func(*[state_combined[name] for name in sideslip_func.name_in()])
+    CL = cl_func(*[state_combined[name] for name in cl_func.name_in()])
+    CD = cd_func(*[state_combined[name] for name in cd_func.name_in()])
+    T = T_func(*[state_combined[name] for name in T_func.name_in()])
+    solution_dict['sideslip'] = float(sideslip)
+    solution_dict['CL'] = float(CL)
+    solution_dict['CD'] = float(CD)
+    solution_dict['tension_tether'] = float(T)
+    solutions.append(solution_dict)
+    # print(f"Solution: {solution}")
+    T_guess = float(solution[0])
+    u_s_guess = float(solution[1])
+    speed_tangential_guess = float(solution[2])
+    theta_guess = float(solution[3])
+    phi_guess = float(solution[4])
+    psi_guess = float(solution[5])
+    print(i)
+    # except RuntimeError as e: 
+    #     # Handle solver failure
+    #     solutions.append({
+    #         'T': None,
+    #         'u_s': None,
+    #         'speed_tangential': None
+    #     })
 
 
 end = time.time()
@@ -226,7 +230,7 @@ print(f"Time per iteration: {time_per_iteration} seconds")
 
 solutions_df = pd.DataFrame(solutions)
 # Filter out rows where 'T' is None
-solutions_df = solutions_df[solutions_df['T'].notna()]
+solutions_df = solutions_df[solutions_df['length_tether'].notna()]
 
 dt = 0.1
 total_time = len(flight_data)*dt
@@ -238,37 +242,49 @@ total_time = len(flight_data)*dt
 import matplotlib.pyplot as plt
 plt.figure()
 plt.plot(speed_tangential, label='tangential speed')
-plt.plot(solutions_df['v_tau'], label='v_tau')
+plt.plot(solutions_df['speed_tangential'], label='speed_tangential')
 plt.legend()
 
 plt.figure()
 plt.plot(flight_data["ground_tether_force"], label='ground_tether_force')
-plt.plot(solutions_df['T'], label='T')
+plt.plot(solutions_df['tension_tether'], label='estimated tension_tether')
 plt.legend()
 
 plt.figure()
-plt.plot(np.degrees(solutions_df['phi_k']), label='roll tether-kite')
-plt.plot(np.degrees(solutions_df['theta_k']), label='pitch tether-kite')
-plt.plot(np.degrees(solutions_df['psi_k']), label='yaw tether-kite')
+plt.plot(np.degrees(solutions_df['angle_roll']), label='roll tether-kite')
+plt.plot(np.degrees(solutions_df['angle_pitch']), label='pitch tether-kite')
+plt.plot(np.degrees(solutions_df['angle_yaw']), label='yaw tether-kite')
 plt.legend()
-
+# plt.show()
 
 #Plot sideslip
 plt.figure()
 plt.plot(np.degrees(solutions_df['sideslip']), label='sideslip')
 plt.legend()
-plt.show()
+
+
+# PLot steering input
+plt.figure()
+plt.plot(flight_data["us"], label='us measured')
+plt.plot(solutions_df['input_steering'], label='u_s')
+plt.legend()
+# plt.show()
 
 
 plt.figure()
 plt.plot(results["wing_lift_coefficient"], label='wing_lift_coefficient')
 plt.plot(solutions_df['CL'], label='CL')
 plt.legend()
-plt.show()
+# plt.show()
 
 plt.figure()
 plt.plot(results["wing_drag_coefficient"], label='wing_drag_coefficient')
 plt.plot(solutions_df['CD'], label='CD')
 plt.legend()
-plt.show()
+# plt.show()
 
+total_power = sum(solutions_df['tension_tether']*solutions_df['speed_radial']*dt)/total_time
+measured_power = sum(flight_data['ground_tether_force']*flight_data['tether_reelout_speed']*dt)/total_time
+print('Estimated power: ', total_power, 'W')
+print('Measured power: ', measured_power, 'W')
+plt.show()
