@@ -20,8 +20,6 @@ def transformation_C_from_AZR(chi):
     )
     return transformation
 
-import casadi as ca
-
 def transformation_C_from_A(theta_a, chi_a, roll):
     # Define the Pitch matrix
     Pitch = ca.vertcat(
@@ -74,3 +72,7 @@ def transformation_C_from_K(pitch, roll, yaw = 0):
 
     T = Yaw @ Pitch @ Roll
     return T
+
+def transformation_C_from_W(azimuth, elevation, course):
+    # Create the transformation matrix
+    return transformation_C_from_AZR(course) @ transformation_AZR_from_W(azimuth, elevation)

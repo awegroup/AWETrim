@@ -1,6 +1,6 @@
 
 import numpy as np
-from picawe import KiteSystem, Environment, Control
+from picawe import State
 import pandas as pd
 import matplotlib.pyplot as plt
 import time
@@ -21,8 +21,8 @@ aero_input = {
         'CL': v3_polar_data['CL'].values, 
         'CD': v3_polar_data['CD'].values, 
         'alpha': np.radians(v3_polar_data['aoa'].values), 
-        'theta_t_0': np.radians(-10),
-        'delta_theta_up': np.radians(-15.0),
+        'angle_pitch_depower_0': np.radians(-10),
+        'delta_pitch_depower': np.radians(-15.0),
         "Cn_base": 0.05,
         # Add other aerodynamic parameters
     },
@@ -38,23 +38,24 @@ aero_input = {
 
 
 # Example Usage
-kite = KiteSystem(m_wing=15, A=20, aero_input=aero_input, m_kcu = 0)
+kite = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu = 25)
+
 
 # Define the known state
 known_state = {
-    'v_w': 10,
-    'r': 100.0,
-    'chi': np.radians(180),
-    'dot_v_tau': 0.0,
-    'v_r': -1.0,
-    'dot_v_r': 0.0,
-    'u_p': 0.0,
-    'dot_chi': 0.0,
+    'speed_wind': 10,
+    'distance_radial': 100.0,
+    'angle_course': np.radians(90),
+    'timeder_speed_tangential': 0.0,
+    'speed_radial': 0.0,
+    'timeder_speed_radial': 0.0,
+    'input_depower': 0.0,
+    'timeder_angle_course': 0.0,
 }
 
-unknown_vars = ['T', 'u_s', 'v_tau']
-unknown_vars_rb = ['T', 'u_s', 'v_tau', 'phi_k', 'theta_k', 'psi_k']
+unknown_vars = ['length_tether', 'input_steering', 'speed_tangential', 'angle_roll', 'angle_pitch', 'angle_yaw']
 alpha_func = kite.extract_parameter_function('angle_of_attack')
+T_func = kite.extract_parameter_function('tension_tether')
 
 # Define the range of phi and beta
 phi_values = np.radians(np.linspace(-90, 90, 50))  # Range for phi in radians
@@ -100,7 +101,7 @@ solutions = []
 solver_options = {
     'ipopt': {
         'print_level': 0,  # Suppresses IPOPT output
-        # 'max_iter': 1000,  # Maximum number of iterations
+        'max_iter': 200,  # Maximum number of iterations
         'sb': 'yes'        # Suppresses more detailed solver information
     },
     'print_time': False    # Disables CasADi's internal timing output
@@ -109,22 +110,20 @@ solver_options = {
 for phi, beta in zip(phi_combinations, beta_combinations):
     
     # Substitute phi and beta into the residual equations
-    subs_force_residual = ca.substitute(force_residual, kite.phi, phi)
-    subs_force_residual = ca.substitute(subs_force_residual, kite.beta, beta)
-    subs_residual = ca.substitute(residual, kite.phi, phi)
-    subs_residual = ca.substitute(subs_residual, kite.beta, beta)
-    known_state['phi'] = phi
-    known_state['beta'] = beta
+    subs_residual = ca.substitute(residual, kite.angle_azimuth, phi)
+    subs_residual = ca.substitute(subs_residual, kite.angle_elevation, beta)
+    known_state['angle_azimuth'] = phi
+    known_state['angle_elevation'] = beta
 
     # Define variables to solve for
-    sym_list = [getattr(kite, name) for name in unknown_vars_rb]
+    sym_list = [getattr(kite, name) for name in unknown_vars]
     
     # Combine residual equations into a single vector
     g = subs_residual  # This is the vector of equations to solve
     
     # Bounds for the variables
-    lbx = [0, -1, 0, -np.pi / 4, -np.pi / 4, -np.pi / 4]  # Lower bounds for T, u_s, v_tau, phi_k, theta_k
-    ubx = [1e6, 1, 500, np.pi / 4, np.pi / 4, np.pi / 4]  # Upper bounds for T, u_s, v_tau, phi_k, theta_k
+    lbx = [95, -1, 0, -np.pi / 4, -np.pi / 4, -np.pi / 4]  # Lower bounds for T, u_s, v_tau, phi_k, theta_k
+    ubx = [105, 1, 500, np.pi / 4, np.pi / 4, np.pi / 4]  # Upper bounds for T, u_s, v_tau, phi_k, theta_k
     
     # NLP problem definition
     nlp = {'x': ca.vertcat(*sym_list), 'f': 0, 'g': g}  # 'f' is set to 0 for root-finding
@@ -140,7 +139,7 @@ for phi, beta in zip(phi_combinations, beta_combinations):
     # try:
         # Solve the system
     sol = solver(
-        x0=[T_guess, u_s_guess, v_tau_guess, phi_guess, theta_guess, psi_guess],  # Initial guess
+        x0=[100, u_s_guess, v_tau_guess, phi_guess, theta_guess, psi_guess],  # Initial guess
         lbg=lbg,
         ubg=ubg,
         lbx=lbx,
@@ -150,27 +149,27 @@ for phi, beta in zip(phi_combinations, beta_combinations):
     solution = sol['x']
     if ca.norm_1(sol['g']) < 1:
         state_combined = {**known_state}
-        state_combined['T'] = float(solution[0])
-        state_combined['u_s'] = float(solution[1])
-        state_combined['v_tau'] = float(solution[2])
-        state_combined['phi_k'] = float(solution[3])
-        state_combined['theta_k'] = float(solution[4])
-        state_combined['psi_k'] = float(solution[5])
+        state_combined['length_tether'] = float(solution[0])
+        state_combined['input_steering'] = float(solution[1])
+        state_combined['speed_tangential'] = float(solution[2])
+        state_combined['angle_roll'] = float(solution[3])
+        state_combined['angle_pitch'] = float(solution[4])
+        state_combined['angle_yaw'] = float(solution[5])
 
         # Calculate alpha value
         alpha_value = alpha_func(*[state_combined[name] for name in alpha_func.name_in()])
+        T = T_func(*[state_combined[name] for name in T_func.name_in()])
         state_combined['alpha'] = float(alpha_value)
+        state_combined['T'] = float(T)
         solutions.append(state_combined)
 
-
-        # Update guesses for better convergence
-
-        # T_guess = float(solution[0])
-        # u_s_guess = float(solution[1])
-        # v_tau_guess = float(solution[2])
-        # phi_guess = float(solution[3])
-        # theta_guess = float(solution[4])
-        # psi_guess = float(solution[5])
+        # if beta < np.radians(50):
+        # # Update guesses for better convergence
+        #     u_s_guess = float(solution[1])
+        #     v_tau_guess = float(solution[2])
+        #     phi_guess = float(solution[3])
+        #     theta_guess = float(solution[4])
+        #     psi_guess = float(solution[5])
 
 
     # except RuntimeError as e:
@@ -201,12 +200,14 @@ solutions_df.reset_index(drop=True, inplace=True)
 
 
 # Extract data for plotting
-phi_values = solutions_df['phi'].values
-beta_values = solutions_df['beta'].values
+phi_values = solutions_df['angle_azimuth'].values
+beta_values = solutions_df['angle_elevation'].values
 alpha_values = np.degrees(solutions_df['alpha'].values)
 tether_tensions = solutions_df['T'].values
-theta_k_values = np.degrees(solutions_df['theta_k'].values)
-phi_k_values = np.degrees(solutions_df['phi_k'].values)
+theta_k_values = np.degrees(solutions_df['angle_pitch'].values)
+phi_k_values = np.degrees(solutions_df['angle_roll'].values)
+psi_k_values = np.degrees(solutions_df['angle_yaw'].values)
+input_steering = solutions_df['input_steering'].values
 
 # Convert spherical to Cartesian for 3D plotting
 x = np.cos(beta_values) * np.sin(phi_values)* 1
@@ -238,11 +239,12 @@ plt.tight_layout()
 
 
 # Create a 3D plot for tether tension and angle of attack
-fig = plt.figure(figsize=(16, 8))
+fig = plt.figure(figsize=(18, 6))
 
 # 3D Plot for Tether Tension
-ax1 = fig.add_subplot(121, projection='3d')
-sc1 = ax1.scatter(x, y, z, c=theta_k_values, cmap='viridis', marker='o')
+ax1 = fig.add_subplot(131, projection='3d')
+mean = np.mean(theta_k_values)
+sc1 = ax1.scatter(x, y, z, c=theta_k_values, cmap='viridis', marker='o',vmin=mean-5,vmax=mean+5)
 fig.colorbar(sc1, ax=ax1, label="Pitch Angle (degrees)")
 ax1.set_title("Pitch Angle (3D)")
 ax1.set_xlabel("X Coordinate")
@@ -250,10 +252,46 @@ ax1.set_ylabel("Y Coordinate")
 ax1.set_zlabel("Z Coordinate")
 
 # 3D Plot for Angle of Attack (alpha)
-ax2 = fig.add_subplot(122, projection='3d')
-sc2 = ax2.scatter(x, y, z, c=phi_k_values, cmap='plasma', marker='o',vmin=-10,vmax=10)
+ax2 = fig.add_subplot(132, projection='3d')
+mean = np.mean(phi_k_values)
+sc2 = ax2.scatter(x, y, z, c=phi_k_values, cmap='plasma', marker='o',vmin=mean-5,vmax=mean+5)
 fig.colorbar(sc2, ax=ax2, label="Roll Angle (degrees)")
 ax2.set_title("Roll Angle (3D)")
+ax2.set_xlabel("X Coordinate")
+ax2.set_ylabel("Y Coordinate")
+ax2.set_zlabel("Z Coordinate")
+
+ax3 = fig.add_subplot(133, projection='3d')
+mean = np.mean(psi_k_values)
+sc3 = ax3.scatter(x, y, z, c=psi_k_values, cmap='plasma', marker='o')
+fig.colorbar(sc3, ax=ax3, label="Yaw Angle (degrees)")
+ax3.set_title("Yaw Angle (3D)")
+ax3.set_xlabel("X Coordinate")
+ax3.set_ylabel("Y Coordinate")
+ax3.set_zlabel("Z Coordinate")
+
+
+plt.tight_layout()
+plt.show()
+
+
+# Create a 3D plot for tether tension and angle of attack
+fig = plt.figure(figsize=(16, 8))
+
+# 3D Plot for Tether Tension
+ax1 = fig.add_subplot(121, projection='3d')
+sc1 = ax1.scatter(x, y, z, c=tether_tensions, cmap='viridis', marker='o')
+fig.colorbar(sc1, ax=ax1, label="Tether Tension (N)")
+ax1.set_title("Tether Tension (3D)")
+ax1.set_xlabel("X Coordinate")
+ax1.set_ylabel("Y Coordinate")
+ax1.set_zlabel("Z Coordinate")
+
+# 3D Plot for Angle of Attack (alpha)
+ax2 = fig.add_subplot(122, projection='3d')
+sc2 = ax2.scatter(x, y, z, c=input_steering, cmap='plasma', marker='o')
+fig.colorbar(sc2, ax=ax2, label="Steering Input")
+ax2.set_title("Angle of Attack (3D)")
 ax2.set_xlabel("X Coordinate")
 ax2.set_ylabel("Y Coordinate")
 ax2.set_zlabel("Z Coordinate")

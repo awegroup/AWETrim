@@ -1,103 +1,36 @@
 import casadi as ca
 import numpy as np
-from picawe.reference_frames import transformation_C_from_AZR, transformation_C_from_A, transformation_C_from_K
-class KiteSystem:
-    # Base symbolic variables
-    base_symbolic_variables = {
-        'dot_v_tau': 'dot_v_tau',
-        'dot_chi': 'dot_chi',
-        'dot_v_r': 'dot_v_r',
-        'v_tau': 'v_tau',
-        'v_r': 'v_r',
-        'r': 'r',
-        'chi': 'chi',
-        'beta': 'beta',
-        'u_s': 'u_s',
-        'u_p': 'u_p',
-        'T': 'T',
-        'phi': 'phi',
-        'v_w': 'v_w',
-        'theta_k': 'theta_k',
-        'phi_k': 'phi_k',
-        'psi_k': 'psi_k',
-    }
+from picawe.reference_frames import transformation_C_from_W, transformation_C_from_A, transformation_C_from_K
+from picawe.Kinematics import KiteKinematics
+from picawe.Tether import Tether
+from picawe.Wind import Wind
 
-    # Property-level dependencies (mapped to other properties or symbolic variables)
-    property_dependencies = {
-        'wind_velocity': ['beta', 'chi', 'phi', 'v_w'],
-        'aerodynamic_coeffs': ['angle_of_attack', 'u_s', 'u_p'],
-        'theta_t': ['u_p'],
-        'pitch_kcu': ['beta', 'chi', 'v_tau', 'v_r', 'r', 'T'],
-        'angle_of_attack': ['theta_a', 'theta_t', 'pitch_kcu', 'theta_k'],
-        'apparent_velocity': ['v_tau', 'v_r', 'beta', 'chi', 'phi', 'v_w'],
-        'theta_a': ['apparent_velocity'],
-        'chi_a': ['apparent_velocity'],
-        'aerodynamic_forces': ['theta_a', 'chi_a', 'apparent_velocity', 'aerodynamic_coeffs'],
-        'gravity_force': ['beta', 'chi', 'm_wing'],
-        'tether_force': ['T'],
-        'acceleration': ['v_tau', 'v_r', 'r', 'chi', 'beta', 'dot_v_tau', 'dot_chi', 'dot_v_r'],
-        'force_residual': ['aerodynamic_forces', 'gravity_force', 'tether_force', 'acceleration', 'm_wing'],
-        'sideslip': ['psi_k', 'chi_a'],
-        'CL': ['angle_of_attack', 'apparent_velocity', 'u_s', 'u_p'],
-        'CD': ['angle_of_attack', 'apparent_velocity', 'u_s', 'u_p'],
-    }
-    def __init__(self, m_wing, A, aero_input, m_kcu = 0, g=9.81, rho=1.225, x_ca_wing = [0,0,10], x_cg_wing = [0,0,10]):
+
+class Wing:
+
+    def __init__(self, mass_wing, area_wing, aero_input):
         """
         Initialize the kite system with its parameters.
         """
-        self.m_wing = m_wing # Mass
-        self.A = A  # Reference area
-        self.m_kcu = m_kcu  # Mass of the kite control unit
-        self.g = g  # Gravitational acceleration
-        self.rho = rho  # Air density
-        self.x_ca_wing = x_ca_wing  # Center of aerodynamic pressure
-        self.x_cg_wing = x_cg_wing  # Center of gravity
-        
-        
+        self.mass_wing = mass_wing
+        self.area_wing = area_wing
+        self.define_symbolic_variables_wing()
         # Aerodynamic inputs
-        self.theta_t_0 = aero_input['params'].get("theta_t_0", ca.SX.sym('theta_t_0'))
-        self.delta_theta_up = aero_input['params'].get("delta_theta_up", ca.SX.sym('delta_theta_up'))
-
-        # Define symbolic variables for the function inputs
-        self.define_symbolic_variables()
+        self.angle_pitch_depower_0 = aero_input['params'].get("angle_pitch_depower_0", ca.SX.sym('angle_pitch_depower_0'))
+        self.delta_pitch_depower = aero_input['params'].get("delta_pitch_depower", ca.SX.sym('delta_pitch_depower'))
         self.aerodynamic_coeffs_function(aero_input)
         
+    def define_symbolic_variables_wing(self):
+        """
+        Define symbolic variables used in the model.
+        """
+        base_symbolic_variables = {
+            'input_steering': 'input_steering',
+            'input_depower': 'input_depower',
+        }
+        for var_name in base_symbolic_variables.keys():
+            setattr(self, var_name, ca.SX.sym(var_name))
 
-    def define_symbolic_variables(self):
-            """
-            Define symbolic variables used in the model.
-            """
-            for var_name in self.base_symbolic_variables.keys():
-                setattr(self, var_name, ca.SX.sym(var_name))
-
-    @property
-    def wind_velocity(self):
-        """
-        Compute the wind velocity in the body frame.
-        """
-
-        beta, chi, phi, v_w = self.beta, self.chi, self.phi, self.v_w
-        # Wind velocity components in the body frame
-        v_w_x = (-ca.sin(beta) * ca.cos(chi) * ca.cos(phi) - ca.sin(chi) * ca.sin(phi)) * v_w
-        v_w_y = (-ca.sin(beta) * ca.sin(chi) * ca.cos(phi) + ca.sin(phi) * ca.cos(chi)) * v_w
-        v_w_z = ca.cos(beta) * ca.cos(phi) * v_w
-
-        return ca.vertcat(v_w_x, v_w_y, v_w_z)
-    
-    @property
-    def theta_t(self):
-        """
-        Compute the tether angle based on the powered angle and the tether angle at t=0.
-        """
-        return self.theta_t_0 + self.u_p * self.delta_theta_up
-
-    @property
-    def sideslip(self):
-        """
-        Compute the sideslip
-        """
-        return self.psi_k - self.chi_a
-    
     def aerodynamic_coeffs_function(self, aero_input):
         """
         Create a function to compute aerodynamic coefficients with dynamic dependencies.
@@ -105,11 +38,12 @@ class KiteSystem:
         # Define symbolic variables
         variables = {
             "alpha": self.angle_of_attack,
-            "u_s": self.u_s,
-            "u_p": self.u_p,
+            "alpha_squared": self.angle_of_attack**2,
+            "u_s": self.input_steering,
+            "u_p": self.input_depower,
             # Dynamically add other variables as dependencies
-            "yaw_rate": self.dot_chi/ca.norm_2(self.apparent_velocity),
-            "sideslip": self.sideslip,
+            "yaw_rate": self.timeder_angle_course/ca.norm_2(self.velocity_apparent_wind),
+            "sideslip": self.angle_sideslip,
         }
         C_S = 0 # Side force coefficient
         C_m = 0 # Pitch moment coefficient
@@ -124,7 +58,9 @@ class KiteSystem:
 
             C_L = 2 * ca.pi * variables["alpha"]
             C_D = C_L**2 / (ca.pi * e * AR) + CD0
-
+        elif aero_input["model"] == "coeffs":
+            C_L = aero_input["params"]["CL0"]
+            C_D = aero_input["params"]["CD0"]
         elif aero_input["model"] == "polars":
             cl_data, cd_data, alpha_data = (
                 aero_input["params"]["CL"],
@@ -163,6 +99,8 @@ class KiteSystem:
                     C_S += coeff_value * variables[var]
                 elif coeff_type == "k_cm":  # Pitch moment coefficient
                     C_m += coeff_value * variables[var]
+                elif coeff_type == "k_cn":
+                    C_n += coeff_value * variables[var]
 
         # Include base moment coefficients if specified
         C_m += aero_input["params"].get("C_m_base", 0)
@@ -176,10 +114,19 @@ class KiteSystem:
         self.Cl = C_l
         self.Cn = C_n
 
-    # @property
-    # def pitch_kcu(self):
-    #     return np.arctan((self.m_kcu*9.81 * np.cos(self.beta) * np.cos(self.chi) -self.v_tau*self.v_r/self.r)/
-    #                        (self.T + self.m_kcu*9.81 * np.sin(self.beta) - (self.m_kcu*self.v_tau**2 / self.r)))
+    @property
+    def angle_pitch_depower(self):
+        """
+        Compute the tether angle based on the powered angle and the tether angle at t=0.
+        """
+        return self.angle_pitch_depower_0 + self.input_depower * self.delta_pitch_depower
+
+    @property
+    def angle_sideslip(self):
+        """
+        Compute the angle_sideslip
+        """
+        return self.angle_yaw - self.angle_yaw_aerodynamic
 
     @property
     def angle_of_attack(self):
@@ -187,79 +134,89 @@ class KiteSystem:
         Compute the angle of attack based on the air velocity vector and tether angle.
         """
 
-        return self.theta_a + self.theta_t - self.theta_k
+        return self.angle_pitch_aerodynamic + self.angle_pitch_depower - self.angle_pitch
     
     @property
-    def apparent_velocity(self):
+    def velocity_apparent_wind(self):
 
-        v_k_vec = ca.vertcat(self.v_tau, 0, self.v_r)
-        v_w_vec = self.wind_velocity
-        v_a_vec = v_w_vec - v_k_vec
-
-        return v_a_vec
+        return self.velocity_wind - self.velocity_kite
 
     @property
-    def theta_a(self):
+    def angle_pitch_aerodynamic(self):
         
-        theta_a = ca.atan2(self.apparent_velocity[2], ca.sqrt(self.apparent_velocity[0]**2 + self.apparent_velocity[1]**2))
-        return theta_a
+        return ca.atan2(self.velocity_apparent_wind[2], ca.sqrt(self.velocity_apparent_wind[0]**2 + self.velocity_apparent_wind[1]**2))
 
     @property
-    def chi_a(self):
-        return ca.atan(self.apparent_velocity[1]/ self.apparent_velocity[0])
+    def angle_yaw_aerodynamic(self):
+        return ca.atan(self.velocity_apparent_wind[1]/ self.velocity_apparent_wind[0])
 
     @property
-    def aerodynamic_forces(self):
+    def force_aerodynamic(self):
         """
         Compute the aerodynamic forces based on the aerodynamic coefficients.
         """
-        V_a_sq = ca.mtimes(self.apparent_velocity.T, self.apparent_velocity)
+        V_a_sq = ca.mtimes(self.velocity_apparent_wind.T, self.velocity_apparent_wind)
 
         # Aerodynamic forces
-        D = 0.5 * self.rho * V_a_sq * self.A * self.CD
-        L = 0.5 * self.rho * V_a_sq * self.A * self.CL
-        S = 0.5 * self.rho * V_a_sq * self.A * self.CS
+        D = 0.5 * self.rho * V_a_sq * self.area_wing * self.CD
+        L = 0.5 * self.rho * V_a_sq * self.area_wing * self.CL
+        S = 0.5 * self.rho * V_a_sq * self.area_wing * self.CS
     
-        R = transformation_C_from_A(self.theta_a, self.chi_a, self.phi_k)
+        R = transformation_C_from_A(self.angle_pitch_aerodynamic, self.angle_yaw_aerodynamic, self.angle_roll)
         aero_forces = R @ ca.vertcat(-D, S, L)
         return aero_forces
        
     @property
-    def gravity_force_wing(self):
+    def force_gravity_wing(self):
 
-        return (self.m_wing) * self.g * ca.vertcat(
-            -ca.cos(self.beta) * ca.cos(self.chi),
-            -ca.sin(self.chi) * ca.cos(self.beta),
-            -ca.sin(self.beta)
-        )
+        return transformation_C_from_W(self.angle_azimuth, self.angle_elevation, self.angle_course) @ ca.vertcat(0, 0, -self.mass_wing * self.g)
+    
+
+class Kite(Wing):
+    
+    def __init__(self, mass_wing, area_wing, aero_input, mass_kcu = 0, g=9.81, rho=1.225, center_aerodynamic_wing = [0,0,10], center_gravity_wing = [0,0,10]):
+        """
+        Initialize the kite system with its parameters.
+        """
+        self.define_symbolic_variables_kite()
+        Wing.__init__(self, mass_wing, area_wing, aero_input)
+        self.mass_kcu = mass_kcu  # Mass of the kite control unit
+        self.g = g  # Gravitational acceleration
+        self.rho = rho  # Air density
+        self.center_aerodynamic_wing = center_aerodynamic_wing  # Center of aerodynamic pressure
+        self.center_gravity_wing = center_gravity_wing  # Center of gravity
+
+    def define_symbolic_variables_kite(self):
+        """
+        Define symbolic variables used in the model.
+        """
+        base_symbolic_variables = {
+            'angle_pitch': 'angle_pitch',
+            'angle_roll': 'angle_roll',
+            'angle_yaw': 'angle_yaw',
+        }
+        for var_name in base_symbolic_variables.keys():
+            setattr(self, var_name, ca.SX.sym(var_name))
 
     @property
-    def gravity_force_kcu(self):
+    def force_gravity_kcu(self):
             
-            return (self.m_kcu) * self.g * ca.vertcat(
-                -ca.cos(self.beta) * ca.cos(self.chi),
-                -ca.sin(self.chi) * ca.cos(self.beta),
-                -ca.sin(self.beta)
-            )
+        T = transformation_C_from_W(self.angle_azimuth, self.angle_elevation, self.angle_course)
+        return T @ ca.vertcat(0, 0, -self.mass_kcu * self.g)
         
     @property
-    def gravity_force(self):
-        return self.gravity_force_wing + self.gravity_force_kcu
-
-    @property
-    def tether_force(self):
-
-        return ca.vertcat(0, 0, -self.T)
+    def force_gravity(self):
+        return self.force_gravity_wing + self.force_gravity_kcu
 
     @property
     def acceleration(self):
         
-        v_tau, v_r, r, chi, beta = self.v_tau, self.v_r, self.r, self.chi, self.beta
-        dot_v_tau, dot_chi, dot_v_r = self.dot_v_tau, self.dot_chi, self.dot_v_r
+        speed_tangential, speed_radial, r, angle_course, angle_elevation = self.speed_tangential, self.speed_radial, self.distance_radial, self.angle_course, self.angle_elevation
+        timeder_speed_tangential, timeder_angle_course, timeder_speed_radial = self.timeder_speed_tangential, self.timeder_angle_course, self.timeder_speed_radial
         return ca.vertcat(
-            dot_v_tau + (v_tau * v_r) / r,
-            (v_tau**2 / r) * ca.sin(chi) * ca.tan(beta) - v_tau * dot_chi,
-            dot_v_r - (v_tau**2 / r)
+            timeder_speed_tangential + (speed_tangential * speed_radial) / r,
+            (speed_tangential**2 / r) * ca.sin(angle_course) * ca.tan(angle_elevation) - speed_tangential * timeder_angle_course,
+            timeder_speed_radial - (speed_tangential**2 / r)
         )
 
     @property
@@ -269,17 +226,17 @@ class KiteSystem:
         """
 
         # Compute the aerodynamic forces
-        aero_forces = self.aerodynamic_forces
+        aero_forces = self.force_aerodynamic
 
         # Compute the gravity force
-        gravity_force = self.gravity_force
+        force_gravity = self.force_gravity
 
         # Compute the tether force
-        tether_force = self.tether_force
+        force_tether = self.force_tether
 
         # LHS and RHS
-        lhs = (self.m_wing+self.m_kcu) * self.acceleration
-        rhs = aero_forces + tether_force + gravity_force
+        lhs = (self.mass_wing+self.mass_kcu) * self.acceleration
+        rhs = aero_forces + force_tether + force_gravity
 
         # Residual
         return lhs - rhs
@@ -287,33 +244,33 @@ class KiteSystem:
     @property
     def aero_moment(self):
 
-        R_C_from_K = transformation_C_from_K(self.theta_k, self.phi_k)
+        R_C_from_K = transformation_C_from_K(self.angle_pitch, self.angle_roll)
 
-        x_ca_wing = R_C_from_K @ ca.vertcat(*self.x_ca_wing)
+        center_aerodynamic_wing = R_C_from_K @ ca.vertcat(*self.center_aerodynamic_wing)
 
 
-        aero_moment = ca.cross(x_ca_wing, self.aerodynamic_forces)
-        aero_moment[1] += self.Cn*self.A*self.rho*ca.mtimes(self.apparent_velocity.T, self.apparent_velocity)*4 ### Not the correct formula
-        aero_moment[2] += self.Cm*self.A*self.rho*ca.mtimes(self.apparent_velocity.T, self.apparent_velocity)*4 ### Not the correct formula
+        aero_moment = ca.cross(center_aerodynamic_wing, self.force_aerodynamic)
+        aero_moment[1] += self.Cn*self.area_wing*self.rho*ca.mtimes(self.velocity_apparent_wind.T, self.velocity_apparent_wind)*4 ### Not the correct formula
+        aero_moment[2] += self.Cm*self.area_wing*self.rho*ca.mtimes(self.velocity_apparent_wind.T, self.velocity_apparent_wind)*4 ### Not the correct formula
         return aero_moment
 
     @property
     def gravity_moment(self):
 
-        R_C_from_K = transformation_C_from_K(self.theta_k, self.phi_k)
+        R_C_from_K = transformation_C_from_K(self.angle_pitch, self.angle_roll)
 
-        x_cg_wing = R_C_from_K @ ca.vertcat(*self.x_cg_wing)
+        center_gravity_wing = R_C_from_K @ ca.vertcat(*self.center_gravity_wing)
 
-        return ca.cross(x_cg_wing, self.gravity_force_wing)
+        return ca.cross(center_gravity_wing, self.force_gravity_wing)
 
     @property
     def inertia_moment(self):
 
-        R_C_from_K = transformation_C_from_K(self.theta_k, self.phi_k)
+        R_C_from_K = transformation_C_from_K(self.angle_pitch, self.angle_roll)
 
-        x_cg_wing = R_C_from_K @ ca.vertcat(*self.x_cg_wing)
+        center_gravity_wing = R_C_from_K @ ca.vertcat(*self.center_gravity_wing)
 
-        return ca.cross(x_cg_wing, (self.m_wing) * self.acceleration)
+        return ca.cross(center_gravity_wing, (self.mass_wing) * self.acceleration)
 
     @property
     def moment_residual(self):
@@ -330,102 +287,11 @@ class KiteSystem:
         # Residual
         return aero_moment + gravity_moment - inertia_moment
     
-
+    
     @property
     def rb_residual(self):
         """
         Compute the residual for the kite system dynamics. 
         Join the force and moment residuals.
         """
-
         return ca.vertcat(self.force_residual, self.moment_residual)
-
-    def get_residual_function(self):
-        """
-        Returns a CasADi function for the residual.
-        """
-
-        # Return a CasADi function
-        return ca.Function(
-            'residual_func',
-            [self.dot_v_tau, self.dot_chi, self.dot_v_r, self.v_tau, self.v_r, self.r, self.chi, self.beta, self.u_s, self.u_p, self.T, self.phi, self.v_w],
-            [self.force_residual],
-            ['dot_v_tau', 'dot_chi', 'dot_v_r', 'v_tau', 'v_r', 'r', 'chi', 'beta', 'u_s', 'u_p', 'T', 'phi', 'v_w'],
-            ['residual']
-        )
-    
-    def get_residual_function_aero_iden(self):
-        """
-        Returns a CasADi function for the residual.
-        """
-
-
-        # Call compute_residual with the symbolic variables
-        residual = self.compute_residual()
-
-        # Return a CasADi function
-        return ca.Function(
-            'residual_func',
-            [self.dot_v_tau, self.dot_chi, self.dot_v_r, self.v_tau, self.v_r, self.r, self.chi, self.beta, self.u_s, self.u_p, self.T, self.phi, self.v_w, 
-             self.delta_theta_up, self.theta_t_0, self.CD0, self.k_cd_us, self.k_cl_us, self.k_cd_up, self.k_cl_up],
-            [residual],
-            ['dot_v_tau', 'dot_chi', 'dot_v_r', 'v_tau', 'v_r', 'r', 'chi', 'beta', 'u_s', 'u_p', 'T', 'phi', 'v_w', 
-             'delta_theta_up', 'theta_t_0', 'CD0', 'k_cd_us', 'k_cl_us', 'k_cd_up', 'k_cl_up'],
-            ['residual']
-        )
-
-    def resolve_dependencies(self, property_name):
-        """
-        Recursively resolve dependencies to find all symbolic variables required for a property.
-
-        :param property_name: The name of the property (e.g., 'aerodynamic_forces').
-        :return: Set of symbolic variables required for the property.
-        """
-        if property_name in self.base_symbolic_variables:
-            # Base case: property is a direct symbolic variable
-            return {property_name}
-
-        if property_name not in self.property_dependencies:
-            raise ValueError(f"Property '{property_name}' not found in dependency map.")
-
-        resolved_deps = set()
-        for dep in self.property_dependencies[property_name]:
-            # Recursively resolve dependencies
-            resolved_deps.update(self.resolve_dependencies(dep))
-        return resolved_deps
-
-    def get_symbolic_dependencies(self, property_name):
-        """
-        Get the actual symbolic variables required for a property.
-
-        :param property_name: The name of the property (e.g., 'aerodynamic_forces').
-        :return: List of CasADi symbolic variables required for the property.
-        """
-        dependencies = self.resolve_dependencies(property_name)
-        return [getattr(self, dep) for dep in dependencies if dep in self.base_symbolic_variables]
-
-    def extract_parameter_function(self, parameter_name):
-        """
-        Creates a CasADi function to compute a specific parameter from the kite state.
-
-        :param parameter_name: The name of the parameter to extract (e.g., 'alpha').
-        :return: CasADi function to compute the parameter.
-        """
-        # Check if the parameter is defined
-        if parameter_name not in self.property_dependencies:
-            raise ValueError(f"Parameter {parameter_name} is not defined.")
-
-        # Get the symbolic expression for the parameter
-        parameter_expr = getattr(self, parameter_name)
-
-        # Get the required inputs for this parameter
-        required_inputs = list(self.resolve_dependencies(parameter_name))  # Ensure it's a list
-
-        print(f"Required inputs for {parameter_name}: {required_inputs}")
-
-        # Map required inputs to symbolic variables
-        input_symbols = [getattr(self, var) for var in required_inputs]
-        print(f"Input symbols for {parameter_name}: {input_symbols}")
-
-        # Create and return the CasADi function
-        return ca.Function(f'compute_{parameter_name}', input_symbols, [parameter_expr], required_inputs, [parameter_name])
