@@ -28,12 +28,12 @@ class State(KiteKinematics, Tether, Wind, Kite):
         'timeder_angle_elevation': ['speed_tangential', 'distance_radial', 'angle_course'],
         'timeder_angle_azimuth': ['speed_tangential', 'distance_radial', 'angle_course', 'angle_elevation'],
     }
-    def __init__(self, mass_wing, area_wing, aero_input, mass_kcu = 0, g=9.81, rho=1.225, center_aerodynamic_wing = [0,0,10], center_gravity_wing = [0,0,10], E = 132e9, diameter = 0.014):
+    def __init__(self, mass_wing, area_wing, aero_input, mass_kcu = 0, g=9.81, rho=1.225, center_aerodynamic_wing = [0,0,10], center_gravity_wing = [0,0,10], E = 132e9, diameter = 0.008, density = 970):
         """
         Initialize the kite system with its parameters.
         """
         # Define symbolic variables for the function inputs
-        Tether.__init__(self, E, diameter)
+        Tether.__init__(self, E, diameter, density)
         KiteKinematics.__init__(self)
         Wind.__init__(self)
         Kite.__init__(self, mass_wing, area_wing, aero_input, mass_kcu, g, rho, center_aerodynamic_wing, center_gravity_wing)
@@ -50,6 +50,95 @@ class State(KiteKinematics, Tether, Wind, Kite):
 
         ode = ca.vertcat(dot_r, dot_vr, dot_vt, dot_chi, dot_theta, dot_beta)
         return ode
+
+    def solve_quasi_steady_state(self, known_state, unknown_vars, x0,solver_options = {}, dof=6, return_not_converged = True):
+        """
+        Solve the quasi-steady state equations for the kite system.
+
+        :param known_state: Dictionary of known state variables and their values.
+        :param unknown_vars: List of unknown state variables to solve for.
+        :return: Dictionary of unknown state variables and their values.
+        """
+        if dof == 6:
+            residual = self.rb_residual
+            # Solve the system of equations
+            lbx = [known_state["distance_radial"]-5, -10, -1, -np.pi / 4, -np.pi / 4, -np.pi / 4]  # Lower bounds for T, u_s, speed_tangential, phi_k, theta_k
+            ubx = [known_state["distance_radial"], 10, 500, np.pi / 4, np.pi / 4, np.pi / 4]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
+        elif dof == 3:
+            known_state["angle_roll"] = 0
+            known_state["angle_yaw"] = 0
+            known_state["angle_pitch"] = 0
+            residual = self.force_residual
+            # Solve the system of equations
+            lbx = [known_state["distance_radial"]-5, -10, 0]  # Lower bounds for T, u_s, speed_tangential, phi_k, theta_k
+            ubx = [known_state["distance_radial"], 10, 500]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
+
+        sym_list = [getattr(self, name) for name in unknown_vars]
+        for name, value in known_state.items():
+            if name in unknown_vars:
+                continue
+            variable = getattr(self, name)
+            residual = ca.substitute(residual, variable, value)
+
+        
+
+        # NLP problem definition
+        nlp = {'x': ca.vertcat(*sym_list), 'f': 0, 'g': residual}  # 'f' is set to 0 for root-finding
+
+        # Define the NLP solver
+        solver = ca.nlpsol('solver', 'ipopt', nlp, solver_options)
+
+        # Bounds for the constraints
+        lbg = [0] * residual.size1()  # Lower bounds (0 for residuals)
+        ubg = [0] * residual.size1()  # Upper bounds (0 for residuals)
+
+        # try:
+        # Solve the system
+        sol = solver(
+            x0=x0,  # Initial guess
+            lbg=lbg,
+            ubg=ubg,
+            lbx=lbx,
+            ubx=ubx
+        )
+        converged = True
+        if ca.norm_1(sol['g']) > 1:
+            print("Quasi-steady state not found")
+            converged = False
+        
+        qs_state = {name: float(sol['x'][i]) for i, name in enumerate(unknown_vars)}
+        # Join qs_state with known_state
+        qs_state.update(known_state)
+        return qs_state, converged
+    
+    def integrate(self, current_state, time, time_step):
+
+        x = ca.vertcat(*[getattr(self, name) for name in self.ode_states])
+        ode = self.ode
+        # Substitute known values into the ode function
+        for name, value in current_state.items():
+            if name in self.ode_states:
+                continue
+            else:
+                variable = getattr(self, name)
+                ode = ca.substitute(ode, variable, value)
+
+        # Define the CasADi integrator
+        intg = ca.integrator('intg','cvodes',{'x':x,'ode':ode},time,time+time_step)
+
+        x0 = [current_state[name] for name in self.ode_states]
+        res = intg(x0 = x0)
+
+        # new_state.update(current_state)
+        return res['xf']
+
+
+
+
+
+    @property
+    def ode_states(self):
+        return ['distance_radial', 'speed_radial', 'speed_tangential', 'angle_course', 'angle_azimuth', 'angle_elevation']
 
     def resolve_dependencies(self, property_name):
         """

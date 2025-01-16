@@ -51,13 +51,13 @@ class KiteKinematics:
         )
 
         return angle_elevation_dot
-    
+
     @property
     def acceleration_azimuth(self):
         r = self.distance_radial
         r_dot = self.speed_radial
         v_tau = self.speed_tangential
-        v_tau_dot = self.timeder_speed_tangential
+        v_tau_dot = self.force_residual[0]
         beta = self.angle_elevation
         beta_dot = self.timeder_angle_elevation
         chi = self.angle_course

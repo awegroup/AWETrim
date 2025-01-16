@@ -38,24 +38,24 @@ aero_input = {
 
 
 # Example Usage
-kite = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu = 25)
+state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu = 25)
 
 
 # Define the known state
 known_state = {
     'speed_wind': 10,
     'distance_radial': 100.0,
-    'angle_course': np.radians(90),
+    'angle_course': np.radians(0),
     'timeder_speed_tangential': 0.0,
     'speed_radial': 0.0,
     'timeder_speed_radial': 0.0,
     'input_depower': 0.0,
-    'timeder_angle_course': 0.0,
+    'input_steering': 0.0,
 }
 
-unknown_vars = ['length_tether', 'input_steering', 'speed_tangential', 'angle_roll', 'angle_pitch', 'angle_yaw']
-alpha_func = kite.extract_parameter_function('angle_of_attack')
-T_func = kite.extract_parameter_function('tension_tether')
+unknown_vars = ['length_tether', 'timeder_angle_course', 'speed_tangential', 'angle_roll', 'angle_pitch', 'angle_yaw']
+alpha_func = state.extract_parameter_function('angle_of_attack')
+T_func = state.extract_parameter_function('tension_tether')
 
 # Define the range of phi and beta
 phi_values = np.radians(np.linspace(-90, 90, 50))  # Range for phi in radians
@@ -81,21 +81,9 @@ beta_combinations = beta_combinations[sorted_indices]
 
 # Prepare to store solutions
 solutions = []
-# Initial guess
-T_guess = 10000
-u_s_guess = 0.1
-v_tau_guess = 30
-theta_guess = np.radians(1e-3)
-phi_guess = np.radians(1e-3)
-psi_guess = np.radians(1e-3)
 
 start = time.time()
-force_residual = kite.force_residual
-residual = kite.rb_residual
-for name, value in known_state.items():
-    variable = getattr(kite, name)  # Dynamically retrieve variable from kite
-    force_residual = ca.substitute(force_residual, variable, value)
-    residual = ca.substitute(residual, variable, value)
+
 # Prepare to store solutions
 solutions = []
 solver_options = {
@@ -106,81 +94,27 @@ solver_options = {
     },
     'print_time': False    # Disables CasADi's internal timing output
 }
+qs_guess = [known_state["distance_radial"], 0, 30, 1e-3, 1e-3, 1e-3]
 # Loop over combinations of phi and beta
 for phi, beta in zip(phi_combinations, beta_combinations):
-    
+
     # Substitute phi and beta into the residual equations
-    subs_residual = ca.substitute(residual, kite.angle_azimuth, phi)
-    subs_residual = ca.substitute(subs_residual, kite.angle_elevation, beta)
-    known_state['angle_azimuth'] = phi
-    known_state['angle_elevation'] = beta
 
-    # Define variables to solve for
-    sym_list = [getattr(kite, name) for name in unknown_vars]
-    
-    # Combine residual equations into a single vector
-    g = subs_residual  # This is the vector of equations to solve
-    
-    # Bounds for the variables
-    lbx = [95, -1, 0, -np.pi / 4, -np.pi / 4, -np.pi / 4]  # Lower bounds for T, u_s, v_tau, phi_k, theta_k
-    ubx = [105, 1, 500, np.pi / 4, np.pi / 4, np.pi / 4]  # Upper bounds for T, u_s, v_tau, phi_k, theta_k
-    
-    # NLP problem definition
-    nlp = {'x': ca.vertcat(*sym_list), 'f': 0, 'g': g}  # 'f' is set to 0 for root-finding
+    current_state = {
+        'angle_azimuth': phi,
+        'angle_elevation': beta
+    }
 
-    # Define the NLP solver
-    solver = ca.nlpsol('solver', 'ipopt', nlp, solver_options)
-
-    # Bounds for the constraints
-    # Bounds for the constraints
-    lbg = [0] * g.size1()  # Lower bounds (0 for residuals)
-    ubg = [0] * g.size1()  # Upper bounds (0 for residuals)
-
-    # try:
-        # Solve the system
-    sol = solver(
-        x0=[100, u_s_guess, v_tau_guess, phi_guess, theta_guess, psi_guess],  # Initial guess
-        lbg=lbg,
-        ubg=ubg,
-        lbx=lbx,
-        ubx=ubx
-    )
-    
-    solution = sol['x']
-    if ca.norm_1(sol['g']) < 1:
-        state_combined = {**known_state}
-        state_combined['length_tether'] = float(solution[0])
-        state_combined['input_steering'] = float(solution[1])
-        state_combined['speed_tangential'] = float(solution[2])
-        state_combined['angle_roll'] = float(solution[3])
-        state_combined['angle_pitch'] = float(solution[4])
-        state_combined['angle_yaw'] = float(solution[5])
-
-        # Calculate alpha value
-        alpha_value = alpha_func(*[state_combined[name] for name in alpha_func.name_in()])
-        T = T_func(*[state_combined[name] for name in T_func.name_in()])
-        state_combined['alpha'] = float(alpha_value)
-        state_combined['T'] = float(T)
-        solutions.append(state_combined)
-
-        # if beta < np.radians(50):
-        # # Update guesses for better convergence
-        #     u_s_guess = float(solution[1])
-        #     v_tau_guess = float(solution[2])
-        #     phi_guess = float(solution[3])
-        #     theta_guess = float(solution[4])
-        #     psi_guess = float(solution[5])
+    current_state, converged = state.solve_quasi_steady_state({**known_state,**current_state}, unknown_vars, qs_guess, solver_options= solver_options, dof = 6, return_not_converged=False)
+    if converged:
+        alpha_value = alpha_func(*[current_state[name] for name in alpha_func.name_in()])
+        T = T_func(*[current_state[name] for name in T_func.name_in()])
+        current_state['alpha'] = float(alpha_value)
+        current_state['T'] = float(T)
+        # qs_guess = [current_state[name] for name in unknown_vars]
+        solutions.append(current_state)
 
 
-    # except RuntimeError as e:
-    #     # Handle solver failure
-    #     solutions.append({
-    #         'phi': np.degrees(phi),
-    #         'beta': np.degrees(beta),
-    #         'T': None,
-    #         'u_s': None,
-    #         'v_tau': None
-    #     })
 
 end = time.time()
 print(f"Time taken: {end - start} seconds for {len(phi_values) * len(beta_values)} iterations")
@@ -195,7 +129,7 @@ solutions_df = pd.DataFrame(solutions)
 # Filter out rows where 'T' is None
 solutions_df = solutions_df[solutions_df['T'].notna()]
 # solutions_df = solutions_df[(np.degrees(solutions_df['alpha']) < 20)&(np.degrees(solutions_df['alpha']) > -5)]
-# solutions_df = solutions_df[solutions_df['T']>kite.m_wing*9.81]
+
 solutions_df.reset_index(drop=True, inplace=True)
 
 

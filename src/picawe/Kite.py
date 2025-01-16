@@ -148,7 +148,7 @@ class Wing:
 
     @property
     def angle_yaw_aerodynamic(self):
-        return ca.atan(self.velocity_apparent_wind[1]/ self.velocity_apparent_wind[0])
+        return -ca.atan(self.velocity_apparent_wind[1]/ self.velocity_apparent_wind[0])
 
     @property
     def force_aerodynamic(self):
@@ -233,6 +233,8 @@ class Kite(Wing):
 
         # Compute the tether force
         force_tether = self.force_tether
+
+        
 
         # LHS and RHS
         lhs = (self.mass_wing+self.mass_kcu) * self.acceleration
