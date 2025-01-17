@@ -44,7 +44,7 @@ def read_dict_from_group(group):
     return config_dict
 
 results, flight_data,config_data = read_results("2019", "10", "08", "v3",addition='')
-mask = (flight_data.cycle.isin([64,65])) 
+mask = (flight_data.cycle.isin([65])) 
 
 flight_data = flight_data[mask]
 results = results[mask]
@@ -65,17 +65,17 @@ aero_input = {
         'CL': v3_polar_data['CL'].values, 
         'CD': v3_polar_data['CD'].values, 
         'alpha': np.radians(v3_polar_data['aoa'].values), 
-        'angle_pitch_depower_0': np.radians(-5),
+        'angle_pitch_depower_0': np.radians(-8),
         'delta_pitch_depower': np.radians(-9.0),
         "Cn_base": -0.01,
         # Add other aerodynamic parameters
     },
     "dependencies": {
         "alpha": {},
-        "u_s": {"k_cl": 0, "k_cd": 0.15, "k_cs": 0.23, "k_cm": 0.005},    # 
-        "yaw_rate": {"k_cl": 0, "k_cd": 0, "k_cs": -0.01, "k_cm": -0.02}, # 
-        "sideslip": {"k_cl": 0, "k_cd": 0, "k_cs": 0.01, "k_cm": -0.05}, # Cm 0.85 from Jelle
-        "u_p": {"k_cl": 0, "k_cd": 0., "k_cs": 0, "k_cn": 0.035},     #  Cn 0.04 from Jelle
+        "u_s": {"k_cl": 0, "k_cd": 0.15, "k_cs": 0.23, "k_cn": 0.005},    # 
+        "yaw_rate": {"k_cl": 0, "k_cd": 0, "k_cs": -0.01, "k_cn": -0.02}, # 
+        "sideslip": {"k_cl": 0, "k_cd": 0, "k_cs": 0.01, "k_cn": -0.05}, # Cn 0.85 from Jelle
+        "u_p": {"k_cl": 0, "k_cd": 0., "k_cs": 0, "k_cm": 0.01},     #  Cm 0.04 from Jelle
         # Add other dependencies as needed
     },
 }

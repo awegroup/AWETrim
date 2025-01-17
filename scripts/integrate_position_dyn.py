@@ -36,12 +36,11 @@ aero_input = {
 # Example Usage
 state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu = 25)
 
-residual = state.rb_residual
-ode = state.ode
 
 T_func = state.extract_parameter_function('tension_tether')
 aoa_func = state.extract_parameter_function('angle_of_attack')
 
+reeling_speed = -2
 known_state = {
     'timeder_speed_tangential': 0.0,
     'timeder_speed_radial': 0.0,
@@ -50,10 +49,7 @@ known_state = {
     'input_depower': 0,
     'speed_wind': 10,
 }
-for name, value in known_state.items():
-    variable = getattr(state, name)
-    residual = ca.substitute(residual, variable, value)
-    ode = ca.substitute(ode, variable, value)
+
 unknown_vars = ['length_tether', 'input_steering', 'speed_tangential']
 
 current_state = {
@@ -70,39 +66,39 @@ solver_options = {
     },
     'print_time': False    # Disables CasADi's internal timing output
 }
-time_step = 0.1
-time = np.arange(0, 100, time_step)
+time_step = 0.01
+time = np.arange(0, 50, time_step)
 qs_guess = [200, 0, 40]
+known_state.update(current_state)
+
+current_state,_ = state.solve_quasi_steady_state(known_state, unknown_vars, qs_guess, solver_options= solver_options, dof = 3)
 states = []
 for i in range(len(time)):
-    
-    known_state.update(current_state)
 
-    current_state,_ = state.solve_quasi_steady_state(known_state, unknown_vars, qs_guess, solver_options= solver_options, dof = 3)
-
-    qs_guess = [current_state[name] for name in unknown_vars]
-    
+    # print(current_state["angle_course"])
     new_state = state.integrate(current_state, time[i], time_step)
 
     T = T_func(*[current_state[name] for name in T_func.name_in()])
     aoa = aoa_func(*[current_state[name] for name in aoa_func.name_in()])
-    current_state["T"] = float(T)
-    current_state["aoa"] = float(aoa)
-    states.append(current_state)
+    
+    # states.append(current_state)
     # print(current_state["input_steering"])
-    current_state = {
-        'distance_radial': float(new_state[0]),
-        'angle_course': float(new_state[3]),
-        'angle_azimuth': float(new_state[4]),
-        'angle_elevation': float(new_state[5]),
-    }
+    current_state["length_tether"] += reeling_speed*time_step
+    current_state["distance_radial"] = float(new_state[0])
+    current_state["speed_radial"] = float(new_state[1])
+    current_state["speed_tangential"] = float(new_state[2])
+    current_state["angle_course"] = float(0)
+    current_state["angle_azimuth"] = float(new_state[4])
+    current_state["angle_elevation"] = float(new_state[5])
+    full_state = {**current_state, 'T': float(T), 'aoa': float(aoa)}
+    states.append(full_state)
 
-    if current_state["angle_elevation"] < 0 or current_state["distance_radial"] < 20:
+    if current_state["angle_elevation"] < 0 or current_state["distance_radial"] < 10 or full_state["aoa"] < np.radians(-5):
         break
 
 
     # current_state["timeder_angle_course"] = qs_guess[2]/40
-    print(current_state["distance_radial"] )   
+    # print(full_state["length_tether"])    
     
 
 
@@ -113,6 +109,7 @@ solution_df = pd.DataFrame(states)
 
 plt.figure()
 plt.plot(solution_df['speed_tangential'])
+plt.plot(solution_df['speed_radial'])
 plt.xlabel('Time [s]')
 plt.ylabel('Speed Tangential [m/s]')
 

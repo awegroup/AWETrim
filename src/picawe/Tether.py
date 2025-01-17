@@ -29,7 +29,7 @@ class Tether:
         force_tension = ca.vertcat(0, 0, -self.tension_tether)
         force_drag = self.drag_tether_at_kite
         force_gravity = self.force_gravity_tether
-        return force_tension + force_drag + force_gravity
+        return force_tension + force_drag #+ force_gravity
 
     @property
     def drag_tether_at_kite(self):
