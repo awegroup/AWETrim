@@ -99,7 +99,7 @@ class Wing:
                     C_S += coeff_value * variables[var]
                 elif coeff_type == "k_cm":  # Pitch moment coefficient
                     C_m += coeff_value * variables[var]
-                elif coeff_type == "k_cn":
+                elif coeff_type == "k_cn": # Yaw moment coefficient
                     C_n += coeff_value * variables[var]
 
         # Include base moment coefficients if specified
@@ -209,39 +209,35 @@ class Kite(Wing):
         return self.force_gravity_wing + self.force_gravity_kcu
 
     @property
-    def acceleration(self):
-        
-        speed_tangential, speed_radial, r, angle_course, angle_elevation = self.speed_tangential, self.speed_radial, self.distance_radial, self.angle_course, self.angle_elevation
-        timeder_speed_tangential, timeder_angle_course, timeder_speed_radial = self.timeder_speed_tangential, self.timeder_angle_course, self.timeder_speed_radial
+    def acceleration_rotation(self):   
         return ca.vertcat(
-            timeder_speed_tangential + (speed_tangential * speed_radial) / r,
-            (speed_tangential**2 / r) * ca.sin(angle_course) * ca.tan(angle_elevation) - speed_tangential * timeder_angle_course,
-            timeder_speed_radial - (speed_tangential**2 / r)
+             (self.speed_tangential * self.speed_radial) / self.distance_radial,
+            (self.speed_tangential**2 / self.distance_radial) * ca.sin(self.angle_course) * ca.tan(self.angle_elevation),
+             - (self.speed_tangential**2 / self.distance_radial)
         )
+
+    @property
+    def acceleration_local(self):
+        return ca.vertcat(self.timeder_speed_tangential, - self.speed_tangential * self.timeder_angle_course, self.timeder_speed_radial)
+    
+    @property
+    def acceleration(self):
+        return self.acceleration_local + self.acceleration_rotation
+
+    @property
+    def force_external(self):
+
+        return self.force_aerodynamic + self.force_gravity + self.force_tether
 
     @property
     def force_residual(self):
         """
         Compute the residual for the kite system dynamics.
-        """
-
-        # Compute the aerodynamic forces
-        aero_forces = self.force_aerodynamic
-
-        # Compute the gravity force
-        force_gravity = self.force_gravity
-
-        # Compute the tether force
-        force_tether = self.force_tether
-
-        
-
+        """   
         # LHS and RHS
         lhs = (self.mass_wing+self.mass_kcu) * self.acceleration
-        rhs = aero_forces + force_tether + force_gravity
-
         # Residual
-        return lhs - rhs
+        return lhs - self.force_external
 
     @property
     def aero_moment(self):
@@ -252,8 +248,8 @@ class Kite(Wing):
 
 
         aero_moment = ca.cross(center_aerodynamic_wing, self.force_aerodynamic)
-        aero_moment[1] += self.Cn*self.area_wing*self.rho*ca.mtimes(self.velocity_apparent_wind.T, self.velocity_apparent_wind)*4 ### Not the correct formula
-        aero_moment[2] += self.Cm*self.area_wing*self.rho*ca.mtimes(self.velocity_apparent_wind.T, self.velocity_apparent_wind)*4 ### Not the correct formula
+        aero_moment[1] += self.Cm*self.area_wing*self.rho*ca.mtimes(self.velocity_apparent_wind.T, self.velocity_apparent_wind)*4 ### Not the correct formula
+        aero_moment[2] += self.Cn*self.area_wing*self.rho*ca.mtimes(self.velocity_apparent_wind.T, self.velocity_apparent_wind)*4 ### Not the correct formula
         return aero_moment
 
     @property

@@ -17,8 +17,8 @@ class State(KiteKinematics, Tether, Wind, Kite):
         'velocity_apparent_wind': ['speed_tangential', 'speed_radial', 'angle_elevation', 'angle_course', 'angle_azimuth', 'speed_wind'],
         'angle_pitch_aerodynamic': ['velocity_apparent_wind'],
         'angle_yaw_aerodynamic': ['velocity_apparent_wind'],
-        'force_aerodynamic': ['angle_pitch_aerodynamic', 'angle_yaw_aerodynamic', 'velocity_apparent_wind', 'aerodynamic_coeffs'],
-        'force_gravity': ['angle_elevation', 'angle_course', 'mass_wing'],
+        'force_aerodynamic': ['angle_pitch_aerodynamic', 'angle_yaw_aerodynamic', 'velocity_apparent_wind', 'input_depower', 'angle_pitch', 'input_steering', 'angle_yaw', 'angle_roll'],
+        'force_gravity': ['angle_elevation', 'angle_course'],
         'tension_tether': ['distance_radial', 'length_tether'],
         'acceleration': ['speed_tangential', 'speed_radial', 'distance_radial', 'angle_course', 'angle_elevation', 'timeder_speed_tangential', 'timeder_angle_course', 'timeder_speed_radial'],
         'force_residual': ['force_aerodynamic', 'force_gravity', 'force_tether', 'acceleration', 'mass_wing'],
@@ -27,29 +27,39 @@ class State(KiteKinematics, Tether, Wind, Kite):
         'CD': ['angle_of_attack', 'velocity_apparent_wind', 'input_steering', 'input_depower'],
         'timeder_angle_elevation': ['speed_tangential', 'distance_radial', 'angle_course'],
         'timeder_angle_azimuth': ['speed_tangential', 'distance_radial', 'angle_course', 'angle_elevation'],
+        'isolate_tether_tension': ['force_aerodynamic', 'force_gravity', 'acceleration'],
     }
     def __init__(self, mass_wing, area_wing, aero_input, mass_kcu = 0, g=9.81, rho=1.225, center_aerodynamic_wing = [0,0,10], center_gravity_wing = [0,0,10], E = 132e9, diameter = 0.008, density = 970):
         """
         Initialize the kite system with its parameters.
         """
         # Define symbolic variables for the function inputs
-        Tether.__init__(self, E, diameter, density)
         KiteKinematics.__init__(self)
         Wind.__init__(self)
         Kite.__init__(self, mass_wing, area_wing, aero_input, mass_kcu, g, rho, center_aerodynamic_wing, center_gravity_wing)
+        Tether.__init__(self, E, diameter, density)
+        
+        
         
     @property
     def ode(self):
 
+        local_acceleration = (self.force_external - self.acceleration_rotation*(self.mass_wing + self.mass_kcu))/(self.mass_wing + self.mass_kcu)
         dot_r = self.speed_radial
-        dot_vr = self.timeder_speed_radial
-        dot_vt = self.timeder_speed_tangential
-        dot_chi = self.timeder_angle_course
+        dot_vr = local_acceleration[2]
+        dot_vt = local_acceleration[0]
+        dot_chi = local_acceleration[1]/(-self.speed_tangential)
         dot_theta = self.timeder_angle_azimuth
         dot_beta = self.timeder_angle_elevation
 
         ode = ca.vertcat(dot_r, dot_vr, dot_vt, dot_chi, dot_theta, dot_beta)
         return ode
+
+    @property
+    def isolate_tether_tension(self):
+
+        T = self.acceleration*(self.mass_wing + self.mass_kcu) - self.force_aerodynamic - self.force_gravity
+        return -T[2]
 
     def solve_quasi_steady_state(self, known_state, unknown_vars, x0,solver_options = {}, dof=6, return_not_converged = True):
         """
@@ -79,9 +89,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
                 continue
             variable = getattr(self, name)
             residual = ca.substitute(residual, variable, value)
-
-        
-
+            
         # NLP problem definition
         nlp = {'x': ca.vertcat(*sym_list), 'f': 0, 'g': residual}  # 'f' is set to 0 for root-finding
 
@@ -131,7 +139,6 @@ class State(KiteKinematics, Tether, Wind, Kite):
 
         # new_state.update(current_state)
         return res['xf']
-
 
 
 
