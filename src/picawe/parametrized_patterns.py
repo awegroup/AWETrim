@@ -76,3 +76,39 @@ class Lissajous(ParametrizedPatterns):
         yd = self.yd(s)
         zd = self.zd(s)
         return ca.sqrt(r**2 - yd**2 - zd**2)
+    
+
+class FigureEight(ParametrizedPatterns):
+
+    def __init__(self, omega, r0, ry, rz, vr, beta,ky = 1, kz = 1):
+        self.omega = omega
+        self.r0 = r0
+        self.ry = ry
+        self.rz = rz
+        self.vr = vr
+        self.beta = beta
+        self.ky = ky
+        self.kz = kz
+
+     
+    
+    def r(self, t):
+        return self.r0 + self.vr*t
+    
+    def yd(self, s):
+        return self.ry*ca.cos(self.omega * s)/(1 + self.ky*ca.sin(self.omega * s)**2)
+    
+    def zd(self, s):
+        return self.rz*ca.sin(self.omega * s)*ca.cos(self.omega * s)/(1 + self.kz*ca.sin(self.omega * s)**2)
+    
+    def xd(self, t, s):
+        r = self.r(t)
+        yd = self.yd(s)
+        zd = self.zd(s)
+        return ca.sqrt(r**2 - yd**2 - zd**2)
+    
+    # def azimuth(self, t, s):
+    #     return self.ry*ca.cos(self.omega * s)/(1 + self.ky*ca.sin(self.omega * s)**2)
+    
+    # def elevation(self, t, s):
+    #     return self.rz*ca.sin(self.omega * s)*ca.cos(self.omega * s)/(1 + self.kz*ca.sin(self.omega * s)**2) + self.beta
