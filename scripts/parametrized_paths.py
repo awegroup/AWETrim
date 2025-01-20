@@ -55,6 +55,7 @@ dR_ds_func = ca.Function('dR_ds', [kinematics.t, kinematics.s, kinematics.s_dot]
 
 vr_func = ca.Function('vr', [kinematics.t], [kinematics.vr])
 dot_chi_func = ca.Function('dot_chi', [kinematics.t, kinematics.s, kinematics.s_dot], [kinematics.dot_chi])
+vtau_func = ca.Function('vtau', [kinematics.t, kinematics.s, kinematics.s_dot], [kinematics.vtau])
 
 state.timeder_speed_tangential = 0.0
 state.timeder_speed_radial = 0.0
@@ -77,6 +78,8 @@ s_ddot = 0
 vk = 20
 states = []
 qs_guess = [200, 0, 40]
+s_dot = ca.SX.sym('s_dot')
+state.s_dot = s_dot
 for i in range(len(time)):
 
     elevation = pattern.elevation(time[i], s)
@@ -84,35 +87,32 @@ for i in range(len(time)):
     r = pattern.r(time[i])
 
     # vk = 1
-    s_dot = 0.1
+    # s_dot = 0.1
     
-    while abs(s_dot*dR_ds_func(time[i], s, s_dot)-vk)>1e-6:
+    chi = chi_func(time[i], s, s_dot)
+    vr = vr_func(time[i])
+    dot_chi = dot_chi_func(time[i], s, s_dot)
+    vtau = vtau_func(time[i], s, s_dot)
 
-        chi = float(chi_func(time[i], s, s_dot))
-        s_dot = float(vk)/float(dR_ds_func(time[i], s, s_dot))
-        vr = float(vr_func(time[i]))
-        dot_chi = float(dot_chi_func(time[i], s, s_dot))
+    state.angle_elevation = elevation
+    state.angle_azimuth = azimuth
+    state.distance_radial = r
+    state.angle_course = chi
+    state.timeder_angle_course = dot_chi
+    state.speed_radial = vr   
+    state.speed_tangential = vtau
 
-        state.angle_elevation = elevation
-        state.angle_azimuth = azimuth
-        state.distance_radial = r
-        state.angle_course = chi
-        state.timeder_angle_course = dot_chi
-        state.speed_radial = vr
-
-        sol,_ = state.solve_quasi_steady_state(['length_tether', 'input_steering', 'speed_tangential'], qs_guess, solver_options=solver_options,dof = 3)
-        # print(current_state)
-        vk = (float(sol[2])**2+vr**2)**0.5
-        qs_guess = sol
-        
+    sol,_ = state.solve_quasi_steady_state(['length_tether', 'input_steering', 's_dot'], qs_guess, solver_options=solver_options,dof = 3)
+    qs_guess = sol
     # print(s_dot)
-    current_state = {name : float(sol[i]) for i, name in enumerate(['length_tether', 'input_steering', 'speed_tangential'])}
+    current_state = {name : float(sol[i]) for i, name in enumerate(['length_tether', 'input_steering', 's_dot'])}
     current_state["s"] = s
     current_state["angle_azimuth"] = azimuth
     current_state["angle_elevation"] = elevation
-    current_state["angle_course"] = chi
+    current_state["angle_course"] = float(chi_func(time[i], s, sol[2]))
+    current_state["speed_tangential"] = float(vtau_func(time[i], s, sol[2]))
     states.append(current_state)
-    s += s_dot*time_step
+    s += float(sol[2])*time_step
     if abs(omega*s) > 2*np.pi:
         break
 
