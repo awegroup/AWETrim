@@ -44,7 +44,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
     @property
     def ode(self):
 
-        local_acceleration = (self.force_external - self.acceleration_rotation*(self.mass_wing + self.mass_kcu))/(self.mass_wing + self.mass_kcu)
+        local_acceleration = (self.force_external - self.acceleration_rotation()*(self.mass_wing + self.mass_kcu))/(self.mass_wing + self.mass_kcu)
         dot_r = self.speed_radial
         dot_vr = local_acceleration[2]
         dot_vt = local_acceleration[0]
@@ -78,7 +78,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
             self.angle_roll = 0
             self.angle_pitch = 0
             self.angle_yaw = 0
-            residual = self.force_residual
+            residual = self.force_residual()
             # Solve the system of equations
             lbx = [self.distance_radial-5, -10, 0]  # Lower bounds for T, u_s, speed_tangential, phi_k, theta_k
             ubx = [self.distance_radial, 10, 500]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
@@ -111,26 +111,24 @@ class State(KiteKinematics, Tether, Wind, Kite):
         
         return sol['x'], converged
     
-    def integrate(self, current_state, time, time_step):
+    def integrate(self, x0, time, time_step, qs_state = {}):
 
-        x = ca.vertcat(*[getattr(self, name) for name in self.ode_states])
+        x = ca.vertcat(*[ca.SX.sym(name) for name in self.ode_states])
         ode = self.ode
         # Substitute known values into the ode function
-        for name, value in current_state.items():
-            if name in self.ode_states:
-                continue
-            else:
-                variable = getattr(self, name)
-                ode = ca.substitute(ode, variable, value)
+        for name, value in qs_state.items():
+            variable = getattr(self, name)
+            ode = ca.substitute(ode, variable, value)
+
 
         # Define the CasADi integrator
         intg = ca.integrator('intg','cvodes',{'x':x,'ode':ode},time,time+time_step)
 
-        x0 = [current_state[name] for name in self.ode_states]
         res = intg(x0 = x0)
-
+        
+        new_state = {name: float(res['xf'][i]) for i, name in enumerate(self.ode_states)}
         # new_state.update(current_state)
-        return res['xf']
+        return new_state
 
 
 

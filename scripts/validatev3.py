@@ -188,7 +188,7 @@ for i, row in flight_data.iterrows():
         "timeder_angle_course": row.kite_yaw_rate_1,
         "speed_radial": row.tether_reelout_speed,
         "input_depower": row.up,
-        "angle_azimuth": angle_azimuth,
+        "angle_azimuth": row.kite_azimuth,
         "angle_elevation": row.kite_elevation,
     }
     sideslip = sideslip_func(
@@ -205,8 +205,8 @@ for i, row in flight_data.iterrows():
     # print(f"Solution: {solution}")
     qs_guess = sol
     print(i)
-    if i > 500:
-        break
+    # if i > 500:
+    #     break
 
 
 end = time.time()

@@ -15,47 +15,49 @@ v3_polar_data = pd.read_csv(csv_file)
 
 
 aero_input = {
-    "model": "polars",
+    "model": "coeffs",
     "params": {
-        "CD0": 0.075,
-        'CL': v3_polar_data['CL'].values, 
-        'CD': v3_polar_data['CD'].values, 
-        'alpha': np.radians(v3_polar_data['aoa'].values), 
-        'angle_pitch_depower_0': np.radians(-10),
-        'delta_pitch_depower': np.radians(-15.0),
-        "Cn_base": 0.05,
+        "CD0": 0.1,
+        "CL0": 0.257,
+        "angle_pitch_depower_0": np.radians(-8),
+        "delta_pitch_depower": np.radians(-9.0),
+        "Cn_base": -0.01,
         # Add other aerodynamic parameters
     },
     "dependencies": {
-        "alpha": {},
-        "u_s": {"k_cl": 0, "k_cd": 0.15, "k_cs": 0.23, "k_cm": 0.005},
-        "yaw_rate": {"k_cl": 0, "k_cd": 0, "k_cs": -0.01, "k_cm": -0.02},
-        "sideslip": {"k_cl": 0, "k_cd": 0, "k_cs": 0.01, "k_cm": -0.05},
-        "u_p": {"k_cl": 0, "k_cd": 0, "k_cs": 0, "k_cn": -0.05},
+        "alpha": {"k_cl": 4.615, "k_cd": 0.027, "k_cs": 0.0, "k_cn": 0.0},
+        "alpha_squared": {"k_cl": -4.68, "k_cd": 1.217, "k_cs": 0.0, "k_cn": 0.0},
+        "u_s": {"k_cl": 0, "k_cd": 0.15, "k_cs": 0.23, "k_cn": 0.005},  #
+        "yaw_rate": {"k_cl": 0, "k_cd": 0, "k_cs": -0.01, "k_cn": -0.02},  #
+        "sideslip": {
+            "k_cl": 0,
+            "k_cd": 0,
+            "k_cs": 0.01,
+            "k_cn": -0.05,
+        },  # Cn 0.85 from Jelle
+        "u_p": {"k_cl": 0, "k_cd": 0.0, "k_cs": 0, "k_cm": 0.01},  #  Cm 0.04 from Jelle
         # Add other dependencies as needed
     },
 }
 
 
 # Example Usage
-state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu = 25)
+state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu = 10)
+
+state.speed_wind = 10
+state.distance_radial = 100.0
+state.angle_course = np.radians(0)
+state.timeder_speed_tangential = 0.0
+state.speed_radial = 0.0
+state.timeder_speed_radial = 0.0
+state.input_depower = 0.0
+state.input_steering = 0.0
 
 
-# Define the known state
-known_state = {
-    'speed_wind': 10,
-    'distance_radial': 100.0,
-    'angle_course': np.radians(0),
-    'timeder_speed_tangential': 0.0,
-    'speed_radial': 0.0,
-    'timeder_speed_radial': 0.0,
-    'input_depower': 0.0,
-    'input_steering': 0.0,
-}
 
 unknown_vars = ['length_tether', 'timeder_angle_course', 'speed_tangential', 'angle_roll', 'angle_pitch', 'angle_yaw']
-alpha_func = state.extract_parameter_function('angle_of_attack')
-T_func = state.extract_parameter_function('tension_tether')
+# alpha_func = state.extract_parameter_function('angle_of_attack')
+# T_func = state.extract_parameter_function('tension_tether')
 
 # Define the range of phi and beta
 phi_values = np.radians(np.linspace(-90, 90, 50))  # Range for phi in radians
@@ -94,23 +96,26 @@ solver_options = {
     },
     'print_time': False    # Disables CasADi's internal timing output
 }
-qs_guess = [known_state["distance_radial"], 0, 30, 1e-3, 1e-3, 1e-3]
+qs_guess = [state.distance_radial, 0, 40, 1e-3, 1e-3, 1e-3]
 # Loop over combinations of phi and beta
 for phi, beta in zip(phi_combinations, beta_combinations):
 
-    # Substitute phi and beta into the residual equations
+    state.angle_azimuth = phi
+    state.angle_elevation = beta
 
-    current_state = {
-        'angle_azimuth': phi,
-        'angle_elevation': beta
-    }
-
-    current_state, converged = state.solve_quasi_steady_state({**known_state,**current_state}, unknown_vars, qs_guess, solver_options= solver_options, dof = 6, return_not_converged=False)
+    sol, converged = state.solve_quasi_steady_state( unknown_vars, qs_guess, solver_options= solver_options, dof = 6, return_not_converged=False)
     if converged:
-        alpha_value = alpha_func(*[current_state[name] for name in alpha_func.name_in()])
-        T = T_func(*[current_state[name] for name in T_func.name_in()])
-        current_state['alpha'] = float(alpha_value)
-        current_state['T'] = float(T)
+        # alpha_value = alpha_func(*[current_state[name] for name in alpha_func.name_in()])
+        # T = T_func(*[current_state[name] for name in T_func.name_in()])
+        current_state = {name : float(sol[i]) for i, name in enumerate(unknown_vars)}
+        current_state["T"] = float(ca.substitute(
+            state.tension_tether,  # The expression to substitute into
+            getattr(state, 'length_tether'),  # Variables to substitute
+            current_state["length_tether"]  # Corresponding values
+        ))
+        current_state["angle_azimuth"] = phi
+        current_state["angle_elevation"] = beta
+        # current_state["alpha"] = float(alpha_value)
         # qs_guess = [current_state[name] for name in unknown_vars]
         solutions.append(current_state)
 
@@ -136,12 +141,12 @@ solutions_df.reset_index(drop=True, inplace=True)
 # Extract data for plotting
 phi_values = solutions_df['angle_azimuth'].values
 beta_values = solutions_df['angle_elevation'].values
-alpha_values = np.degrees(solutions_df['alpha'].values)
+# alpha_values = np.degrees(solutions_df['alpha'].values)
 tether_tensions = solutions_df['T'].values
 theta_k_values = np.degrees(solutions_df['angle_pitch'].values)
 phi_k_values = np.degrees(solutions_df['angle_roll'].values)
 psi_k_values = np.degrees(solutions_df['angle_yaw'].values)
-input_steering = solutions_df['input_steering'].values
+# input_steering = solutions_df['input_steering'].values
 
 # Convert spherical to Cartesian for 3D plotting
 x = np.cos(beta_values) * np.sin(phi_values)* 1
@@ -162,8 +167,8 @@ ax1.set_zlabel("Z Coordinate")
 
 # 3D Plot for Angle of Attack (alpha)
 ax2 = fig.add_subplot(122, projection='3d')
-sc2 = ax2.scatter(x, y, z, c=alpha_values, cmap='plasma', marker='o')
-fig.colorbar(sc2, ax=ax2, label="Angle of Attack (degrees)")
+# sc2 = ax2.scatter(x, y, z, c=alpha_values, cmap='plasma', marker='o')
+# fig.colorbar(sc2, ax=ax2, label="Angle of Attack (degrees)")
 ax2.set_title("Angle of Attack (3D)")
 ax2.set_xlabel("X Coordinate")
 ax2.set_ylabel("Y Coordinate")
@@ -223,7 +228,7 @@ ax1.set_zlabel("Z Coordinate")
 
 # 3D Plot for Angle of Attack (alpha)
 ax2 = fig.add_subplot(122, projection='3d')
-sc2 = ax2.scatter(x, y, z, c=input_steering, cmap='plasma', marker='o')
+# sc2 = ax2.scatter(x, y, z, c=input_steering, cmap='plasma', marker='o')
 fig.colorbar(sc2, ax=ax2, label="Steering Input")
 ax2.set_title("Angle of Attack (3D)")
 ax2.set_xlabel("X Coordinate")

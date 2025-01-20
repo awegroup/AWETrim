@@ -16,23 +16,27 @@ rz = 40
 csv_file = './processed_data/VSM_results_alpha_sweep.csv'
 v3_polar_data = pd.read_csv(csv_file)
 aero_input = {
-    "model": "polars",
+    "model": "coeffs",
     "params": {
-        "CD0": 0.075,
-        'CL': v3_polar_data['CL'].values, 
-        'CD': v3_polar_data['CD'].values, 
-        'alpha': np.radians(v3_polar_data['aoa'].values), 
-        'angle_pitch_depower_0': np.radians(-10),
-        'delta_pitch_depower': np.radians(-10.0),
+        "CD0": 0.1,
+        "CL0": 0.257,
+        "angle_pitch_depower_0": np.radians(-8),
+        "delta_pitch_depower": np.radians(-9.0),
         "Cn_base": -0.01,
         # Add other aerodynamic parameters
     },
     "dependencies": {
-        "alpha": {},
-        "u_s": {"k_cl": 0, "k_cd": 0.15, "k_cs": 0.23, "k_cm": 0.005},
-        "yaw_rate": {"k_cl": 0, "k_cd": 0, "k_cs": -0.01, "k_cm": -0.02},
-        "sideslip": {"k_cl": 0, "k_cd": 0, "k_cs": 0.01, "k_cm": -0.05},
-        "u_p": {"k_cl": 0, "k_cd": 0., "k_cs": 0, "k_cn": 0.04},
+        "alpha": {"k_cl": 4.615, "k_cd": 0.027, "k_cs": 0.0, "k_cn": 0.0},
+        "alpha_squared": {"k_cl": -4.68, "k_cd": 1.217, "k_cs": 0.0, "k_cn": 0.0},
+        "u_s": {"k_cl": 0, "k_cd": 0.15, "k_cs": 0.23, "k_cn": 0.005},  #
+        "yaw_rate": {"k_cl": 0, "k_cd": 0, "k_cs": -0.01, "k_cn": -0.02},  #
+        "sideslip": {
+            "k_cl": 0,
+            "k_cd": 0,
+            "k_cs": 0.01,
+            "k_cn": -0.05,
+        },  # Cn 0.85 from Jelle
+        "u_p": {"k_cl": 0, "k_cd": 0.0, "k_cs": 0, "k_cm": 0.01},  #  Cm 0.04 from Jelle
         # Add other dependencies as needed
     },
 }
@@ -54,13 +58,9 @@ dot_chi_func = ca.Function('dot_chi', [kinematics.t, kinematics.s, kinematics.s_
 
 state.timeder_speed_tangential = 0.0
 state.timeder_speed_radial = 0.0
+state.speed_wind = 10
+state.input_depower = 0
 
-known_state = {
-    'timeder_speed_tangential': 0.0,
-    'timeder_speed_radial': 0.0,
-    'speed_wind': 10,
-    'input_depower': 0,
-}
 solver_options = {
     'ipopt': {
         'print_level': 0,  # Suppresses IPOPT output
@@ -93,21 +93,24 @@ for i in range(len(time)):
         vr = float(vr_func(time[i]))
         dot_chi = float(dot_chi_func(time[i], s, s_dot))
 
-        known_state.update({
-            'angle_elevation': elevation,
-            'angle_azimuth': azimuth,
-            'distance_radial': r,
-            'angle_course': chi,
-            'timeder_angle_course': dot_chi,
-            'speed_radial': vr,
-        })
-        current_state,_ = state.solve_quasi_steady_state(known_state, ['length_tether', 'input_steering', 'speed_tangential'], qs_guess, solver_options=solver_options,dof = 3)
+        state.angle_elevation = elevation
+        state.angle_azimuth = azimuth
+        state.distance_radial = r
+        state.angle_course = chi
+        state.timeder_angle_course = dot_chi
+        state.speed_radial = vr
+
+        sol,_ = state.solve_quasi_steady_state(['length_tether', 'input_steering', 'speed_tangential'], qs_guess, solver_options=solver_options,dof = 3)
         # print(current_state)
-        vk = (current_state['speed_tangential']**2+current_state['speed_radial']**2)**0.5
-        qs_guess = [current_state[name] for name in ['length_tether', 'input_steering', 'speed_tangential']]
+        vk = (float(sol[2])**2+vr**2)**0.5
+        qs_guess = sol
         
     # print(s_dot)
+    current_state = {name : float(sol[i]) for i, name in enumerate(['length_tether', 'input_steering', 'speed_tangential'])}
     current_state["s"] = s
+    current_state["angle_azimuth"] = azimuth
+    current_state["angle_elevation"] = elevation
+    current_state["angle_course"] = chi
     states.append(current_state)
     s += s_dot*time_step
     if abs(omega*s) > 2*np.pi:
