@@ -61,7 +61,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
         T = self.acceleration*(self.mass_wing + self.mass_kcu) - self.force_aerodynamic - self.force_gravity
         return -T[2]
 
-    def solve_quasi_steady_state(self, known_state, unknown_vars, x0,solver_options = {}, dof=6, return_not_converged = True):
+    def solve_quasi_steady_state(self, unknown_vars, x0,solver_options = {}, dof=6, return_not_converged = True):
         """
         Solve the quasi-steady state equations for the kite system.
 
@@ -72,23 +72,18 @@ class State(KiteKinematics, Tether, Wind, Kite):
         if dof == 6:
             residual = self.rb_residual
             # Solve the system of equations
-            lbx = [known_state["distance_radial"]-5, -10, -1, -np.pi / 4, -np.pi / 4, -np.pi / 4]  # Lower bounds for T, u_s, speed_tangential, phi_k, theta_k
-            ubx = [known_state["distance_radial"], 10, 500, np.pi / 4, np.pi / 4, np.pi / 4]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
+            lbx = [self.distance_radial-5, -10, -1, -np.pi / 4, -np.pi / 4, -np.pi / 4]  # Lower bounds for T, u_s, speed_tangential, phi_k, theta_k
+            ubx = [self.distance_radial, 10, 500, np.pi / 4, np.pi / 4, np.pi / 4]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
         elif dof == 3:
-            known_state["angle_roll"] = 0
-            known_state["angle_yaw"] = 0
-            known_state["angle_pitch"] = 0
+            self.angle_roll = 0
+            self.angle_pitch = 0
+            self.angle_yaw = 0
             residual = self.force_residual
             # Solve the system of equations
-            lbx = [known_state["distance_radial"]-5, -10, 0]  # Lower bounds for T, u_s, speed_tangential, phi_k, theta_k
-            ubx = [known_state["distance_radial"], 10, 500]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
+            lbx = [self.distance_radial-5, -10, 0]  # Lower bounds for T, u_s, speed_tangential, phi_k, theta_k
+            ubx = [self.distance_radial, 10, 500]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
 
         sym_list = [getattr(self, name) for name in unknown_vars]
-        for name, value in known_state.items():
-            if name in unknown_vars:
-                continue
-            variable = getattr(self, name)
-            residual = ca.substitute(residual, variable, value)
             
         # NLP problem definition
         nlp = {'x': ca.vertcat(*sym_list), 'f': 0, 'g': residual}  # 'f' is set to 0 for root-finding
@@ -114,10 +109,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
             print("Quasi-steady state not found")
             converged = False
         
-        qs_state = {name: float(sol['x'][i]) for i, name in enumerate(unknown_vars)}
-        # Join qs_state with known_state
-        qs_state.update(known_state)
-        return qs_state, converged
+        return sol['x'], converged
     
     def integrate(self, current_state, time, time_step):
 
