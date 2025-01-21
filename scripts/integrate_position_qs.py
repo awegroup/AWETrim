@@ -68,7 +68,7 @@ solver_options = {
     'print_time': False    # Disables CasADi's internal timing output
 }
 time_step = 0.1
-time = np.arange(0, 100, time_step)
+time = np.arange(0, 50, time_step)
 qs_guess = [200, 0, 40]
 states = []
 for i in range(len(time)):
@@ -87,8 +87,6 @@ for i in range(len(time)):
     current_state["angle_elevation"] = float(state.angle_elevation)
     current_state["speed_radial"] = float(state.speed_radial)
     # print(current_state)
-    
-
 
     current_state["T"] = float(ca.substitute(
             state.tension_tether,  # The expression to substitute into

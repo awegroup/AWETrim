@@ -80,7 +80,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
             self.angle_yaw = 0
             residual = self.force_residual()
             # Solve the system of equations
-            lbx = [self.distance_radial-5, -10, 0]  # Lower bounds for T, u_s, speed_tangential, phi_k, theta_k
+            lbx = [self.distance_radial-5, -10, -10]  # Lower bounds for T, u_s, speed_tangential, phi_k, theta_k
             ubx = [self.distance_radial, 10, 500]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
 
         sym_list = [getattr(self, name) for name in unknown_vars]

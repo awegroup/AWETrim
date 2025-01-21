@@ -1,15 +1,16 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-from picawe.parametrized_patterns import Helix, Lissajous
+from picawe.parametrized_patterns import Helix, Lissajous, FigureEight
 from picawe.Kinematics import ParametrizedKinematics
 from picawe import State
 import casadi as ca
+import time as timet
 
 omega = -0.1
 x0 = 200
-rh = 100
-vr = 2
+rh = 60
+vr = 0
 beta = np.radians(30)
 ry = 120
 rz = 40
@@ -42,10 +43,11 @@ aero_input = {
 }
 helix = Helix(omega, x0, rh, vr, beta)
 lissajous = Lissajous(omega, x0, ry,rz, vr, beta)
+figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
 
-pattern = lissajous
+pattern = helix
 kinematics = ParametrizedKinematics(pattern)
-state = State(mass_wing=30, area_wing=20, aero_input=aero_input, mass_kcu = 0)
+state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu = 25)
 
 # Substitute the numeric values into the symbolic expressions using CasADi functions
 chi_func = ca.Function('chi', [kinematics.t, kinematics.s, kinematics.s_dot], [kinematics.chi])
@@ -77,9 +79,11 @@ s_dot = 0.1
 s_ddot = 0
 vk = 20
 states = []
+unknown_vars = ['length_tether', 'input_steering', 's_dot']
 qs_guess = [200, 0, 40]
 s_dot = ca.SX.sym('s_dot')
 state.s_dot = s_dot
+start_time = timet.time()
 for i in range(len(time)):
 
     elevation = pattern.elevation(time[i], s)
@@ -102,10 +106,10 @@ for i in range(len(time)):
     state.speed_radial = vr   
     state.speed_tangential = vtau
 
-    sol,_ = state.solve_quasi_steady_state(['length_tether', 'input_steering', 's_dot'], qs_guess, solver_options=solver_options,dof = 3)
+    sol,_ = state.solve_quasi_steady_state(unknown_vars, qs_guess, solver_options=solver_options,dof = 3)
     qs_guess = sol
     # print(s_dot)
-    current_state = {name : float(sol[i]) for i, name in enumerate(['length_tether', 'input_steering', 's_dot'])}
+    current_state = {name : float(sol[i]) for i, name in enumerate(unknown_vars)}
     current_state["s"] = s
     current_state["angle_azimuth"] = azimuth
     current_state["angle_elevation"] = elevation
@@ -113,9 +117,9 @@ for i in range(len(time)):
     current_state["speed_tangential"] = float(vtau_func(time[i], s, sol[2]))
     states.append(current_state)
     s += float(sol[2])*time_step
-    if abs(omega*s) > 2*np.pi:
+    if abs(omega*s) > 4*np.pi:
         break
-
+print(f"Time taken: {timet.time() - start_time}")
 states = pd.DataFrame(states)
 
 # Convert angles to radians for plotting if necessary
@@ -140,7 +144,7 @@ cbar.set_label('Tangential Speed [m/s]', fontsize=12)
 plt.scatter(azimuth[max_idx], elevation[max_idx], color='red', label='Max Speed', edgecolor='black', zorder=5)
 plt.scatter(azimuth[min_idx], elevation[min_idx], color='red', label='Min Speed', edgecolor='black', zorder=5)
 
-print(f"Max speed: {speed_tangential[max_idx]} m/s at phase {s[max_idx]*omega*180/np.pi} degrees")
+print(f"Max speed: {speed_tangential[max_idx]} m/s at phase {(s[max_idx]*omega*180/np.pi)%360} degrees")
 
 
 # Labels, title, and legend
@@ -155,12 +159,24 @@ plt.show()
 plt.figure(figsize=(8, 6))
 scatter = plt.scatter(azimuth, elevation, c=course, cmap='viridis', s=10)  # `s` adjusts marker size
 cbar = plt.colorbar(scatter)
-cbar.set_label('Tangential Speed [m/s]', fontsize=12)
+cbar.set_label('Course angle', fontsize=12)
 
 # Labels, title, and legend
 plt.xlabel('Azimuth [rad]', fontsize=12)
 plt.ylabel('Elevation [rad]', fontsize=12)
-plt.title('Flown Trajectory with Tangential Speed', fontsize=14)
+plt.legend(fontsize=10)
+plt.grid()
+plt.show()
+
+# Plot the trajectory with a colorbar for tangential speed
+plt.figure(figsize=(8, 6))
+scatter = plt.scatter(azimuth, elevation, c=np.array(states['angle_roll']), cmap='viridis', s=10)  # `s` adjusts marker size
+cbar = plt.colorbar(scatter)
+cbar.set_label('Roll angle', fontsize=12)
+
+# Labels, title, and legend
+plt.xlabel('Azimuth [rad]', fontsize=12)
+plt.ylabel('Elevation [rad]', fontsize=12)
 plt.legend(fontsize=10)
 plt.grid()
 plt.show()
