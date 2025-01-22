@@ -32,7 +32,7 @@ state.timeder_speed_tangential = 0.0
 state.timeder_speed_radial = 0.0
 state.speed_wind = 10
 state.input_depower = 0.0
-state.timeder_length_tether = -2
+state.timeder_length_tether = 0
 state.timeder_angle_course = 0.0
 
 # Extract the tension tether function
@@ -47,7 +47,7 @@ current_state = {
     "angle_elevation": 0,
     "angle_azimuth": 0,
     "angle_course": 0,
-    "speed_radial": -2,
+    "speed_radial": 0,
     "speed_tangential": 10,
     "length_tether": 200,
 }

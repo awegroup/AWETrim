@@ -28,17 +28,17 @@ state = State(
 # Set constant parameters
 state.speed_wind = 10
 state.input_depower = 0.0
-state.timeder_length_tether = -2
-state.input_steering = 0
+state.timeder_length_tether = 0
+state.input_steering = 0.0
 
 # Initial conditions
 current_state = {
     "distance_radial": 200,
-    "angle_elevation": 0,
+    "angle_elevation": np.radians(0),
     "angle_azimuth": 0,
     "angle_course": 0,
     "speed_radial": -2,
-    "speed_tangential": 10,
+    "speed_tangential": 30,
     "length_tether": 200,
 }
 accelerations = {
@@ -54,7 +54,7 @@ solver_options = {
     "print_time": False,
 }
 time_step = 0.1
-time = np.arange(0, 100, time_step)
+time = np.arange(0, 50, time_step)
 
 # -----------------------------------------------
 # Solve the quasi-steady state and initialize variables
@@ -73,13 +73,17 @@ aoa_func = state.extract_function("angle_of_attack")
 # Time integration loop
 # -----------------------------------------------
 for t in time:
-    # Integrate system dynamics
-    xf, zf = state.integrate(x0, t, time_step)
-
+    try:
+        # Integrate system dynamics
+        xf, zf = state.integrate(x0, t, time_step)
+    except Exception as e:
+        print("Integration failed at time: ", t)
+        print(e)
+        break
     # Enforce constraints/reset values (e.g., angles)
     x0 = xf
-    x0[3] = 0  # Reset angle_course
-    x0[2] = 0  # Reset angle_azimuth
+    x0[3] = 0  # Reset angle_course (Only to find the reel-in angle)
+    x0[2] = 0  # Reset angle_azimuth (Only to find the reel-in angle)
 
     # Update the current state
     new_state = {name: float(xf[j]) for j, name in enumerate(current_state.keys())}
@@ -147,8 +151,10 @@ ax.set_ylim(-100, 100)
 ax.set_zlim(0, 200)
 ax.legend()
 
-plt.show()
+
 
 # Print final results
 print("Reel-in elevation angle: ", np.degrees(states[-1]["angle_elevation"]))
 print("Reel-in tether force: ", states[-1]["T"])
+
+plt.show()

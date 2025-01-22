@@ -3,7 +3,7 @@ from picawe import State
 import pandas as pd
 import matplotlib.pyplot as plt
 import time
-import casadi as ca
+import json
 
 
 aero_dict = {
@@ -15,9 +15,6 @@ aero_dict = {
     "delta_theta_up": np.radians(-18.0),
 }
 aero_input = ["inviscid", aero_dict]
-
-
-import json
 
 # -----------------------------------------------
 # Load data and define aerodynamic model
