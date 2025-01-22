@@ -75,6 +75,12 @@ state.timeder_speed_tangential = 0.0
 state.timeder_speed_radial = 0.0
 state.speed_wind = 10
 state.input_depower = 0
+state.timeder_angle_roll = 0
+state.timeder_angle_pitch = 0
+state.timeder_angle_yaw = 0
+state.acceleration_angle_roll = 0
+state.acceleration_angle_pitch = 0
+state.acceleration_angle_yaw = 0
 
 solver_options = {
     "ipopt": {
@@ -84,7 +90,7 @@ solver_options = {
     },
     "print_time": False,  # Disables CasADi's internal timing output
 }
-time_step = 0.01
+time_step = 0.1
 time = np.arange(0, 100, time_step)
 s = 0
 s_dot = 0.1

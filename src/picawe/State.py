@@ -101,20 +101,6 @@ class State(KiteKinematics, Tether, Wind, Kite):
                 np.pi / 4,
                 np.pi / 4,
             ]  
-            qs_state = {
-                "timeder_angle_pitch": 0,
-                "timeder_angle_roll": 0,
-                "timeder_angle_yaw": 0,
-                "acceleration_angle_pitch": 0,
-                "acceleration_angle_roll": 0,
-                "acceleration_angle_yaw": 0,
-            }
-            for state_name, state_value in qs_state.items():
-                if state_name not in unknown_vars:
-                    residual = ca.substitute(
-                        residual, getattr(self, state_name), state_value
-                    )
-
         elif self.dof == 3:
             residual = self.force_residual()
             # Solve the system of equations

@@ -90,7 +90,7 @@ import json
 file_path = "./data/v3_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
-    
+
 # Example Usage
 state = State(mass_wing=15, area_wing=20, mass_kcu=25, aero_input=aero_input, dof=6)
 
@@ -107,6 +107,12 @@ wdir_window = []
 
 state.timeder_speed_tangential = 0.0
 state.timeder_speed_radial = 0.0
+state.timeder_angle_roll = 0
+state.timeder_angle_pitch = 0
+state.timeder_angle_yaw = 0
+state.acceleration_angle_roll = 0
+state.acceleration_angle_pitch = 0
+state.acceleration_angle_yaw = 0
 unknown_vars = [
     "length_tether",
     "input_steering",
