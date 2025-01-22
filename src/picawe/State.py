@@ -45,6 +45,12 @@ class State(KiteKinematics, Tether, Wind, Kite):
             self.angle_pitch = 0
             self.angle_roll = 0
             self.angle_yaw = 0
+            self.timeder_angle_pitch = 0
+            self.timeder_angle_roll = 0
+            self.timeder_angle_yaw = 0
+            self.acceleration_angle_pitch = 0
+            self.acceleration_angle_roll = 0
+            self.acceleration_angle_yaw = 0
         
         self.dof = dof
 
@@ -75,6 +81,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
         :param unknown_vars: List of unknown state variables to solve for.
         :return: Dictionary of unknown state variables and their values.
         """
+        
         if self.dof == 6:
             residual = self.rb_residual
             # Solve the system of equations
@@ -85,7 +92,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
                 -np.pi / 4,
                 -np.pi / 4,
                 -np.pi / 4,
-            ]  # Lower bounds for T, u_s, speed_tangential, phi_k, theta_k
+            ]  
             ubx = [
                 current_state["distance_radial"],
                 10,
@@ -93,7 +100,21 @@ class State(KiteKinematics, Tether, Wind, Kite):
                 np.pi / 4,
                 np.pi / 4,
                 np.pi / 4,
-            ]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
+            ]  
+            qs_state = {
+                "timeder_angle_pitch": 0,
+                "timeder_angle_roll": 0,
+                "timeder_angle_yaw": 0,
+                "acceleration_angle_pitch": 0,
+                "acceleration_angle_roll": 0,
+                "acceleration_angle_yaw": 0,
+            }
+            for state_name, state_value in qs_state.items():
+                if state_name not in unknown_vars:
+                    residual = ca.substitute(
+                        residual, getattr(self, state_name), state_value
+                    )
+
         elif self.dof == 3:
             residual = self.force_residual()
             # Solve the system of equations
