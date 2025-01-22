@@ -80,34 +80,19 @@ v3_polar_data = pd.read_csv(csv_file)
 # Define the system
 # -----------------------------------------
 
-aero_input = {
-    "model": "coeffs",
-    "params": {
-        "CD0": 0.1,
-        "CL0": 0.257,
-        "angle_pitch_depower_0": np.radians(-8),
-        "delta_pitch_depower": np.radians(-9.0),
-        "Cn_base": -0.01,
-        # Add other aerodynamic parameters
-    },
-    "dependencies": {
-        "alpha": {"k_cl": 4.615, "k_cd": 0.027, "k_cs": 0.0, "k_cn": 0.0},
-        "alpha_squared": {"k_cl": -4.68, "k_cd": 1.217, "k_cs": 0.0, "k_cn": 0.0},
-        "u_s": {"k_cl": 0, "k_cd": 0.15, "k_cs": 0.23, "k_cn": 0.005},  #
-        "yaw_rate": {"k_cl": 0, "k_cd": 0, "k_cs": -0.01, "k_cn": -0.02},  #
-        "sideslip": {
-            "k_cl": 0,
-            "k_cd": 0,
-            "k_cs": 0.01,
-            "k_cn": -0.05,
-        },  # Cn 0.85 from Jelle
-        "u_p": {"k_cl": 0, "k_cd": 0.0, "k_cs": 0, "k_cm": 0.01},  #  Cm 0.04 from Jelle
-        # Add other dependencies as needed
-    },
-}
+import json
 
+# -----------------------------------------------
+# Load data and define aerodynamic model
+# -----------------------------------------------
+
+# Define aerodynamic input
+file_path = "./data/v3_aero_input.json"
+with open(file_path, "r") as file:
+    aero_input = json.load(file)
+    
 # Example Usage
-state = State(mass_wing=15, area_wing=20, mass_kcu=25, aero_input=aero_input, dof = 6)
+state = State(mass_wing=15, area_wing=20, mass_kcu=25, aero_input=aero_input, dof=6)
 
 sideslip_func = state.extract_function("angle_sideslip")
 T_func = state.extract_function("tension_tether")
@@ -119,7 +104,6 @@ start = time.time()
 vw_window = []
 vw_averaged = []
 wdir_window = []
-
 
 state.timeder_speed_tangential = 0.0
 state.timeder_speed_radial = 0.0
@@ -174,15 +158,12 @@ for i, row in flight_data.iterrows():
         "input_depower": row.up,
     }
 
-    sol, _ = state.solve_quasi_steady_state(current_state,
-        unknown_vars, qs_guess, solver_options=solver_options
+    sol, _ = state.solve_quasi_steady_state(
+        current_state, unknown_vars, qs_guess, solver_options=solver_options
     )
 
     qs_solution = {name: float(sol[i]) for i, name in enumerate(unknown_vars)}
-    state_combined = {
-        **qs_solution,
-        **current_state
-    }
+    state_combined = {**qs_solution, **current_state}
     sideslip = sideslip_func(
         *[state_combined[name] for name in sideslip_func.name_in()]
     )
@@ -192,7 +173,6 @@ for i, row in flight_data.iterrows():
     solutions.append(state_combined)
     # print(f"Solution: {solution}")
     qs_guess = sol
-    print(i)
 
 
 end = time.time()
