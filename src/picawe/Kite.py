@@ -1,9 +1,7 @@
 import casadi as ca
-import numpy as np
+from picawe.utils import skew_symmetric
 from picawe.reference_frames import transformation_C_from_W, transformation_C_from_A, transformation_C_from_K
-from picawe.Kinematics import KiteKinematics
-from picawe.Tether import Tether
-from picawe.Wind import Wind
+
 
 
 class Wing:
@@ -111,88 +109,6 @@ class Wing:
                     C_n += coeff_value * variables[var]
 
         return C_m, C_l, C_n
-    # def aerodynamic_coeffs_function(self, aero_input):
-    #     """
-    #     Create a function to compute aerodynamic coefficients with dynamic dependencies.
-    #     """
-    #     # Define symbolic variables
-    #     variables = {
-    #         "alpha": self.angle_of_attack,
-    #         "alpha_squared": self.angle_of_attack**2,
-    #         "u_s": self.input_steering,
-    #         "u_p": self.input_depower,
-    #         # Dynamically add other variables as dependencies
-    #         "yaw_rate": self.timeder_angle_course/ca.norm_2(self.velocity_apparent_wind),
-    #         "sideslip": self.angle_sideslip,
-    #     }
-    #     C_S = 0 # Side force coefficient
-    #     C_m = 0 # Pitch moment coefficient
-    #     C_l = 0  # Roll moment coefficient
-    #     C_n = 0  # Yaw moment coefficient
-
-    #     # Initialize base aerodynamic coefficients
-    #     if aero_input["model"] == "inviscid":
-    #         e = aero_input["params"]["oswald_efficiency"]
-    #         AR = aero_input["params"]["aspect_ratio"]
-    #         CD0 = aero_input["params"]["CD0"]
-
-    #         C_L = 2 * ca.pi * variables["alpha"]
-    #         C_D = C_L**2 / (ca.pi * e * AR) + CD0
-    #     elif aero_input["model"] == "coeffs":
-    #         C_L = aero_input["params"]["CL0"]
-    #         C_D = aero_input["params"]["CD0"]
-    #     elif aero_input["model"] == "polars":
-    #         cl_data, cd_data, alpha_data = (
-    #             aero_input["params"]["CL"],
-    #             aero_input["params"]["CD"],
-    #             aero_input["params"]["alpha"],
-    #         )
-
-    #         # Fit polynomials for CL and CD
-    #         cl_coeffs = np.polyfit(alpha_data, cl_data, 2)
-    #         cd_coeffs = np.polyfit(alpha_data, cd_data, 2)
-
-    #         # Define symbolic polynomials
-    #         C_L = cl_coeffs[0] * variables["alpha"]**2 + cl_coeffs[1] * variables["alpha"] + cl_coeffs[2]
-    #         C_D = cd_coeffs[0] * variables["alpha"]**2 + cd_coeffs[1] * variables["alpha"] + cd_coeffs[2]
-    #         C_D += aero_input["params"].get("CD0", 0)
-    #         # Constrain CL and CD to valid alpha range
-    #         alpha_min, alpha_max = min(alpha_data), max(alpha_data)
-    #         C_L = ca.if_else(
-    #             ca.logic_and(variables["alpha"] >= alpha_min, variables["alpha"] <= alpha_max), C_L, 0
-    #         )
-    #         C_D = ca.if_else(
-    #             ca.logic_and(variables["alpha"] >= alpha_min, variables["alpha"] <= alpha_max), C_D, 1
-    #         )
-
-    #     else:
-    #         raise ValueError("Invalid aerodynamic model type. Choose 'inviscid' or 'polars'.")
-
-    #         # Apply dependencies dynamically for CL, CD, CS, C_m, C_l, and C_n
-    #     for var, coeffs in aero_input.get("dependencies", {}).items():
-    #         for coeff_type, coeff_value in coeffs.items():
-    #             if coeff_type == "k_cl":
-    #                 C_L += coeff_value * variables[var]
-    #             elif coeff_type == "k_cd":
-    #                 C_D += coeff_value * ca.fabs(variables[var])
-    #             elif coeff_type == "k_cs":
-    #                 C_S += coeff_value * variables[var]
-    #             elif coeff_type == "k_cm":  # Pitch moment coefficient
-    #                 C_m += coeff_value * variables[var]
-    #             elif coeff_type == "k_cn": # Yaw moment coefficient
-    #                 C_n += coeff_value * variables[var]
-
-    #     # Include base moment coefficients if specified
-    #     C_m += aero_input["params"].get("C_m_base", 0)
-    #     C_l += aero_input["params"].get("C_l_base", 0)
-    #     C_n += aero_input["params"].get("C_n_base", 0)
-        
-    #     self.CL = C_L
-    #     self.CD = C_D
-    #     self.CS = C_S
-    #     self.Cm = C_m
-    #     self.Cl = C_l
-    #     self.Cn = C_n
 
     @property
     def angle_pitch_depower(self):
@@ -275,6 +191,12 @@ class Kite(Wing):
             'angle_pitch': 'angle_pitch',
             'angle_roll': 'angle_roll',
             'angle_yaw': 'angle_yaw',
+            'timeder_angle_pitch': 'timeder_angle_pitch',
+            'timeder_angle_roll': 'timeder_angle_roll',
+            'timeder_angle_yaw': 'timeder_angle_yaw',
+            'acceleration_angle_pitch': 'acceleration_angle_pitch',
+            'acceleration_angle_roll': 'acceleration_angle_roll',
+            'acceleration_angle_yaw': 'acceleration_angle_yaw',
         }
         for var_name in base_symbolic_variables.keys():
             setattr(self, var_name, ca.SX.sym(var_name))
@@ -291,19 +213,20 @@ class Kite(Wing):
 
     # @property
     def acceleration_rotation(self):   
-        return ca.vertcat(
-             (self.speed_tangential * self.speed_radial) / self.distance_radial,
-            (self.speed_tangential**2 / self.distance_radial) * ca.sin(self.angle_course) * ca.tan(self.angle_elevation),
-             - (self.speed_tangential**2 / self.distance_radial)
-        )
+        return ca.cross(self.velocity_rotation_course_frame, self.velocity_kite)
 
     # @property
     def acceleration_local(self):
-        return ca.vertcat(self.timeder_speed_tangential, - self.speed_tangential * self.timeder_angle_course, self.timeder_speed_radial)
+        return ca.vertcat(self.timeder_speed_tangential, 0, self.timeder_speed_radial)
     
     # @property
     def acceleration(self):
         return self.acceleration_local() + self.acceleration_rotation()
+
+    def velocity_rotation(self):
+        return ca.vertcat(self.timeder_angle_pitch, self.timeder_angle_roll, self.timeder_angle_yaw)
+    def acceleration_rotation(self):
+        return ca.vertcat(self.acceleration_angle_roll, self.acceleration_angle_pitch, self.acceleration_angle_yaw)
 
     @property
     def force_external(self):
@@ -352,19 +275,9 @@ class Kite(Wing):
         return ca.cross(center_gravity_wing, (self.mass_wing) * self.acceleration())
 
     @property
-    def moment_residual(self):
-        """
-        Compute the residual for the kite system dynamics.
-        """
-        
-        aero_moment = self.aero_moment
+    def moment_external(self):
 
-        gravity_moment = self.gravity_moment
-
-        inertia_moment = self.inertia_moment
-
-        # Residual
-        return aero_moment + gravity_moment - inertia_moment
+        return self.aero_moment + self.gravity_moment 
     
     
     @property
@@ -373,4 +286,40 @@ class Kite(Wing):
         Compute the residual for the kite system dynamics. 
         Join the force and moment residuals.
         """
-        return ca.vertcat(self.force_residual(), self.moment_residual)
+        x_cg_c_cross = skew_symmetric(self.center_gravity_wing_course)
+        omega_cross = skew_symmetric(self.velocity_rotation_course_frame)
+        I = self.inertia_matrix_course
+        m = (self.mass_wing+self.mass_kcu)
+        m_w = self.mass_wing
+        # Create the block matrix
+        M = ca.vertcat(
+            ca.horzcat(m * ca.SX.eye(3), -m_w * x_cg_c_cross),
+            ca.horzcat(m_w * x_cg_c_cross, I)
+        )
+
+        ROT = ca.vertcat(
+            ca.horzcat( omega_cross,ca.SX.zeros(3,3)),
+            ca.horzcat(ca.SX.zeros(3,3), omega_cross)
+        )
+
+        acceleration = ca.vertcat(self.acceleration_local(), self.acceleration_rotation())
+        velocity = ca.vertcat(self.velocity_kite, self.velocity_rotation())
+
+        lhs = M @ acceleration + ROT @ M @ velocity
+        rhs = ca.vertcat(self.force_external, self.moment_external)
+
+        return lhs - rhs
+    
+    @property
+    def inertia_matrix_body(self):
+        #TODO: Calculate based on the cg position
+        return ca.diag([1, 1, 0])*self.mass_wing*self.center_gravity_wing[2]**2
+    
+    @property
+    def inertia_matrix_course(self):
+        return transformation_C_from_K(self.angle_pitch, self.angle_roll)@self.inertia_matrix_body
+    
+    @property
+    def center_gravity_wing_course(self):
+        return transformation_C_from_K(self.angle_pitch, self.angle_roll)@ca.vertcat(*self.center_gravity_wing)
+    
