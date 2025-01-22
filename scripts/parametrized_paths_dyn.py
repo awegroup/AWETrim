@@ -7,15 +7,6 @@ from picawe import State
 import casadi as ca
 import time as timet
 
-omega = -0.1
-x0 = 200
-rh = 60
-vr = 0
-beta = np.radians(30)
-ry = 120
-rz = 40
-csv_file = './processed_data/VSM_results_alpha_sweep.csv'
-v3_polar_data = pd.read_csv(csv_file)
 aero_input = {
     "model": "coeffs",
     "params": {
@@ -41,13 +32,20 @@ aero_input = {
         # Add other dependencies as needed
     },
 }
+omega = -0.1
+x0 = 200
+rh = 60
+vr = 0
+beta = np.radians(30)
+ry = 120
+rz = 40
 helix = Helix(omega, x0, rh, vr, beta)
 lissajous = Lissajous(omega, x0, ry,rz, vr, beta)
 figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
 
 pattern = helix
 kinematics = ParametrizedKinematics(pattern)
-state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu = 25)
+state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu = 25, dof = 3)
 
 # Substitute the numeric values into the symbolic expressions using CasADi functions
 chi_func = ca.Function('chi', [kinematics.t, kinematics.s, kinematics.s_dot], [kinematics.chi])
@@ -86,66 +84,54 @@ qs_guess = [200, 0, 40]
 s_dot = ca.SX.sym('s_dot')
 state.s_dot = s_dot
 start_time = timet.time()
-elevation = pattern.elevation(time[0], s)
-azimuth = pattern.azimuth(time[0], s)
-r = pattern.r(time[0])
 
-chi = chi_func(time[0], s, s_dot)
-vr = vr_func(time[0])
-dot_chi = dot_chi_func(time[0], s, s_dot)
-vtau = vtau_func(time[0], s, s_dot)
-
-state.angle_elevation = elevation
-state.angle_azimuth = azimuth
-state.distance_radial = r
-state.angle_course = chi
-state.timeder_angle_course = dot_chi
-state.speed_radial = vr   
-state.speed_tangential = vtau
-
-sol,_ = state.solve_quasi_steady_state(unknown_vars, qs_guess, solver_options=solver_options,dof = 3)
+current_state = {
+    "distance_radial": pattern.r(time[0]),
+    "angle_elevation": pattern.elevation(time[0], s),
+    "angle_azimuth": pattern.azimuth(time[0], s),
+    "angle_course": chi_func(time[0], s, s_dot),
+    "speed_radial": vr_func(time[0]),
+    "speed_tangential": vtau_func(time[0], s, s_dot),
+    "length_tether": pattern.r(time[0]),
+    "timeder_angle_course": dot_chi_func(time[0], s, s_dot),
+}
+sol,_ = state.solve_quasi_steady_state(current_state,unknown_vars, qs_guess, solver_options=solver_options)
+print(sol)
 s_dot = float(sol[2])
 state.s_dot = s_dot
 s_ddot = ca.SX.sym('s_ddot')
 state.s_ddot = s_ddot
 unknown_vars = ['length_tether', 'input_steering', 's_ddot']
 for i in range(len(time)):
-    elevation = pattern.elevation(time[i], s)
-    azimuth = pattern.azimuth(time[i], s)
-    r = pattern.r(time[i])
 
-    chi = chi_func(time[i], s, s_dot)
-    vr = vr_func(time[i])
-    dot_chi = dot_chi_func(time[i], s, s_dot)
-    vtau = vtau_func(time[i], s, s_dot)
-    dot_vtau = dot_vtau_func(time[i], s, s_dot, s_ddot)
-    dot_vr = dot_vr_func(time[i], s, s_dot, s_ddot)
+    current_state = {
+        "distance_radial": pattern.r(time[i]),
+        "angle_elevation": pattern.elevation(time[i], s),
+        "angle_azimuth": pattern.azimuth(time[i], s),
+        "angle_course": chi_func(time[i], s, s_dot),
+        "speed_radial": vr_func(time[i]),
+        "speed_tangential": vtau_func(time[i], s, s_dot),
+        "length_tether": pattern.r(time[i]),
+        "timeder_angle_course": dot_chi_func(time[i], s, s_dot),
+    }
+    state.timeder_speed_tangential = dot_vtau_func(time[i], s, s_dot, s_ddot)
+    state.timeder_speed_radial = dot_vr_func(time[i], s, s_dot, s_ddot)
+    sol,_ = state.solve_quasi_steady_state(current_state,unknown_vars, qs_guess, solver_options=solver_options)
 
-    state.angle_elevation = elevation
-    state.angle_azimuth = azimuth
-    state.distance_radial = r
-    state.angle_course = chi
-    state.timeder_angle_course = dot_chi
-    state.speed_radial = vr   
-    state.speed_tangential = vtau
-    state.timeder_speed_tangential = dot_vtau
-    state.timeder_speed_radial = dot_vr
-    sol,_ = state.solve_quasi_steady_state(unknown_vars, qs_guess, solver_options=solver_options,dof = 3)
-    # print(state.timeder_speed_tangential)
     qs_guess = sol
     # print(s_dot)
     
     s_dot += float(sol[2])*time_step
     s += s_dot*time_step
     state.s_dot = s_dot
-    current_state = {name : float(sol[i]) for i, name in enumerate(unknown_vars)}
+
     current_state["s"] = s
-    current_state["angle_azimuth"] = azimuth
-    current_state["angle_elevation"] = elevation
+    current_state["input_steering"] = float(sol[1])
+    current_state["length_tether"] = float(sol[0])
     current_state["angle_course"] = float(chi_func(time[i], s, s_dot))
     current_state["speed_tangential"] = float(vtau_func(time[i], s, s_dot))
     states.append(current_state)
-    # print(s)
+
     if abs(omega*s) > 6*np.pi:
         break
 print(f"Time taken: {timet.time() - start_time}")

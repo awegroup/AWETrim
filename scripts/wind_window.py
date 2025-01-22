@@ -42,8 +42,9 @@ aero_input = {
 
 
 # Example Usage
-state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu = 10)
+state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu = 10, dof = 6)
 
+# Constants
 state.speed_wind = 10
 state.distance_radial = 100.0
 state.angle_course = np.radians(0)
@@ -53,7 +54,7 @@ state.timeder_speed_radial = 0.0
 state.input_depower = 0.0
 state.input_steering = 0.0
 
-
+tension_tether_func = state.extract_function('tension_tether')
 
 unknown_vars = ['length_tether', 'timeder_angle_course', 'speed_tangential', 'angle_roll', 'angle_pitch', 'angle_yaw']
 # alpha_func = state.extract_parameter_function('angle_of_attack')
@@ -100,19 +101,17 @@ qs_guess = [state.distance_radial, 0, 40, 1e-3, 1e-3, 1e-3]
 # Loop over combinations of phi and beta
 for phi, beta in zip(phi_combinations, beta_combinations):
 
-    state.angle_azimuth = phi
-    state.angle_elevation = beta
+    current_state = {
+        "distance_radial": state.distance_radial,
+        "angle_elevation": beta,
+        "angle_azimuth": phi,
+    }
 
-    sol, converged = state.solve_quasi_steady_state( unknown_vars, qs_guess, solver_options= solver_options, dof = 6, return_not_converged=False)
+    sol, converged = state.solve_quasi_steady_state( current_state,unknown_vars, qs_guess, solver_options= solver_options)
     if converged:
-        # alpha_value = alpha_func(*[current_state[name] for name in alpha_func.name_in()])
-        # T = T_func(*[current_state[name] for name in T_func.name_in()])
+
         current_state = {name : float(sol[i]) for i, name in enumerate(unknown_vars)}
-        current_state["T"] = float(ca.substitute(
-            state.tension_tether,  # The expression to substitute into
-            getattr(state, 'length_tether'),  # Variables to substitute
-            current_state["length_tether"]  # Corresponding values
-        ))
+        current_state["T"] = float(tension_tether_func(*[current_state[name] for name in tension_tether_func.name_in()]))
         current_state["angle_azimuth"] = phi
         current_state["angle_elevation"] = beta
         # current_state["alpha"] = float(alpha_value)

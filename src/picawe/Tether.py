@@ -16,6 +16,7 @@ class Tether:
         """
         base_symbolic_variables = {
             'length_tether': 'length_tether',
+            'timeder_length_tether': 'timeder_length_tether',
         }
         for var_name in base_symbolic_variables.keys():
             setattr(self, var_name, ca.SX.sym(var_name))

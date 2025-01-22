@@ -47,7 +47,7 @@ figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
 
 pattern = helix
 kinematics = ParametrizedKinematics(pattern)
-state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu = 25)
+state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu = 25, dof = 3)
 
 # Substitute the numeric values into the symbolic expressions using CasADi functions
 chi_func = ca.Function('chi', [kinematics.t, kinematics.s, kinematics.s_dot], [kinematics.chi])
@@ -84,35 +84,25 @@ qs_guess = [200, 0, 40]
 s_dot = ca.SX.sym('s_dot')
 state.s_dot = s_dot
 start_time = timet.time()
+
 for i in range(len(time)):
 
-    elevation = pattern.elevation(time[i], s)
-    azimuth = pattern.azimuth(time[i], s)
-    r = pattern.r(time[i])
+    state.timeder_angle_course = dot_chi_func(time[i], s, s_dot)
+    state.speed_tangential = vtau_func(time[i], s, s_dot)
+    state.angle_course = chi_func(time[i], s, s_dot)
+    current_state = {
+        "distance_radial": pattern.r(time[i]),
+        "angle_elevation": pattern.elevation(time[i], s),
+        "angle_azimuth": pattern.azimuth(time[i], s),
+        "speed_radial": vr_func(time[i]),
+        "length_tether": pattern.r(time[i]),
+    }
 
-    # vk = 1
-    # s_dot = 0.1
-    
-    chi = chi_func(time[i], s, s_dot)
-    vr = vr_func(time[i])
-    dot_chi = dot_chi_func(time[i], s, s_dot)
-    vtau = vtau_func(time[i], s, s_dot)
-
-    state.angle_elevation = elevation
-    state.angle_azimuth = azimuth
-    state.distance_radial = r
-    state.angle_course = chi
-    state.timeder_angle_course = dot_chi
-    state.speed_radial = vr   
-    state.speed_tangential = vtau
-
-    sol,_ = state.solve_quasi_steady_state(unknown_vars, qs_guess, solver_options=solver_options,dof = 3)
+    sol,_ = state.solve_quasi_steady_state(current_state,unknown_vars, qs_guess, solver_options=solver_options)
     qs_guess = sol
-    # print(s_dot)
-    current_state = {name : float(sol[i]) for i, name in enumerate(unknown_vars)}
     current_state["s"] = s
-    current_state["angle_azimuth"] = azimuth
-    current_state["angle_elevation"] = elevation
+    current_state["input_steering"] = float(sol[1])
+    current_state["length_tether"] = float(sol[0])
     current_state["angle_course"] = float(chi_func(time[i], s, sol[2]))
     current_state["speed_tangential"] = float(vtau_func(time[i], s, sol[2]))
     states.append(current_state)

@@ -1,16 +1,15 @@
-
 from picawe import State
 import numpy as np
 import pandas as pd
 import casadi as ca
 import matplotlib.pyplot as plt
 
-csv_file = './processed_data/VSM_results_alpha_sweep.csv'
+csv_file = "./processed_data/VSM_results_alpha_sweep.csv"
 v3_polar_data = pd.read_csv(csv_file)
 
-#-----------------------------------------------
+# -----------------------------------------------
 # Define the system
-#-----------------------------------------------
+# -----------------------------------------------
 aero_input = {
     "model": "coeffs",
     "params": {
@@ -38,77 +37,73 @@ aero_input = {
 }
 
 # Example Usage
-state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu = 25)
+state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3)
 
-
-ode = state.ode
-
-
+# Define constant parameters
 state.timeder_speed_tangential = 0.0
 state.timeder_speed_radial = 0.0
 state.speed_wind = 10
 state.input_depower = 0.0
-state.speed_radial = -2
+state.timeder_length_tether = -2
 state.timeder_angle_course = 0.0
 
-unknown_vars = ['length_tether', 'input_steering', 'speed_tangential']
+tension_tether_func = state.extract_function("tension_tether")
 
-#Initial conditions
-state.distance_radial = 200
-state.angle_course = np.radians(0)
-state.angle_azimuth = 0.0
-state.angle_elevation = np.radians(0)
+unknown_vars = ["length_tether", "input_steering", "speed_tangential"]
+
+# Initial conditions
+current_state = {
+    "distance_radial": 200,
+    "angle_elevation": 0,
+    "angle_azimuth": 0,
+    "angle_course": 0,
+    "speed_radial": -2,
+    "speed_tangential": 10,
+    "length_tether": 200,
+}
 
 solver_options = {
-    'ipopt': {
-        'print_level': 0,  # Suppresses IPOPT output
+    "ipopt": {
+        "print_level": 0,  # Suppresses IPOPT output
         # 'max_iter': 200,  # Maximum number of iterations
-        'sb': 'yes'        # Suppresses more detailed solver information
+        "sb": "yes",  # Suppresses more detailed solver information
     },
-    'print_time': False    # Disables CasADi's internal timing output
+    "print_time": False,  # Disables CasADi's internal timing output
 }
 time_step = 0.1
-time = np.arange(0, 50, time_step)
+time = np.arange(0, 100, time_step)
 qs_guess = [200, 0, 40]
 states = []
 for i in range(len(time)):
-    
 
-    sol,_ = state.solve_quasi_steady_state(unknown_vars,qs_guess, solver_options= solver_options, dof = 3)
+    sol, _ = state.solve_quasi_steady_state(
+        current_state, unknown_vars, qs_guess, solver_options=solver_options
+    )
 
     qs_guess = sol
-    current_state = {key: float(sol[i]) for i, key in enumerate(unknown_vars)}
-    x0 = [state.distance_radial, state.speed_radial, current_state["speed_tangential"], state.angle_course, state.angle_azimuth, state.angle_elevation]
-    # print(x0)
-    new_state = state.integrate(x0, time[i], time_step, qs_state=current_state)
-    current_state["distance_radial"] = float(state.distance_radial)
-    current_state["angle_course"] = float(state.angle_course)
-    current_state["angle_azimuth"] = float(state.angle_azimuth)
-    current_state["angle_elevation"] = float(state.angle_elevation)
-    current_state["speed_radial"] = float(state.speed_radial)
-    # print(current_state)
 
-    current_state["T"] = float(ca.substitute(
-            state.tension_tether,  # The expression to substitute into
-            getattr(state, 'length_tether'),  # Variables to substitute
-            current_state["length_tether"]  # Corresponding values
-        ))
-    states.append(current_state)
-    # print(current_state["input_steering"])
-    # print(new_state["distance_radial"])
-    state.distance_radial = new_state["distance_radial"]
-    state.angle_azimuth = new_state["angle_azimuth"]
-    state.angle_elevation = new_state["angle_elevation"]
-    state.angle_course = new_state["angle_course"]
+    x0 = [
+        current_state["distance_radial"],
+        current_state["angle_elevation"],
+        current_state["angle_azimuth"],
+        current_state["angle_course"],
+        current_state["speed_radial"],
+        float(sol[2]),
+        float(sol[0]),
+    ]
 
-    if new_state["angle_elevation"] < 0 or new_state["distance_radial"] < 20:
+    xf = state.integrate(x0, time[i], time_step, quasi_steady=True)
+
+    current_state = {name: float(xf[i]) for i, name in enumerate(current_state.keys())}
+    T = tension_tether_func(
+        *[current_state[name] for name in tension_tether_func.name_in()]
+    )
+    states.append({**current_state, "T": float(T)})
+
+    if current_state["angle_elevation"] < 0 or current_state["distance_radial"] < 20:
         break
 
-
-    # current_state["timeder_angle_course"] = qs_guess[2]/40
-    print(current_state["distance_radial"] )   
-    
-
+    print(current_state["distance_radial"])
 
 
 print("Reel-in elevation angle: ", np.degrees(states[-1]["angle_elevation"]))
@@ -116,14 +111,14 @@ print("Reel-in tether force: ", states[-1]["T"])
 solution_df = pd.DataFrame(states)
 
 plt.figure()
-plt.plot(solution_df['speed_tangential'])
-plt.xlabel('Time [s]')
-plt.ylabel('Speed Tangential [m/s]')
+plt.plot(solution_df["speed_tangential"])
+plt.xlabel("Time [s]")
+plt.ylabel("Speed Tangential [m/s]")
 
 plt.figure()
-plt.plot(solution_df['T'])
-plt.xlabel('Time [s]')
-plt.ylabel('Tether Tension [N]')
+plt.plot(solution_df["T"])
+plt.xlabel("Time [s]")
+plt.ylabel("Tether Tension [N]")
 
 # plt.figure()
 # plt.plot(np.degrees(solution_df['aoa']))
@@ -133,9 +128,9 @@ plt.show()
 
 
 # Extract spherical coordinates
-r = solution_df['distance_radial']  # Radial distance
+r = solution_df["distance_radial"]  # Radial distance
 theta = solution_df["angle_azimuth"]  # Azimuth angle in radians
-phi = solution_df['angle_elevation']  # Elevation angle in radians
+phi = solution_df["angle_elevation"]  # Elevation angle in radians
 
 
 # Convert to Cartesian coordinates
@@ -144,18 +139,19 @@ y = r * np.cos(phi) * np.sin(theta)
 z = r * np.sin(phi)
 
 from mpl_toolkits.mplot3d import Axes3D
+
 # Create a 3D plot
 fig = plt.figure()
-ax = fig.add_subplot(111, projection='3d')
+ax = fig.add_subplot(111, projection="3d")
 
 # Plot the trajectory
-ax.plot(x, y, z, label='Trajectory in Cartesian Coordinates')
-ax.set_xlabel('X [m]')
-ax.set_ylabel('Y [m]')
-ax.set_zlabel('Z [m]')
+ax.plot(x, y, z, label="Trajectory in Cartesian Coordinates")
+ax.set_xlabel("X [m]")
+ax.set_ylabel("Y [m]")
+ax.set_zlabel("Z [m]")
 ax.set_ylim(-100, 100)
-ax.set_xlim(0,200)
-ax.set_zlim(0,200)
+ax.set_xlim(0, 200)
+ax.set_zlim(0, 200)
 ax.legend()
 
 plt.show()

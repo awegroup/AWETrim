@@ -107,12 +107,10 @@ aero_input = {
 }
 
 # Example Usage
-state = State(mass_wing=15, area_wing=20, mass_kcu=25, aero_input=aero_input)
+state = State(mass_wing=15, area_wing=20, mass_kcu=25, aero_input=aero_input, dof = 6)
 
-sideslip_func = state.extract_parameter_function("angle_sideslip")
-# cl_func = state.extract_parameter_function('CL')
-# cd_func = state.extract_parameter_function('CD')
-T_func = state.extract_parameter_function("tension_tether")
+sideslip_func = state.extract_function("angle_sideslip")
+T_func = state.extract_function("tension_tether")
 
 
 solutions = []
@@ -165,48 +163,36 @@ for i, row in flight_data.iterrows():
 
     vw = np.mean(vw_window)  # Compute the average of the current window
 
-    angle_azimuth = np.arctan2(position[i][1], position[i][0]) - np.mean(wdir_window)
-    state.timeder_angle_course = row.kite_yaw_rate_1
-    state.speed_wind = vw
-    state.distance_radial = distance_radial[i]
-    state.angle_course = row.kite_course
-    state.speed_radial = row.tether_reelout_speed
-    state.input_depower = row.up
-    state.angle_azimuth = row.kite_azimuth
-    state.angle_elevation = row.kite_elevation
+    current_state = {
+        "distance_radial": distance_radial[i],
+        "angle_course": row.kite_course,
+        "speed_radial": row.tether_reelout_speed,
+        "angle_azimuth": row.kite_azimuth,
+        "angle_elevation": row.kite_elevation,
+        "speed_wind": vw,
+        "timeder_angle_course": row.kite_yaw_rate_1,
+        "input_depower": row.up,
+    }
 
-    sol, _ = state.solve_quasi_steady_state(
-        unknown_vars, qs_guess, solver_options=solver_options, dof=6
+    sol, _ = state.solve_quasi_steady_state(current_state,
+        unknown_vars, qs_guess, solver_options=solver_options
     )
 
     qs_solution = {name: float(sol[i]) for i, name in enumerate(unknown_vars)}
     state_combined = {
         **qs_solution,
-        "speed_wind": vw,
-        "distance_radial": distance_radial[i],
-        "angle_course": row.kite_course,
-        "timeder_angle_course": row.kite_yaw_rate_1,
-        "speed_radial": row.tether_reelout_speed,
-        "input_depower": row.up,
-        "angle_azimuth": row.kite_azimuth,
-        "angle_elevation": row.kite_elevation,
+        **current_state
     }
     sideslip = sideslip_func(
         *[state_combined[name] for name in sideslip_func.name_in()]
     )
-    # CL = cl_func(*[state_combined[name] for name in cl_func.name_in()])
-    # CD = cd_func(*[state_combined[name] for name in cd_func.name_in()])
     T = T_func(*[state_combined[name] for name in T_func.name_in()])
     state_combined["sideslip"] = float(sideslip)
-    # state_combined['CL'] = float(CL)
-    # state_combined['CD'] = float(CD)
     state_combined["tension_tether"] = float(T)
     solutions.append(state_combined)
     # print(f"Solution: {solution}")
     qs_guess = sol
     print(i)
-    # if i > 500:
-    #     break
 
 
 end = time.time()
