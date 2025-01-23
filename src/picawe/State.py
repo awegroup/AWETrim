@@ -21,7 +21,8 @@ class State(KiteKinematics, Tether, Wind, Kite):
         E=132e9,
         diameter=0.008,
         density=970,
-        dof = 6
+        dof = 6,
+        quasi_steady = False
     ):
         """
         Initialize the kite system with its parameters.
@@ -53,8 +54,9 @@ class State(KiteKinematics, Tether, Wind, Kite):
             self.acceleration_angle_yaw = 0
         
         self.dof = dof
+        self.quasi_steady = quasi_steady
 
-    def ode(self):
+    def ode_function(self):
         dot_r = self.speed_radial
         dot_beta = self.timeder_angle_elevation
         dot_theta = self.timeder_angle_azimuth
@@ -64,7 +66,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
         dot_lt = self.timeder_length_tether
 
         ode = ca.vertcat(dot_r, dot_beta, dot_theta, dot_chi, dot_vr, dot_vt, dot_lt)
-        if self.dof == 6:
+        if self.dof == 6 and not self.quasi_steady:
             ode_add = ca.vertcat(
                 self.timeder_angle_roll,
                 self.timeder_angle_pitch,
@@ -76,15 +78,18 @@ class State(KiteKinematics, Tether, Wind, Kite):
             ode = ca.vertcat(ode, ode_add)
         return ode
 
-
-    def algebraic(self):
+    def algebraic_function(self):
         if self.dof == 6:
             return self.rb_residual
         else:
             return self.force_residual()
+
+    def establish_residual(self):
+        if self.dof == 6:
+            self.residual = self.rb_residual
+        elif self.dof == 3:
+            self.residual = self.force_residual()
         
-
-
     def solve_quasi_steady_state(
         self, current_state, unknown_vars, x0, solver_options={}
     ):
@@ -97,7 +102,6 @@ class State(KiteKinematics, Tether, Wind, Kite):
         """
         
         if self.dof == 6:
-            residual = self.rb_residual
             # Solve the system of equations
             lbx = [
                 current_state["distance_radial"] - 5,
@@ -116,7 +120,6 @@ class State(KiteKinematics, Tether, Wind, Kite):
                 np.pi / 4,
             ]  
         elif self.dof == 3:
-            residual = self.force_residual()
             # Solve the system of equations
             lbx = [
                 current_state["distance_radial"] - 5,
@@ -130,7 +133,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
             ]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
 
         sym_list = [getattr(self, name) for name in unknown_vars]
-
+        residual = self.residual
         for state_name, state_value in current_state.items():
             if state_name not in unknown_vars:
                 residual = ca.substitute(
@@ -160,7 +163,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
 
         return sol["x"], converged
 
-    def integrate(self, x0, time, time_step, quasi_steady = False):
+    def integrate(self, x0, time, time_step):
 
         x = ca.vertcat(
             self.distance_radial,
@@ -176,7 +179,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
                 self.timeder_angle_course,
                 self.timeder_speed_tangential,
             )
-        if self.dof == 6:
+        if self.dof == 6 and not self.quasi_steady:
             x_add = ca.vertcat(
                 self.angle_roll,
                 self.angle_pitch,
@@ -188,14 +191,14 @@ class State(KiteKinematics, Tether, Wind, Kite):
             x = ca.vertcat(x, x_add)
             z = ca.vertcat(z, self.acceleration_angle_roll, self.acceleration_angle_pitch, self.acceleration_angle_yaw)
 
-        
-        if quasi_steady:
-            ode = {'x': x, 'ode': self.ode()}
+        if self.quasi_steady:
+            ode = {'x': x, 'ode': self.ode}
             intg = ca.integrator('intg', 'cvodes', ode, time, time + time_step)
             res = intg(x0=x0)
             return res['xf']
-        else: 
-            dae = {"x": x, "z": z, "ode": self.ode(), "alg": self.algebraic()}
+        else:
+            
+            dae = {"x": x, "z": z, "ode": self.ode, "alg": self.algebraic}
 
             intg = ca.integrator(
                 "intg", "idas", dae, time, time + time_step
@@ -208,6 +211,18 @@ class State(KiteKinematics, Tether, Wind, Kite):
             # new_state.update(current_state)
             return new_state, zf
 
+
+    def establish_ode(self):
+        """
+        Establish the ordinary differential equations for the kite system.
+        """
+        self.ode = self.ode_function()
+
+    def establish_algebraic(self):
+        """
+        Establish the algebraic equations for the kite system.
+        """
+        self.algebraic = self.algebraic_function()
 
     def extract_function(self, attribute_name):
         """Extract a CasADi function dynamically based on the attribute name."""

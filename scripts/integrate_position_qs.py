@@ -24,12 +24,19 @@ state = State(
     area_wing=20,
     aero_input=aero_input,
     mass_kcu=25,
-    dof=3,
+    dof=6,
+    quasi_steady=True,
 )
 
 # Set constant parameters
 state.timeder_speed_tangential = 0.0
 state.timeder_speed_radial = 0.0
+state.timeder_angle_roll = 0
+state.timeder_angle_pitch = 0
+state.timeder_angle_yaw = 0
+state.acceleration_angle_roll = 0
+state.acceleration_angle_pitch = 0
+state.acceleration_angle_yaw = 0
 state.speed_wind = 10
 state.input_depower = 0.0
 state.timeder_length_tether = 0
@@ -41,7 +48,7 @@ tension_tether_func = state.extract_function("tension_tether")
 # -----------------------------------------------
 # Define simulation parameters and initial state
 # -----------------------------------------------
-unknown_vars = ["length_tether", "input_steering", "speed_tangential"]
+unknown_vars = ["length_tether", "input_steering", "speed_tangential", "angle_roll", "angle_pitch", "angle_yaw"]
 current_state = {
     "distance_radial": 200,
     "angle_elevation": 0,
@@ -57,9 +64,12 @@ solver_options = {
 }
 time_step = 0.1
 time = np.arange(0, 100, time_step)
-qs_guess = [200, 0, 40]
+qs_guess = [200, 0, 40,0,0,0]
 states = []
-
+import time as timet
+start_time = timet.time()
+state.establish_residual()
+state.establish_ode()
 # -----------------------------------------------
 # Time integration loop
 # -----------------------------------------------
@@ -82,7 +92,7 @@ for t in time:
     ]
 
     # Integrate the dynamics
-    xf = state.integrate(x0, t, time_step, quasi_steady=True)
+    xf = state.integrate(x0, t, time_step)
 
     # Update the current state
     current_state = {name: float(xf[i]) for i, name in enumerate(current_state.keys())}
@@ -97,6 +107,7 @@ for t in time:
     if current_state["angle_elevation"] < 0 or current_state["distance_radial"] < 20:
         break
 
+print("Elapsed time: ", timet.time() - start_time)
 # -----------------------------------------------
 # Process and visualize results
 # -----------------------------------------------

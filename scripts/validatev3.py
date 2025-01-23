@@ -92,10 +92,9 @@ with open(file_path, "r") as file:
     aero_input = json.load(file)
 
 # Example Usage
-state = State(mass_wing=15, area_wing=20, mass_kcu=25, aero_input=aero_input, dof=6)
+state = State(mass_wing=15, area_wing=20, mass_kcu=25, aero_input=aero_input, dof=6, quasi_steady=True)
 
-sideslip_func = state.extract_function("angle_sideslip")
-T_func = state.extract_function("tension_tether")
+
 
 
 solutions = []
@@ -122,7 +121,8 @@ unknown_vars = [
     "angle_yaw",
 ]
 
-
+sideslip_func = state.extract_function("angle_sideslip")
+T_func = state.extract_function("tension_tether")
 solver_options = {
     "ipopt": {
         "print_level": 0,  # Suppresses IPOPT output
@@ -142,6 +142,7 @@ velocity = np.array(
 distance_radial = np.linalg.norm(position, axis=1)
 speed_tangential = np.linalg.norm(velocity, axis=1)
 qs_guess = [distance_radial[0], 0, 40, 0, 0, 0]
+state.establish_residual()
 for i, row in flight_data.iterrows():
 
     # Wind speed (vw) sliding window average

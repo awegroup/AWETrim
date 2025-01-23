@@ -4,6 +4,7 @@ import json
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # For 3D trajectory plot
 from picawe import State
+import time as timet
 
 # -----------------------------------------------
 # Load data and define aerodynamic model
@@ -29,7 +30,7 @@ state = State(
 # Set constant parameters
 state.speed_wind = 10
 state.input_depower = 0.0
-state.timeder_length_tether = -2
+state.timeder_length_tether = -1
 state.input_steering = 0.0
 
 # Initial conditions
@@ -38,7 +39,7 @@ current_state = {
     "angle_elevation": np.radians(0),
     "angle_azimuth": 0,
     "angle_course": 0,
-    "speed_radial": -2,
+    "speed_radial": -1,
     "speed_tangential": 30,
     "length_tether": 200,
 }
@@ -62,7 +63,7 @@ solver_options = {
 }
 time_step = 0.01
 time = np.arange(0, 50, time_step)
-
+state.establish_residual()
 # -----------------------------------------------
 # Solve the quasi-steady state and initialize variables
 # -----------------------------------------------
@@ -85,7 +86,9 @@ states = []
 # Extract functions
 tension_tether_func = state.extract_function("tension_tether")
 aoa_func = state.extract_function("angle_of_attack")
-
+state.establish_ode()
+state.establish_algebraic()
+start_time = timet.time()
 # -----------------------------------------------
 # Time integration loop
 # -----------------------------------------------
@@ -120,6 +123,7 @@ for t in time:
     if new_state["angle_elevation"] < 0 or new_state["distance_radial"] < 10:
         break
 
+print("Elapsed time: ", timet.time() - start_time)
 # -----------------------------------------------
 # Process and visualize results
 # -----------------------------------------------

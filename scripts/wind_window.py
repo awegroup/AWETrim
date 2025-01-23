@@ -27,7 +27,7 @@ with open(file_path, "r") as file:
 
 
 # Example Usage
-state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=10, dof=6)
+state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=10, dof=6, quasi_steady=True)
 
 # Constants
 state.speed_wind = 10
@@ -38,6 +38,12 @@ state.speed_radial = 0.0
 state.timeder_speed_radial = 0.0
 state.input_depower = 0.0
 state.input_steering = 0.0
+state.timeder_angle_roll = 0
+state.timeder_angle_pitch = 0
+state.timeder_angle_yaw = 0
+state.acceleration_angle_roll = 0
+state.acceleration_angle_pitch = 0
+state.acceleration_angle_yaw = 0
 
 tension_tether_func = state.extract_function("tension_tether")
 
@@ -90,6 +96,7 @@ solver_options = {
     "print_time": False,  # Disables CasADi's internal timing output
 }
 qs_guess = [state.distance_radial, 0, 40, 1e-3, 1e-3, 1e-3]
+state.establish_residual()
 # Loop over combinations of phi and beta
 for phi, beta in zip(phi_combinations, beta_combinations):
 
