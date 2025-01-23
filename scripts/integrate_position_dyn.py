@@ -23,12 +23,13 @@ state = State(
     aero_input=aero_input,
     mass_kcu=25,
     dof=6,
+    center_gravity_wing=[0, 0, 12],
 )
 
 # Set constant parameters
 state.speed_wind = 10
 state.input_depower = 0.0
-state.timeder_length_tether = 0
+state.timeder_length_tether = -2
 state.input_steering = 0.0
 
 # Initial conditions
@@ -37,7 +38,7 @@ current_state = {
     "angle_elevation": np.radians(0),
     "angle_azimuth": 0,
     "angle_course": 0,
-    "speed_radial": 0,
+    "speed_radial": -2,
     "speed_tangential": 30,
     "length_tether": 200,
 }
@@ -98,8 +99,9 @@ for t in time:
         break
     # Enforce constraints/reset values (e.g., angles)
     x0 = xf
-    # x0[3] = 0  # Reset angle_course (Only to find the reel-in angle)
-    # x0[2] = 0  # Reset angle_azimuth (Only to find the reel-in angle)
+    x0[3] = 0  # Reset angle_course (Only to find the reel-in angle)
+    x0[2] = 0  # Reset angle_azimuth (Only to find the reel-in angle)
+    x0[7] = 0  # Reset angle_roll (Only to find the reel-in angle)
 
     # Update the current state
     new_state = {name: float(xf[j]) for j, name in enumerate(current_state.keys())}

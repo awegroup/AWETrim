@@ -138,13 +138,22 @@ class Wing:
         return self.velocity_wind - self.velocity_kite
 
     @property
+    def velocity_rotation_wing(self):
+        return ca.vertcat(self.timeder_angle_roll, self.timeder_angle_pitch, self.timeder_angle_yaw)
+    
+    @property
+    def velocity_apparent_wind_wing(self):
+        velocity_wing_rotation = ca.cross(self.velocity_rotation_wing, self.center_gravity_wing_course)
+        return self.velocity_apparent_wind - velocity_wing_rotation
+
+    @property
     def angle_pitch_aerodynamic(self):
         
-        return ca.atan2(self.velocity_apparent_wind[2], ca.sqrt(self.velocity_apparent_wind[0]**2 + self.velocity_apparent_wind[1]**2))
+        return ca.atan2(self.velocity_apparent_wind_wing[2], ca.sqrt(self.velocity_apparent_wind_wing[0]**2 + self.velocity_apparent_wind_wing[1]**2))
 
     @property
     def angle_yaw_aerodynamic(self):
-        return -ca.atan(self.velocity_apparent_wind[1]/ self.velocity_apparent_wind[0])
+        return -ca.atan(self.velocity_apparent_wind_wing[1]/ self.velocity_apparent_wind_wing[0])
 
     @property
     def force_aerodynamic(self):
@@ -252,8 +261,8 @@ class Kite(Wing):
 
         Cm, Cl, Cn = self.aerodynamic_moment_coefficients()
         aero_moment = ca.cross(center_aerodynamic_wing, self.force_aerodynamic)
-        aero_moment[1] += Cm*self.area_wing*self.rho*ca.mtimes(self.velocity_apparent_wind.T, self.velocity_apparent_wind)*4 ### Not the correct formula
-        aero_moment[2] += Cn*self.area_wing*self.rho*ca.mtimes(self.velocity_apparent_wind.T, self.velocity_apparent_wind)*4 ### Not the correct formula
+        aero_moment[1] += Cm*self.area_wing*self.rho*ca.mtimes(self.velocity_apparent_wind.T, self.velocity_apparent_wind)*2 ### Not the correct formula
+        aero_moment[2] += Cn*self.area_wing*self.rho*ca.mtimes(self.velocity_apparent_wind.T, self.velocity_apparent_wind)*2 ### Not the correct formula
         return aero_moment
 
     @property
