@@ -90,6 +90,7 @@ solver_options = {
     "print_time": False,  # Disables CasADi's internal timing output
 }
 qs_guess = [state.distance_radial, 0, 40, 1e-3, 1e-3, 1e-3]
+state.establish_residual()
 # Loop over combinations of phi and beta
 for phi, beta in zip(phi_combinations, beta_combinations):
 

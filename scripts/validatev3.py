@@ -136,6 +136,7 @@ velocity = np.array(
 distance_radial = np.linalg.norm(position, axis=1)
 speed_tangential = np.linalg.norm(velocity, axis=1)
 qs_guess = [distance_radial[0], 0, 40, 0, 0, 0]
+state.establish_residual()
 for i, row in flight_data.iterrows():
 
     # Wind speed (vw) sliding window average
