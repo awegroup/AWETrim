@@ -33,7 +33,7 @@ figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
 
 pattern = helix
 kinematics = ParametrizedKinematics(pattern)
-state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3)
+state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
 
 # Substitute the numeric values into the symbolic expressions using CasADi functions
 chi_func = ca.Function(

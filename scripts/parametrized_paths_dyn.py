@@ -69,7 +69,7 @@ dot_vr_func = ca.Function(
 # -----------------------------------------------
 # Define the system
 # -----------------------------------------------
-state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=6)
+state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
 
 state.speed_wind = 10
 state.input_depower = 0
@@ -94,8 +94,8 @@ s = 0
 s_dot = 0.1
 vk = 20
 states = []
-unknown_vars = ["length_tether", "input_steering", "s_dot", "angle_roll", "angle_pitch", "angle_yaw"]
-qs_guess = [200, 0, 40,0,0,0]
+unknown_vars = ["length_tether", "input_steering", "s_dot"]
+qs_guess = [200, 0, 40]
 s_dot = ca.SX.sym("s_dot")
 state.s_dot = s_dot
 start_time = timet.time()
@@ -121,7 +121,7 @@ s_dot = float(sol[2])
 state.s_dot = s_dot
 s_ddot = ca.SX.sym("s_ddot")
 state.s_ddot = s_ddot
-unknown_vars = ["length_tether", "input_steering", "s_ddot", "angle_roll", "angle_pitch", "angle_yaw"]
+unknown_vars = ["length_tether", "input_steering", "s_ddot"]
 for i in range(len(time)):
 
     current_state = {
