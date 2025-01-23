@@ -64,7 +64,12 @@ class State(KiteKinematics, Tether, Wind, Kite):
     def algebraic(self):
         return self.force_residual()
 
-
+    def establish_residual(self):
+        if self.dof == 6:
+            self.residual = self.rb_residual
+        elif self.dof == 3:
+            self.residual = self.force_residual()
+        
     def solve_quasi_steady_state(
         self, current_state, unknown_vars, x0, solver_options={}
     ):
@@ -76,7 +81,6 @@ class State(KiteKinematics, Tether, Wind, Kite):
         :return: Dictionary of unknown state variables and their values.
         """
         if self.dof == 6:
-            residual = self.rb_residual
             # Solve the system of equations
             lbx = [
                 current_state["distance_radial"] - 5,
@@ -95,7 +99,6 @@ class State(KiteKinematics, Tether, Wind, Kite):
                 np.pi / 4,
             ]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
         elif self.dof == 3:
-            residual = self.force_residual()
             # Solve the system of equations
             lbx = [
                 current_state["distance_radial"] - 5,
@@ -109,7 +112,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
             ]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
 
         sym_list = [getattr(self, name) for name in unknown_vars]
-
+        residual = self.residual
         for state_name, state_value in current_state.items():
             if state_name not in unknown_vars:
                 residual = ca.substitute(
