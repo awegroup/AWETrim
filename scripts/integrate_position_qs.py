@@ -62,6 +62,7 @@ states = []
 import time as timet
 start_time = timet.time()
 state.establish_residual()
+state.establish_ode()
 # -----------------------------------------------
 # Time integration loop
 # -----------------------------------------------
