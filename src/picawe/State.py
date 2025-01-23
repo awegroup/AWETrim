@@ -52,6 +52,18 @@ class State(KiteKinematics, Tether, Wind, Kite):
             self.acceleration_angle_pitch = 0
             self.acceleration_angle_roll = 0
             self.acceleration_angle_yaw = 0
+
+
+        if quasi_steady:
+            self.timeder_angle_roll = 0
+            self.timeder_angle_pitch = 0
+            self.timeder_angle_yaw = 0
+            self.acceleration_angle_roll = 0
+            self.acceleration_angle_pitch = 0
+            self.acceleration_angle_yaw = 0
+            self.timeder_length_tether = self.speed_radial
+            self.timeder_speed_tangential = 0
+            self.timeder_speed_radial = 0
         
         self.dof = dof
         self.quasi_steady = quasi_steady
