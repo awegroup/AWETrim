@@ -33,7 +33,7 @@ figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
 
 pattern = helix
 kinematics = ParametrizedKinematics(pattern)
-state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
+state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=6, quasi_steady=True)
 
 # Substitute the numeric values into the symbolic expressions using CasADi functions
 chi_func = ca.Function(
@@ -57,8 +57,7 @@ vtau_func = ca.Function(
     "vtau", [kinematics.t, kinematics.s, kinematics.s_dot], [kinematics.vtau]
 )
 
-state.timeder_speed_tangential = 0.0
-state.timeder_speed_radial = 0.0
+
 state.speed_wind = 10
 state.input_depower = 0
 
@@ -77,8 +76,8 @@ s_dot = 0.1
 s_ddot = 0
 vk = 20
 states = []
-unknown_vars = ["length_tether", "input_steering", "s_dot"]
-qs_guess = [200, 0, 40]
+unknown_vars = ["length_tether", "input_steering", "s_dot", "angle_roll", "angle_pitch", "angle_yaw"]
+qs_guess = [200, 0, 40, 0, 0, 0]
 s_dot = ca.SX.sym("s_dot")
 state.s_dot = s_dot
 start_time = timet.time()
