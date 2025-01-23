@@ -31,7 +31,7 @@ helix = Helix(omega, x0, rh, vr, beta)
 lissajous = Lissajous(omega, x0, ry, rz, vr, beta)
 figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
 
-pattern = helix
+pattern = lissajous
 kinematics = ParametrizedKinematics(pattern)
 state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=6, quasi_steady=True)
 
@@ -66,8 +66,10 @@ solver_options = {
         "print_level": 0,  # Suppresses IPOPT output
         # 'max_iter': 200,  # Maximum number of iterations
         "sb": "yes",  # Suppresses more detailed solver information
+        
     },
     "print_time": False,  # Disables CasADi's internal timing output
+    # "allow_free": True,  # Allows free variables
 }
 time_step = 0.1
 time = np.arange(0, 100, time_step)
@@ -79,33 +81,41 @@ states = []
 unknown_vars = ["length_tether", "input_steering", "s_dot", "angle_roll", "angle_pitch", "angle_yaw"]
 qs_guess = [200, 0, 40, 0, 0, 0]
 s_dot = ca.SX.sym("s_dot")
+s_sym = ca.SX.sym("s")
+time_sym = ca.SX.sym("time")
 state.s_dot = s_dot
 start_time = timet.time()
+state.timeder_angle_course =  dot_chi_func(time_sym, s_sym, s_dot)
+state.speed_tangential = vtau_func(time_sym, s_sym, s_dot)
+state.angle_course = chi_func(time_sym, s_sym, s_dot)
 state.establish_residual()
+solve_func, inputs_name = state.solve_quasi_steady_state(
+        unknown_vars, solver_options=solver_options
+    )
+print(solve_func)
 for i in range(len(time)):
 
     current_state = {
         "distance_radial": pattern.r(time[i]),
         "angle_elevation": pattern.elevation(time[i], s),
         "angle_azimuth": pattern.azimuth(time[i], s),
-        "speed_radial": vr_func(time[i]),
+        "speed_radial": float(vr_func(time[i])),
         "length_tether": pattern.r(time[i]),
-        "timeder_angle_course": dot_chi_func(time[i], s, s_dot),
-        "speed_tangential": vtau_func(time[i], s, s_dot),
-        "angle_course": chi_func(time[i], s, s_dot),
+        "s": s,
+        "time": time[i],
     }
+    p = [current_state[name] for name in inputs_name]
 
-    sol, _ = state.solve_quasi_steady_state(
-        current_state, unknown_vars, qs_guess, solver_options=solver_options
-    )
-    qs_guess = sol
+    lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+    sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+    qs_guess = sol["x"]
     current_state["s"] = s
-    current_state["input_steering"] = float(sol[1])
-    current_state["length_tether"] = float(sol[0])
-    current_state["angle_course"] = float(chi_func(time[i], s, sol[2]))
-    current_state["speed_tangential"] = float(vtau_func(time[i], s, sol[2]))
+    current_state["input_steering"] = float(sol['x'][1])
+    current_state["length_tether"] = float(sol['x'][0])
+    current_state["angle_course"] = float(chi_func(time[i], s, sol['x'][2]))
+    current_state["speed_tangential"] = float(vtau_func(time[i], s, sol['x'][2]))
     states.append(current_state)
-    s += float(sol[2]) * time_step
+    s += float(sol['x'][2]) * time_step
     if abs(omega * s) > 4 * np.pi:
         break
 print(f"Time taken: {timet.time() - start_time}")

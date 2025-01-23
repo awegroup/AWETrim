@@ -103,7 +103,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
             self.residual = self.force_residual()
         
     def solve_quasi_steady_state(
-        self, current_state, unknown_vars, x0, solver_options={}
+        self, unknown_vars, solver_options={}
     ):
         """
         Solve the quasi-steady state equations for the kite system.
@@ -112,6 +112,29 @@ class State(KiteKinematics, Tether, Wind, Kite):
         :param unknown_vars: List of unknown state variables to solve for.
         :return: Dictionary of unknown state variables and their values.
         """
+        x = [getattr(self, name) for name in unknown_vars]
+        
+        inputs = []
+        for var in ca.symvar(self.residual):
+            if var.name() not in unknown_vars:
+                inputs.append(var)
+        inputs_name = [name.name() for name in inputs]
+        
+        # NLP problem definition
+        nlp = {
+            "x": ca.vertcat(*x),
+            "f": 0,
+            "g": self.residual,
+            "p": ca.vertcat(*inputs),
+        }  # 'f' is set to 0 for root-finding
+
+        # Define the NLP solver
+        solver = ca.nlpsol("solver", "ipopt", nlp, solver_options)
+
+        return solver, inputs_name
+
+
+    def get_boundaries(self, current_state):
         
         if self.dof == 6:
             # Solve the system of equations
@@ -143,37 +166,15 @@ class State(KiteKinematics, Tether, Wind, Kite):
                 10,
                 500,
             ]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
-
-        sym_list = [getattr(self, name) for name in unknown_vars]
-        residual = self.residual
-        for state_name, state_value in current_state.items():
-            if state_name not in unknown_vars:
-                residual = ca.substitute(
-                    residual, getattr(self, state_name), state_value
-                )
-        # NLP problem definition
-        nlp = {
-            "x": ca.vertcat(*sym_list),
-            "f": 0,
-            "g": residual,
-        }  # 'f' is set to 0 for root-finding
-
-        # Define the NLP solver
-        solver = ca.nlpsol("solver", "ipopt", nlp, solver_options)
-
+   
         # Bounds for the constraints
-        lbg = [0] * residual.size1()  # Lower bounds (0 for residuals)
-        ubg = [0] * residual.size1()  # Upper bounds (0 for residuals)
+        lbg = [0] * self.residual.size1()  # Lower bounds (0 for residuals)
+        ubg = [0] * self.residual.size1()  # Upper bounds (0 for residuals)
+        
+        
+        return lbx, ubx, lbg, ubg
 
-        # try:
-        # Solve the system
-        sol = solver(x0=x0, lbg=lbg, ubg=ubg, lbx=lbx, ubx=ubx)  # Initial guess
-        converged = True
-        if ca.norm_1(sol["g"]) > 1:
-            print("Quasi-steady state not found")
-            converged = False
 
-        return sol["x"], converged
 
     def integrate(self, x0, time, time_step):
 
