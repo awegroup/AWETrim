@@ -22,7 +22,7 @@ state = State(
     area_wing=20,
     aero_input=aero_input,
     mass_kcu=25,
-    dof=3,
+    dof=6,
 )
 
 # Set constant parameters
@@ -37,23 +37,29 @@ current_state = {
     "angle_elevation": np.radians(0),
     "angle_azimuth": 0,
     "angle_course": 0,
-    "speed_radial": -2,
+    "speed_radial": 0,
     "speed_tangential": 30,
     "length_tether": 200,
 }
 accelerations = {
     "timeder_speed_tangential": 0.0,
     "timeder_speed_radial": 0.0,
+    "timeder_angle_roll": 0,
+    "timeder_angle_pitch": 0,
+    "timeder_angle_yaw": 0,
+    "acceleration_angle_roll": 0,
+    "acceleration_angle_pitch": 0,
+    "acceleration_angle_yaw": 0,
 }
-unknown_vars = ["length_tether", "timeder_angle_course", "speed_tangential"]
-qs_guess = [200, 0, 40]
+unknown_vars = ["length_tether", "timeder_angle_course", "speed_tangential", "angle_roll", "angle_pitch", "angle_yaw"]
+qs_guess = [200, 0, 40, 0, 0, 0]
 
 # Solver configuration
 solver_options = {
     "ipopt": {"print_level": 0, "sb": "yes"},
     "print_time": False,
 }
-time_step = 0.1
+time_step = 0.01
 time = np.arange(0, 50, time_step)
 
 # -----------------------------------------------
@@ -62,6 +68,16 @@ time = np.arange(0, 50, time_step)
 sol, _ = state.solve_quasi_steady_state(
     {**current_state, **accelerations}, unknown_vars, qs_guess, solver_options
 )
+current_state["speed_tangential"] = float(sol[2])
+current_state["length_tether"] = float(sol[0])
+current_state = {**current_state, 
+                 'angle_roll': float(sol[3]),
+                    'angle_pitch': float(sol[4]),
+                    'angle_yaw': float(sol[5]),
+                    'timeder_angle_roll': 0,
+                    'timeder_angle_pitch': 0,
+                    'timeder_angle_yaw': 0,
+}
 x0 = [x for x in current_state.values()]
 states = []
 
@@ -82,8 +98,8 @@ for t in time:
         break
     # Enforce constraints/reset values (e.g., angles)
     x0 = xf
-    x0[3] = 0  # Reset angle_course (Only to find the reel-in angle)
-    x0[2] = 0  # Reset angle_azimuth (Only to find the reel-in angle)
+    # x0[3] = 0  # Reset angle_course (Only to find the reel-in angle)
+    # x0[2] = 0  # Reset angle_azimuth (Only to find the reel-in angle)
 
     # Update the current state
     new_state = {name: float(xf[j]) for j, name in enumerate(current_state.keys())}
@@ -106,6 +122,11 @@ for t in time:
 # Process and visualize results
 # -----------------------------------------------
 solution_df = pd.DataFrame(states)
+
+plt.figure()
+plt.plot(solution_df["angle_pitch"]*180/np.pi, label="Pitch")
+plt.plot(solution_df["angle_roll"]*180/np.pi, label="Roll")
+plt.show()
 
 # Plot speeds
 plt.figure()

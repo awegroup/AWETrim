@@ -64,11 +64,25 @@ class State(KiteKinematics, Tether, Wind, Kite):
         dot_lt = self.timeder_length_tether
 
         ode = ca.vertcat(dot_r, dot_beta, dot_theta, dot_chi, dot_vr, dot_vt, dot_lt)
+        if self.dof == 6:
+            ode_add = ca.vertcat(
+                self.timeder_angle_roll,
+                self.timeder_angle_pitch,
+                self.timeder_angle_yaw,
+                self.acceleration_angle_roll,
+                self.acceleration_angle_pitch,
+                self.acceleration_angle_yaw,
+            )
+            ode = ca.vertcat(ode, ode_add)
         return ode
 
 
     def algebraic(self):
-        return self.force_residual()
+        if self.dof == 6:
+            return self.rb_residual
+        else:
+            return self.force_residual()
+        
 
 
     def solve_quasi_steady_state(
@@ -157,19 +171,30 @@ class State(KiteKinematics, Tether, Wind, Kite):
             self.speed_tangential,
             self.length_tether,
         )
+        z = ca.vertcat(
+                self.timeder_speed_radial,
+                self.timeder_angle_course,
+                self.timeder_speed_tangential,
+            )
+        if self.dof == 6:
+            x_add = ca.vertcat(
+                self.angle_roll,
+                self.angle_pitch,
+                self.angle_yaw,
+                self.timeder_angle_roll,
+                self.timeder_angle_pitch,
+                self.timeder_angle_yaw,
+            )
+            x = ca.vertcat(x, x_add)
+            z = ca.vertcat(z, self.acceleration_angle_roll, self.acceleration_angle_pitch, self.acceleration_angle_yaw)
+
         
         if quasi_steady:
             ode = {'x': x, 'ode': self.ode()}
             intg = ca.integrator('intg', 'cvodes', ode, time, time + time_step)
             res = intg(x0=x0)
             return res['xf']
-        else:
-            z = ca.vertcat(
-                self.timeder_speed_radial,
-                self.timeder_angle_course,
-                self.timeder_speed_tangential,
-            )
-            
+        else: 
             dae = {"x": x, "z": z, "ode": self.ode(), "alg": self.algebraic()}
 
             intg = ca.integrator(
