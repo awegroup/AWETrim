@@ -29,17 +29,8 @@ state = State(
 )
 
 # Set constant parameters
-state.timeder_speed_tangential = 0.0
-state.timeder_speed_radial = 0.0
-state.timeder_angle_roll = 0
-state.timeder_angle_pitch = 0
-state.timeder_angle_yaw = 0
-state.acceleration_angle_roll = 0
-state.acceleration_angle_pitch = 0
-state.acceleration_angle_yaw = 0
 state.speed_wind = 10
 state.input_depower = 0.0
-state.timeder_length_tether = 0
 state.timeder_angle_course = 0.0
 
 # Extract the tension tether function
@@ -54,7 +45,7 @@ current_state = {
     "angle_elevation": 0,
     "angle_azimuth": 0,
     "angle_course": 0,
-    "speed_radial": 0,
+    "speed_radial": -2,
     "speed_tangential": 10,
     "length_tether": 200,
 }
@@ -68,17 +59,28 @@ qs_guess = [200, 0, 40,0,0,0]
 states = []
 import time as timet
 start_time = timet.time()
-state.establish_residual()
+solve_qs, inputs_name = state.solve_quasi_steady_state(
+        unknown_vars, solver_options=solver_options
+    )
+# Solve quasi-steady state
+p = [current_state[name] for name in inputs_name]
+
+lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+sol = solve_qs(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 state.establish_ode()
+
 # -----------------------------------------------
 # Time integration loop
 # -----------------------------------------------
 for t in time:
     # Solve quasi-steady state
-    sol, _ = state.solve_quasi_steady_state(
-        current_state, unknown_vars, qs_guess, solver_options=solver_options
-    )
-    qs_guess = sol
+    p = [current_state[name] for name in inputs_name]
+
+    lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+    sol = solve_qs(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+
+    qs_guess = sol["x"]
+    qs_state = {name: float(qs_guess[i]) for i, name in enumerate(unknown_vars)}
 
     # Construct initial conditions for integration
     x0 = [
@@ -87,8 +89,8 @@ for t in time:
         current_state["angle_azimuth"],
         current_state["angle_course"],
         current_state["speed_radial"],
-        float(sol[2]),  # speed_tangential
-        float(sol[0]),  # length_tether
+        float(sol['x'][2]),  # speed_tangential
+        float(sol['x'][0]),  # length_tether
     ]
 
     # Integrate the dynamics
@@ -108,6 +110,7 @@ for t in time:
         break
 
 print("Elapsed time: ", timet.time() - start_time)
+print("Simulated time: ", time[-1])
 # -----------------------------------------------
 # Process and visualize results
 # -----------------------------------------------

@@ -52,6 +52,8 @@ accelerations = {
     "acceleration_angle_roll": 0,
     "acceleration_angle_pitch": 0,
     "acceleration_angle_yaw": 0,
+    "timeder_speed_tangential": 0,
+    "timeder_speed_radial": 0,
 }
 unknown_vars = ["length_tether", "timeder_angle_course", "speed_tangential", "angle_roll", "angle_pitch", "angle_yaw"]
 qs_guess = [200, 0, 40, 0, 0, 0]
@@ -67,9 +69,14 @@ state.establish_residual()
 # -----------------------------------------------
 # Solve the quasi-steady state and initialize variables
 # -----------------------------------------------
-sol, _ = state.solve_quasi_steady_state(
-    {**current_state, **accelerations}, unknown_vars, qs_guess, solver_options
-)
+solve_qs, inputs_name = state.solve_quasi_steady_state(
+        unknown_vars, solver_options=solver_options
+    )
+# Solve quasi-steady state
+p = [{**current_state,**accelerations}[name] for name in inputs_name]
+
+lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+sol = solve_qs(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)['x']
 current_state["speed_tangential"] = float(sol[2])
 current_state["length_tether"] = float(sol[0])
 current_state = {**current_state, 

@@ -112,6 +112,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
         :param unknown_vars: List of unknown state variables to solve for.
         :return: Dictionary of unknown state variables and their values.
         """
+        self.establish_residual()
         x = [getattr(self, name) for name in unknown_vars]
         
         inputs = []
@@ -141,7 +142,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
             lbx = [
                 current_state["distance_radial"] - 5,
                 -10,
-                -1,
+                -10,
                 -np.pi / 4,
                 -np.pi / 4,
                 -np.pi / 4,

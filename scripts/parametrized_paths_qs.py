@@ -31,9 +31,9 @@ helix = Helix(omega, x0, rh, vr, beta)
 lissajous = Lissajous(omega, x0, ry, rz, vr, beta)
 figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
 
-pattern = lissajous
+pattern = helix
 kinematics = ParametrizedKinematics(pattern)
-state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=6, quasi_steady=True)
+state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
 
 # Substitute the numeric values into the symbolic expressions using CasADi functions
 chi_func = ca.Function(
@@ -78,8 +78,8 @@ s_dot = 0.1
 s_ddot = 0
 vk = 20
 states = []
-unknown_vars = ["length_tether", "input_steering", "s_dot", "angle_roll", "angle_pitch", "angle_yaw"]
-qs_guess = [200, 0, 40, 0, 0, 0]
+unknown_vars = ["length_tether", "input_steering", "s_dot"]
+qs_guess = [200, 0, 40]
 s_dot = ca.SX.sym("s_dot")
 s_sym = ca.SX.sym("s")
 time_sym = ca.SX.sym("time")
@@ -88,11 +88,12 @@ start_time = timet.time()
 state.timeder_angle_course =  dot_chi_func(time_sym, s_sym, s_dot)
 state.speed_tangential = vtau_func(time_sym, s_sym, s_dot)
 state.angle_course = chi_func(time_sym, s_sym, s_dot)
-state.establish_residual()
+
 solve_func, inputs_name = state.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
 print(solve_func)
+print(ca.symvar(state.residual))
 for i in range(len(time)):
 
     current_state = {
@@ -108,15 +109,16 @@ for i in range(len(time)):
 
     lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
     sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+
     qs_guess = sol["x"]
+    print(sol['x'][2])
+    qs_state = {name: float(qs_guess[i]) for i, name in enumerate(unknown_vars)}
     current_state["s"] = s
-    current_state["input_steering"] = float(sol['x'][1])
-    current_state["length_tether"] = float(sol['x'][0])
     current_state["angle_course"] = float(chi_func(time[i], s, sol['x'][2]))
     current_state["speed_tangential"] = float(vtau_func(time[i], s, sol['x'][2]))
-    states.append(current_state)
+    states.append({**current_state, **qs_state})
     s += float(sol['x'][2]) * time_step
-    if abs(omega * s) > 4 * np.pi:
+    if abs(omega * s) > 8 * np.pi:
         break
 print(f"Time taken: {timet.time() - start_time}")
 states = pd.DataFrame(states)

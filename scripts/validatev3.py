@@ -66,7 +66,7 @@ def read_dict_from_group(group):
 
 
 results, flight_data, config_data = read_results("2019", "10", "08", "v3", addition="")
-mask = flight_data.cycle.isin([65])
+mask = flight_data.cycle.isin([64,65])
 
 flight_data = flight_data[mask]
 results = results[mask]
@@ -104,14 +104,6 @@ vw_window = []
 vw_averaged = []
 wdir_window = []
 
-state.timeder_speed_tangential = 0.0
-state.timeder_speed_radial = 0.0
-state.timeder_angle_roll = 0
-state.timeder_angle_pitch = 0
-state.timeder_angle_yaw = 0
-state.acceleration_angle_roll = 0
-state.acceleration_angle_pitch = 0
-state.acceleration_angle_yaw = 0
 unknown_vars = [
     "length_tether",
     "input_steering",
@@ -143,6 +135,10 @@ distance_radial = np.linalg.norm(position, axis=1)
 speed_tangential = np.linalg.norm(velocity, axis=1)
 qs_guess = [distance_radial[0], 0, 40, 0, 0, 0]
 state.establish_residual()
+solve_func, inputs_name = state.solve_quasi_steady_state(
+        unknown_vars, solver_options=solver_options
+    )
+print(solve_func)
 for i, row in flight_data.iterrows():
 
     # Wind speed (vw) sliding window average
@@ -151,7 +147,7 @@ for i, row in flight_data.iterrows():
     if len(vw_window) > window_size:
         vw_window.pop(0)  # Keep the window size constant
         wdir_window.pop(0)
-
+    print(i)
     vw = np.mean(vw_window)  # Compute the average of the current window
 
     current_state = {
@@ -165,12 +161,16 @@ for i, row in flight_data.iterrows():
         "input_depower": row.up,
     }
 
-    sol, _ = state.solve_quasi_steady_state(
-        current_state, unknown_vars, qs_guess, solver_options=solver_options
-    )
+    p = [current_state[name] for name in inputs_name]
+    # print(p)
+    lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+    # print(lbx,ubx,lbg,ubg)
+    sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
-    qs_solution = {name: float(sol[i]) for i, name in enumerate(unknown_vars)}
-    state_combined = {**qs_solution, **current_state}
+    qs_guess = sol["x"]
+    qs_state = {name: float(qs_guess[i]) for i, name in enumerate(unknown_vars)}
+
+    state_combined = {**qs_state, **current_state}
     sideslip = sideslip_func(
         *[state_combined[name] for name in sideslip_func.name_in()]
     )
@@ -179,7 +179,7 @@ for i, row in flight_data.iterrows():
     state_combined["tension_tether"] = float(T)
     solutions.append(state_combined)
     # print(f"Solution: {solution}")
-    qs_guess = sol
+
 
 
 end = time.time()

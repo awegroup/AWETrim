@@ -31,19 +31,12 @@ state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=10, do
 
 # Constants
 state.speed_wind = 10
-state.distance_radial = 100.0
-state.angle_course = np.radians(0)
-state.timeder_speed_tangential = 0.0
+state.distance_radial = 200.0
+state.angle_course = np.radians(90)
 state.speed_radial = 0.0
-state.timeder_speed_radial = 0.0
 state.input_depower = 0.0
 state.input_steering = 0.0
-state.timeder_angle_roll = 0
-state.timeder_angle_pitch = 0
-state.timeder_angle_yaw = 0
-state.acceleration_angle_roll = 0
-state.acceleration_angle_pitch = 0
-state.acceleration_angle_yaw = 0
+
 
 tension_tether_func = state.extract_function("tension_tether")
 
@@ -59,8 +52,8 @@ unknown_vars = [
 # T_func = state.extract_parameter_function('tension_tether')
 
 # Define the range of phi and beta
-phi_values = np.radians(np.linspace(-90, 90, 50))  # Range for phi in radians
-beta_values = np.radians(np.linspace(0, 90, 50))  # Range for beta in radians
+phi_values = np.radians(np.linspace(-90, 90, 30))  # Range for phi in radians
+beta_values = np.radians(np.linspace(0, 90, 30))  # Range for beta in radians
 
 # Generate combinations of phi and beta using meshgrid
 phi_grid, beta_grid = np.meshgrid(phi_values, beta_values)
@@ -90,13 +83,17 @@ solutions = []
 solver_options = {
     "ipopt": {
         "print_level": 0,  # Suppresses IPOPT output
-        "max_iter": 200,  # Maximum number of iterations
+        # "max_iter": 200,  # Maximum number of iterations
         "sb": "yes",  # Suppresses more detailed solver information
     },
     "print_time": False,  # Disables CasADi's internal timing output
 }
 qs_guess = [state.distance_radial, 0, 40, 1e-3, 1e-3, 1e-3]
-state.establish_residual()
+
+solve_func, inputs_name = state.solve_quasi_steady_state(
+        unknown_vars, solver_options=solver_options
+    )
+print(solve_func)
 # Loop over combinations of phi and beta
 for phi, beta in zip(phi_combinations, beta_combinations):
 
@@ -106,12 +103,18 @@ for phi, beta in zip(phi_combinations, beta_combinations):
         "angle_azimuth": phi,
     }
 
-    sol, converged = state.solve_quasi_steady_state(
-        current_state, unknown_vars, qs_guess, solver_options=solver_options
-    )
-    if converged:
+    p = [current_state[name] for name in inputs_name]
+    # print(p)
+    lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+    # print(lbx,ubx,lbg,ubg)
+    sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
-        current_state = {name: float(sol[i]) for i, name in enumerate(unknown_vars)}
+    
+
+    if np.linalg.norm(sol["g"]) < 1:
+        # qs_guess = sol["x"]
+        qs_state = {name: float(sol["x"][i]) for i, name in enumerate(unknown_vars)}
+        current_state = qs_state
         current_state["T"] = float(
             tension_tether_func(
                 *[current_state[name] for name in tension_tether_func.name_in()]
@@ -122,6 +125,8 @@ for phi, beta in zip(phi_combinations, beta_combinations):
         # current_state["alpha"] = float(alpha_value)
         # qs_guess = [current_state[name] for name in unknown_vars]
         solutions.append(current_state)
+    else:
+        print("Quasi steady solution not found")
 
 
 end = time.time()
