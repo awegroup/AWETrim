@@ -82,18 +82,18 @@ qs_guess = [200, 0, 40]
 s_dot = ca.SX.sym("s_dot")
 state.s_dot = s_dot
 start_time = timet.time()
-
+state.establish_residual()
 for i in range(len(time)):
 
-    state.timeder_angle_course = dot_chi_func(time[i], s, s_dot)
-    state.speed_tangential = vtau_func(time[i], s, s_dot)
-    state.angle_course = chi_func(time[i], s, s_dot)
     current_state = {
         "distance_radial": pattern.r(time[i]),
         "angle_elevation": pattern.elevation(time[i], s),
         "angle_azimuth": pattern.azimuth(time[i], s),
         "speed_radial": vr_func(time[i]),
         "length_tether": pattern.r(time[i]),
+        "timeder_angle_course": dot_chi_func(time[i], s, s_dot),
+        "speed_tangential": vtau_func(time[i], s, s_dot),
+        "angle_course": chi_func(time[i], s, s_dot),
     }
 
     sol, _ = state.solve_quasi_steady_state(

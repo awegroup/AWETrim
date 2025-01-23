@@ -59,7 +59,9 @@ time_step = 0.1
 time = np.arange(0, 100, time_step)
 qs_guess = [200, 0, 40]
 states = []
-
+import time as timet
+start_time = timet.time()
+state.establish_residual()
 # -----------------------------------------------
 # Time integration loop
 # -----------------------------------------------
@@ -97,6 +99,7 @@ for t in time:
     if current_state["angle_elevation"] < 0 or current_state["distance_radial"] < 20:
         break
 
+print("Elapsed time: ", timet.time() - start_time)
 # -----------------------------------------------
 # Process and visualize results
 # -----------------------------------------------

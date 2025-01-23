@@ -71,8 +71,6 @@ dot_vr_func = ca.Function(
 # -----------------------------------------------
 state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3)
 
-state.timeder_speed_tangential = 0.0
-state.timeder_speed_radial = 0.0
 state.speed_wind = 10
 state.input_depower = 0
 
@@ -105,7 +103,10 @@ current_state = {
     "speed_tangential": vtau_func(time[0], s, s_dot),
     "length_tether": pattern.r(time[0]),
     "timeder_angle_course": dot_chi_func(time[0], s, s_dot),
+    "timeder_speed_tangential": 0,
+    "timeder_speed_radial": 0,
 }
+state.establish_residual()
 sol, _ = state.solve_quasi_steady_state(
     current_state, unknown_vars, qs_guess, solver_options=solver_options
 )
@@ -115,6 +116,7 @@ state.s_dot = s_dot
 s_ddot = ca.SX.sym("s_ddot")
 state.s_ddot = s_ddot
 unknown_vars = ["length_tether", "input_steering", "s_ddot"]
+state.establish_residual()
 for i in range(len(time)):
 
     current_state = {
@@ -126,9 +128,10 @@ for i in range(len(time)):
         "speed_tangential": vtau_func(time[i], s, s_dot),
         "length_tether": pattern.r(time[i]),
         "timeder_angle_course": dot_chi_func(time[i], s, s_dot),
+        "timeder_speed_tangential": dot_vtau_func(time[i], s, s_dot, s_ddot),
+        "timeder_speed_radial": dot_vr_func(time[i], s, s_dot, s_ddot),
     }
-    state.timeder_speed_tangential = dot_vtau_func(time[i], s, s_dot, s_ddot)
-    state.timeder_speed_radial = dot_vr_func(time[i], s, s_dot, s_ddot)
+
     sol, _ = state.solve_quasi_steady_state(
         current_state, unknown_vars, qs_guess, solver_options=solver_options
     )
