@@ -4,6 +4,7 @@ import json
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # For 3D trajectory plot
 from picawe import State
+import time as timet
 
 # -----------------------------------------------
 # Load data and define aerodynamic model
@@ -68,7 +69,9 @@ states = []
 # Extract functions
 tension_tether_func = state.extract_function("tension_tether")
 aoa_func = state.extract_function("angle_of_attack")
-
+state.establish_ode()
+state.establish_algebraic()
+start_time = timet.time()
 # -----------------------------------------------
 # Time integration loop
 # -----------------------------------------------
@@ -102,6 +105,7 @@ for t in time:
     if new_state["angle_elevation"] < 0 or new_state["distance_radial"] < 10:
         break
 
+print("Elapsed time: ", timet.time() - start_time)
 # -----------------------------------------------
 # Process and visualize results
 # -----------------------------------------------
