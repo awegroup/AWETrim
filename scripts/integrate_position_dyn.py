@@ -55,7 +55,7 @@ solver_options = {
 }
 time_step = 0.1
 time = np.arange(0, 50, time_step)
-
+state.establish_residual()
 # -----------------------------------------------
 # Solve the quasi-steady state and initialize variables
 # -----------------------------------------------
