@@ -22,8 +22,8 @@ with open(file_path, "r") as file:
 # -----------------------------------------------
 omega = -1
 x0 = 200
-rh = 60
-vr = 2
+rh = 90
+vr = 1
 beta = np.radians(30)
 ry = 120
 rz = 40
@@ -31,7 +31,7 @@ helix = Helix(omega, x0, rh, vr, beta)
 lissajous = Lissajous(omega, x0, ry, rz, vr, beta)
 figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
 
-pattern = lissajous
+pattern = helix
 kinematics = ParametrizedKinematics(pattern)
 state = State(mass_wing=40, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
 
@@ -72,17 +72,16 @@ solver_options = {
     # "allow_free": True,  # Allows free variables
 }
 time_step = 0.1
-time = np.arange(0, 100, time_step)
-s = np.pi / 2
+s = np.linspace(0, 2*np.pi, 100) + np.pi/2
 s_dot = 0.1
 s_ddot = 0
 vk = 20
 states = []
 unknown_vars = ["length_tether", "input_steering", "s_dot"]
 qs_guess = [200, 0, 10]
-s_dot = ca.SX.sym("s_dot")
-s_sym = ca.SX.sym("s")
-time_sym = ca.SX.sym("time")
+s_dot = ca.MX.sym("s_dot")
+s_sym = ca.MX.sym("s")
+time_sym = ca.MX.sym("time")
 state.s_dot = s_dot
 start_time = timet.time()
 state.timeder_angle_course =  dot_chi_func(time_sym, s_sym, s_dot)
@@ -90,7 +89,7 @@ state.speed_tangential = vtau_func(time_sym, s_sym, s_dot)
 state.angle_course = chi_func(time_sym, s_sym, s_dot)
 state.override_gravity = False
 state.override_centripetal = False
-state.override_coriolis = True
+state.override_coriolis = False
 
 tension_tether_func = state.extract_function("tension_tether")
 solve_func, inputs_name = state.solve_quasi_steady_state(
@@ -98,16 +97,17 @@ solve_func, inputs_name = state.solve_quasi_steady_state(
     )
 print(solve_func)
 print(ca.symvar(state.residual))
-for i in range(len(time)):
+time = 0
+for i in range(len(s)):
 
     current_state = {
-        "distance_radial": pattern.r(time[i]),
-        "angle_elevation": pattern.elevation(time[i], s),
-        "angle_azimuth": pattern.azimuth(time[i], s),
-        "speed_radial": float(vr_func(time[i])),
-        "length_tether": pattern.r(time[i]),
-        "s": s,
-        "time": time[i],
+        "distance_radial": pattern.r(time),
+        "angle_elevation": pattern.elevation(time, s[i]),
+        "angle_azimuth": pattern.azimuth(time, s[i]),
+        "speed_radial": float(vr_func(time)),
+        "length_tether": pattern.r(time),
+        "s": s[i],
+        "time": time,
     }
     p = [current_state[name] for name in inputs_name]
 
@@ -116,9 +116,9 @@ for i in range(len(time)):
 
     qs_guess = sol["x"]
     qs_state = {name: float(qs_guess[i]) for i, name in enumerate(unknown_vars)}
-    current_state["s"] = s
-    current_state["angle_course"] = float(chi_func(time[i], s, sol['x'][2]))
-    current_state["speed_tangential"] = float(vtau_func(time[i], s, sol['x'][2]))
+
+    current_state["angle_course"] = float(chi_func(time, s[i], sol['x'][2]))
+    current_state["speed_tangential"] = float(vtau_func(time, s[i], sol['x'][2]))
     full_state = {**current_state, **qs_state}
     full_state["tension_tether"] = float(
         tension_tether_func(
@@ -127,13 +127,14 @@ for i in range(len(time)):
     )
     
     states.append(full_state)
-    s += float(sol['x'][2]) * time_step
-    if abs(omega * s) > 8 * np.pi:
-        break
+    if i < len(s)-1:
+        time_step = (s[i+1]-s[i])/float(sol['x'][2])
+        time += time_step
 print(f"Time taken: {timet.time() - start_time}")
 states = pd.DataFrame(states)
 
-states = states[abs(states["s"] * omega) > 2 * np.pi]
+print(sum(states["tension_tether"]))
+# states = states[abs(states["s"] * omega) > 2 * np.pi]
 
 # Reflect the override choices in the file name
 override_settings = {
