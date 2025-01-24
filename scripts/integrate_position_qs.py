@@ -35,6 +35,7 @@ state.timeder_angle_course = 0.0
 
 # Extract the tension tether function
 tension_tether_func = state.extract_function("tension_tether")
+aoa_func = state.extract_function("angle_of_attack")
 
 # -----------------------------------------------
 # Define simulation parameters and initial state
@@ -99,11 +100,21 @@ for t in time:
     # Update the current state
     current_state = {name: float(xf[i]) for i, name in enumerate(current_state.keys())}
 
+    full_state = {**current_state, 
+                    'angle_roll': float(sol['x'][3]),
+                         'angle_pitch': float(sol['x'][4]),
+                         'angle_yaw': float(sol['x'][5])
+    }
+
     # Evaluate tension tether
     T = tension_tether_func(
-        *[current_state[name] for name in tension_tether_func.name_in()]
+        *[full_state[name] for name in tension_tether_func.name_in()]
     )
-    states.append({**current_state, "T": float(T)})
+    aoa = aoa_func(
+        *[full_state[name] for name in aoa_func.name_in()]
+    )
+
+    states.append({**full_state, "T": float(T), "aoa": float(aoa)})
 
     # Stop if the system reaches critical limits
     if current_state["angle_elevation"] < 0 or current_state["distance_radial"] < 20:
@@ -128,6 +139,13 @@ plt.figure()
 plt.plot(solution_df["T"], label="Tether Tension")
 plt.xlabel("Time [s]")
 plt.ylabel("Tether Tension [N]")
+plt.legend()
+
+#Plot angle of attack
+plt.figure()
+plt.plot(solution_df["aoa"]*180/np.pi, label="Angle of Attack")
+plt.xlabel("Time [s]")
+plt.ylabel("Angle of Attack [deg]")
 plt.legend()
 
 # Extract spherical coordinates

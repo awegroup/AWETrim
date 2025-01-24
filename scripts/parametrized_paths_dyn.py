@@ -20,10 +20,10 @@ with open(file_path, "r") as file:
 # -----------------------------------------------
 # Define the parametrized path
 # -----------------------------------------------
-omega = -0.1
+omega = -1
 x0 = 200
 rh = 60
-vr = 0
+vr = 2
 beta = np.radians(30)
 ry = 120
 rz = 40
@@ -31,7 +31,7 @@ helix = Helix(omega, x0, rh, vr, beta)
 lissajous = Lissajous(omega, x0, ry, rz, vr, beta)
 figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
 
-pattern = helix
+pattern = lissajous
 kinematics = ParametrizedKinematics(pattern)
 # Substitute the numeric values into the symbolic expressions using CasADi functions
 chi_func = ca.Function(
@@ -69,7 +69,7 @@ dot_vr_func = ca.Function(
 # -----------------------------------------------
 # Define the system
 # -----------------------------------------------
-state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
+state = State(mass_wing=40, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
 
 state.speed_wind = 10
 state.input_depower = 0
@@ -85,12 +85,12 @@ solver_options = {
 }
 time_step = 0.1
 time = np.arange(0, 300, time_step)
-s = 0
+s = np.pi/2
 s_dot = 0.1
 vk = 20
 states = []
 unknown_vars = ["length_tether", "input_steering", "s_dot"]
-qs_guess = [200, 0, 40]
+qs_guess = [200, 0, 10]
 
 start_time = timet.time()
 
@@ -125,7 +125,7 @@ p = [current_state[name] for name in inputs_name]
 lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
 
 sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
-
+s_dot = float(sol['x'][2])
 current_state["s_dot"] = float(sol['x'][2])
 s_ddot_sym = ca.SX.sym("s_ddot")
 state.s_ddot = s_ddot_sym
@@ -135,9 +135,23 @@ unknown_vars = ["length_tether", "input_steering", "s_ddot"]
 solve_func, inputs_name = state.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
-
+tension_tether_func = state.extract_function("tension_tether")
 for i in range(len(time)):
-    # print(i)
+    
+    current_state = {
+        "distance_radial": pattern.r(time[i]),
+        "angle_elevation": pattern.elevation(time[i], s),
+        "angle_azimuth": pattern.azimuth(time[i], s),
+        "speed_radial": float(vr_func(time[i])),
+        "length_tether": pattern.r(time[i]),
+        "s": s,
+        "time": time[i],
+        "s_dot": s_dot,
+        "angle_course": float(chi_func(time[i], s, s_dot)),
+        "speed_tangential": float(vtau_func(time[i], s, s_dot)),
+        "timeder_angle_course": float(dot_chi_func(time[i], s, s_dot)),
+    }
+
     # Solve quasi-steady state
     p = [current_state[name] for name in inputs_name]
 
@@ -150,28 +164,30 @@ for i in range(len(time)):
     s += s_dot * time_step
     if np.linalg.norm(s_dot) > 1:
         print("Infeasible solution")
-    current_state = {}
-    current_state["s"] = s
-    current_state["time"] = time[i]
-    current_state["s_dot"] = s_dot
-    current_state["input_steering"] = float(sol['x'][1])
-    current_state["length_tether"] = float(sol['x'][0])
-    current_state["angle_course"] = float(chi_func(time[i], s, s_dot))
-    current_state["speed_tangential"] = float(vtau_func(time[i], s, s_dot))
-    current_state["angle_azimuth"] = float(pattern.azimuth(time[i], s))
-    current_state["angle_elevation"] = float(pattern.elevation(time[i], s))
-    current_state["speed_radial"] = float(vr_func(time[i]))
-    current_state["timeder_angle_course"] = float(dot_chi_func(time[i], s, s_dot))
-    current_state["distance_radial"] = float(pattern.r(time[i]))
-    states.append(current_state)
 
-    if abs(omega * s) > 6 * np.pi:
+    qs_state = {name: float(qs_guess[i]) for i, name in enumerate(unknown_vars)}
+    full_state = {**current_state, **qs_state}
+    full_state["tension_tether"] = float(
+        tension_tether_func(
+            *[full_state[name] for name in tension_tether_func.name_in()]
+        )
+    )
+    states.append(full_state)
+
+    if abs(omega * s) > 8 * np.pi:
         break
 print(f"Time taken: {timet.time() - start_time}")
 states = pd.DataFrame(states)
 
 
-states = states[abs(states["s"] * omega) > 4 * np.pi]
+states = states[abs(states["s"] * omega) > 2 * np.pi]
+
+file_name = f"helix_dynamic.csv"
+# Save the DataFrame
+output_path = f"./results/impact_inertial_forces/{file_name}"
+states.to_csv(output_path, index=False)
+
+print(f"Saved results to {output_path}")
 
 # Convert angles to radians for plotting if necessary
 azimuth = np.array(states["angle_azimuth"])
@@ -235,68 +251,67 @@ cbar.set_label("Course angle", fontsize=12)
 # Labels, title, and legend
 plt.xlabel("Azimuth [rad]", fontsize=12)
 plt.ylabel("Elevation [rad]", fontsize=12)
-plt.legend(fontsize=10)
 plt.grid()
 plt.show()
 
-# Plot the trajectory with a colorbar for tangential speed
-plt.figure(figsize=(8, 6))
-scatter = plt.scatter(
-    azimuth, elevation, c=np.array(states["angle_roll"]), cmap="viridis", s=10
-)  # `s` adjusts marker size
-cbar = plt.colorbar(scatter)
-cbar.set_label("Roll angle", fontsize=12)
+# # Plot the trajectory with a colorbar for tangential speed
+# plt.figure(figsize=(8, 6))
+# scatter = plt.scatter(
+#     azimuth, elevation, c=np.array(states["angle_roll"]), cmap="viridis", s=10
+# )  # `s` adjusts marker size
+# cbar = plt.colorbar(scatter)
+# cbar.set_label("Roll angle", fontsize=12)
 
-# Labels, title, and legend
-plt.xlabel("Azimuth [rad]", fontsize=12)
-plt.ylabel("Elevation [rad]", fontsize=12)
-plt.legend(fontsize=10)
-plt.grid()
-plt.show()
-
-
-def angle_with_x(azimuth, elevation):
-    # Convert azimuth and elevation to radians if not already
-    phi = np.radians(azimuth)
-    theta = np.radians(elevation)
-
-    # Cartesian coordinates of the vector
-    vx = np.cos(theta) * np.cos(phi)
-    vy = np.cos(theta) * np.sin(phi)
-    vz = np.sin(theta)
-
-    # Magnitude of the vector
-    magnitude = np.sqrt(vx**2 + vy**2 + vz**2)
-
-    # Angle with the x-axis
-    angle = np.arccos(vx / magnitude)  # Result in radians
-    return np.degrees(angle)  # Convert to degrees if needed
+# # Labels, title, and legend
+# plt.xlabel("Azimuth [rad]", fontsize=12)
+# plt.ylabel("Elevation [rad]", fontsize=12)
+# plt.legend(fontsize=10)
+# plt.grid()
+# plt.show()
 
 
-vatau = (
-    -np.sin(elevation) * np.cos(azimuth) * np.cos(course)
-    - np.sin(azimuth) * np.sin(course)
-) * 10 - speed_tangential
-van = (
-    -np.sin(elevation) * np.cos(azimuth) * np.sin(course)
-    + np.sin(azimuth) * np.cos(course)
-) * 10
-var = (np.cos(elevation) * np.cos(azimuth)) * 10
-# Plot the trajectory with a colorbar for tangential speed
-plt.figure(figsize=(8, 6))
-scatter = plt.scatter(
-    azimuth, elevation, c=van / vatau, cmap="viridis", s=10
-)  # `s` adjusts marker size
-cbar = plt.colorbar(scatter)
-cbar.set_label("Tangential Speed [m/s]", fontsize=12)
+# def angle_with_x(azimuth, elevation):
+#     # Convert azimuth and elevation to radians if not already
+#     phi = np.radians(azimuth)
+#     theta = np.radians(elevation)
 
-# Labels, title, and legend
-plt.xlabel("Azimuth [rad]", fontsize=12)
-plt.ylabel("Elevation [rad]", fontsize=12)
-plt.title("Flown Trajectory with Tangential Speed", fontsize=14)
-plt.legend(fontsize=10)
-plt.grid()
+#     # Cartesian coordinates of the vector
+#     vx = np.cos(theta) * np.cos(phi)
+#     vy = np.cos(theta) * np.sin(phi)
+#     vz = np.sin(theta)
 
-plt.figure()
-plt.plot(time[: i + 1], input_steering)
-plt.show()
+#     # Magnitude of the vector
+#     magnitude = np.sqrt(vx**2 + vy**2 + vz**2)
+
+#     # Angle with the x-axis
+#     angle = np.arccos(vx / magnitude)  # Result in radians
+#     return np.degrees(angle)  # Convert to degrees if needed
+
+
+# vatau = (
+#     -np.sin(elevation) * np.cos(azimuth) * np.cos(course)
+#     - np.sin(azimuth) * np.sin(course)
+# ) * 10 - speed_tangential
+# van = (
+#     -np.sin(elevation) * np.cos(azimuth) * np.sin(course)
+#     + np.sin(azimuth) * np.cos(course)
+# ) * 10
+# var = (np.cos(elevation) * np.cos(azimuth)) * 10
+# # Plot the trajectory with a colorbar for tangential speed
+# plt.figure(figsize=(8, 6))
+# scatter = plt.scatter(
+#     azimuth, elevation, c=van / vatau, cmap="viridis", s=10
+# )  # `s` adjusts marker size
+# cbar = plt.colorbar(scatter)
+# cbar.set_label("Tangential Speed [m/s]", fontsize=12)
+
+# # Labels, title, and legend
+# plt.xlabel("Azimuth [rad]", fontsize=12)
+# plt.ylabel("Elevation [rad]", fontsize=12)
+# plt.title("Flown Trajectory with Tangential Speed", fontsize=14)
+# plt.legend(fontsize=10)
+# plt.grid()
+
+# plt.figure()
+# plt.plot(time[: i + 1], input_steering)
+# plt.show()

@@ -191,6 +191,9 @@ class Kite(Wing):
         self.rho = rho  # Air density
         self.center_aerodynamic_wing = center_aerodynamic_wing  # Center of aerodynamic pressure
         self.center_gravity_wing = center_gravity_wing  # Center of gravity
+        self._override_gravity = False
+        self._override_centripetal = False
+        self._override_coriolis = False
 
     def define_symbolic_variables_kite(self):
         """
@@ -215,13 +218,50 @@ class Kite(Wing):
             
         T = transformation_C_from_W(self.angle_azimuth, self.angle_elevation, self.angle_course)
         return T @ ca.vertcat(0, 0, -self.mass_kcu * self.g)
+    
         
     @property
     def force_gravity(self):
+        if self._override_gravity == True:
+            return ca.vertcat(0, 0, 0)
         return self.force_gravity_wing + self.force_gravity_kcu
+    
+    @property
+    def override_gravity(self):
+        return self._override_gravity
+    
+    @override_gravity.setter
+    def override_gravity(self, value):
+        if not isinstance(value, bool):
+            raise ValueError("override_gravity ha de ser True o False.")
+        self._override_gravity = value
 
+    @property
+    def override_centripetal(self):
+        return self._override_centripetal
+    
+    @override_centripetal.setter
+    def override_centripetal(self, value):
+        if not isinstance(value, bool):
+            raise ValueError("override_gravity ha de ser True o False.")
+        self._override_centripetal = value
+
+    @property
+    def override_coriolis(self):
+        return self._override_coriolis
+    
+    @override_coriolis.setter
+    def override_coriolis(self, value):
+        if not isinstance(value, bool):
+            raise ValueError("override_gravity ha de ser True o False.")
+        self._override_coriolis = value
+    
     # @property
-    def acceleration_rotation(self):   
+    def acceleration_rotation_course(self):   
+        if self._override_centripetal == True:
+            return ca.vertcat(self.speed_tangential * self.speed_radial / self.distance_radial, 0, 0)
+        if self._override_coriolis == True:
+            return ca.cross(self.velocity_rotation_course_frame, self.velocity_kite) - ca.vertcat(2*self.speed_tangential * self.speed_radial / self.distance_radial, 0, 0)
         return ca.cross(self.velocity_rotation_course_frame, self.velocity_kite)
 
     # @property
@@ -230,11 +270,12 @@ class Kite(Wing):
     
     # @property
     def acceleration(self):
-        return self.acceleration_local() + self.acceleration_rotation()
+        return self.acceleration_local() + self.acceleration_rotation_course()
 
     def velocity_rotation(self):
         return ca.vertcat(self.timeder_angle_pitch, self.timeder_angle_roll, self.timeder_angle_yaw)
-    def acceleration_rotation(self):
+    
+    def acceleration_rotation_kite(self):
         return ca.vertcat(self.acceleration_angle_roll, self.acceleration_angle_pitch, self.acceleration_angle_yaw)
 
     @property
@@ -311,7 +352,7 @@ class Kite(Wing):
             ca.horzcat(ca.SX.zeros(3,3), omega_cross)
         )
 
-        acceleration = ca.vertcat(self.acceleration_local(), self.acceleration_rotation())
+        acceleration = ca.vertcat(self.acceleration_local(), self.acceleration_rotation_kite())
         velocity = ca.vertcat(self.velocity_kite, self.velocity_rotation())
 
         lhs = M @ acceleration + ROT @ M @ velocity
