@@ -63,7 +63,7 @@ solver_options = {
     "ipopt": {"print_level": 0, "sb": "yes"},
     "print_time": False,
 }
-time_step = 0.01
+time_step = 0.1
 time = np.arange(0, 50, time_step)
 state.establish_residual()
 # -----------------------------------------------

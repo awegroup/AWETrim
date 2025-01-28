@@ -195,6 +195,7 @@ class Kite(Wing):
         self._override_gravity = False
         self._override_centripetal = False
         self._override_coriolis = False
+        self._angle_yaw = ca.MX.sym("angle_yaw")
 
     def define_symbolic_variables_kite(self):
         """
@@ -203,7 +204,6 @@ class Kite(Wing):
         base_symbolic_variables = {
             'angle_pitch': 'angle_pitch',
             'angle_roll': 'angle_roll',
-            'angle_yaw': 'angle_yaw',
             'timeder_angle_pitch': 'timeder_angle_pitch',
             'timeder_angle_roll': 'timeder_angle_roll',
             'timeder_angle_yaw': 'timeder_angle_yaw',
@@ -374,3 +374,12 @@ class Kite(Wing):
     def center_gravity_wing_course(self):
         return transformation_C_from_K(self.angle_pitch, self.angle_roll)@ca.vertcat(*self.center_gravity_wing)
     
+
+    @property  
+    def angle_yaw(self):
+        
+        if self.dof == 3:
+            return self.angle_yaw_aerodynamic
+        
+        elif self.dof == 6:
+            return self._angle_yaw

@@ -45,7 +45,6 @@ class State(KiteKinematics, Tether, Wind, Kite):
         if dof == 3:
             self.angle_pitch = 0
             self.angle_roll = 0
-            self.angle_yaw = 0
             self.timeder_angle_pitch = 0
             self.timeder_angle_roll = 0
             self.timeder_angle_yaw = 0
@@ -101,7 +100,8 @@ class State(KiteKinematics, Tether, Wind, Kite):
             self.residual = self.rb_residual
         elif self.dof == 3:
             self.residual = self.force_residual()
-        
+    
+    
     def solve_quasi_steady_state(
         self, unknown_vars, solver_options={}
     ):

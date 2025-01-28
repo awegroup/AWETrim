@@ -22,9 +22,9 @@ with open(file_path, "r") as file:
 # -----------------------------------------------
 omega = -1
 x0 = 200
-rh = 90
-vr = 1
-beta = np.radians(30)
+rh = 61.7
+vr = 0
+beta = np.radians(0)
 ry = 120
 rz = 40
 helix = Helix(omega, x0, rh, vr, beta)
@@ -33,7 +33,7 @@ figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
 
 pattern = helix
 kinematics = ParametrizedKinematics(pattern)
-state = State(mass_wing=40, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
+state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
 
 # Substitute the numeric values into the symbolic expressions using CasADi functions
 chi_func = ca.Function(
@@ -98,6 +98,7 @@ solve_func, inputs_name = state.solve_quasi_steady_state(
 print(solve_func)
 print(ca.symvar(state.residual))
 time = 0
+power = 0
 for i in range(len(s)):
 
     current_state = {
@@ -129,11 +130,12 @@ for i in range(len(s)):
     states.append(full_state)
     if i < len(s)-1:
         time_step = (s[i+1]-s[i])/float(sol['x'][2])
+        power += full_state["tension_tether"]*time_step*full_state["speed_radial"]
         time += time_step
 print(f"Time taken: {timet.time() - start_time}")
 states = pd.DataFrame(states)
 
-print(sum(states["tension_tether"]))
+print("Power: ", power/time, "W")
 # states = states[abs(states["s"] * omega) > 2 * np.pi]
 
 # Reflect the override choices in the file name
@@ -220,7 +222,7 @@ cbar.set_label("Course angle", fontsize=12)
 plt.xlabel("Azimuth [rad]", fontsize=12)
 plt.ylabel("Elevation [rad]", fontsize=12)
 plt.grid()
-# plt.show()
+plt.show()
 
 # # Plot the trajectory with a colorbar for tangential speed
 # plt.figure(figsize=(8, 6))

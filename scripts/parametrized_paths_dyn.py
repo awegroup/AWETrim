@@ -102,10 +102,10 @@ current_state = {
     "timeder_speed_radial": 0,
 }
 
-s_dot_sym = ca.SX.sym("s_dot")
+s_dot_sym = ca.MX.sym("s_dot")
 state.s_dot = s_dot_sym
-s_sym = ca.SX.sym("s")
-time_sym = ca.SX.sym("time")
+s_sym = ca.MX.sym("s")
+time_sym = ca.MX.sym("time")
 state.speed_tangential = vtau_func(time_sym, s_sym, s_dot_sym)
 state.angle_course = chi_func(time_sym, s_sym, s_dot_sym)
 state.timeder_angle_course = dot_chi_func(time_sym, s_sym, s_dot_sym)
@@ -127,7 +127,7 @@ lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
 sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 s_dot = float(sol['x'][2])
 current_state["s_dot"] = float(sol['x'][2])
-s_ddot_sym = ca.SX.sym("s_ddot")
+s_ddot_sym = ca.MX.sym("s_ddot")
 state.s_ddot = s_ddot_sym
 state.timeder_speed_tangential = dot_vtau_func(time_sym, s_sym, s_dot_sym, s_ddot_sym)
 state.timeder_speed_radial = dot_vr_func(time_sym, s_sym, s_dot_sym, s_ddot_sym)
