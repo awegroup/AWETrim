@@ -12,7 +12,7 @@ class Wind:
             'speed_wind': 'speed_wind',
         }
         for var_name in base_symbolic_variables.keys():
-            setattr(self, var_name, ca.MX.sym(var_name))
+            setattr(self, var_name, ca.SX.sym(var_name))
 
     @property
     def velocity_wind(self):

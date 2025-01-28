@@ -14,8 +14,8 @@ class Wing:
         self.area_wing = area_wing
         self.define_symbolic_variables_wing()
         # Aerodynamic inputs
-        self.angle_pitch_depower_0 = aero_input['params'].get("angle_pitch_depower_0", ca.MX.sym('angle_pitch_depower_0'))
-        self.delta_pitch_depower = aero_input['params'].get("delta_pitch_depower", ca.MX.sym('delta_pitch_depower'))
+        self.angle_pitch_depower_0 = aero_input['params'].get("angle_pitch_depower_0", ca.SX.sym('angle_pitch_depower_0'))
+        self.delta_pitch_depower = aero_input['params'].get("delta_pitch_depower", ca.SX.sym('delta_pitch_depower'))
         # self.aerodynamic_coeffs_function(aero_input)
         self.aero_input = aero_input
         
@@ -28,7 +28,7 @@ class Wing:
             'input_depower': 'input_depower',
         }
         for var_name in base_symbolic_variables.keys():
-            setattr(self, var_name, ca.MX.sym(var_name))
+            setattr(self, var_name, ca.SX.sym(var_name))
     def aerodynamic_force_coefficients(self):
         aero_input = self.aero_input
         # Define symbolic variables
@@ -195,7 +195,7 @@ class Kite(Wing):
         self._override_gravity = False
         self._override_centripetal = False
         self._override_coriolis = False
-        self._angle_yaw = ca.MX.sym("angle_yaw")
+        self._angle_yaw = ca.SX.sym("angle_yaw")
 
     def define_symbolic_variables_kite(self):
         """
@@ -212,7 +212,7 @@ class Kite(Wing):
             'acceleration_angle_yaw': 'acceleration_angle_yaw',
         }
         for var_name in base_symbolic_variables.keys():
-            setattr(self, var_name, ca.MX.sym(var_name))
+            setattr(self, var_name, ca.SX.sym(var_name))
 
     @property
     def force_gravity_kcu(self):
@@ -344,13 +344,13 @@ class Kite(Wing):
         m_w = self.mass_wing
         # Create the block matrix
         M = ca.vertcat(
-            ca.horzcat(m * ca.MX.eye(3), -m_w * x_cg_c_cross),
+            ca.horzcat(m * ca.SX.eye(3), -m_w * x_cg_c_cross),
             ca.horzcat(m_w * x_cg_c_cross, I)
         )
 
         ROT = ca.vertcat(
-            ca.horzcat( omega_cross,ca.MX.zeros(3,3)),
-            ca.horzcat(ca.MX.zeros(3,3), omega_cross)
+            ca.horzcat( omega_cross,ca.SX.zeros(3,3)),
+            ca.horzcat(ca.SX.zeros(3,3), omega_cross)
         )
 
         acceleration = ca.vertcat(self.acceleration_local(), self.acceleration_rotation_kite())

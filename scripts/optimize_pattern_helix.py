@@ -31,8 +31,8 @@ with open(file_path, "r") as file:
 
 omega = -1
 x0 = 200
-rh = ca.MX.sym("rh")
-vr = ca.MX.sym("vr")
+rh = ca.SX.sym("rh")
+vr = ca.SX.sym("vr")
 beta = np.radians(30)
 ry = 120
 rz = 40
@@ -80,9 +80,9 @@ s = np.linspace(0, 2*np.pi, 100) + np.pi/2
 states = []
 unknown_vars = ["length_tether", "input_steering", "s_dot"]
 
-s_dot_sym = ca.MX.sym("s_dot")
-s_sym = ca.MX.sym("s")
-time_sym = ca.MX.sym("time")
+s_dot_sym = ca.SX.sym("s_dot")
+s_sym = ca.SX.sym("s")
+time_sym = ca.SX.sym("time")
 state.s_dot = s_dot_sym
 start_time = timet.time()
 opti = ca.Opti()
@@ -98,9 +98,9 @@ solve_func, inputs_name = state.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
 
-sf = ca.MX.sym("sf")
-si = ca.MX.sym("si")
-t = ca.MX.sym("t")
+sf = ca.SX.sym("sf")
+si = ca.SX.sym("si")
+t = ca.SX.sym("t")
 ts = (sf-si)/s_dot_sym
 timestep_func = ca.Function("t_func", [si,sf,s_dot_sym], [ts])
 
@@ -121,7 +121,7 @@ state.speed_radial = vr_func(time_sym, vr)
 state.establish_residual()
 tension_tether = 0
 power = 0
-z = ca.MX.zeros(len(s))
+z = ca.SX.zeros(len(s))
 residual = ca.Function("residual", [time_sym,s_sym,s_dot_sym,rh, vr, state.input_steering, state.length_tether], [state.residual])
 for i in range(len(s)-1):
     opti.subject_to(residual(time_var[i],s[i],s_dot_var[i],rh_var, vr_var, input_steering_var[i],length_tether_var[i]) == 0)

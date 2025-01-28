@@ -4,8 +4,8 @@ import casadi as ca
 class KiteKinematics:
 
     def __init__(self):
-        self._timeder_speed_tangential = ca.MX.sym("timeder_speed_tangential")
-        self._timeder_speed_radial = ca.MX.sym("timeder_speed_radial")
+        self._timeder_speed_tangential = ca.SX.sym("timeder_speed_tangential")
+        self._timeder_speed_radial = ca.SX.sym("timeder_speed_radial")
         self._define_symbolic_variables_kin()
 
     def _define_symbolic_variables_kin(self):
@@ -22,7 +22,7 @@ class KiteKinematics:
             "angle_azimuth": "angle_azimuth",
         }
         for var_name in base_symbolic_variables.keys():
-            setattr(self, var_name, ca.MX.sym(var_name))
+            setattr(self, var_name, ca.SX.sym(var_name))
 
     @property
     def timeder_angle_elevation(self):
@@ -76,10 +76,10 @@ class ParametrizedKinematics:
     def __init__(self, pattern):
         self.pattern = pattern
 
-        self.s = ca.MX.sym("s")
-        self.t = ca.MX.sym("t")
-        self.s_dot = ca.MX.sym("s_dot")
-        self.s_ddot = ca.MX.sym("s_ddot")
+        self.s = ca.SX.sym("s")
+        self.t = ca.SX.sym("t")
+        self.s_dot = ca.SX.sym("s_dot")
+        self.s_ddot = ca.SX.sym("s_ddot")
 
     @property
     def dtheta_ds(self):

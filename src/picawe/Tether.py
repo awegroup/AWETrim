@@ -19,7 +19,7 @@ class Tether:
             'timeder_length_tether': 'timeder_length_tether',
         }
         for var_name in base_symbolic_variables.keys():
-            setattr(self, var_name, ca.MX.sym(var_name))
+            setattr(self, var_name, ca.SX.sym(var_name))
 
     @property
     def tension_tether(self):

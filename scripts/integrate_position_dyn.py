@@ -63,7 +63,7 @@ solver_options = {
     "ipopt": {"print_level": 0, "sb": "yes"},
     "print_time": False,
 }
-time_step = 0.1
+time_step = 0.01
 time = np.arange(0, 50, time_step)
 state.establish_residual()
 # -----------------------------------------------
@@ -109,9 +109,9 @@ for t in time:
         break
     # Enforce constraints/reset values (e.g., angles)
     x0 = xf
-    x0[3] = 0  # Reset angle_course (Only to find the reel-in angle)
-    x0[2] = 0  # Reset angle_azimuth (Only to find the reel-in angle)
-    x0[7] = 0  # Reset angle_roll (Only to find the reel-in angle)
+    # x0[3] = 0  # Reset angle_course (Only to find the reel-in angle)
+    # x0[2] = 0  # Reset angle_azimuth (Only to find the reel-in angle)
+    # x0[7] = 0  # Reset angle_roll (Only to find the reel-in angle)
 
     # Update the current state
     new_state = {name: float(xf[j]) for j, name in enumerate(current_state.keys())}
