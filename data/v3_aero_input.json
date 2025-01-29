@@ -3,7 +3,7 @@
     "params": {
         "CD0": 0.1,
         "CL0": 0.257,
-        "angle_pitch_depower_0": -0.1,
+        "angle_pitch_depower_0": -0.08,
         "delta_pitch_depower": -0.15707963267948966,
         "Cm_base": 0.05
     },

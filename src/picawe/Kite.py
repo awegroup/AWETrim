@@ -282,7 +282,7 @@ class Kite(Wing):
     @property
     def force_external(self):
 
-        return self.force_aerodynamic + self.force_gravity + self.force_tether
+        return self.force_aerodynamic + self.force_gravity + self.force_tether_at_kite
 
     # @property
     def force_residual(self):

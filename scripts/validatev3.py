@@ -66,7 +66,7 @@ def read_dict_from_group(group):
 
 
 results, flight_data, config_data = read_results("2019", "10", "08", "v3", addition="")
-mask = flight_data.cycle.isin([64,65])
+mask = flight_data.cycle.isin([65])
 
 flight_data = flight_data[mask]
 results = results[mask]
@@ -105,7 +105,7 @@ vw_averaged = []
 wdir_window = []
 
 unknown_vars = [
-    "length_tether",
+    "tension_tether_ground",
     "input_steering",
     "speed_tangential",
     "angle_roll",
@@ -114,7 +114,7 @@ unknown_vars = [
 ]
 
 sideslip_func = state.extract_function("angle_sideslip")
-T_func = state.extract_function("tension_tether")
+# T_func = state.extract_function("tension_tether")
 solver_options = {
     "ipopt": {
         "print_level": 0,  # Suppresses IPOPT output
@@ -133,7 +133,7 @@ velocity = np.array(
 ).T
 distance_radial = np.linalg.norm(position, axis=1)
 speed_tangential = np.linalg.norm(velocity, axis=1)
-qs_guess = [distance_radial[0], 0, 40, 0, 0, 0]
+qs_guess = [1e2, 0, 40, 0, 0, 0]
 state.establish_residual()
 solve_func, inputs_name = state.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
@@ -174,9 +174,8 @@ for i, row in flight_data.iterrows():
     sideslip = sideslip_func(
         *[state_combined[name] for name in sideslip_func.name_in()]
     )
-    T = T_func(*[state_combined[name] for name in T_func.name_in()])
     state_combined["sideslip"] = float(sideslip)
-    state_combined["tension_tether"] = float(T)
+    # state_combined["tension_tether"] = float(T)
     solutions.append(state_combined)
     # print(f"Solution: {solution}")
 
@@ -193,7 +192,7 @@ print(f"Time per iteration: {time_per_iteration} seconds")
 
 solutions_df = pd.DataFrame(solutions)
 # Filter out rows where 'T' is None
-solutions_df = solutions_df[solutions_df["length_tether"].notna()]
+solutions_df = solutions_df[solutions_df["tension_tether_ground"].notna()]
 
 dt = 0.1
 total_time = len(flight_data) * dt
@@ -210,7 +209,7 @@ plt.legend()
 
 plt.figure()
 plt.plot(flight_data["ground_tether_force"], label="ground_tether_force")
-plt.plot(solutions_df["tension_tether"], label="estimated tension_tether")
+plt.plot(solutions_df["tension_tether_ground"], label="estimated tension_tether")
 plt.legend()
 
 plt.figure()
@@ -247,7 +246,7 @@ plt.legend()
 # plt.show()
 
 total_power = (
-    sum(solutions_df["tension_tether"] * solutions_df["speed_radial"] * dt) / total_time
+    sum(solutions_df["tension_tether_ground"] * solutions_df["speed_radial"] * dt) / total_time
 )
 measured_power = (
     sum(flight_data["ground_tether_force"] * flight_data["tether_reelout_speed"] * dt)

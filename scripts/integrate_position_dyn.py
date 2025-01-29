@@ -30,8 +30,9 @@ state = State(
 # Set constant parameters
 state.speed_wind = 10
 state.input_depower = 0.0
-state.timeder_length_tether = -1
+state.timeder_speed_radial = 0.0
 state.input_steering = 0.0
+
 
 # Initial conditions
 current_state = {
@@ -39,9 +40,8 @@ current_state = {
     "angle_elevation": np.radians(0),
     "angle_azimuth": 0,
     "angle_course": 0,
-    "speed_radial": -1,
-    "speed_tangential": 30,
-    "length_tether": 200,
+    "speed_radial": 0,
+    "speed_tangential": 40,
 }
 accelerations = {
     "timeder_speed_tangential": 0.0,
@@ -53,9 +53,8 @@ accelerations = {
     "acceleration_angle_pitch": 0,
     "acceleration_angle_yaw": 0,
     "timeder_speed_tangential": 0,
-    "timeder_speed_radial": 0,
 }
-unknown_vars = ["length_tether", "timeder_angle_course", "speed_tangential", "angle_roll", "angle_pitch", "angle_yaw"]
+unknown_vars = ["tension_tether_ground", "timeder_angle_course", "speed_tangential", "angle_roll", "angle_pitch", "angle_yaw"]
 qs_guess = [200, 0, 40, 0, 0, 0]
 
 # Solver configuration
@@ -78,7 +77,6 @@ p = [{**current_state,**accelerations}[name] for name in inputs_name]
 lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
 sol = solve_qs(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)['x']
 current_state["speed_tangential"] = float(sol[2])
-current_state["length_tether"] = float(sol[0])
 current_state = {**current_state, 
                  'angle_roll': float(sol[3]),
                     'angle_pitch': float(sol[4]),
@@ -91,7 +89,6 @@ x0 = [x for x in current_state.values()]
 states = []
 
 # Extract functions
-tension_tether_func = state.extract_function("tension_tether")
 aoa_func = state.extract_function("angle_of_attack")
 state.establish_ode()
 state.establish_algebraic()
@@ -109,21 +106,19 @@ for t in time:
         break
     # Enforce constraints/reset values (e.g., angles)
     x0 = xf
-    # x0[3] = 0  # Reset angle_course (Only to find the reel-in angle)
-    # x0[2] = 0  # Reset angle_azimuth (Only to find the reel-in angle)
-    # x0[7] = 0  # Reset angle_roll (Only to find the reel-in angle)
+    x0[3] = 0  # Reset angle_course (Only to find the reel-in angle)
+    x0[2] = 0  # Reset angle_azimuth (Only to find the reel-in angle)
+    x0[6] = 0  # Reset angle_roll (Only to find the reel-in angle)
 
     # Update the current state
     new_state = {name: float(xf[j]) for j, name in enumerate(current_state.keys())}
-
-    # Evaluate tension and angle of attack
-    T = tension_tether_func(
-        *[new_state[name] for name in tension_tether_func.name_in()]
-    )
+    new_state["timeder_speed_tangential"] = float(zf[2])
+    new_state["timeder_angle_course"] = float(zf[1])
+    new_state["tension_tether_ground"] = float(zf[0])
     aoa = aoa_func(*[new_state[name] for name in aoa_func.name_in()])
 
     # Store full state
-    full_state = {**new_state, "T": float(T), "aoa": float(aoa)}
+    full_state = {**new_state, "aoa": float(aoa)}
     states.append(full_state)
 
     # Stop if the system reaches critical limits
@@ -151,7 +146,7 @@ plt.legend()
 
 # Plot tether tension
 plt.figure()
-plt.plot(solution_df["T"], label="Tether Tension")
+plt.plot(solution_df["tension_tether_ground"], label="Tether Tension")
 plt.xlabel("Time [s]")
 plt.ylabel("Tether Tension [N]")
 plt.legend()
@@ -189,6 +184,6 @@ ax.legend()
 
 # Print final results
 print("Reel-in elevation angle: ", np.degrees(states[-1]["angle_elevation"]))
-print("Reel-in tether force: ", states[-1]["T"])
+print("Reel-in tether force: ", states[-1]["tension_tether_ground"])
 
 plt.show()

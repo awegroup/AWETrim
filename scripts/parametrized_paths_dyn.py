@@ -31,7 +31,7 @@ helix = Helix(omega, x0, rh, vr, beta)
 lissajous = Lissajous(omega, x0, ry, rz, vr, beta)
 figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
 
-pattern = lissajous
+pattern = helix
 kinematics = ParametrizedKinematics(pattern)
 # Substitute the numeric values into the symbolic expressions using CasADi functions
 chi_func = ca.Function(
@@ -89,7 +89,7 @@ s = np.pi/2
 s_dot = 0.1
 vk = 20
 states = []
-unknown_vars = ["length_tether", "input_steering", "s_dot"]
+unknown_vars = ["tension_tether_ground", "input_steering", "s_dot"]
 qs_guess = [200, 0, 10]
 
 start_time = timet.time()
@@ -131,11 +131,11 @@ s_ddot_sym = ca.SX.sym("s_ddot")
 state.s_ddot = s_ddot_sym
 state.timeder_speed_tangential = dot_vtau_func(time_sym, s_sym, s_dot_sym, s_ddot_sym)
 state.timeder_speed_radial = dot_vr_func(time_sym, s_sym, s_dot_sym, s_ddot_sym)
-unknown_vars = ["length_tether", "input_steering", "s_ddot"]
+unknown_vars = ["tension_tether_ground", "input_steering", "s_ddot"]
 solve_func, inputs_name = state.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
-tension_tether_func = state.extract_function("tension_tether")
+
 for i in range(len(time)):
     
     current_state = {
@@ -143,7 +143,6 @@ for i in range(len(time)):
         "angle_elevation": pattern.elevation(time[i], s),
         "angle_azimuth": pattern.azimuth(time[i], s),
         "speed_radial": float(vr_func(time[i])),
-        "length_tether": pattern.r(time[i]),
         "s": s,
         "time": time[i],
         "s_dot": s_dot,
@@ -167,11 +166,7 @@ for i in range(len(time)):
 
     qs_state = {name: float(qs_guess[i]) for i, name in enumerate(unknown_vars)}
     full_state = {**current_state, **qs_state}
-    full_state["tension_tether"] = float(
-        tension_tether_func(
-            *[full_state[name] for name in tension_tether_func.name_in()]
-        )
-    )
+
     states.append(full_state)
 
     if abs(omega * s) > 8 * np.pi:

@@ -74,9 +74,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
         dot_chi = self.timeder_angle_course
         dot_vr = self.timeder_speed_radial
         dot_vt = self.timeder_speed_tangential
-        dot_lt = self.timeder_length_tether
-
-        ode = ca.vertcat(dot_r, dot_beta, dot_theta, dot_chi, dot_vr, dot_vt, dot_lt)
+        ode = ca.vertcat(dot_r, dot_beta, dot_theta, dot_chi, dot_vr, dot_vt)
         if self.dof == 6 and not self.quasi_steady:
             ode_add = ca.vertcat(
                 self.timeder_angle_roll,
@@ -140,15 +138,15 @@ class State(KiteKinematics, Tether, Wind, Kite):
         if self.dof == 6:
             # Solve the system of equations
             lbx = [
-                current_state["distance_radial"] - 5,
+                0,
                 -10,
-                -10,
+                0,
                 -np.pi / 4,
                 -np.pi / 4,
                 -np.pi / 4,
             ]  
             ubx = [
-                current_state["distance_radial"],
+                1e5,
                 10,
                 500,
                 np.pi / 4,
@@ -158,12 +156,12 @@ class State(KiteKinematics, Tether, Wind, Kite):
         elif self.dof == 3:
             # Solve the system of equations
             lbx = [
-                current_state["distance_radial"] - 5,
+                0,
                 -10,
                 -10,
             ]  # Lower bounds for T, u_s, speed_tangential, phi_k, theta_k
             ubx = [
-                current_state["distance_radial"],
+                1e5,
                 10,
                 500,
             ]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
@@ -186,10 +184,9 @@ class State(KiteKinematics, Tether, Wind, Kite):
             self.angle_course,
             self.speed_radial,
             self.speed_tangential,
-            self.length_tether,
         )
         z = ca.vertcat(
-                self.timeder_speed_radial,
+                self.tension_tether_ground,
                 self.timeder_angle_course,
                 self.timeder_speed_tangential,
             )

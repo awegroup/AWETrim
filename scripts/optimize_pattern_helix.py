@@ -33,7 +33,7 @@ omega = -1
 x0 = 200
 rh = ca.SX.sym("rh")
 vr = ca.SX.sym("vr")
-beta = np.radians(30)
+beta = ca.SX.sym("beta")
 ry = 120
 rz = 40
 helix = Helix(omega, x0, rh, vr, beta)
@@ -46,19 +46,19 @@ state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, do
 
 # Substitute the numeric values into the symbolic expressions using CasADi functions
 chi_func = ca.Function(
-    "chi", [kinematics.t, kinematics.s, kinematics.s_dot, rh, vr], [kinematics.chi]
+    "chi", [kinematics.t, kinematics.s, kinematics.s_dot, rh, vr, beta], [kinematics.chi]
 )
 
 vk_func = ca.Function(
-    "vk", [kinematics.t, kinematics.s, kinematics.s_dot, rh, vr], [kinematics.vk]
+    "vk", [kinematics.t, kinematics.s, kinematics.s_dot, rh, vr, beta], [kinematics.vk]
 )
 
 vr_func = ca.Function("vr", [kinematics.t, vr], [kinematics.vr])
 dot_chi_func = ca.Function(
-    "dot_chi", [kinematics.t, kinematics.s, kinematics.s_dot, rh, vr], [kinematics.dot_chi]
+    "dot_chi", [kinematics.t, kinematics.s, kinematics.s_dot, rh, vr, beta], [kinematics.dot_chi]
 )
 vtau_func = ca.Function(
-    "vtau", [kinematics.t, kinematics.s, kinematics.s_dot, rh, vr], [kinematics.vtau]
+    "vtau", [kinematics.t, kinematics.s, kinematics.s_dot, rh, vr, beta], [kinematics.vtau]
 )
 
 
@@ -78,7 +78,7 @@ solver_options = {
 s = np.linspace(0, 2*np.pi, 100) + np.pi/2
 
 states = []
-unknown_vars = ["length_tether", "input_steering", "s_dot"]
+unknown_vars = ["tension_tether_ground", "input_steering", "s_dot"]
 
 s_dot_sym = ca.SX.sym("s_dot")
 s_sym = ca.SX.sym("s")
@@ -87,13 +87,11 @@ state.s_dot = s_dot_sym
 start_time = timet.time()
 opti = ca.Opti()
 
-state.timeder_angle_course =  dot_chi_func(time_sym, s_sym, s_dot_sym, rh, vr)
-state.speed_tangential = vtau_func(time_sym, s_sym, s_dot_sym, rh, vr)
-state.angle_course = chi_func(time_sym, s_sym, s_dot_sym, rh, vr)
+state.timeder_angle_course =  dot_chi_func(time_sym, s_sym, s_dot_sym, rh, vr, beta)
+state.speed_tangential = vtau_func(time_sym, s_sym, s_dot_sym, rh, vr, beta)
+state.angle_course = chi_func(time_sym, s_sym, s_dot_sym, rh, vr, beta)
 
 
-tension_tether_func = state.extract_function("tension_tether")
-print(tension_tether_func)
 solve_func, inputs_name = state.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
@@ -106,52 +104,75 @@ timestep_func = ca.Function("t_func", [si,sf,s_dot_sym], [ts])
 
 rh_var = opti.variable()
 vr_var = opti.variable()
+beta_var = opti.variable()
 time_var = opti.variable(len(s))
 s_dot_var = opti.variable(len(s))
 input_steering_var = opti.variable(len(s))
-length_tether_var = opti.variable(len(s))
+tension_tether_var = opti.variable(len(s))
 
 
 state.distance_radial = pattern.r(time_sym)
 distance_radial = ca.Function("distance_radial", [time_sym,vr], [state.distance_radial])
 state.angle_elevation = pattern.elevation(time_sym, s_sym)
-angle_elevation = ca.Function("angle_elevation", [time_sym,s_sym, rh, vr], [state.angle_elevation])
+angle_elevation_fun = ca.Function("angle_elevation", [time_sym,s_sym, rh, vr, beta], [state.angle_elevation])
 state.angle_azimuth = pattern.azimuth(time_sym, s_sym)
 state.speed_radial = vr_func(time_sym, vr)
 state.establish_residual()
 tension_tether = 0
 power = 0
-z = ca.SX.zeros(len(s))
-residual = ca.Function("residual", [time_sym,s_sym,s_dot_sym,rh, vr, state.input_steering, state.length_tether], [state.residual])
-for i in range(len(s)-1):
-    opti.subject_to(residual(time_var[i],s[i],s_dot_var[i],rh_var, vr_var, input_steering_var[i],length_tether_var[i]) == 0)
-    time_step = timestep_func(s[i],s[i+1],s_dot_var[i])
-    opti.subject_to(time_var[i+1] == time_var[i] + time_step)
-    tension_tether = tension_tether_func(distance_radial(time_var[i], vr_var),length_tether_var[i])
-    power += tension_tether*time_step*vr_var
+angle_elevation = ca.MX.zeros(len(s))
+residual = ca.Function("residual", [time_sym,s_sym,s_dot_sym,rh, vr, beta, state.input_steering, state.tension_tether_ground], [state.residual])
+time_step = timestep_func(s[0],s[1],s_dot_var[0])
+for i in range(len(s)):
+    opti.subject_to(residual(time_var[i],s[i],s_dot_var[i],rh_var, vr_var, beta_var, input_steering_var[i],tension_tether_var[i]) == 0)
+    power += tension_tether_var[i]*time_step*vr_var
+    if i < len(s)-1:
+        time_step = timestep_func(s[i],s[i+1],s_dot_var[i])
+        opti.subject_to(time_var[i+1] == time_var[i] + time_step)
+    
+    
+    angle_elevation[i] = angle_elevation_fun(time_var[i], s[i], rh_var, vr_var ,beta_var)
     # print(distance_radial(time_var[i], vr_var)*ca.sin(angle_elevation(time_var[i],s[i],rh_var,vr_var)))
     # z[i] = distance_radial(time_var[i], vr_var)*ca.sin(angle_elevation(time_var[i],s[i],rh_var,vr_var))
 
 power = power/time_var[-1]
-opti.subject_to(5 >= (input_steering_var[:] >= -5))
-opti.subject_to(300 >= (length_tether_var[:] >= 195))
+opti.subject_to(1 >= (input_steering_var[:] >= -1))
+opti.subject_to(1e5 >= (tension_tether_var[:] >= 300))
 # opti.subject_to(0 <= (s_var[:] <= 8*np.pi))
 opti.subject_to(40 <= (rh_var <= 80))
-opti.subject_to(1 <= (vr_var <= 5))
-opti.subject_to(0 <= (s_dot_var[:] <= 5))
-opti.subject_to(0 <= (time_var[:] <= 100))
-# opti.subject_to(100 <= (z[:] <= 600))
+opti.subject_to(1 <= (vr_var <= 2.8))
+opti.subject_to(0 <= (s_dot_var[:] <= 30))
+opti.subject_to(0 <= (time_var[:] <= 200))
+opti.subject_to(25*np.pi/180 <= (beta_var <= 45*np.pi/180))
+opti.subject_to(10*np.pi/180 <= (angle_elevation[:] <= 80*np.pi/180))
 
-opti.set_initial(rh_var, 62)
-opti.set_initial(vr_var, 2.43)
+opti.set_initial(rh_var, 56.5)
+opti.set_initial(beta_var,25/180*np.pi)
+opti.set_initial(vr_var, 2.5)
 opti.set_initial(time_var, results['time'])
 opti.set_initial(s_dot_var, results['s_dot'])
 opti.set_initial(input_steering_var, results['input_steering'])
-opti.set_initial(length_tether_var, results['length_tether'])
+opti.set_initial(tension_tether_var, results['tension_tether_ground'])
 
 opti.minimize(-power)
 
+solver_options = {
+    "ipopt": {
+        "print_level": 5,  # Verbose output
+        "tol": 1e-4,  # Relaxed tolerance
+        "acceptable_tol": 1e-2,
+        "acceptable_constr_viol_tol": 1e-2,
+        "acceptable_iter": 10,
+        "max_iter": 5000,
+        "mu_strategy": "monotone",
+        "nlp_scaling_method": "gradient-based",
+        # "barrier_tol": 1e-6,  # Adjust as necessary
+    },
+    "print_time": True,
+}
+
 opti.solver("ipopt")
+# opti.solver("sqpmethod")
 
 try:
     sol = opti.solve()
@@ -160,6 +181,7 @@ try:
     print("power:", sol.value(power))
     print("time:", sol.value(time_var[-1]))
     print("vr:", sol.value(vr_var))
+    print("beta:", sol.value(beta_var)*180/np.pi)
 except RuntimeError as e:
     print("Solver failed with error:", e)
     

@@ -37,11 +37,8 @@ state.speed_radial = 0.0
 state.input_depower = 0.0
 state.input_steering = 0.0
 
-
-tension_tether_func = state.extract_function("tension_tether")
-
 unknown_vars = [
-    "length_tether",
+    "tension_tether_ground",
     "timeder_angle_course",
     "speed_tangential",
     "angle_roll",
@@ -115,11 +112,6 @@ for phi, beta in zip(phi_combinations, beta_combinations):
         # qs_guess = sol["x"]
         qs_state = {name: float(sol["x"][i]) for i, name in enumerate(unknown_vars)}
         current_state = qs_state
-        current_state["T"] = float(
-            tension_tether_func(
-                *[current_state[name] for name in tension_tether_func.name_in()]
-            )
-        )
         current_state["angle_azimuth"] = phi
         current_state["angle_elevation"] = beta
         # current_state["alpha"] = float(alpha_value)
@@ -142,7 +134,7 @@ print(f"Time per iteration: {time_per_iteration} seconds")
 # Display the solutions
 solutions_df = pd.DataFrame(solutions)
 # Filter out rows where 'T' is None
-solutions_df = solutions_df[solutions_df["T"].notna()]
+solutions_df = solutions_df[solutions_df["tension_tether_ground"].notna()]
 # solutions_df = solutions_df[(np.degrees(solutions_df['alpha']) < 20)&(np.degrees(solutions_df['alpha']) > -5)]
 
 solutions_df.reset_index(drop=True, inplace=True)
@@ -152,7 +144,7 @@ solutions_df.reset_index(drop=True, inplace=True)
 phi_values = solutions_df["angle_azimuth"].values
 beta_values = solutions_df["angle_elevation"].values
 # alpha_values = np.degrees(solutions_df['alpha'].values)
-tether_tensions = solutions_df["T"].values
+tether_tensions = solutions_df["tension_tether_ground"].values
 theta_k_values = np.degrees(solutions_df["angle_pitch"].values)
 phi_k_values = np.degrees(solutions_df["angle_roll"].values)
 psi_k_values = np.degrees(solutions_df["angle_yaw"].values)

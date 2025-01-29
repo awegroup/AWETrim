@@ -22,9 +22,9 @@ with open(file_path, "r") as file:
 # -----------------------------------------------
 omega = -1
 x0 = 200
-rh = 61.7
-vr = 0
-beta = np.radians(0)
+rh = 50
+vr = 2.414
+beta = np.radians(30)
 ry = 120
 rz = 40
 helix = Helix(omega, x0, rh, vr, beta)
@@ -77,7 +77,7 @@ s_dot = 0.1
 s_ddot = 0
 vk = 20
 states = []
-unknown_vars = ["length_tether", "input_steering", "s_dot"]
+unknown_vars = ["tension_tether_ground", "input_steering", "s_dot"]
 qs_guess = [200, 0, 10]
 s_dot = ca.SX.sym("s_dot")
 s_sym = ca.SX.sym("s")
@@ -91,7 +91,7 @@ state.override_gravity = False
 state.override_centripetal = False
 state.override_coriolis = False
 
-tension_tether_func = state.extract_function("tension_tether")
+
 solve_func, inputs_name = state.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
@@ -121,16 +121,11 @@ for i in range(len(s)):
     current_state["angle_course"] = float(chi_func(time, s[i], sol['x'][2]))
     current_state["speed_tangential"] = float(vtau_func(time, s[i], sol['x'][2]))
     full_state = {**current_state, **qs_state}
-    full_state["tension_tether"] = float(
-        tension_tether_func(
-            *[full_state[name] for name in tension_tether_func.name_in()]
-        )
-    )
-    
+
     states.append(full_state)
     if i < len(s)-1:
         time_step = (s[i+1]-s[i])/float(sol['x'][2])
-        power += full_state["tension_tether"]*time_step*full_state["speed_radial"]
+        power += full_state["tension_tether_ground"]*time_step*full_state["speed_radial"]
         time += time_step
 print(f"Time taken: {timet.time() - start_time}")
 states = pd.DataFrame(states)
