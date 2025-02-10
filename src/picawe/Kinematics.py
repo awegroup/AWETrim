@@ -73,26 +73,41 @@ class KiteKinematics:
 
 class ParametrizedKinematics:
 
-    def __init__(self, pattern):
+    def __init__(self, pattern, quasi_steady=False):
         self.pattern = pattern
 
         self.s = ca.SX.sym("s")
         self.t = ca.SX.sym("t")
         self.s_dot = ca.SX.sym("s_dot")
-        self.s_ddot = ca.SX.sym("s_ddot")
+        if quasi_steady:
+            self.s_ddot = 0
+        else:
+            self.s_ddot = ca.SX.sym("s_ddot")
+
+    @property
+    def beta(self):
+        return self.pattern.elevation(self.t, self.s)
+    
+    @property
+    def phi(self):
+        return self.pattern.azimuth(self.t, self.s)
+    
+    @property
+    def r(self):
+        return self.pattern.r(self.t)
 
     @property
     def dtheta_ds(self):
         return (
-            ca.gradient(self.pattern.azimuth(self.t, self.s), self.s)
-            + ca.gradient(self.pattern.azimuth(self.t, self.s), self.t) / self.s_dot
+            ca.gradient(self.phi, self.s)
+            + ca.gradient(self.phi, self.t) / self.s_dot
         )
 
     @property
     def dbeta_ds(self):
         return (
-            ca.gradient(self.pattern.elevation(self.t, self.s), self.s)
-            + ca.gradient(self.pattern.elevation(self.t, self.s), self.t) / self.s_dot
+            ca.gradient(self.beta, self.s)
+            + ca.gradient(self.beta, self.t) / self.s_dot
         )
 
     @property
@@ -106,10 +121,10 @@ class ParametrizedKinematics:
     @property
     def dR_ds(self):
         return ca.vertcat(
-            self.pattern.r(self.t)
+            self.r
             * self.dtheta_ds
-            * ca.cos(self.pattern.elevation(self.t, self.s)),
-            self.pattern.r(self.t) * self.dbeta_ds,
+            * ca.cos(self.beta),
+            self.r * self.dbeta_ds,
             self.dr_ds,
         )
 
@@ -131,10 +146,9 @@ class ParametrizedKinematics:
 
     @property
     def dot_vtau(self):
-        r = self.pattern.r(self.t)
         return self.sqrt_A * (
-            self.s_dot**2 * self.dr_ds + self.s_ddot * r
-        ) + self.s_dot * r * self.dot_A / (2 * self.sqrt_A)
+            self.s_dot**2 * self.dr_ds + self.s_ddot * self.r
+        ) + self.s_dot * self.r * self.dot_A / (2 * self.sqrt_A)
 
     @property
     def dbeta_ds2(self):
@@ -149,7 +163,7 @@ class ParametrizedKinematics:
         return ca.atan2(
             self.dtheta_ds
             * self.s_dot
-            * ca.cos(self.pattern.elevation(self.t, self.s)),
+            * ca.cos(self.beta),
             self.dbeta_ds * self.s_dot,
         )
 
@@ -159,17 +173,36 @@ class ParametrizedKinematics:
 
     @property
     def sqrt_A(self):
-        return self.vtau / (self.s_dot * self.pattern.r(self.t))
+        return self.vtau / (self.s_dot * self.r)
 
     @property
     def dot_A(self):
-        beta = self.pattern.elevation(self.t, self.s)
         return (
             2
             * self.s_dot
             * (
                 self.dbeta_ds * self.dbeta_ds2
-                + self.dtheta_ds * self.dtheta_ds2 * ca.cos(beta) ** 2
-                - self.dtheta_ds**2 * self.dbeta_ds * ca.sin(beta) * ca.cos(beta)
+                + self.dtheta_ds * self.dtheta_ds2 * ca.cos(self.beta) ** 2
+                - self.dtheta_ds**2 * self.dbeta_ds * ca.sin(self.beta) * ca.cos(self.beta)
             )
         )
+
+    def extract_function(self, attr_name):
+        """
+        Returns a CasADi function for a given symbolic attribute name.
+        
+        :param attr_name: Name of the attribute (string)
+        :return: CasADi function
+        """
+        if not hasattr(self, attr_name):
+            raise AttributeError(f"'ParametrizedKinematics' has no attribute '{attr_name}'")
+
+        expression = getattr(self, attr_name)  # Get the symbolic expression
+        if not isinstance(expression, ca.MX) and not isinstance(expression, ca.SX):
+            raise TypeError(f"'{attr_name}' is not a CasADi symbolic expression")
+
+        # Extract all symbolic variables used in the expression
+        variables = list(ca.symvar(expression))
+        variables.sort(key=lambda x: x.name())  # Ensure consistent ordering
+
+        return ca.Function(attr_name, variables, [expression], [var.name() for var in variables], [attr_name])
