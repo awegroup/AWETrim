@@ -2,7 +2,7 @@ import numpy as np
 import dash
 from dash import dcc, html, Output, Input
 import plotly.graph_objects as go
-from color_palette import get_color_list
+from picawe.color_palette import get_color_list
 
 # Sample colors list
 colors = get_color_list()
