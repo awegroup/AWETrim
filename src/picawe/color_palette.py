@@ -109,7 +109,7 @@ def set_plot_style_no_latex():
         'ytick.labelsize': 10,
         'legend.fontsize': 10,
         'figure.titlesize': 16,
-        'figure.figsize': (10, 6),  # Default figure size
+        'figure.figsize': (5, 4),  # Default figure size
         'axes.prop_cycle': cycler('color', color_cycle)  # Set the custom color cycle
     })
 
