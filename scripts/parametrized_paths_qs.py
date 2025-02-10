@@ -2,8 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 from picawe.parametrized_patterns import Helix, Lissajous, FigureEight
-from picawe.Kinematics import ParametrizedKinematics
-from picawe import State
+from picawe.Kinematics import ParametrizedKinematics, KiteKinematics
+from picawe import SystemModel
 import casadi as ca
 import time as timet
 import json
@@ -14,6 +14,7 @@ import json
 
 # Define aerodynamic input
 file_path = "./data/v3_aero_input.json"
+# file_path = "./data/rigid_kite.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
@@ -22,44 +23,31 @@ with open(file_path, "r") as file:
 # -----------------------------------------------
 omega = -1
 x0 = 200
-rh = 50
-vr = 2.414
+rh = 100
+vr = 2.4
 beta = np.radians(30)
 ry = 120
 rz = 40
-helix = Helix(omega, x0, rh, vr, beta)
+helix = Helix(omega, x0, rh, vr, beta, kappa=0)
 lissajous = Lissajous(omega, x0, ry, rz, vr, beta)
 figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
 
 pattern = helix
 kinematics = ParametrizedKinematics(pattern)
-state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
+# State.__bases__ = (KiteKinematics, Tether, Wind, RigidKite)
+kite_model = SystemModel(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
+
 
 # Substitute the numeric values into the symbolic expressions using CasADi functions
-chi_func = ca.Function(
-    "chi", [kinematics.t, kinematics.s, kinematics.s_dot], [kinematics.chi]
-)
+chi_func = kinematics.extract_function("chi")
+vk_func = kinematics.extract_function("vk")
+dR_ds_func = kinematics.extract_function("dR_ds")
+vr_func = vr
+dot_chi_func = kinematics.extract_function("dot_chi")
+vtau_func = kinematics.extract_function("vtau")
 
-vk_func = ca.Function(
-    "vk", [kinematics.t, kinematics.s, kinematics.s_dot], [kinematics.vk]
-)
-dR_ds_func = ca.Function(
-    "dR_ds",
-    [kinematics.t, kinematics.s, kinematics.s_dot],
-    [ca.norm_2(kinematics.dR_ds)],
-)
-
-vr_func = ca.Function("vr", [kinematics.t], [kinematics.vr])
-dot_chi_func = ca.Function(
-    "dot_chi", [kinematics.t, kinematics.s, kinematics.s_dot], [kinematics.dot_chi]
-)
-vtau_func = ca.Function(
-    "vtau", [kinematics.t, kinematics.s, kinematics.s_dot], [kinematics.vtau]
-)
-
-
-state.speed_wind = 10
-state.input_depower = 0
+kite_model.speed_wind = 10
+kite_model.input_depower = 0
 
 solver_options = {
     "ipopt": {
@@ -82,21 +70,21 @@ qs_guess = [200, 0, 10]
 s_dot = ca.SX.sym("s_dot")
 s_sym = ca.SX.sym("s")
 time_sym = ca.SX.sym("time")
-state.s_dot = s_dot
+kite_model.s_dot = s_dot
 start_time = timet.time()
-state.timeder_angle_course =  dot_chi_func(time_sym, s_sym, s_dot)
-state.speed_tangential = vtau_func(time_sym, s_sym, s_dot)
-state.angle_course = chi_func(time_sym, s_sym, s_dot)
-state.override_gravity = False
-state.override_centripetal = False
-state.override_coriolis = False
+kite_model.timeder_angle_course =  dot_chi_func(t =time_sym, s= s_sym, s_dot = s_dot)['dot_chi']
+kite_model.speed_tangential = vtau_func(t =time_sym, s= s_sym, s_dot = s_dot)['vtau']
+kite_model.angle_course = chi_func(t =time_sym, s= s_sym, s_dot = s_dot)['chi']
+kite_model.override_gravity = False
+kite_model.override_centripetal = False
+kite_model.override_coriolis = False
 
 
-solve_func, inputs_name = state.solve_quasi_steady_state(
+solve_func, inputs_name = kite_model.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
 print(solve_func)
-print(ca.symvar(state.residual))
+print(ca.symvar(kite_model.residual))
 time = 0
 power = 0
 for i in range(len(s)):
@@ -105,21 +93,21 @@ for i in range(len(s)):
         "distance_radial": pattern.r(time),
         "angle_elevation": pattern.elevation(time, s[i]),
         "angle_azimuth": pattern.azimuth(time, s[i]),
-        "speed_radial": float(vr_func(time)),
+        "speed_radial": float(vr_func),
         "length_tether": pattern.r(time),
         "s": s[i],
         "time": time,
     }
     p = [current_state[name] for name in inputs_name]
 
-    lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+    lbx,ubx,lbg,ubg = kite_model.get_boundaries(unknown_vars)
     sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
     qs_guess = sol["x"]
     qs_state = {name: float(qs_guess[i]) for i, name in enumerate(unknown_vars)}
 
-    current_state["angle_course"] = float(chi_func(time, s[i], sol['x'][2]))
-    current_state["speed_tangential"] = float(vtau_func(time, s[i], sol['x'][2]))
+    current_state["angle_course"] = float(chi_func(t =time, s= s[i], s_dot = sol['x'][2])['chi'])
+    current_state["speed_tangential"] = float(vtau_func(t =time, s= s[i], s_dot = sol['x'][2])['vtau'])
     full_state = {**current_state, **qs_state}
 
     states.append(full_state)
@@ -135,9 +123,9 @@ print("Power: ", power/time, "W")
 
 # Reflect the override choices in the file name
 override_settings = {
-    "gravity": state.override_gravity,
-    "centripetal": state.override_centripetal,
-    "coriolis": state.override_coriolis,
+    "gravity": kite_model.override_gravity,
+    "centripetal": kite_model.override_centripetal,
+    "coriolis": kite_model.override_coriolis,
 }
 
 # Build a suffix based on active overrides
@@ -158,7 +146,7 @@ print(f"Saved results to {output_path}")
 azimuth = np.array(states["angle_azimuth"])
 elevation = np.array(states["angle_elevation"])
 speed_tangential = np.array(states["speed_tangential"])
-input_steering = np.array(states["input_steering"])
+# input_steering = np.array(states["input_steering"])
 course = np.array(states["angle_course"])
 s = np.array(states["s"])
 

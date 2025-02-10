@@ -3,7 +3,7 @@ import pandas as pd
 import casadi as ca
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-from picawe import State
+from picawe import SystemModel
 import json
 
 # -----------------------------------------------
@@ -19,7 +19,7 @@ with open(file_path, "r") as file:
 # Define the system and aerodynamic model
 # -----------------------------------------------
 
-state = State(
+kite_model = SystemModel(
     mass_wing=15,
     area_wing=20,
     aero_input=aero_input,
@@ -29,12 +29,12 @@ state = State(
 )
 
 # Set constant parameters
-state.speed_wind = 10
-state.input_depower = 0.0
-state.timeder_angle_course = 0.0
+kite_model.speed_wind = 10
+kite_model.input_depower = 0.0
+kite_model.timeder_angle_course = 0.0
 
 # Extract the tension tether function
-aoa_func = state.extract_function("angle_of_attack")
+aoa_func = kite_model.extract_function("angle_of_attack")
 
 # -----------------------------------------------
 # Define simulation parameters and initial state
@@ -58,15 +58,15 @@ qs_guess = [200, 0, 40,0,0,0]
 states = []
 import time as timet
 start_time = timet.time()
-solve_qs, inputs_name = state.solve_quasi_steady_state(
+solve_qs, inputs_name = kite_model.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
 # Solve quasi-steady state
 p = [current_state[name] for name in inputs_name]
 
-lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+lbx,ubx,lbg,ubg = kite_model.get_boundaries(unknown_vars)
 sol = solve_qs(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
-state.establish_ode()
+kite_model.establish_ode()
 
 # -----------------------------------------------
 # Time integration loop
@@ -75,7 +75,7 @@ for t in time:
     # Solve quasi-steady state
     p = [current_state[name] for name in inputs_name]
 
-    lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+    lbx,ubx,lbg,ubg = kite_model.get_boundaries(unknown_vars)
     sol = solve_qs(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
     qs_guess = sol["x"]
@@ -92,7 +92,7 @@ for t in time:
     ]
 
     # Integrate the dynamics
-    xf = state.integrate(x0, t, time_step)
+    xf = kite_model.integrate(x0, t, time_step)
 
     # Update the current state
     current_state = {name: float(xf[i]) for i, name in enumerate(current_state.keys())}

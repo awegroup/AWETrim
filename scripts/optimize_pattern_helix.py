@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from picawe.parametrized_patterns import Helix, Lissajous, FigureEight
 from picawe.Kinematics import ParametrizedKinematics
-from picawe import State
+from picawe import SystemModel
 import casadi as ca
 import time as timet
 import json
@@ -42,7 +42,7 @@ figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
 
 pattern = helix
 kinematics = ParametrizedKinematics(pattern)
-state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
+kite_model = SystemModel(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
 
 # Substitute the numeric values into the symbolic expressions using CasADi functions
 chi_func = ca.Function(
@@ -62,8 +62,8 @@ vtau_func = ca.Function(
 )
 
 
-state.speed_wind = 10
-state.input_depower = 0
+kite_model.speed_wind = 16
+kite_model.input_depower = 0
 
 solver_options = {
     "ipopt": {
@@ -83,16 +83,16 @@ unknown_vars = ["tension_tether_ground", "input_steering", "s_dot"]
 s_dot_sym = ca.SX.sym("s_dot")
 s_sym = ca.SX.sym("s")
 time_sym = ca.SX.sym("time")
-state.s_dot = s_dot_sym
+kite_model.s_dot = s_dot_sym
 start_time = timet.time()
 opti = ca.Opti()
 
-state.timeder_angle_course =  dot_chi_func(time_sym, s_sym, s_dot_sym, rh, vr, beta)
-state.speed_tangential = vtau_func(time_sym, s_sym, s_dot_sym, rh, vr, beta)
-state.angle_course = chi_func(time_sym, s_sym, s_dot_sym, rh, vr, beta)
+kite_model.timeder_angle_course =  dot_chi_func(time_sym, s_sym, s_dot_sym, rh, vr, beta)
+kite_model.speed_tangential = vtau_func(time_sym, s_sym, s_dot_sym, rh, vr, beta)
+kite_model.angle_course = chi_func(time_sym, s_sym, s_dot_sym, rh, vr, beta)
 
 
-solve_func, inputs_name = state.solve_quasi_steady_state(
+solve_func, inputs_name = kite_model.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
 
@@ -111,17 +111,17 @@ input_steering_var = opti.variable(len(s))
 tension_tether_var = opti.variable(len(s))
 
 
-state.distance_radial = pattern.r(time_sym)
-distance_radial = ca.Function("distance_radial", [time_sym,vr], [state.distance_radial])
-state.angle_elevation = pattern.elevation(time_sym, s_sym)
-angle_elevation_fun = ca.Function("angle_elevation", [time_sym,s_sym, rh, vr, beta], [state.angle_elevation])
-state.angle_azimuth = pattern.azimuth(time_sym, s_sym)
-state.speed_radial = vr_func(time_sym, vr)
-state.establish_residual()
+kite_model.distance_radial = pattern.r(time_sym)
+distance_radial = ca.Function("distance_radial", [time_sym,vr], [kite_model.distance_radial])
+kite_model.angle_elevation = pattern.elevation(time_sym, s_sym)
+angle_elevation_fun = ca.Function("angle_elevation", [time_sym,s_sym, rh, vr, beta], [kite_model.angle_elevation])
+kite_model.angle_azimuth = pattern.azimuth(time_sym, s_sym)
+kite_model.speed_radial = vr_func(time_sym, vr)
+kite_model.establish_residual()
 tension_tether = 0
 power = 0
 angle_elevation = ca.MX.zeros(len(s))
-residual = ca.Function("residual", [time_sym,s_sym,s_dot_sym,rh, vr, beta, state.input_steering, state.tension_tether_ground], [state.residual])
+residual = ca.Function("residual", [time_sym,s_sym,s_dot_sym,rh, vr, beta, kite_model.input_steering, kite_model.tension_tether_ground], [kite_model.residual])
 time_step = timestep_func(s[0],s[1],s_dot_var[0])
 for i in range(len(s)):
     opti.subject_to(residual(time_var[i],s[i],s_dot_var[i],rh_var, vr_var, beta_var, input_steering_var[i],tension_tether_var[i]) == 0)
@@ -140,11 +140,11 @@ opti.subject_to(1 >= (input_steering_var[:] >= -1))
 opti.subject_to(1e5 >= (tension_tether_var[:] >= 300))
 # opti.subject_to(0 <= (s_var[:] <= 8*np.pi))
 opti.subject_to(40 <= (rh_var <= 80))
-opti.subject_to(1 <= (vr_var <= 2.8))
+opti.subject_to(1 <= (vr_var <= 6))
 opti.subject_to(0 <= (s_dot_var[:] <= 30))
 opti.subject_to(0 <= (time_var[:] <= 200))
 opti.subject_to(25*np.pi/180 <= (beta_var <= 45*np.pi/180))
-opti.subject_to(10*np.pi/180 <= (angle_elevation[:] <= 80*np.pi/180))
+opti.subject_to(0*np.pi/180 <= (angle_elevation[:] <= 80*np.pi/180))
 
 opti.set_initial(rh_var, 56.5)
 opti.set_initial(beta_var,25/180*np.pi)
@@ -154,7 +154,7 @@ opti.set_initial(s_dot_var, results['s_dot'])
 opti.set_initial(input_steering_var, results['input_steering'])
 opti.set_initial(tension_tether_var, results['tension_tether_ground'])
 
-opti.minimize(-power)
+opti.minimize(-power/10000)
 
 solver_options = {
     "ipopt": {

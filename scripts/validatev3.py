@@ -1,7 +1,7 @@
 import h5py
 import pandas as pd
 import numpy as np
-from picawe import State
+from picawe import SystemModel
 import casadi as ca
 import time
 
@@ -92,7 +92,7 @@ with open(file_path, "r") as file:
     aero_input = json.load(file)
 
 # Example Usage
-state = State(mass_wing=15, area_wing=20, mass_kcu=25, aero_input=aero_input, dof=6, quasi_steady=True)
+kite_model = SystemModel(mass_wing=15, area_wing=20, mass_kcu=25, aero_input=aero_input, dof=6, quasi_steady=True)
 
 
 
@@ -113,8 +113,8 @@ unknown_vars = [
     "angle_yaw",
 ]
 
-sideslip_func = state.extract_function("angle_sideslip")
-# T_func = state.extract_function("tension_tether")
+sideslip_func = kite_model.extract_function("angle_sideslip")
+# T_func = kite_model.extract_function("tension_tether")
 solver_options = {
     "ipopt": {
         "print_level": 0,  # Suppresses IPOPT output
@@ -134,8 +134,8 @@ velocity = np.array(
 distance_radial = np.linalg.norm(position, axis=1)
 speed_tangential = np.linalg.norm(velocity, axis=1)
 qs_guess = [1e2, 0, 40, 0, 0, 0]
-state.establish_residual()
-solve_func, inputs_name = state.solve_quasi_steady_state(
+kite_model.establish_residual()
+solve_func, inputs_name = kite_model.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
 print(solve_func)
@@ -163,7 +163,7 @@ for i, row in flight_data.iterrows():
 
     p = [current_state[name] for name in inputs_name]
     # print(p)
-    lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+    lbx,ubx,lbg,ubg = kite_model.get_boundaries(unknown_vars)
     # print(lbx,ubx,lbg,ubg)
     sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 

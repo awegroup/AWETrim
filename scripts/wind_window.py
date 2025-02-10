@@ -1,5 +1,5 @@
 import numpy as np
-from picawe import State
+from picawe import SystemModel
 import pandas as pd
 import matplotlib.pyplot as plt
 import time
@@ -27,15 +27,15 @@ with open(file_path, "r") as file:
 
 
 # Example Usage
-state = State(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=10, dof=6, quasi_steady=True)
+kite_model = SystemModel(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=10, dof=6, quasi_steady=True)
 
 # Constants
-state.speed_wind = 10
-state.distance_radial = 200.0
-state.angle_course = np.radians(90)
-state.speed_radial = 0.0
-state.input_depower = 0.0
-state.input_steering = 0.0
+kite_model.speed_wind = 10
+kite_model.distance_radial = 200.0
+kite_model.angle_course = np.radians(90)
+kite_model.speed_radial = 0.0
+kite_model.input_depower = 0.0
+kite_model.input_steering = 0.0
 
 unknown_vars = [
     "tension_tether_ground",
@@ -45,8 +45,8 @@ unknown_vars = [
     "angle_pitch",
     "angle_yaw",
 ]
-# alpha_func = state.extract_parameter_function('angle_of_attack')
-# T_func = state.extract_parameter_function('tension_tether')
+# alpha_func = kite_model.extract_parameter_function('angle_of_attack')
+# T_func = kite_model.extract_parameter_function('tension_tether')
 
 # Define the range of phi and beta
 phi_values = np.radians(np.linspace(-90, 90, 30))  # Range for phi in radians
@@ -85,9 +85,9 @@ solver_options = {
     },
     "print_time": False,  # Disables CasADi's internal timing output
 }
-qs_guess = [state.distance_radial, 0, 40, 1e-3, 1e-3, 1e-3]
+qs_guess = [kite_model.distance_radial, 0, 40, 1e-3, 1e-3, 1e-3]
 
-solve_func, inputs_name = state.solve_quasi_steady_state(
+solve_func, inputs_name = kite_model.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
 print(solve_func)
@@ -95,14 +95,14 @@ print(solve_func)
 for phi, beta in zip(phi_combinations, beta_combinations):
 
     current_state = {
-        "distance_radial": state.distance_radial,
+        "distance_radial": kite_model.distance_radial,
         "angle_elevation": beta,
         "angle_azimuth": phi,
     }
 
     p = [current_state[name] for name in inputs_name]
     # print(p)
-    lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+    lbx,ubx,lbg,ubg = kite_model.get_boundaries(unknown_vars)
     # print(lbx,ubx,lbg,ubg)
     sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
