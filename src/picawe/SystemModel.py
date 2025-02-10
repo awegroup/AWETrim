@@ -4,9 +4,10 @@ from picawe.Tether import Tether
 from picawe.Kinematics import KiteKinematics
 from picawe.Wind import Wind
 from picawe.Kite import Kite
+from picawe.defaults import DEFAULT_BOUNDS
 
 
-class State(KiteKinematics, Tether, Wind, Kite):
+class SystemModel(KiteKinematics, Tether, Wind, Kite):
 
     def __init__(
         self,
@@ -22,7 +23,8 @@ class State(KiteKinematics, Tether, Wind, Kite):
         diameter=0.008,
         density=970,
         dof = 6,
-        quasi_steady = False
+        quasi_steady = False,
+        steering_control="asymmetric"  # Default to asymmetric deformation
     ):
         """
         Initialize the kite system with its parameters.
@@ -42,16 +44,23 @@ class State(KiteKinematics, Tether, Wind, Kite):
             center_gravity_wing,
         )
         Tether.__init__(self, E, diameter, density)
+        self.steering_control = steering_control.lower()
+        
+        if self.steering_control not in ["asymmetric", "roll"]:
+            raise ValueError("Invalid steering_control. Choose 'asymmetric' or 'roll'.")
         if dof == 3:
             self.angle_pitch = 0
-            self.angle_roll = 0
             self.timeder_angle_pitch = 0
             self.timeder_angle_roll = 0
             self.timeder_angle_yaw = 0
             self.acceleration_angle_pitch = 0
             self.acceleration_angle_roll = 0
             self.acceleration_angle_yaw = 0
+            if steering_control == "asymmetric":
+                self.angle_roll = 0
 
+        if steering_control == "roll":
+            self.steering_input = 0
 
         if quasi_steady:
             self.timeder_angle_roll = 0
@@ -101,7 +110,7 @@ class State(KiteKinematics, Tether, Wind, Kite):
     
     
     def solve_quasi_steady_state(
-        self, unknown_vars, solver_options={}
+        self, unknown_vars, solver_options=None
     ):
         """
         Solve the quasi-steady state equations for the kite system.
@@ -127,44 +136,22 @@ class State(KiteKinematics, Tether, Wind, Kite):
             "p": ca.vertcat(*inputs),
         }  # 'f' is set to 0 for root-finding
 
+        # Define the solver options
+        if solver_options is None:
+            solver_options = self.solver_options()
         # Define the NLP solver
         solver = ca.nlpsol("solver", "ipopt", nlp, solver_options)
 
         return solver, inputs_name
 
 
-    def get_boundaries(self, current_state):
+    def get_boundaries(self, unkown_vars):
         
-        if self.dof == 6:
-            # Solve the system of equations
-            lbx = [
-                0,
-                -10,
-                0,
-                -np.pi / 4,
-                -np.pi / 4,
-                -np.pi / 4,
-            ]  
-            ubx = [
-                1e5,
-                10,
-                500,
-                np.pi / 4,
-                np.pi / 4,
-                np.pi / 4,
-            ]  
-        elif self.dof == 3:
-            # Solve the system of equations
-            lbx = [
-                0,
-                -10,
-                -10,
-            ]  # Lower bounds for T, u_s, speed_tangential, phi_k, theta_k
-            ubx = [
-                1e5,
-                10,
-                500,
-            ]  # Upper bounds for T, u_s, speed_tangential, phi_k, theta_k
+        lbx = []
+        ubx = []
+        for var in unkown_vars:
+            lbx.append(DEFAULT_BOUNDS[var][0])
+            ubx.append(DEFAULT_BOUNDS[var][1])
    
         # Bounds for the constraints
         lbg = [0] * self.residual.size1()  # Lower bounds (0 for residuals)
@@ -253,3 +240,19 @@ class State(KiteKinematics, Tether, Wind, Kite):
         
         # Create and return the CasADi function
         return ca.Function(attribute_name, variables, [expression], names, [attribute_name])
+    
+    def solver_options(self):
+        """
+        Define the solver options for the NLP problem.
+
+        :param print_level: Verbosity level of the solver.
+        :return: Dictionary of solver options.
+        """
+        return {
+            "ipopt": {
+                "print_level": 0,  # Suppresses IPOPT output
+                # 'max_iter': 200,  # Maximum number of iterations
+                "sb": "yes",  # Suppresses more detailed solver information
+            },
+            "print_time": False,  # Disables CasADi's internal timing output
+        }
