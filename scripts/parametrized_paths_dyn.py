@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from picawe.parametrized_patterns import Helix, Lissajous, FigureEight
 from picawe.Kinematics import ParametrizedKinematics
-from picawe import State
+from picawe import SystemModel
 import casadi as ca
 import time as timet
 import json
@@ -21,15 +21,15 @@ with open(file_path, "r") as file:
 # Define the parametrized path
 # -----------------------------------------------
 omega = -1
-x0 = 200
-rh = 60
-vr = 2
+r0 = 200
+d0 = 100
+vr = 2.4
 beta = np.radians(30)
 ry = 120
 rz = 40
-helix = Helix(omega, x0, rh, vr, beta)
-lissajous = Lissajous(omega, x0, ry, rz, vr, beta)
-figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
+helix = Helix(omega, r0, d0, vr, beta, kappa = 0)
+lissajous = Lissajous(omega, r0, ry, rz, vr, beta, kappa = 0)
+figure_eight = FigureEight(omega, r0, 80, 80, vr, beta)
 
 pattern = helix
 kinematics = ParametrizedKinematics(pattern)
@@ -69,10 +69,10 @@ dot_vr_func = ca.Function(
 # -----------------------------------------------
 # Define the system
 # -----------------------------------------------
-state = State(mass_wing=40, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
+kite_model = SystemModel(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=3, quasi_steady=True)
 
-state.speed_wind = 10
-state.input_depower = 0
+kite_model.speed_wind = 10
+kite_model.input_depower = 0
 
 
 solver_options = {
@@ -84,13 +84,13 @@ solver_options = {
     "print_time": False,  # Disables CasADi's internal timing output
 }
 time_step = 0.1
-time = np.arange(0, 300, time_step)
+time = np.arange(0, 200, time_step)
 s = np.pi/2
 s_dot = 0.1
 vk = 20
 states = []
 unknown_vars = ["tension_tether_ground", "input_steering", "s_dot"]
-qs_guess = [200, 0, 10]
+qs_guess = [1e4, 0, 40]
 
 start_time = timet.time()
 
@@ -103,36 +103,37 @@ current_state = {
 }
 
 s_dot_sym = ca.SX.sym("s_dot")
-state.s_dot = s_dot_sym
+kite_model.s_dot = s_dot_sym
 s_sym = ca.SX.sym("s")
 time_sym = ca.SX.sym("time")
-state.speed_tangential = vtau_func(time_sym, s_sym, s_dot_sym)
-state.angle_course = chi_func(time_sym, s_sym, s_dot_sym)
-state.timeder_angle_course = dot_chi_func(time_sym, s_sym, s_dot_sym)
-state.distance_radial = pattern.r(time_sym)
-state.angle_elevation = pattern.elevation(time_sym, s_sym)
-state.angle_azimuth = pattern.azimuth(time_sym, s_sym)
-state.speed_radial = vr_func(time_sym)
+kite_model.speed_tangential = vtau_func(time_sym, s_sym, s_dot_sym)
+kite_model.angle_course = chi_func(time_sym, s_sym, s_dot_sym)
+kite_model.timeder_angle_course = dot_chi_func(time_sym, s_sym, s_dot_sym)
+kite_model.distance_radial = pattern.r(time_sym)
+kite_model.angle_elevation = pattern.elevation(time_sym, s_sym)
+kite_model.angle_azimuth = pattern.azimuth(time_sym, s_sym)
+kite_model.speed_radial = vr_func(time_sym)
 
 
-solve_func, inputs_name = state.solve_quasi_steady_state(
+solve_func, inputs_name = kite_model.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
 
 # Solve quasi-steady state
 p = [current_state[name] for name in inputs_name]
 
-lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+lbx,ubx,lbg,ubg = kite_model.get_boundaries(unknown_vars)
 
 sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+qs_guess = [float(sol['x'][0]), float(sol['x'][1]), 0]
 s_dot = float(sol['x'][2])
 current_state["s_dot"] = float(sol['x'][2])
 s_ddot_sym = ca.SX.sym("s_ddot")
-state.s_ddot = s_ddot_sym
-state.timeder_speed_tangential = dot_vtau_func(time_sym, s_sym, s_dot_sym, s_ddot_sym)
-state.timeder_speed_radial = dot_vr_func(time_sym, s_sym, s_dot_sym, s_ddot_sym)
+kite_model.s_ddot = s_ddot_sym
+kite_model.timeder_speed_tangential = dot_vtau_func(time_sym, s_sym, s_dot_sym, s_ddot_sym)
+kite_model.timeder_speed_radial = dot_vr_func(time_sym, s_sym, s_dot_sym, s_ddot_sym)
 unknown_vars = ["tension_tether_ground", "input_steering", "s_ddot"]
-solve_func, inputs_name = state.solve_quasi_steady_state(
+solve_func, inputs_name = kite_model.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
 
@@ -154,7 +155,7 @@ for i in range(len(time)):
     # Solve quasi-steady state
     p = [current_state[name] for name in inputs_name]
 
-    lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+    lbx,ubx,lbg,ubg = kite_model.get_boundaries(unknown_vars)
     sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
     qs_guess = sol['x']
     # print(qs_guess)

@@ -3,7 +3,7 @@ import pandas as pd
 import json
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # For 3D trajectory plot
-from picawe import State
+from picawe import SystemModel
 import time as timet
 
 # -----------------------------------------------
@@ -18,7 +18,7 @@ with open(file_path, "r") as file:
 # -----------------------------------------------
 # Define the system and initial state
 # -----------------------------------------------
-state = State(
+kite_model = SystemModel(
     mass_wing=15,
     area_wing=20,
     aero_input=aero_input,
@@ -28,10 +28,10 @@ state = State(
 )
 
 # Set constant parameters
-state.speed_wind = 10
-state.input_depower = 0.0
-state.timeder_speed_radial = 0.0
-state.input_steering = 0.0
+kite_model.speed_wind = 10
+kite_model.input_depower = 0.0
+kite_model.timeder_speed_radial = 0.0
+kite_model.input_steering = 0.0
 
 
 # Initial conditions
@@ -64,17 +64,17 @@ solver_options = {
 }
 time_step = 0.01
 time = np.arange(0, 50, time_step)
-state.establish_residual()
+kite_model.establish_residual()
 # -----------------------------------------------
 # Solve the quasi-steady state and initialize variables
 # -----------------------------------------------
-solve_qs, inputs_name = state.solve_quasi_steady_state(
+solve_qs, inputs_name = kite_model.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
 # Solve quasi-steady state
 p = [{**current_state,**accelerations}[name] for name in inputs_name]
 
-lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+lbx,ubx,lbg,ubg = kite_model.get_boundaries(unknown_vars)
 sol = solve_qs(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)['x']
 current_state["speed_tangential"] = float(sol[2])
 current_state = {**current_state, 
@@ -89,9 +89,9 @@ x0 = [x for x in current_state.values()]
 states = []
 
 # Extract functions
-aoa_func = state.extract_function("angle_of_attack")
-state.establish_ode()
-state.establish_algebraic()
+aoa_func = kite_model.extract_function("angle_of_attack")
+kite_model.establish_ode()
+kite_model.establish_algebraic()
 start_time = timet.time()
 # -----------------------------------------------
 # Time integration loop
@@ -99,7 +99,7 @@ start_time = timet.time()
 for t in time:
     try:
         # Integrate system dynamics
-        xf, zf = state.integrate(x0, t, time_step)
+        xf, zf = kite_model.integrate(x0, t, time_step)
     except Exception as e:
         print("Integration failed at time: ", t)
         print(e)
