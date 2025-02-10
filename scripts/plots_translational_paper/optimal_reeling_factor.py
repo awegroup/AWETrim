@@ -1,16 +1,16 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-from picawe.parametrized_patterns import Helix, Lissajous, FigureEight
-from picawe.Kinematics import ParametrizedKinematics
-from picawe import State
+from picawe.kinematics.parametrized_patterns import Helix, Lissajous, FigureEight
+from picawe.kinematics.Kinematics import ParametrizedKinematics
+from picawe import SystemModel
 import casadi as ca
 import time as timet
 import json
 import os
-from picawe.color_palette import get_color_list, set_plot_style, set_plot_style_no_latex
+from picawe.utils.color_palette import get_color_list, set_plot_style, set_plot_style_no_latex
 
-save_folder = "./results/plots_point_mass/"
+save_folder = "./results/figures/translational_paper/"
 # -----------------------------------------------
 # Load data and define aerodynamic model
 # -----------------------------------------------
@@ -43,7 +43,7 @@ aero_input =    {
 # Define the state
 # -----------------------------------------------
 # State.__bases__ = (KiteKinematics, Tether, Wind, RigidKite)
-state = State(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll")
+state = SystemModel(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll")
 
 speed_wind = 10
 state.speed_wind = speed_wind

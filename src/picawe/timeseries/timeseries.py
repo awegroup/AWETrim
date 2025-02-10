@@ -1,6 +1,6 @@
 from picawe import SystemModel
 import numpy as np
-from picawe.defaults import PLOT_PARAMETERS, PLOT_LABELS
+from picawe.utils.defaults import PLOT_PARAMETERS, PLOT_LABELS
 import matplotlib.pyplot as plt
 from matplotlib import animation
 from matplotlib.widgets import Slider

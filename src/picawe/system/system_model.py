@@ -1,10 +1,10 @@
 import casadi as ca
 import numpy as np
-from picawe.Tether import Tether
-from picawe.Kinematics import KiteKinematics
-from picawe.Wind import Wind
-from picawe.Kite import Kite
-from picawe.defaults import DEFAULT_BOUNDS
+from picawe.system.tether import Tether
+from picawe.system.kite import Kite
+from picawe.kinematics.Kinematics import KiteKinematics
+from picawe.environment.Wind import Wind
+from picawe.utils.defaults import DEFAULT_BOUNDS
 
 
 class SystemModel(KiteKinematics, Tether, Wind, Kite):

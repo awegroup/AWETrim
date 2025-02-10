@@ -1,7 +1,7 @@
 from picawe.timeseries.timeseries import TimeSeries
-from picawe.parametrized_patterns import ParametrizedPatterns
+from picawe.kinematics.parametrized_patterns import ParametrizedPatterns
 from picawe import SystemModel
-from picawe.Kinematics import ParametrizedKinematics
+from picawe.kinematics.Kinematics import ParametrizedKinematics
 import casadi as ca
 import numpy as np
 

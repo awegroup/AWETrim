@@ -1,8 +1,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-from picawe.parametrized_patterns import Helix, Lissajous, FigureEight
-from picawe.Kinematics import ParametrizedKinematics
+from picawe.kinematics.parametrized_patterns import Helix, Lissajous, FigureEight
+from picawe.kinematics.Kinematics import ParametrizedKinematics
 from picawe import SystemModel
 import casadi as ca
 import time as timet

@@ -1,5 +1,5 @@
 import casadi as ca
-from picawe.reference_frames import transformation_C_from_W
+from picawe.utils.reference_frames import transformation_C_from_W
 class Wind:
     def __init__(self):
         self.define_symbolic_variables_wind()

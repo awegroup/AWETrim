@@ -1,5 +1,5 @@
 import casadi as ca
-from picawe.reference_frames import transformation_AZR_from_W
+from picawe.utils.reference_frames import transformation_AZR_from_W
 
 
 class Position:
@@ -78,6 +78,7 @@ class Position:
 class KiteKinematics(Position):
 
     def __init__(self):
+        super().__init__()  # Initialize the base class
         self._timeder_speed_tangential = ca.SX.sym("timeder_speed_tangential")
         self._timeder_speed_radial = ca.SX.sym("timeder_speed_radial")
         self._define_symbolic_variables_kin()

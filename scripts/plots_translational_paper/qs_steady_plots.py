@@ -1,21 +1,18 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-from picawe.parametrized_patterns import Helix, Lissajous, FigureEight
-from picawe.Kinematics import ParametrizedKinematics, KiteKinematics
-from picawe import State
+from picawe.kinematics.parametrized_patterns import Helix, Lissajous, FigureEight
+from picawe.kinematics.Kinematics import ParametrizedKinematics, KiteKinematics
+from picawe import SystemModel
 import casadi as ca
 import time as timet
 import json
-from picawe.Tether import Tether
-from picawe.Wind import Wind
-from picawe.RigidKite import RigidKite
-from picawe.color_palette import get_color_list, set_plot_style, set_plot_style_no_latex
+from picawe.utils.color_palette import get_color_list, set_plot_style, set_plot_style_no_latex
 
 # -----------------------------------------------
 # Load data and define aerodynamic model
 # -----------------------------------------------
-save_folder = "./results/plots_point_mass/"
+save_folder = "./results/figures/translational_paper/"
 set_plot_style()
 # Define aerodynamic input
 file_path = "./data/v3_aero_input.json"
@@ -40,7 +37,7 @@ aero_input =    {
 # Define the state
 # -----------------------------------------------
 # State.__bases__ = (KiteKinematics, Tether, Wind, RigidKite)
-state = State(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll")
+state = SystemModel(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll")
 
 speed_wind = 10
 state.speed_wind = speed_wind
@@ -76,7 +73,7 @@ for i, elevation in enumerate(angles_elevation):
         }
         p = [current_state[name] for name in inputs_name]
 
-        lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+        lbx,ubx,lbg,ubg = state.get_boundaries(unknown_vars)
         sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
         qs_guess = sol["x"]
@@ -114,7 +111,7 @@ for i, azimuth in enumerate(angles_azimuth):
         }
         p = [current_state[name] for name in inputs_name]
 
-        lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+        lbx,ubx,lbg,ubg = state.get_boundaries(unknown_vars)
         sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
         qs_guess = sol["x"]
@@ -142,7 +139,9 @@ plt.figure(figsize=(5, 4))
 X = []
 Y = []
 Z = []
+
 for state_i in elevation_states:
+
     X.append(state_i["angle_course"] * 180 / np.pi)
     Y.append(state_i["speed_tangential"] / speed_wind)
     Z.append(state_i["angle_elevation"] * 180 / np.pi)
@@ -214,7 +213,7 @@ for i, course in enumerate(angles_course):
         }
         p = [current_state[name] for name in inputs_name]
 
-        lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+        lbx,ubx,lbg,ubg = state.get_boundaries(unknown_vars)
         sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
         qs_guess = sol["x"]
@@ -276,7 +275,7 @@ solve_func, inputs_name = state.solve_quasi_steady_state(
         unknown_vars
     )
 
-speeds_radial = np.linspace(-10, 0, 500)
+speeds_radial = np.linspace(-5, 0, 500)
 angles_course = [0]
 
 course_states = []
@@ -294,13 +293,12 @@ for i, course in enumerate(angles_course):
         }
         p = [current_state[name] for name in inputs_name]
 
-        lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+        lbx,ubx,lbg,ubg = state.get_boundaries(unknown_vars)
         sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
         qs_guess = sol["x"]
         if np.linalg.norm(sol["g"]) > 1:
             print(sol["g"])
-            break
         else:
             qs_state = {name: float(sol["x"][i]) for i, name in enumerate(unknown_vars)}
 

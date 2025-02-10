@@ -1,6 +1,6 @@
 import casadi as ca
-from picawe.utils import skew_symmetric
-from picawe.reference_frames import transformation_C_from_W, transformation_C_from_A, transformation_C_from_K
+from picawe.utils.utils import skew_symmetric
+from picawe.utils.reference_frames import transformation_C_from_W, transformation_C_from_A, transformation_C_from_K
 
 
 
