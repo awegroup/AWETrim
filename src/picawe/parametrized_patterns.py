@@ -7,74 +7,82 @@ class ParametrizedPatterns(ABC):
         pass
 
     def x(self, t, s):
-        return self.xd(t, s)*ca.cos(self.beta) - self.zd(s)*ca.sin(self.beta)
+        return self.xd(t, s)*ca.cos(self.beta) - self.zd(t,s)*ca.sin(self.beta)
 
     def z(self, t, s):
-        return self.xd(t, s)*ca.sin(self.beta) + self.zd(s)*ca.cos(self.beta)
+        return self.xd(t, s)*ca.sin(self.beta) + self.zd(t,s)*ca.cos(self.beta)
     
-    def y(self, s):
-        return self.yd(s)
+    def y(self, t,s):
+        return self.yd(t,s)
     
     def azimuth(self, t, s):
-        return ca.atan2(self.y(s), self.xd(t, s))
+        return ca.atan2(self.y(t,s), self.x(t, s)) 
     
     def elevation(self, t, s):
-        return ca.atan2(self.z(t,s), ca.sqrt(self.xd(t, s)**2 + self.y(s)**2))
-
+        return ca.atan2(self.z(t,s), ca.sqrt(self.x(t, s)**2 + self.y(t,s)**2)) 
 
 
 class Helix(ParametrizedPatterns):
 
-    def __init__(self, omega, r0, rh, vr, beta):
+    def __init__(self, omega, r0, d0, vr, beta, kappa = 1):
         self.omega = omega
         self.r0 = r0
-        self.rh = rh
+        self.d0 = d0
         self.vr = vr
         self.beta = beta
+        self.kappa = kappa
 
      
+    def d(self, t):
+        return self.d0*(1 + self.kappa*(self.r(t)/self.r0-1))
     
     def r(self, t):
         return self.r0 + self.vr*t
     
-    def yd(self, s):
-        return self.rh*ca.sin(self.omega * s)
+    def yd(self, t,s):
+        return self.d(t)/2*ca.sin(self.omega * s)
     
-    def zd(self, s):
-        return self.rh*ca.cos(self.omega * s)
+    def zd(self, t,s):
+        return self.d(t)/2*ca.cos(self.omega * s)
     
     def xd(self, t, s):
         r = self.r(t)
-        yd = self.yd(s)
-        zd = self.zd(s)
+        yd = self.yd(t,s)
+        zd = self.zd(t,s)
         return ca.sqrt(r**2 - yd**2 - zd**2)
 
 
 class Lissajous(ParametrizedPatterns):
 
-    def __init__(self, omega, r0, ry, rz, vr, beta):
+    def __init__(self, omega, r0, a0, h0, vr, beta, kappa = 1):
         self.omega = omega
         self.r0 = r0
-        self.ry = ry
-        self.rz = rz
+        self.a0 = a0
+        self.h0 = h0
         self.vr = vr
         self.beta = beta
+        self.kappa = kappa
 
      
+    def a(self, t):
+        return self.a0*(1 + self.kappa*(self.r(t)/self.r0-1))
+    
+    def h(self, t):
+        return self.h0*(1 + self.kappa*(self.r(t)/self.r0-1))
     
     def r(self, t):
         return self.r0 + self.vr*t
     
-    def yd(self, s):
-        return self.ry*ca.cos(self.omega * s)
+    def yd(self, t,s):
+        return self.a(t)*ca.cos(self.omega * s)
     
-    def zd(self, s):
-        return self.rz*ca.sin(2*self.omega * s)
+    def zd(self, t,s):
+        return self.h(t)*ca.sin(2*self.omega * s)
     
     def xd(self, t, s):
         r = self.r(t)
-        yd = self.yd(s)
-        zd = self.zd(s)
+        yd = self.yd(t,s)
+        zd = self.zd(t,s)
         return ca.sqrt(r**2 - yd**2 - zd**2)
     
 
