@@ -29,6 +29,8 @@ class Wing:
         }
         for var_name in base_symbolic_variables.keys():
             setattr(self, var_name, ca.SX.sym(var_name))
+    
+    @property
     def aerodynamic_force_coefficients(self):
         aero_input = self.aero_input
         # Define symbolic variables
@@ -49,6 +51,7 @@ class Wing:
             CD0 = aero_input["params"]["CD0"]
             C_L = 2 * ca.pi * variables["alpha"]
             C_D = C_L**2 / (ca.pi * e * AR) + CD0
+            C_S = 0
         elif aero_input["model"] == "coeffs":
             C_L = aero_input["params"].get("CL0", 0)
             C_D = aero_input["params"].get("CD0", 0)
@@ -80,6 +83,13 @@ class Wing:
         
 
         return C_L, C_D, C_S
+    @property
+    def lift_coefficient(self):
+        return self.aerodynamic_force_coefficients[0]
+    
+    @property
+    def drag_coefficient(self):
+        return self.aerodynamic_force_coefficients[1]
     
     def aerodynamic_moment_coefficients(self):
         aero_input = self.aero_input
@@ -163,7 +173,7 @@ class Wing:
         """
         V_a_sq = ca.mtimes(self.velocity_apparent_wind.T, self.velocity_apparent_wind)
 
-        CL, CD, CS = self.aerodynamic_force_coefficients()
+        CL, CD, CS = self.aerodynamic_force_coefficients
         # Aerodynamic forces
         D = 0.5 * self.rho * V_a_sq * self.area_wing * CD
         L = 0.5 * self.rho * V_a_sq * self.area_wing * CL
@@ -292,7 +302,7 @@ class Kite(Wing):
         # LHS and RHS
         lhs = (self.mass_wing+self.mass_kcu) * self.acceleration()
         # Residual
-        return lhs - self.force_external
+        return -lhs + self.force_external
 
     @property
     def aero_moment(self):
