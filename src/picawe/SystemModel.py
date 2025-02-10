@@ -224,22 +224,31 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
 
     def extract_function(self, attribute_name):
         """Extract a CasADi function dynamically based on the attribute name."""
-        # Get the expression from the attribute name
+        
+        # Ensure the attribute exists
         if not hasattr(self, attribute_name):
             raise AttributeError(f"'State' object has no attribute '{attribute_name}'")
         
         expression = getattr(self, attribute_name)
-        
-        # Find all symbolic variables used in the expression
+
+        # If the expression is a DM (numerical constant), return a constant function
+        if isinstance(expression, ca.DM) or isinstance(expression, (int, float)):
+            return ca.Function(attribute_name, [], [expression], [], [attribute_name])
+
+        # If the expression is neither SX nor MX, it is not symbolic and should be handled
+        if not isinstance(expression, (ca.SX, ca.MX)):
+            raise TypeError(f"Expected symbolic expression (SX or MX), but got {type(expression)} for '{attribute_name}'")
+
+        # Extract symbolic variables from the expression
         variables = ca.symvar(expression)
-        
-        # Sort the variables by name for consistent ordering
+
+        # Sort variables by name for consistent ordering
         variables.sort(key=lambda x: x.name())
 
         names = [var.name() for var in variables]
-        
+
         # Create and return the CasADi function
-        return ca.Function(attribute_name, variables, [expression], names, [attribute_name])
+        return ca.Function(attribute_name, variables, [expression], names, [attribute_name], {"allow_duplicate_io_names": True})
     
     def solver_options(self):
         """

@@ -1,7 +1,81 @@
 import casadi as ca
+from picawe.reference_frames import transformation_AZR_from_W
 
 
-class KiteKinematics:
+class Position:
+    """Position of the point particle representing the kite in the inertial reference frame (spherical)
+
+    Attributes:
+        distance_radial (float or None): Radius of point particle w.r.t. origin [m].
+        angle_azimuth (float or None): Azimuth angle of point particle w.r.t. GRF's x-axis [rad].
+        angle_elevation (float or None): Angle of point particle w.r.t. GRF's x,y-plane [rad] (= pi/2 - polar angle).
+    """
+
+    def __init__(self):
+        """
+        Args:
+            distance_radial (float, optional): Value for `straight_tether_length` attribute.
+            angle_azimuth (float, optional): Value for `azimuth_angle` attribute.
+            angle_elevation (float, optional): Value for `elevation_angle` attribute.
+
+        """
+
+        # Spherical coordinates of point particle in ground reference frame.
+        self._angle_azimuth = ca.SX.sym("angle_azimuth")
+        self._angle_elevation = ca.SX.sym("angle_elevation")
+        self._distance_radial = ca.SX.sym("distance_radial")
+
+    @property
+    def angle_azimuth(self):  # We cache these as properties because they are overridden in ParameterizedKinematics
+        return self._angle_azimuth
+
+    @angle_azimuth.setter
+    def angle_azimuth(self, val):
+        self._angle_azimuth = val
+
+    @property
+    def angle_elevation(self):
+        return self._angle_elevation
+
+    @angle_elevation.setter
+    def angle_elevation(self, val):
+        self._angle_elevation = val
+
+    @property
+    def distance_radial(self):
+        return self._distance_radial
+
+    @distance_radial.setter
+    def distance_radial(self, val):
+        self._distance_radial = val
+
+    @property
+    def polar_angle(self):
+        return ca.pi/2 - self.angle_elevation
+
+    @property
+    def x(self):
+        return self.position_W[0]
+
+    @property
+    def y(self):
+        return self.position_W[1]
+
+    @property
+    def z(self):
+        return self.position_W[2]
+
+    @property
+    def position(self):
+        return ca.vertcat(0, 0, self.distance_radial)
+    
+    @property
+    def position_W(self):
+        return ca.transpose(transformation_AZR_from_W(self.angle_azimuth, self.angle_elevation)) @ self.position
+
+
+
+class KiteKinematics(Position):
 
     def __init__(self):
         self._timeder_speed_tangential = ca.SX.sym("timeder_speed_tangential")
@@ -16,10 +90,7 @@ class KiteKinematics:
             "speed_tangential": "speed_tangential",
             "speed_radial": "speed_radial",
             "timeder_angle_course": "timeder_angle_course",
-            "distance_radial": "distance_radial",
             "angle_course": "angle_course",
-            "angle_elevation": "angle_elevation",
-            "angle_azimuth": "angle_azimuth",
         }
         for var_name in base_symbolic_variables.keys():
             setattr(self, var_name, ca.SX.sym(var_name))
@@ -69,7 +140,7 @@ class KiteKinematics:
         )
 
 
-    
+ 
 
 class ParametrizedKinematics:
 
