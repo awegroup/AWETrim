@@ -10,7 +10,7 @@ import json
 import os
 from picawe.utils.color_palette import get_color_list, set_plot_style, set_plot_style_no_latex
 
-save_folder = "./results/plots_point_mass/"
+save_folder = "./results/figures/translational_paper/"
 # -----------------------------------------------
 # Load data and define aerodynamic model
 # -----------------------------------------------
@@ -43,127 +43,115 @@ aero_input =    {
 # Define the state
 # -----------------------------------------------
 # State.__bases__ = (KiteKinematics, Tether, Wind, RigidKite)
-mass_wing = 80
+mass_wing = 0
 state = SystemModel(mass_wing=mass_wing, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll")
 
-speed_wind = 18
+speed_wind = 15
 state.speed_wind = speed_wind
 state.input_depower = 0
 state.timeder_angle_course = 0
 state.distance_radial = 200
 
+
+unknown_vars = ["tension_tether_ground", "angle_roll", "speed_tangential"]
+solve_func, inputs_name = state.solve_quasi_steady_state(unknown_vars)
+current_state = {
+    "distance_radial": 200,
+    "angle_elevation": 0,
+    "angle_azimuth": 0,
+    "angle_course": np.pi/2,
+    "speed_radial": 0,
+}
+p = [current_state[name] for name in inputs_name]
+# print(p)
+lbx,ubx,lbg,ubg = state.get_boundaries(unknown_vars)
+# print(lbx,ubx,lbg,ubg)
+sol = solve_func(x0=[10000,0,100], p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+CL_fun = state.extract_function("lift_coefficient")
+CD_fun = state.extract_function("drag_coefficient")
+qs_state = {name:sol["x"][i] for i,name in enumerate(unknown_vars)}
+full_state = {**current_state, **qs_state}
+CL = CL_fun(*[full_state[name] for name in CL_fun.name_in()])
+CD = CD_fun(*[full_state[name] for name in CD_fun.name_in()])
+print(CL, CD)
+
+
+state.mass_wing = 40
 solver_options = {
     "ipopt": {"print_level": 0, "sb": "yes","tol": 1e-8,},
     "print_time": False,
 }
 # state.override_gravity = True
-state.establish_residual()
-variables = ca.symvar(state.residual)
-name_vars = [var.name() for var in variables]
-residual = ca.Function("residual", variables, [state.residual], name_vars, ["residual"])
-print(residual)
-angles_elevation = np.linspace(0, 90, 10)/180*np.pi
-angles_course = [np.pi/2, 0, np.pi]
-f_el = np.zeros((len(angles_elevation), len(angles_course)))
-ft_el = np.zeros((len(angles_elevation), len(angles_course)))
-for i, beta in enumerate(angles_elevation):
-        speed_tangential_i = 30
-        tension_tether_i = 1000
-        for k,angle_course in enumerate(angles_course):
-            opti = ca.Opti()  
-            reeling_factor = opti.variable()   
-            speed_tangential = opti.variable()
-            angle_roll = opti.variable()
-            tension_tether = opti.variable()
-            opti.subject_to(residual(angle_course = angle_course,
-                                    angle_azimuth = 0,
-                                        angle_elevation = beta,
-                                        speed_tangential = speed_tangential,
-                                        angle_roll = angle_roll,
-                                        # speed_wind = speed_wind,
-                                        speed_radial = reeling_factor*speed_wind,
-                                        tension_tether_ground = tension_tether)["residual"] == 0)
-            
-            opti.subject_to(0 <= (reeling_factor <= 0.4))
-            opti.subject_to(mass_wing*9.81 <= (tension_tether))
-            opti.subject_to(0 <= (speed_tangential))
-            opti.set_initial(reeling_factor, 0.3)
-            opti.set_initial(speed_tangential, 50)
-            opti.set_initial(angle_roll, 0)
-            opti.set_initial(tension_tether, 1e4)
-            opti.minimize(-tension_tether*reeling_factor*speed_wind)
-            opti.solver("ipopt", solver_options)
-            try:
-                sol = opti.solve()
-                f_el[i,k] = sol.value(reeling_factor)
-                ft_el[i,k] = sol.value(tension_tether)
-                speed_tangential_i = sol.value(speed_tangential)
-                tension_tether_i = sol.value(tension_tether)
-            except:
-                f_el[i,k] = np.nan
-                ft_el[i,k] = np.nan
-                print("Failed at elevation angle: ", beta, " and course angle: ", angle_course)
+colors = get_color_list()
+plt.figure(figsize=(5,4))
+wind_speeds = [15, 10, 5]
+for vwi,speed_wind in enumerate(wind_speeds):
+    state.speed_wind = speed_wind
+    state.establish_residual()
+    variables = ca.symvar(state.residual)
+    name_vars = [var.name() for var in variables]
+    residual = ca.Function("residual", variables, [state.residual], name_vars, ["residual"])
 
-angles_azimuth = np.linspace(0, 90, 10)/180*np.pi
-f_az = np.zeros((len(angles_azimuth), len(angles_course)))
-ft_az = np.zeros((len(angles_azimuth), len(angles_course)))
-for i, phi in enumerate(angles_azimuth):
-        speed_tangential_i = 30
-        tension_tether_i = 1000
-        for k,angle_course in enumerate(angles_course):
-            opti = ca.Opti()  
-            reeling_factor = opti.variable()   
-            speed_tangential = opti.variable()
-            angle_roll = opti.variable()
-            tension_tether = opti.variable()
-            opti.subject_to(residual(angle_course = angle_course,
-                                    angle_azimuth = phi,
-                                        angle_elevation = 0,
-                                        speed_tangential = speed_tangential,
-                                        angle_roll = angle_roll,
-                                        # speed_wind = speed_wind,
-                                        speed_radial = reeling_factor*speed_wind,
-                                        tension_tether_ground = tension_tether)["residual"] == 0)
-            
-            opti.subject_to(0 <= (reeling_factor <= 0.4))
-            opti.subject_to(mass_wing*9.81 <= (tension_tether))
-            opti.subject_to(0 <= (speed_tangential))
-            opti.set_initial(reeling_factor, 0.3)
-            opti.set_initial(speed_tangential, 50)
-            opti.set_initial(angle_roll, 0)
-            opti.set_initial(tension_tether, 1e4)
-            opti.minimize(-tension_tether*reeling_factor*speed_wind)
-            opti.solver("ipopt", solver_options)
-            try:
-                sol = opti.solve()
-                f_az[i,k] = sol.value(reeling_factor)
-                ft_az[i,k] = sol.value(tension_tether)
-                speed_tangential_i = sol.value(speed_tangential)
-                tension_tether_i = sol.value(tension_tether)
-            except:
-                f_az[i,k] = np.nan
-                ft_az[i,k] = np.nan
-                print("Failed at azimuth angle: ", phi, " and course angle: ", angle_course)
+    print(residual)
+    angles_elevation = np.linspace(0, 60, 10)/180*np.pi
+    angles_course = np.linspace(0, np.pi, 5)
+    angles_azimuth = np.linspace(0, 50, 10)/180*np.pi
+    f = np.zeros((len(angles_azimuth), len(angles_elevation), len(angles_course)))
+    ft = np.zeros((len(angles_azimuth), len(angles_elevation), len(angles_course)))
 
+    for i, phi in enumerate(angles_azimuth):
+            speed_tangential_i = 30
+            tension_tether_i = 1000
+            for j, angle_elevation in enumerate(angles_elevation):
+                for k,angle_course in enumerate(angles_course):
+                    opti = ca.Opti()  
+                    reeling_factor = opti.variable()   
+                    speed_tangential = opti.variable()
+                    angle_roll = opti.variable()
+                    tension_tether = opti.variable()
+                    opti.subject_to(residual(angle_course = angle_course,
+                                            angle_azimuth = phi,
+                                                angle_elevation = angle_elevation,
+                                                speed_tangential = speed_tangential,
+                                                angle_roll = angle_roll,
+                                                # speed_wind = speed_wind,
+                                                speed_radial = reeling_factor*speed_wind,
+                                                tension_tether_ground = tension_tether)["residual"] == 0)
+                    
+                    opti.subject_to(0 <= (reeling_factor <= 0.4))
+                    opti.subject_to(mass_wing*9.81 <= (tension_tether))
+                    opti.subject_to(0 <= (speed_tangential))
+                    opti.set_initial(reeling_factor, 0.3)
+                    opti.set_initial(speed_tangential, 50)
+                    opti.set_initial(angle_roll, 0)
+                    opti.set_initial(tension_tether, 1e4)
+                    opti.minimize(-tension_tether*reeling_factor*speed_wind)
+                    opti.solver("ipopt", solver_options)
+                    try:
+                        sol = opti.solve()
+                        f[i,j,k] = sol.value(reeling_factor)
+                        ft[i,j,k] = sol.value(tension_tether)
+                        speed_tangential_i = sol.value(speed_tangential)
+                        tension_tether_i = sol.value(tension_tether)
+                    except:
+                        f[i,j,k] = np.nan
+                        ft[i,j,k] = np.nan
+                        print("Failed at azimuth angle: ", phi, " and course angle: ", angle_course)
+
+    plt.scatter(f*state.speed_wind, ft, color = colors[vwi+1], alpha = 0.1, label = "$v_w$ = " + str(speed_wind) + " m/s")
 # -----------------------------------------------
 # Plot the results
 # -----------------------------------------------
-colors = get_color_list()
-plt.figure(figsize=(5,4))
-for i, chi in enumerate(angles_course):
-    x = f_el[:,i]*speed_wind
-    y = ft_el[:,i]
-    plt.plot(x,y, label = r"$\chi$ = "+str(chi*180/np.pi)+r"$^\circ$, $\phi$ = 0$^\circ$", color = colors[i])
+CR = np.sqrt(CL**2 + CD**2)
+vr_array = np.linspace(0, 5, 50)
+F_opt = 2*1.225*state.area_wing*CR*vr_array**2*(1+(CL/CD)**2)
 
-for i, chi in enumerate(angles_course):
-    x = f_az[:,i]*speed_wind
-    y = ft_az[:,i]
-    plt.plot(x,y, linestyle = '--', label = r"$\chi$ = "+str(chi*180/np.pi)+r"$^\circ$, $\beta$ = 0$^\circ$", color = colors[i])
 
+plt.plot(vr_array, F_opt, label = "Analytical", color = "black")
 
 plt.ylabel("Tension Tether (N)")
 plt.xlabel("Reeling Speed (m/s)")
 plt.legend()
 plt.tight_layout()
-# plt.savefig(save_folder + "optimal_reeling_speed_force.pdf")
+plt.savefig(save_folder + "optimal_reeling_speed_force.pdf")
 plt.show()
