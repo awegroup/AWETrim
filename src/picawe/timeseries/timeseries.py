@@ -360,12 +360,13 @@ class TimeSeries:
             try:
                 y = self.return_variable(p)
             except AttributeError:
+                print(p)
                 print(f'Cannot plot the trace of attribute {p} as it does not exist. Valid attributes are: '
                       f'{self.states[0].list_traceable_attributes()}')
                 continue
 
             # Plot angles in degrees and if required, unwrap to avoid large discontinuities
-            if 'angle' in p or 'rate' in p:
+            if 'angle' in p or 'rate' in p or p == 's':
                 if unwrap:
                     y = np.unwrap(y)
                 y = np.degrees(y)
@@ -428,8 +429,10 @@ class TimeSeries:
             raise ValueError(f'Interactive plot needs at least 4 parameters to plot')
 
         try:
-            dt = self.states[1].time - self.states[0].time
+            t = self.return_variable('t')
+            dt = t[1] - t[0]
             fps = 1 / dt
+            print(f'Frame rate determined to be {fps} Hz.')  # 24 fps is standard for movies
         except Exception as e:
             print('Could not determine frame rate to animate, using default value.')
             fps = 24
@@ -542,8 +545,8 @@ class TimeSeries:
             anim = animation.FuncAnimation(fig, animate, init_func=init,
                                            frames=len(self.__cached_time), interval=1, blit=True)
 
-            writervideo = animation.FFMpegWriter(fps=fps, bitrate=1e5)
-            anim.save('interactive_plot.mp4', writer=writervideo)
+            writergif = animation.PillowWriter(fps=fps)
+            anim.save("interactive_plot.gif", writer=writergif)
 
         # mng = plt.get_current_fig_manager()
         # mng.window.state('zoomed')
