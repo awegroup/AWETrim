@@ -49,7 +49,10 @@ class PhaseParameterized(TimeSeries):
                 p = [current_state[name] for name in inputs_name]
                 lbx,ubx,lbg,ubg = self.kite_model.get_boundaries(unknown_vars)
                 sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
-                qs_guess = sol["x"]
+                if sol["g"][0] < 1e-3:
+                    qs_guess = sol["x"]
+                else:
+                    print("Warning: Solver did not converge")
 
                 time_step = time_array[i+1]-time_array[i]
                 if self.quasi_steady:
