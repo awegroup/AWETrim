@@ -54,7 +54,7 @@ class Helix(ParametrizedPatterns):
 
 class Lissajous(ParametrizedPatterns):
 
-    def __init__(self, omega, r0, a0, h0, vr, beta, kappa = 1):
+    def __init__(self, omega, r0, a0, h0, vr, beta, kappa = 0):
         self.omega = omega
         self.r0 = r0
         self.a0 = a0
@@ -88,31 +88,38 @@ class Lissajous(ParametrizedPatterns):
 
 class FigureEight(ParametrizedPatterns):
 
-    def __init__(self, omega, r0, ry, rz, vr, beta,ky = 1, kz = 1):
+    def __init__(self, omega, r0, ry, rz, vr, beta,ky = 1, kz = 1, kappa = 0):
         self.omega = omega
         self.r0 = r0
-        self.ry = ry
-        self.rz = rz
+        self.ry0 = ry
+        self.rz0 = rz
         self.vr = vr
         self.beta = beta
         self.ky = ky
         self.kz = kz
+        self.kappa = kappa
 
      
     
     def r(self, t):
         return self.r0 + self.vr*t
     
-    def yd(self, s):
-        return self.ry*ca.cos(self.omega * s)/(1 + self.ky*ca.sin(self.omega * s)**2)
+    def ry(self, t):
+        return self.ry0*(1 + self.kappa*(self.r(t)/self.r0-1))
     
-    def zd(self, s):
-        return self.rz*ca.sin(self.omega * s)*ca.cos(self.omega * s)/(1 + self.kz*ca.sin(self.omega * s)**2)
+    def rz(self, t):
+        return self.rz0*(1 + self.kappa*(self.r(t)/self.r0-1))
+    
+    def yd(self,t, s):
+        return self.ry(t)*ca.cos(self.omega * s)/(1 + self.ky*ca.sin(self.omega * s)**2)
+    
+    def zd(self,t, s):
+        return self.rz(t)*ca.sin(self.omega * s)*ca.cos(self.omega * s)/(1 + self.kz*ca.sin(self.omega * s)**2)
     
     def xd(self, t, s):
         r = self.r(t)
-        yd = self.yd(s)
-        zd = self.zd(s)
+        yd = self.yd(t,s)
+        zd = self.zd(t,s)
         return ca.sqrt(r**2 - yd**2 - zd**2)
     
     # def azimuth(self, t, s):
