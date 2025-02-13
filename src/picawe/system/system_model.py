@@ -22,9 +22,9 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
         E=132e9,
         diameter=0.008,
         density=970,
-        dof = 6,
-        quasi_steady = False,
-        steering_control="asymmetric"  # Default to asymmetric deformation
+        dof=6,
+        quasi_steady=False,
+        steering_control="asymmetric",  # Default to asymmetric deformation
     ):
         """
         Initialize the kite system with its parameters.
@@ -45,7 +45,7 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
         )
         Tether.__init__(self, E, diameter, density)
         self.steering_control = steering_control.lower()
-        
+
         if self.steering_control not in ["asymmetric", "roll"]:
             raise ValueError("Invalid steering_control. Choose 'asymmetric' or 'roll'.")
         if dof == 3:
@@ -60,7 +60,7 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
                 self.angle_roll = 0
 
         if steering_control == "roll":
-            self.steering_input = 0
+            self.angle_roll = self.input_steering
 
         if quasi_steady:
             self.timeder_angle_roll = 0
@@ -72,7 +72,7 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
             self.timeder_length_tether = self.speed_radial
             self.timeder_speed_tangential = 0
             self.timeder_speed_radial = 0
-        
+
         self.dof = dof
         self.quasi_steady = quasi_steady
 
@@ -107,10 +107,11 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
             self.residual = self.rb_residual
         elif self.dof == 3:
             self.residual = self.force_residual()
-    
-    
+
     def solve_quasi_steady_state(
-        self, unknown_vars, solver_options=None
+        self,
+        unknown_vars=["tension_tether_ground", "input_steering", "speed_tangential"],
+        solver_options=None,
     ):
         """
         Solve the quasi-steady state equations for the kite system.
@@ -121,13 +122,13 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
         """
         self.establish_residual()
         x = [getattr(self, name) for name in unknown_vars]
-        
+
         inputs = []
         for var in ca.symvar(self.residual):
             if var.name() not in unknown_vars:
                 inputs.append(var)
         inputs_name = [name.name() for name in inputs]
-        
+
         # NLP problem definition
         nlp = {
             "x": ca.vertcat(*x),
@@ -144,23 +145,26 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
 
         return solver, inputs_name
 
-
     def get_boundaries(self, unkown_vars):
-        
+
         lbx = []
         ubx = []
         for var in unkown_vars:
             lbx.append(DEFAULT_BOUNDS[var][0])
             ubx.append(DEFAULT_BOUNDS[var][1])
-   
+
         # Bounds for the constraints
         lbg = [0] * self.residual.size1()  # Lower bounds (0 for residuals)
         ubg = [0] * self.residual.size1()  # Upper bounds (0 for residuals)
-        
-        
+
         return lbx, ubx, lbg, ubg
 
-
+    @property
+    def mechanical_power(self):
+        """
+        Compute the mechanical power of the kite system.
+        """
+        return self.tension_tether_ground * self.speed_radial
 
     def integrate(self, x0, time, time_step):
 
@@ -173,10 +177,10 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
             self.speed_tangential,
         )
         z = ca.vertcat(
-                self.tension_tether_ground,
-                self.timeder_angle_course,
-                self.timeder_speed_tangential,
-            )
+            self.tension_tether_ground,
+            self.timeder_angle_course,
+            self.timeder_speed_tangential,
+        )
         if self.dof == 6 and not self.quasi_steady:
             x_add = ca.vertcat(
                 self.angle_roll,
@@ -187,20 +191,23 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
                 self.timeder_angle_yaw,
             )
             x = ca.vertcat(x, x_add)
-            z = ca.vertcat(z, self.acceleration_angle_roll, self.acceleration_angle_pitch, self.acceleration_angle_yaw)
+            z = ca.vertcat(
+                z,
+                self.acceleration_angle_roll,
+                self.acceleration_angle_pitch,
+                self.acceleration_angle_yaw,
+            )
 
         if self.quasi_steady:
-            ode = {'x': x, 'ode': self.ode}
-            intg = ca.integrator('intg', 'cvodes', ode, time, time + time_step)
+            ode = {"x": x, "ode": self.ode}
+            intg = ca.integrator("intg", "cvodes", ode, time, time + time_step)
             res = intg(x0=x0)
-            return res['xf']
+            return res["xf"]
         else:
-            
+
             dae = {"x": x, "z": z, "ode": self.ode, "alg": self.algebraic}
 
-            intg = ca.integrator(
-                "intg", "idas", dae, time, time + time_step
-            )
+            intg = ca.integrator("intg", "idas", dae, time, time + time_step)
 
             res = intg(x0=x0)
 
@@ -208,7 +215,6 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
             zf = res["zf"]
             # new_state.update(current_state)
             return new_state, zf
-
 
     def establish_ode(self):
         """
@@ -224,11 +230,11 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
 
     def extract_function(self, attribute_name):
         """Extract a CasADi function dynamically based on the attribute name."""
-        
+
         # Ensure the attribute exists
         if not hasattr(self, attribute_name):
             raise AttributeError(f"'State' object has no attribute '{attribute_name}'")
-        
+
         expression = getattr(self, attribute_name)
 
         # If the expression is a DM (numerical constant), return a constant function
@@ -237,7 +243,9 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
 
         # If the expression is neither SX nor MX, it is not symbolic and should be handled
         if not isinstance(expression, (ca.SX, ca.MX)):
-            raise TypeError(f"Expected symbolic expression (SX or MX), but got {type(expression)} for '{attribute_name}'")
+            raise TypeError(
+                f"Expected symbolic expression (SX or MX), but got {type(expression)} for '{attribute_name}'"
+            )
 
         # Extract symbolic variables from the expression
         variables = ca.symvar(expression)
@@ -248,8 +256,15 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
         names = [var.name() for var in variables]
 
         # Create and return the CasADi function
-        return ca.Function(attribute_name, variables, [expression], names, [attribute_name], {"allow_duplicate_io_names": True})
-    
+        return ca.Function(
+            attribute_name,
+            variables,
+            [expression],
+            names,
+            [attribute_name],
+            {"allow_duplicate_io_names": True},
+        )
+
     def solver_options(self):
         """
         Define the solver options for the NLP problem.
