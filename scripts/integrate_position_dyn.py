@@ -4,6 +4,7 @@ import json
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D  # For 3D trajectory plot
 from picawe import SystemModel
+from picawe.system.kite import Kite
 import time as timet
 
 # -----------------------------------------------
@@ -18,19 +19,18 @@ with open(file_path, "r") as file:
 # -----------------------------------------------
 # Define the system and initial state
 # -----------------------------------------------
+kite = Kite(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, steering_control="asymmetric")
 kite_model = SystemModel(
-    mass_wing=15,
-    area_wing=20,
-    aero_input=aero_input,
-    mass_kcu=25,
     dof=6,
-    center_gravity_wing=[0, 0, 12],
+    quasi_steady=False,
+    wind_model="uniform",
+    kite=kite,
 )
 
 # Set constant parameters
 kite_model.speed_wind_ref = 10
 kite_model.input_depower = 0.0
-kite_model.timeder_speed_radial = 0.0
+kite_model.timeder_speed_radial = -0.5
 kite_model.input_steering = 0.0
 
 

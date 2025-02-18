@@ -2,6 +2,7 @@ import h5py
 import pandas as pd
 import numpy as np
 from picawe import SystemModel
+from picawe.system.kite import Kite
 import casadi as ca
 import time
 
@@ -66,7 +67,7 @@ def read_dict_from_group(group):
 
 
 results, flight_data, config_data = read_results("2019", "10", "08", "v3", addition="")
-mask = flight_data.cycle.isin([65])
+mask = flight_data.cycle.isin([64,65])
 mask = mask & (flight_data.tether_reelout_speed > 0.2)
 flight_data = flight_data[mask]
 results = results[mask]
@@ -92,7 +93,8 @@ with open(file_path, "r") as file:
     aero_input = json.load(file)
 
 # Example Usage
-kite_model = SystemModel(mass_wing=15, area_wing=20, mass_kcu=25, aero_input=aero_input, dof=3, quasi_steady=True)
+kite = Kite(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=20, steering_control="asymmetric")
+kite_model = SystemModel(dof=3, quasi_steady=True, kite=kite)
 
 
 
@@ -110,6 +112,7 @@ unknown_vars = [
     "speed_tangential",
 ]
 
+# print(kite_model.tension_tether_ground)
 sideslip_func = kite_model.extract_function("angle_sideslip")
 # T_func = kite_model.extract_function("tension_tether")
 solver_options = {

@@ -8,17 +8,7 @@ class Tether:
         self.area_tether = np.pi * (self.diameter_tether / 2) ** 2
         self.drag_coefficient_tether = 1.1
         self.density_tether = density
-        self.define_symbolic_variables_tether()
-
-    def define_symbolic_variables_tether(self):
-        """
-        Define symbolic variables used in the model.
-        """
-        base_symbolic_variables = {
-            'tension_tether_ground': 'tension_tether_ground',
-        }
-        for var_name in base_symbolic_variables.keys():
-            setattr(self, var_name, ca.SX.sym(var_name))
+        self._tension_tether_ground = ca.SX.sym("tension_tether_ground")
 
 
     @property
@@ -26,7 +16,7 @@ class Tether:
         force_tension = ca.vertcat(0, 0, -self.tension_tether_ground)
         force_drag = self.drag_tether_at_kite
         force_gravity = self.force_gravity_tether_at_kite
-        return force_tension# + force_drag + force_gravity
+        return force_tension #+ force_drag + force_gravity
 
     @property
     def drag_tether_at_kite(self):
@@ -44,3 +34,7 @@ class Tether:
     @property
     def mass_tether(self):
         return self.density_tether * self.distance_radial * self.area_tether
+    
+    @property
+    def tension_tether_ground(self):
+        return self._tension_tether_ground

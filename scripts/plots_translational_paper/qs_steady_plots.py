@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from picawe.kinematics.parametrized_patterns import Helix, Lissajous, FigureEight
 from picawe.kinematics.Kinematics import ParametrizedKinematics, KiteKinematics
+from picawe.system.kite import Kite
 from picawe import SystemModel
 import casadi as ca
 import time as timet
@@ -37,7 +38,8 @@ aero_input =    {
 # Define the state
 # -----------------------------------------------
 # State.__bases__ = (KiteKinematics, Tether, Wind, RigidKite)
-state = SystemModel(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll", wind_model="uniform")
+kite = Kite(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, steering_control="roll")
+state = SystemModel(dof=3, quasi_steady=True, wind_model="uniform", kite=kite)
 
 speed_wind = 10
 state.speed_wind_ref = speed_wind

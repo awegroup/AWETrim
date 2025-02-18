@@ -6,6 +6,7 @@ import casadi as ca
 import time
 from picawe.timeseries.phase import PhaseParameterized
 from picawe.kinematics.parametrized_patterns import FigureEight
+from picawe.system.kite import Kite
 import matplotlib.pyplot as plt
 
 
@@ -97,13 +98,12 @@ quasi_steady = True
 # -----------------------------------------------
 # Define the kite model
 # -----------------------------------------------
+kite = Kite(mass_wing=15, area_wing=19.75, aero_input=aero_input, steering_control="asymmetric")
 kite_model = SystemModel(
-    mass_wing=15,
-    area_wing=19.75,
-    mass_kcu=28,
-    aero_input=aero_input,
     dof=3,
     quasi_steady=quasi_steady,
+    kite=kite,
+    wind_model="logarithmic",
 )
 
 # -----------------------------------------------

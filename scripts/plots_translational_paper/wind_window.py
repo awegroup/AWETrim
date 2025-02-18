@@ -3,6 +3,7 @@ from picawe import SystemModel
 import pandas as pd
 import matplotlib.pyplot as plt
 import time
+from picawe.system.kite import Kite
 import json
 
 
@@ -42,8 +43,8 @@ aero_input =    {
 # -----------------------------------------------
 # Define the state
 # -----------------------------------------------
-# State.__bases__ = (KiteKinematics, Tether, Wind, RigidKite)
-state = SystemModel(mass_wing=120, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll", wind_model="uniform")
+kite = Kite(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, steering_control="roll")
+state = SystemModel( dof=3, quasi_steady=True, wind_model="uniform", kite=kite)
 
 speed_wind = 10
 state.speed_wind_ref = speed_wind

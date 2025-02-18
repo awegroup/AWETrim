@@ -5,47 +5,29 @@ from picawe.system.kite import Kite
 from picawe.kinematics.Kinematics import KiteKinematics
 from picawe.environment.Wind import Wind
 from picawe.utils.defaults import DEFAULT_BOUNDS
+import inspect
 
 
-class SystemModel(KiteKinematics, Tether, Wind, Kite):
+class SystemModel(KiteKinematics):
 
     def __init__(
         self,
-        mass_wing,
-        area_wing,
-        aero_input,
-        mass_kcu=0,
-        g=9.81,
-        rho=1.225,
-        center_aerodynamic_wing=[0, 0, 10],
-        center_gravity_wing=[0, 0, 10],
-        E=132e9,
-        diameter=0.008,
-        density=970,
         dof=6,
         quasi_steady=False,
-        steering_control="asymmetric",  # Default to asymmetric deformation
         wind_model="logarithmic",
+        tether=None,
+        kite = None,
     ):
         """
         Initialize the kite system with its parameters.
         """
         # Define symbolic variables for the function inputs
         KiteKinematics.__init__(self)
-        Wind.__init__(self, model=wind_model)
-        Kite.__init__(
-            self,
-            mass_wing,
-            area_wing,
-            aero_input,
-            mass_kcu,
-            g,
-            rho,
-            center_aerodynamic_wing,
-            center_gravity_wing,
-        )
-        Tether.__init__(self, E, diameter, density)
-        self.steering_control = steering_control.lower()
+        self.define_wind_model(wind_model)
+        self.define_tether_model(tether)
+        self.define_kite_model(kite)
+        
+        self.steering_control = self.steering_control
 
         if self.steering_control not in ["asymmetric", "roll"]:
             raise ValueError("Invalid steering_control. Choose 'asymmetric' or 'roll'.")
@@ -57,10 +39,10 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
             self.acceleration_angle_pitch = 0
             self.acceleration_angle_roll = 0
             self.acceleration_angle_yaw = 0
-            if steering_control == "asymmetric":
+            if self.steering_control == "asymmetric":
                 self.angle_roll = 0
 
-        if steering_control == "roll":
+        if self.steering_control == "roll":
             self.angle_roll = self.input_steering
 
         if quasi_steady:
@@ -76,6 +58,55 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
 
         self.dof = dof
         self.quasi_steady = quasi_steady
+
+
+    def define_kite_model(self, kite):
+        if kite is None:
+            kite = Kite(mass_wing= 20,
+                        area_wing= 20,
+                        aero_input=   {
+                        "model": "inviscid",
+                        "params": {
+                            "CD0": 0.05,
+                            "aspect_ratio": 10,
+                            "oswald_efficiency": 1,
+                            "angle_pitch_depower_0": 0,
+                        }}) 
+            print("Kite model not defined. Using default kite model.")
+                
+        # Inject all tether attributes into SystemModel so they can be accessed directly
+        for attr_name, attr_value in vars(kite).items():
+            setattr(self, attr_name, attr_value)
+        # Copy properties from the component's class and its base classes
+        for cls in inspect.getmro(kite.__class__):
+            for name, obj in cls.__dict__.items():
+                if isinstance(obj, property) and not hasattr(self.__class__, name):
+                    setattr(self.__class__, name, obj)
+
+    def define_tether_model(self, tether):
+        if tether is None:
+            tether = Tether()
+            print("Tether model not defined. Using default tether model.")
+        # Inject all tether attributes into SystemModel so they can be accessed directly
+        for attr_name, attr_value in vars(tether).items():
+            setattr(self, attr_name, attr_value)
+        for prop_name, prop_value in tether.__class__.__dict__.items():
+            if isinstance(prop_value, property):  # ⬅️ Check if it's a @property
+                setattr(SystemModel, prop_name, prop_value)
+
+    def define_wind_model(self, wind_model):
+        if wind_model == "logarithmic"or wind_model == "uniform":
+            wind = Wind(wind_model)
+        else:
+            raise ValueError("Invalid wind model. Choose 'logarithmic' or 'uniform'.")
+
+        # Inject all tether attributes into SystemModel so they can be accessed directly
+        for attr_name, attr_value in vars(wind).items():
+            setattr(self, attr_name, attr_value)
+        for prop_name, prop_value in wind.__class__.__dict__.items():
+            if isinstance(prop_value, property):  # ⬅️ Check if it's a @property
+                setattr(SystemModel, prop_name, prop_value)
+
 
     def ode_function(self):
         dot_r = self.speed_radial
@@ -107,7 +138,7 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
         if self.dof == 6:
             self.residual = self.rb_residual
         elif self.dof == 3:
-            self.residual = self.force_residual()
+            self.residual = self.force_residual
 
     def solve_quasi_steady_state(
         self,

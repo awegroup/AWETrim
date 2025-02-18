@@ -7,6 +7,7 @@ from picawe import SystemModel
 from picawe.utils.color_palette import set_plot_style, get_color_list
 from picawe.timeseries.phase import PhaseParameterized
 import json
+from picawe.system.kite import Kite
 
 
 
@@ -20,8 +21,8 @@ with open(file_path, "r") as file:
     aero_input = json.load(file)
 
 aero_input["params"]["angle_pitch_depower_0"] = np.radians(4)
-
-kite_model = SystemModel(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll", wind_model="uniform")
+kite = Kite(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, steering_control="roll")
+kite_model = SystemModel(dof=3, quasi_steady=True,  wind_model="uniform", kite=kite)
 import casadi as ca
 kite_model.angle_elevation = 0
 kite_model.angle_azimuth = 0
@@ -116,9 +117,8 @@ for i,mr in enumerate(mass_ratio_values):
             label = r"$\frac{m}{S}=$"+str(mr)
         mass_wing = mr * area_wing
         # Define kite model with current parameters
-        kite_model = SystemModel(mass_wing=mass_wing, area_wing=area_wing, aero_input=aero_input, 
-                                 mass_kcu=0, dof=dof, quasi_steady=quasi_steady, 
-                                 steering_control="roll")
+        kite = Kite(mass_wing=mass_wing, area_wing=area_wing, aero_input=aero_input, steering_control="roll")
+        kite_model = SystemModel(dof=dof, quasi_steady=quasi_steady, kite=kite, wind_model="uniform") 
         kite_model.speed_wind_ref = 12
         kite_model.input_depower = 0
         

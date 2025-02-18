@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 from picawe.kinematics.parametrized_patterns import Helix, Lissajous, FigureEight
+from picawe.system.kite import Kite
 from picawe.kinematics.Kinematics import ParametrizedKinematics, KiteKinematics
 from picawe import SystemModel
 from picawe.utils.color_palette import set_plot_style, get_color_list
@@ -20,8 +21,8 @@ with open(file_path, "r") as file:
     aero_input = json.load(file)
 
 aero_input["params"]["angle_pitch_depower_0"] = np.radians(-2)
-
-kite_model = SystemModel(mass_wing=80, area_wing=3, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll", wind_model="uniform")
+kite = Kite(mass_wing=80, area_wing=3, aero_input=aero_input, mass_kcu=0, steering_control="roll")
+kite_model = SystemModel(dof=3, quasi_steady=True,wind_model="uniform", kite=kite)
 import casadi as ca
 kite_model.angle_elevation = 0
 kite_model.angle_azimuth = 0
@@ -93,9 +94,9 @@ phases = {}
 parameters = ["speed_tangential", "tension_tether_ground", "angle_roll"]
 x_param = "s"
 fig, axs = plt.subplots(len(parameters),1, figsize=(10, 4), sharex=True)
-mass_ratio_values = np.linspace(20, 28, 2)
+mass_ratio_values = np.linspace(15, 18, 2)
 aoas_tether = np.ones_like(mass_ratio_values)*np.radians(-1)
-area_wing = 3
+area_wing = 10
 for i,mr in enumerate(mass_ratio_values):
     for quasi_steady in [True,False]:  # Loop over both dynamic and quasi-steady cases
         if quasi_steady:
@@ -107,9 +108,8 @@ for i,mr in enumerate(mass_ratio_values):
         mass_wing = mr * area_wing
         aero_input["params"]["angle_pitch_depower_0"] = aoas_tether[i]
         # Define kite model with current parameters
-        kite_model = SystemModel(mass_wing=mass_wing, area_wing=area_wing, aero_input=aero_input, 
-                                 mass_kcu=0, dof=dof, quasi_steady=quasi_steady, 
-                                 steering_control="roll", wind_model="uniform")
+        kite = Kite(mass_wing=mass_wing, area_wing=area_wing, aero_input=aero_input, mass_kcu=0, steering_control="roll")
+        kite_model = SystemModel(dof=dof, quasi_steady=quasi_steady,wind_model="uniform", kite=kite)
         kite_model.speed_wind_ref = 15
         kite_model.input_depower = 0
 

@@ -4,7 +4,7 @@ DEFAULT_BOUNDS = {
     "input_steering": [-np.pi/2, np.pi/2],
     "s_dot": [0.01, 10],
     "s_ddot": [-100, 100],
-    "speed_tangential": [0, 250],
+    "speed_tangential": [-10, 250],
     "angle_roll": [-np.pi/2, np.pi/2],
     "timeder_angle_course": [-np.pi, np.pi],
     "angle_pitch": [-np.pi/4, np.pi/4],

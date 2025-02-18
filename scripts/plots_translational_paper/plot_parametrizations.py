@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 from picawe.kinematics.parametrized_patterns import Helix, Lissajous, FigureEight
 from picawe.utils.color_palette import get_color_list, set_plot_style, set_plot_style_no_latex
 
+
 colors = get_color_list()
 set_plot_style()
 save_folder = './results/figures/translational_paper/'

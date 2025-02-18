@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from picawe import SystemModel
 import json
+from picawe.system.kite import Kite
 
 # -----------------------------------------------
 # Load data and define aerodynamic model
@@ -19,13 +20,12 @@ with open(file_path, "r") as file:
 # Define the system and aerodynamic model
 # -----------------------------------------------
 
+kite = Kite(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, steering_control="asymmetric")
 kite_model = SystemModel(
-    mass_wing=15,
-    area_wing=20,
-    aero_input=aero_input,
-    mass_kcu=25,
     dof=6,
     quasi_steady=True,
+    wind_model="logarithmic",
+    kite=kite,
 )
 
 # Set constant parameters
@@ -45,7 +45,7 @@ current_state = {
     "angle_elevation": np.radians(5),
     "angle_azimuth": 0,
     "angle_course": 0,
-    "speed_radial": -2,
+    "speed_radial": -1,
     "speed_tangential": 10,
 }
 solver_options = {
@@ -53,7 +53,7 @@ solver_options = {
     "print_time": False,
 }
 time_step = 0.1
-time = np.arange(0, 100, time_step)
+time = np.arange(0, 120, time_step)
 qs_guess = [200, 0, 40,0,0,0]
 states = []
 import time as timet
