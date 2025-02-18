@@ -1,5 +1,5 @@
 import numpy as np
-from picawe import State
+from picawe import SystemModel
 import pandas as pd
 import matplotlib.pyplot as plt
 import time
@@ -43,15 +43,15 @@ aero_input =    {
 # Define the state
 # -----------------------------------------------
 # State.__bases__ = (KiteKinematics, Tether, Wind, RigidKite)
-state = State(mass_wing=120, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll")
+state = SystemModel(mass_wing=120, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll", wind_model="uniform")
 
 speed_wind = 10
-state.speed_wind = speed_wind
+state.speed_wind_ref = speed_wind
 state.input_depower = 0
 
 
 # Constants
-state.speed_wind = 10
+
 state.distance_radial = 200.0
 state.speed_radial = 0.0
 state.input_depower = 0.0
@@ -59,7 +59,7 @@ state.timeder_angle_course = 0.0
 
 unknown_vars = [
     "tension_tether_ground",
-    "angle_roll",
+    "input_steering",
     "speed_tangential",
 ]
 
@@ -108,7 +108,7 @@ for angle_course in angles_course:
 
         p = [current_state[name] for name in inputs_name]
         # print(p)
-        lbx,ubx,lbg,ubg = state.get_boundaries(current_state)
+        lbx,ubx,lbg,ubg = state.get_boundaries(unknown_vars)
         # print(lbx,ubx,lbg,ubg)
         sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 

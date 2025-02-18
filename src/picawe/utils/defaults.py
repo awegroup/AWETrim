@@ -1,15 +1,16 @@
 import numpy as np
 DEFAULT_BOUNDS = {
     "tension_tether_ground": [0, 1e9],
-    "input_steering": [-10, 10],
-    "s_dot": [-np.pi, np.pi],
+    "input_steering": [-np.pi/2, np.pi/2],
+    "s_dot": [0.01, 10],
     "s_ddot": [-100, 100],
-    "speed_tangential": [0, 150],
+    "speed_tangential": [0, 250],
     "angle_roll": [-np.pi/2, np.pi/2],
     "timeder_angle_course": [-np.pi, np.pi],
     "angle_pitch": [-np.pi/4, np.pi/4],
     "angle_yaw": [-np.pi/4, np.pi/4],
     "angle_elevation": [0, np.pi],
+    "speed_radial": [-10, 10],
 
 }
 
@@ -51,6 +52,7 @@ PLOT_LABELS = {
     "phase": "$\\Phi (^\circ)$",
     "angle_azimuth": "$\\phi (^\\circ)$",
     "angle_elevation": "$\\beta (^\\circ)$",
+    "angle_of_attack": "$\\alpha (^\\circ)$",
 }
 
 PLOT_PARAMETERS = [

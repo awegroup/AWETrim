@@ -40,8 +40,8 @@ figure_eight = FigureEight(omega, x0, 80, 80, vr, beta)
 dof = 3
 quasi_steady = False
 pattern = helix
-kite_model = SystemModel(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=dof, quasi_steady=quasi_steady)
-kite_model.speed_wind = 10 
+kite_model = SystemModel(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, dof=dof, quasi_steady=quasi_steady, wind_model="uniform")
+kite_model.speed_wind_ref = 10 
 kite_model.input_depower = 0
 phase = PhaseParameterized(kite_model, pattern, quasi_steady=quasi_steady)
 

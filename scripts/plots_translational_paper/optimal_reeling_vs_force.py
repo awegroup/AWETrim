@@ -44,16 +44,45 @@ aero_input =    {
 # -----------------------------------------------
 # State.__bases__ = (KiteKinematics, Tether, Wind, RigidKite)
 mass_wing = 0
-state = SystemModel(mass_wing=mass_wing, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll")
+state = SystemModel(mass_wing=mass_wing, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll", wind_model="uniform")
 
-speed_wind = 15
-state.speed_wind = speed_wind
+speed_wind = 10
+state.speed_wind_ref = speed_wind
 state.input_depower = 0
 state.timeder_angle_course = 0
 state.distance_radial = 200
 
+plt.figure()
+CL = 0.75
+CD = 0.15
+CR = np.sqrt(CL**2 + CD**2)
+vr_array = np.linspace(0, 5, 50)
+F_opt = 2*1.225*46.854*CR*vr_array**2*(1+(CL/CD)**2)
+plt.plot(vr_array, F_opt/9.81, label = "Mean", color = "black")
+CL = 0.9
+CD = 0.12
+CR = np.sqrt(CL**2 + CD**2)
+F_optmax = 2*1.225*46.854*CR*vr_array**2*(1+(CL/CD)**2)
 
-unknown_vars = ["tension_tether_ground", "angle_roll", "speed_tangential"]
+CL = 0.65
+CD = 0.18
+CR = np.sqrt(CL**2 + CD**2)
+F_optmin = 2*1.225*46.854*CR*vr_array**2*(1+(CL/CD)**2)
+plt.fill_between(vr_array, F_optmin/9.81, F_optmax/9.81, color = "black", alpha = 0.2, label = "Range")
+
+plt.ylabel("Tension Tether (N)")
+plt.xlabel("Optimal Reeling Speed (m/s)")
+
+x = [-0.2,1.4, 10]
+y = [440,2260, 2890]
+plt.plot(x,y, color = "blue", linestyle = "--", label = "Current curve KP")
+plt.ylim([0, 3000])
+plt.legend()
+plt.tight_layout()
+plt.show()
+
+
+unknown_vars = ["tension_tether_ground", "input_steering", "speed_tangential"]
 solve_func, inputs_name = state.solve_quasi_steady_state(unknown_vars)
 current_state = {
     "distance_radial": 200,
@@ -86,7 +115,7 @@ colors = get_color_list()
 plt.figure(figsize=(5,4))
 wind_speeds = [15, 10, 5]
 for vwi,speed_wind in enumerate(wind_speeds):
-    state.speed_wind = speed_wind
+    state.speed_wind_ref = speed_wind
     state.establish_residual()
     variables = ca.symvar(state.residual)
     name_vars = [var.name() for var in variables]
@@ -113,7 +142,7 @@ for vwi,speed_wind in enumerate(wind_speeds):
                                             angle_azimuth = phi,
                                                 angle_elevation = angle_elevation,
                                                 speed_tangential = speed_tangential,
-                                                angle_roll = angle_roll,
+                                                input_steering = angle_roll,
                                                 # speed_wind = speed_wind,
                                                 speed_radial = reeling_factor*speed_wind,
                                                 tension_tether_ground = tension_tether)["residual"] == 0)
@@ -155,3 +184,4 @@ plt.legend()
 plt.tight_layout()
 plt.savefig(save_folder + "optimal_reeling_speed_force.pdf")
 plt.show()
+

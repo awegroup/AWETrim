@@ -43,10 +43,10 @@ aero_input =    {
 # Define the state
 # -----------------------------------------------
 # State.__bases__ = (KiteKinematics, Tether, Wind, RigidKite)
-state = SystemModel(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll")
+state = SystemModel(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll", wind_model="uniform")
 
 speed_wind = 10
-state.speed_wind = speed_wind
+state.speed_wind_ref = speed_wind
 state.input_depower = 0
 state.timeder_angle_course = 0
 state.distance_radial = 200
@@ -76,7 +76,7 @@ for i, angle_elevation in enumerate(angles_elevation):
                                  angle_azimuth = 0,
                                     angle_elevation = angle_elevation,
                                     speed_tangential = speed_tangential,
-                                    angle_roll = angle_roll,
+                                    input_steering = angle_roll,
                                     speed_radial = reeling_factor*speed_wind,
                                     tension_tether_ground = tension_tether)["residual"] == 0)
         
@@ -126,7 +126,7 @@ for i, angle_azimuth in enumerate(angles_azimuth):
                                  angle_azimuth = angle_azimuth,
                                     angle_elevation = 0,
                                     speed_tangential = speed_tangential,
-                                    angle_roll = angle_roll,
+                                    input_steering = angle_roll,
                                     speed_radial = reeling_factor*speed_wind,
                                     tension_tether_ground = tension_tether)["residual"] == 0)
         

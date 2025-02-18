@@ -25,13 +25,14 @@ class SystemModel(KiteKinematics, Tether, Wind, Kite):
         dof=6,
         quasi_steady=False,
         steering_control="asymmetric",  # Default to asymmetric deformation
+        wind_model="logarithmic",
     ):
         """
         Initialize the kite system with its parameters.
         """
         # Define symbolic variables for the function inputs
         KiteKinematics.__init__(self)
-        Wind.__init__(self)
+        Wind.__init__(self, model=wind_model)
         Kite.__init__(
             self,
             mass_wing,

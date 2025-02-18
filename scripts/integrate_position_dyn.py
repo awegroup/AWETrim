@@ -28,7 +28,7 @@ kite_model = SystemModel(
 )
 
 # Set constant parameters
-kite_model.speed_wind = 10
+kite_model.speed_wind_ref = 10
 kite_model.input_depower = 0.0
 kite_model.timeder_speed_radial = 0.0
 kite_model.input_steering = 0.0
@@ -37,7 +37,7 @@ kite_model.input_steering = 0.0
 # Initial conditions
 current_state = {
     "distance_radial": 200,
-    "angle_elevation": np.radians(0),
+    "angle_elevation": np.radians(5),
     "angle_azimuth": 0,
     "angle_course": 0,
     "speed_radial": 0,

@@ -38,16 +38,17 @@ aero_input =    {
 # Define the state
 # -----------------------------------------------
 # State.__bases__ = (KiteKinematics, Tether, Wind, RigidKite)
-state = SystemModel(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True)
+state = SystemModel(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll", wind_model="uniform")
 
 speed_wind = 10
-state.speed_wind = speed_wind
+state.speed_wind_ref = speed_wind
 state.input_depower = 0
 state.timeder_angle_course = 0
 state.angle_course = np.pi/2
 state.angle_elevation = 0
 state.angle_azimuth = 0
-# state.input_steering = 0
+state.input_steering = 0
+state.angle_roll = 0
 state.speed_radial = 2
 state.distance_radial = 200
 
@@ -56,6 +57,7 @@ speed_tangential = np.linspace(30,90,100)
 fig, axs = plt.subplots(1, 2, figsize=(10, 4), sharey=True)
 axs[0].axhline(y=0, color='gray', linewidth=0.5)
 axs[1].axhline(y=0, color='gray', linewidth=0.5)
+print(state.speed_wind)
 for course in courses:
     vtau_dot = []
     aoa = []

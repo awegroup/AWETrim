@@ -100,7 +100,7 @@ kite_model = SystemModel(mass_wing=15, area_wing=20, mass_kcu=25, aero_input=aer
 solutions = []
 
 start = time.time()
-vw_window = []
+uf_window = []
 vw_averaged = []
 wdir_window = []
 
@@ -139,13 +139,14 @@ print(solve_func)
 for i, row in flight_data.iterrows():
 
     # Wind speed (vw) sliding window average
-    vw_window.append(results.wind_speed_horizontal[i])
+    uf_window.append(results.wind_speed_horizontal[i]*kite_model.kappa/np.log(results.kite_position_z[i]/kite_model.z0))
     wdir_window.append(results.wind_direction[i])
-    if len(vw_window) > window_size:
-        vw_window.pop(0)  # Keep the window size constant
+    if len(uf_window) > window_size:
+        uf_window.pop(0)  # Keep the window size constant
         wdir_window.pop(0)
     print(i)
-    vw = np.mean(vw_window)  # Compute the average of the current window
+    uf = np.mean(uf_window)  # Compute the average of the current window
+
 
     current_state = {
         "distance_radial": distance_radial[i],
@@ -153,7 +154,7 @@ for i, row in flight_data.iterrows():
         "speed_radial": row.tether_reelout_speed,
         "angle_azimuth": row.kite_azimuth,
         "angle_elevation": row.kite_elevation,
-        "speed_wind": vw,
+        "speed_friction": uf,
         "timeder_angle_course": row.kite_yaw_rate_1,
         "input_depower": row.up,
     }

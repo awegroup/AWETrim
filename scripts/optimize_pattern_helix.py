@@ -62,7 +62,7 @@ vtau_func = ca.Function(
 )
 
 
-kite_model.speed_wind = 16
+kite_model.speed_wind_ref = 10
 kite_model.input_depower = 0
 
 solver_options = {

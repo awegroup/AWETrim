@@ -37,13 +37,13 @@ aero_input =    {
 # Define the state
 # -----------------------------------------------
 # State.__bases__ = (KiteKinematics, Tether, Wind, RigidKite)
-state = SystemModel(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll")
+state = SystemModel(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll", wind_model="uniform")
 
 speed_wind = 10
-state.speed_wind = speed_wind
+state.speed_wind_ref = speed_wind
 state.input_depower = 0
 
-unknown_vars = ["tension_tether_ground", "angle_roll", "speed_tangential"]
+unknown_vars = ["tension_tether_ground", "input_steering", "speed_tangential"]
 
 
 aoa_func = state.extract_function("angle_of_attack")    
@@ -92,7 +92,8 @@ for i, elevation in enumerate(angles_elevation):
             states.append(full_state)
     elevation_states.append(pd.DataFrame(states))
 
-angles_azimuth = np.linspace(0,65,10)/180*np.pi
+
+angles_azimuth = np.linspace(0,60,10)/180*np.pi
 angles_course = np.linspace(0, 2*np.pi, 100)
 
 azimuth_states = []
@@ -114,11 +115,12 @@ for i, azimuth in enumerate(angles_azimuth):
         lbx,ubx,lbg,ubg = state.get_boundaries(unknown_vars)
         sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
-        qs_guess = sol["x"]
-        if np.linalg.norm(sol["g"]) > 1e-6:
+        
+        if np.linalg.norm(sol["g"]) > 1e-3:
             print(sol["g"])
             break
         else:
+            qs_guess = sol["x"]
             qs_state = {name: float(sol["x"][i]) for i, name in enumerate(unknown_vars)}
 
             
@@ -268,7 +270,7 @@ plt.legend()
 plt.show()
 
 
-unknown_vars = ["tension_tether_ground", "angle_roll", "angle_elevation"]
+unknown_vars = ["tension_tether_ground", "input_steering", "angle_elevation"]
 
 
 solve_func, inputs_name = state.solve_quasi_steady_state(

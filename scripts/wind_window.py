@@ -27,10 +27,10 @@ with open(file_path, "r") as file:
 
 
 # Example Usage
-kite_model = SystemModel(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=10, dof=6, quasi_steady=True)
+kite_model = SystemModel(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=10, dof=6, quasi_steady=True, wind_model="uniform")
 
 # Constants
-kite_model.speed_wind = 10
+kite_model.speed_wind_ref = 10
 kite_model.distance_radial = 200.0
 kite_model.angle_course = np.radians(90)
 kite_model.speed_radial = 0.0

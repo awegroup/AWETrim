@@ -14,14 +14,14 @@ import json
 # Show the structure of the figure
 plt.show()
 # Define aerodynamic input
-file_path = "./data/v3_aero_input.json"
+file_path = "./data/ap2_aero_input.json"
 # file_path = "./data/rigid_kite.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
-aero_input["params"]["angle_pitch_depower_0"] = np.radians(4)
+aero_input["params"]["angle_pitch_depower_0"] = np.radians(-2)
 
-kite_model = SystemModel(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll", wind_model="uniform")
+kite_model = SystemModel(mass_wing=80, area_wing=3, aero_input=aero_input, mass_kcu=0, dof=3, quasi_steady=True, steering_control="roll", wind_model="uniform")
 import casadi as ca
 kite_model.angle_elevation = 0
 kite_model.angle_azimuth = 0
@@ -49,9 +49,15 @@ print(f"Max CL = {np.max(cl_func(vr)):.2f}")
 maxLD = np.max(cl_func(vr)/cd_func(vr))
 max_aoaLD = float(aoa_func(vr)[np.argmax(cl_func(vr)/cd_func(vr))] * 180/np.pi)
 max_L3D2 = np.max(cl_func(vr)**3/cd_func(vr)**2)
+idx_L3D2 = np.argmax(cl_func(vr)**3/cd_func(vr)**2)
 max_aoaL3D2 = float(aoa_func(vr)[np.argmax(cl_func(vr)**3/cd_func(vr)**2)] * 180/np.pi)
 print(f"Max L/D = {maxLD:.2f} at {max_aoaLD:.2f} degrees")
-print(f"Max L^3/D^2 = {max_L3D2:.2f} at {max_aoaL3D2:.2f} degrees")
+CL_target = cl_func(vr)[idx_L3D2]
+CD_target = cd_func(vr)[idx_L3D2]
+CR_target = np.sqrt(CL_target**2 + CD_target**2)
+print(f"Max L^3/D^2 = {max_L3D2:.2f} at {max_aoaL3D2:.2f} degrees, with CL = {float(CL_target):.2f} and CD = {float(CD_target):.2f}")
+
+
 plt.grid()
 # plt.show()
 
@@ -60,32 +66,15 @@ plt.grid()
 # -----------------------------------------------
 omega = -1
 x0 = 200
-rh = 100
+d0 = 80
 vr = 0
 beta = np.radians(20)
-ry = 100
-rz = 40
-helix = Helix(omega, x0, rh, vr, beta, kappa=0.5)
-lissajous = Lissajous(omega, x0, ry, rz, vr, beta)
-figure_eight = FigureEight(omega, x0, ry, rz*2, vr, beta, ky=0.5, kz=.5)
-
-
-t = np.linspace(0, 2*np.pi, 1000)
-s = np.linspace(0, 2*np.pi, 1000)
-plt.plot(lissajous.yd(t,s), lissajous.zd(t,s))
-
-# plt.plot(figure_eight.yd(t,s), figure_eight.zd(t,s))
-# figure_eight = FigureEight(omega, x0, ry, rz*2, vr, beta, ky=2, kz=2)
-# plt.plot(figure_eight.yd(t,s), figure_eight.zd(t,s))
-# figure_eight = FigureEight(omega, x0, ry, rz*2, vr, beta, ky=0.01, kz=0.01)
-# plt.plot(figure_eight.yd(t,s), figure_eight.zd(t,s))
-# plt.show()
-pattern = helix
+helix = Helix(omega, x0, d0, vr, beta, kappa=0.5)
 
 start_state = {
     "t": 0,
     "s": -np.pi/2,
-    "s_dot": 4,
+    "s_dot": 3,
     "s_ddot": 0,
     "tension_tether_ground": 1e3,
     "input_steering": 0,
@@ -93,7 +82,7 @@ start_state = {
     "angle_pitch": 0,
     "angle_yaw": 0,
 }
-time = np.arange(0, 200, 0.1)
+time = np.arange(0, 50, 0.1)
 dof = 3
 # -----------------------------------------------
 # Define the system and aerodynamic model
@@ -101,11 +90,12 @@ dof = 3
 colors = get_color_list()
 tension_tether_results = {}
 phases = {}
-parameters = ["speed_tangential", "tension_tether_ground", "input_steering"]
+parameters = ["speed_tangential", "tension_tether_ground", "angle_roll"]
 x_param = "s"
 fig, axs = plt.subplots(len(parameters),1, figsize=(10, 4), sharex=True)
-mass_ratio_values = [8]
-area_wing = 20
+mass_ratio_values = np.linspace(20, 28, 2)
+aoas_tether = np.ones_like(mass_ratio_values)*np.radians(-1)
+area_wing = 3
 for i,mr in enumerate(mass_ratio_values):
     for quasi_steady in [True,False]:  # Loop over both dynamic and quasi-steady cases
         if quasi_steady:
@@ -115,13 +105,28 @@ for i,mr in enumerate(mass_ratio_values):
             linestyle = "-"
             label = r"$\frac{m}{S}=$"+str(mr)
         mass_wing = mr * area_wing
+        aero_input["params"]["angle_pitch_depower_0"] = aoas_tether[i]
         # Define kite model with current parameters
         kite_model = SystemModel(mass_wing=mass_wing, area_wing=area_wing, aero_input=aero_input, 
                                  mass_kcu=0, dof=dof, quasi_steady=quasi_steady, 
-                                 steering_control="roll")
-        kite_model.speed_wind_ref = 12
+                                 steering_control="roll", wind_model="uniform")
+        kite_model.speed_wind_ref = 15
         kite_model.input_depower = 0
+
+        vr_opt = ca.sqrt(kite_model.tension_tether_ground/(2*1.225*kite_model.area_wing*CR_target*(1+(CL_target/CD_target)**2)))
+
+        ft_min = kite_model.mass_wing*9.81
+        vr_min = ca.sqrt(ft_min/(2*1.225*kite_model.area_wing*CR_target*(1+(CL_target/CD_target)**2)))
+        b = -2
+        a = (vr_min+3)/ft_min
+        vr_save = a*kite_model.tension_tether_ground + b
         
+        vr = ca.if_else(
+            kite_model.tension_tether_ground >= ft_min, vr_opt, vr_save
+        )
+        vr = vr_opt
+        # vr = 0
+        pattern = Helix(omega, x0, d0, vr, beta, kappa=1)
         # Run simulation
         if mr == 0 and not quasi_steady:
             pass
@@ -136,9 +141,11 @@ for i,mr in enumerate(mass_ratio_values):
         phases[(mr, quasi_steady)] = phase
         print(s_dot[0])
         start_state["s_dot"] = s_dot[0]
-
-
-
+        # plt.figure()
+        # plt.plot(s, s_dot, label=label, color=colors[i])
+        # plt.plot(s, phase.return_variable("speed_radial"), linestyle='--', color=colors[i])
+        # plt.plot(s, phase.return_variable("tension_tether_ground")/1000, linestyle=':', color=colors[i])
+        # plt.show()
 
 for ax in axs:
     ax.set_xlim([5*np.pi/2, 9*np.pi/2])
@@ -173,11 +180,11 @@ ax5.set_xlabel(PLOT_LABELS["phase"])
 ax3.set_ylabel(PLOT_LABELS["speed_tangential"])
 ax4.set_ylabel(PLOT_LABELS["tension_tether_ground"])
 ax5.set_ylabel(PLOT_LABELS["angle_roll"])
-ax6.set_ylabel(PLOT_LABELS["angle_of_attack"])
+ax6.set_ylabel(PLOT_LABELS["speed_radial"])
 
 
 # Adjust layout for better spacing
-# mass_ratio_values =np.arange(2,50,6) #[2,4,40,50]
+# mass_ratio_values = [2,4,40,10]
 mean_ft_qs = []
 mean_ft_dyn = []
 min_ft_qs = []
@@ -194,6 +201,8 @@ for i, mr in enumerate(mass_ratio_values):
     mask_dyn = (s_dyn > 5*np.pi/2) & (s_dyn < 9*np.pi/2)
     vtau_qs = phase_qs.return_variable("speed_tangential")[mask_qs]
     vtau_dyn = phase_dyn.return_variable("speed_tangential")[mask_dyn]
+    vr_qs = phase_qs.return_variable("speed_radial")[mask_qs]
+    vr_dyn = phase_dyn.return_variable("speed_radial")[mask_dyn]
     power_qs = phase_qs.return_variable("mechanical_power")[mask_qs]
     power_dyn = phase_dyn.return_variable("mechanical_power")[mask_dyn]
     tension_qs = phase_qs.return_variable("tension_tether_ground")[mask_qs]
@@ -229,19 +238,22 @@ for i, mr in enumerate(mass_ratio_values):
     print(f"Min speed phase difference: {diff_s_vmin:.2f} degrees")
     s_dyn = s_dyn[mask_dyn]-5*np.pi/2
     s_qs = s_qs[mask_qs]-5*np.pi/2
-    ax3.plot(np.degrees(s_dyn), vtau_dyn, label=f"$\frac{{m}}{{S}} = {mr}$", color=colors[i])
-    ax3.plot(np.degrees(s_qs), vtau_qs, linestyle="--", color=colors[i])
-    ax4.plot(np.degrees(s_dyn), tension_dyn/1000, label=f"$\frac{{m}}{{S}} = {mr}$", color=colors[i])
-    ax4.plot(np.degrees(s_qs), tension_qs/1000, linestyle="--", color=colors[i])
-    ax5.plot(np.degrees(s_dyn), np.degrees(roll_dyn), label=f"$\frac{{m}}{{S}} = {mr}$", color=colors[i])
-    ax5.plot(np.degrees(s_qs), np.degrees(roll_qs), linestyle="--", color=colors[i])
-    ax6.plot(np.degrees(s_dyn), np.degrees(aoa_dyn), label=f"$\frac{{m}}{{S}} = {mr}$", color=colors[i])
-    ax6.plot(np.degrees(s_qs), np.degrees(aoa_qs), linestyle="--", color=colors[i])
+    if i < len(colors):
+        ax3.plot(np.degrees(s_dyn), vtau_dyn, label=f"$\frac{{m}}{{S}} = {mr}$", color=colors[i])
+        ax3.plot(np.degrees(s_qs), vtau_qs, linestyle="--", color=colors[i])
+        ax4.plot(np.degrees(s_dyn), tension_dyn/1000, label=f"$\frac{{m}}{{S}} = {mr}$", color=colors[i])
+        ax4.plot(np.degrees(s_qs), tension_qs/1000, linestyle="--", color=colors[i])
+        ax5.plot(np.degrees(s_dyn), np.degrees(roll_dyn), label=f"$\frac{{m}}{{S}} = {mr}$", color=colors[i])
+        ax5.plot(np.degrees(s_qs), np.degrees(roll_qs), linestyle="--", color=colors[i])
+        ax6.plot(np.degrees(s_dyn), vr_dyn, label=f"$\frac{{m}}{{S}} = {mr}$", color=colors[i])
+        ax6.plot(np.degrees(s_qs), vr_qs, linestyle="--", color=colors[i])
     
     mean_ft_qs.append(np.mean(tension_qs))
     mean_ft_dyn.append(np.mean(tension_dyn))
     print("mean tension qs", np.mean(tension_qs))
     print("mean tension dyn", np.mean(tension_dyn))
+    print("mean power qs", np.mean(power_qs))
+    print("mean power dyn", np.mean(power_dyn))
     min_ft_qs.append(np.min(tension_qs))
     min_ft_dyn.append(np.min(tension_dyn))
     max_ft_qs.append(np.max(tension_qs))
@@ -260,8 +272,8 @@ ax4.set_xlim([0, 360])
 ax5.set_xlim([0, 360])
 ax6.set_xlim([0, 360])
 max_el = max(np.max(elevation_qs), np.max(elevation_dyn))*180/np.pi
-ax1.set_ylim([0, max_el])
-ax2.set_ylim([0, max_el])
+ax1.set_ylim([0, max_el+10])
+ax2.set_ylim([0, max_el+10])
 
 vmin = min(np.min(vtau_qs), np.min(vtau_dyn))
 vmax = max(np.max(vtau_qs), np.max(vtau_dyn))

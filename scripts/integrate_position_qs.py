@@ -29,8 +29,8 @@ kite_model = SystemModel(
 )
 
 # Set constant parameters
-kite_model.speed_wind = 10
-kite_model.input_depower = 0.0
+kite_model.speed_wind_ref = 10
+kite_model.input_depower = 1.0
 kite_model.timeder_angle_course = 0.0
 
 # Extract the tension tether function
@@ -42,7 +42,7 @@ aoa_func = kite_model.extract_function("angle_of_attack")
 unknown_vars = ["tension_tether_ground", "input_steering", "speed_tangential", "angle_roll", "angle_pitch", "angle_yaw"]
 current_state = {
     "distance_radial": 200,
-    "angle_elevation": 0,
+    "angle_elevation": np.radians(5),
     "angle_azimuth": 0,
     "angle_course": 0,
     "speed_radial": -2,

@@ -120,7 +120,7 @@ ry = 70
 rz = 25
 beta0 = np.radians(24)
 vr = np.mean(flight_data["tether_reelout_speed"])
-kite_model.speed_wind = np.mean(results["wind_speed_horizontal"])-1
+kite_model.speed_wind_ref = np.mean(results["wind_speed_horizontal"])-1
 kite_model.input_depower = 0
 figure_eight = FigureEight(-1, r0, ry, rz * 2, vr, beta0, ky=0.5, kz=1, kappa=1)
 
@@ -151,7 +151,7 @@ s = phase.return_variable("s")
 s_dot = phase.return_variable("s_dot")
 
 
-fig, slider = phase.interactive_plot()
+fig, slider = phase.interactive_plot(animate=False)
 
 vel_exp = np.array(
     [
