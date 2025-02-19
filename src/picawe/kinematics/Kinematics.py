@@ -111,6 +111,10 @@ class KiteKinematics(Position):
     @property
     def velocity_kite(self):
         return ca.vertcat(self.speed_tangential, 0, self.speed_radial)
+    
+    @property
+    def velocity_kite_W(self):
+        return ca.transpose(transformation_AZR_from_W(self.angle_azimuth, self.angle_elevation)) @ self.velocity_kite
 
     @property
     def timeder_speed_tangential(self):
@@ -139,6 +143,8 @@ class KiteKinematics(Position):
             * ca.sin(self.angle_course)
             - self.timeder_angle_course,
         )
+    
+    
 
 
  

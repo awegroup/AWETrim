@@ -1,6 +1,6 @@
 import casadi as ca
 import numpy as np
-from picawe.system.tether import Tether
+from picawe.system.tether import RigidLumpedTether
 from picawe.system.kite import Kite
 from picawe.kinematics.Kinematics import KiteKinematics
 from picawe.environment.Wind import Wind
@@ -85,14 +85,15 @@ class SystemModel(KiteKinematics):
 
     def define_tether_model(self, tether):
         if tether is None:
-            tether = Tether()
+            tether = RigidLumpedTether()
             print("Tether model not defined. Using default tether model.")
         # Inject all tether attributes into SystemModel so they can be accessed directly
         for attr_name, attr_value in vars(tether).items():
             setattr(self, attr_name, attr_value)
-        for prop_name, prop_value in tether.__class__.__dict__.items():
-            if isinstance(prop_value, property):  # ⬅️ Check if it's a @property
-                setattr(SystemModel, prop_name, prop_value)
+        for cls in inspect.getmro(tether.__class__):
+            for name, obj in cls.__dict__.items():
+                if isinstance(obj, property) and not hasattr(self.__class__, name):
+                    setattr(self.__class__, name, obj)
 
     def define_wind_model(self, wind_model):
         if wind_model == "logarithmic"or wind_model == "uniform":

@@ -42,11 +42,14 @@ class Wind:
         elif self.model == "logarithmic":
             return self._speed_friction/self.kappa * ca.log(self.z/self.z0)
 
-
+    @property
+    def velocity_wind_W(self):
+        return ca.vertcat(self.speed_wind, 0, 0)
+    
     @property
     def velocity_wind(self):
         """
         Compute the wind velocity in the body frame.
         """
         T_C_from_W = transformation_C_from_W(self.angle_azimuth, self.angle_elevation, self.angle_course)
-        return T_C_from_W @ ca.vertcat(self.speed_wind,0 ,0 )
+        return T_C_from_W @ self.velocity_wind_W
