@@ -58,3 +58,34 @@ PLOT_LABELS = {
 PLOT_PARAMETERS = [
                 'speed_tangential', 'speed_radial',"input_steering", "tension_tether_ground"
             ]
+
+DEFAULT_PATTERN_CONFIG = {
+    "pattern_type": "helix",
+    "initial_parameters": {
+        "omega": -1.0,
+        "r0": 200.0,
+        "d0": 100.0,
+        "vr": 0.2,
+        "beta": 0.4,
+        "kappa": 1
+    },
+    "optimization_parameters": {
+        # Add any optimization-related parameters here if needed as list of names
+        "d0",
+        "kappa",
+    }
+}
+
+# defaults.py (This is your file containing the limits)
+DEFAULT_OPTI_LIMITS = {
+    "tension_tether_ground": (0, 1e9),  # Range for tension_tether_ground: 0 to 1e9
+    "input_steering": (-np.pi/2, np.pi/2),  # Range for input_steering: -pi/2 to pi/2
+    "s_dot": (0.01, 10),  # Range for s_dot: 0 to 10
+    "angle_elevation": (0.0, np.pi/2),  # Range for angle_elevation: 0 to pi
+    # HElix
+    "kappa": (0, 4),     # Range for kappa: 0 to 5
+    "vr": (-10, 10),      # Range for vr: 0 to 100
+    "beta": (0.35, 0.873),  # Range for beta: 20 ot 50 degrees
+    "d0": (20, 130),       # Range for d0: 0 to 100
+    
+}
