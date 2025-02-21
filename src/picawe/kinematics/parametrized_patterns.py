@@ -3,127 +3,136 @@ from abc import ABC, abstractmethod
 
 class ParametrizedPatterns(ABC):
 
-    def __init__(self):
-        pass
+    def __init__(self, **kwargs):
+        self.optimization_vars = {}  # Dictionary to store symbolic optimization variables
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+            if isinstance(value, ca.SX):  # If value is symbolic, store it separately
+                self.optimization_vars[key] = value
 
     def x(self, t, s):
-        return self.xd(t, s)*ca.cos(self.beta) - self.zd(t,s)*ca.sin(self.beta)
+        return self.xd(t, s) * ca.cos(self.beta) - self.zd(t, s) * ca.sin(self.beta)
 
     def z(self, t, s):
-        return self.xd(t, s)*ca.sin(self.beta) + self.zd(t,s)*ca.cos(self.beta)
-    
-    def y(self, t,s):
-        return self.yd(t,s)
-    
+        return self.xd(t, s) * ca.sin(self.beta) + self.zd(t, s) * ca.cos(self.beta)
+
+    def y(self, t, s):
+        return self.yd(t, s)
+
     def azimuth(self, t, s):
-        return ca.atan2(self.y(t,s), self.x(t, s)) 
-    
+        return ca.atan2(self.y(t, s), self.x(t, s))
+
     def elevation(self, t, s):
-        return ca.atan2(self.z(t,s), ca.sqrt(self.x(t, s)**2 + self.y(t,s)**2)) 
+        return ca.atan2(self.z(t, s), ca.sqrt(self.x(t, s) ** 2 + self.y(t, s) ** 2))
 
 
 class Helix(ParametrizedPatterns):
 
-    def __init__(self, omega, r0, d0, vr, beta, kappa = 1):
-        self.omega = omega
-        self.r0 = r0
-        self.d0 = d0
-        self.vr = vr
-        self.beta = beta
-        self.kappa = kappa
+    def __init__(self, omega, r0, d0, vr, beta, kappa=1):
+        super().__init__(omega=omega, r0=r0, d0=d0, vr=vr, beta=beta, kappa=kappa)
 
-     
     def d(self, t):
-        return self.d0*(1 + self.kappa*(self.r(t)/self.r0-1))
-    
+        return self.d0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+
     def r(self, t):
-        return self.r0 + self.vr*t
-    
-    def yd(self, t,s):
-        return self.d(t)/2*ca.sin(self.omega * s)
-    
-    def zd(self, t,s):
-        return self.d(t)/2*ca.cos(self.omega * s)
-    
+        return self.r0 + self.vr * t
+
+    def yd(self, t, s):
+        return self.d(t) / 2 * ca.sin(self.omega * s)
+
+    def zd(self, t, s):
+        return self.d(t) / 2 * ca.cos(self.omega * s)
+
     def xd(self, t, s):
         r = self.r(t)
-        yd = self.yd(t,s)
-        zd = self.zd(t,s)
-        return ca.sqrt(r**2 - yd**2 - zd**2)
+        yd = self.yd(t, s)
+        zd = self.zd(t, s)
+        return ca.sqrt(r ** 2 - yd ** 2 - zd ** 2)
 
 
 class Lissajous(ParametrizedPatterns):
 
-    def __init__(self, omega, r0, a0, h0, vr, beta, kappa = 0):
-        self.omega = omega
-        self.r0 = r0
-        self.a0 = a0
-        self.h0 = h0
-        self.vr = vr
-        self.beta = beta
-        self.kappa = kappa
+    def __init__(self, omega, r0, a0, h0, vr, beta, kappa=0):
+        super().__init__(omega=omega, r0=r0, a0=a0, h0=h0, vr=vr, beta=beta, kappa=kappa)
 
-     
     def a(self, t):
-        return self.a0*(1 + self.kappa*(self.r(t)/self.r0-1))
-    
+        return self.a0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+
     def h(self, t):
-        return self.h0*(1 + self.kappa*(self.r(t)/self.r0-1))
-    
+        return self.h0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+
     def r(self, t):
-        return self.r0 + self.vr*t
-    
-    def yd(self, t,s):
-        return self.a(t)*ca.cos(self.omega * s)
-    
-    def zd(self, t,s):
-        return self.h(t)*ca.sin(2*self.omega * s)
-    
+        return self.r0 + self.vr * t
+
+    def yd(self, t, s):
+        return self.a(t) * ca.cos(self.omega * s)
+
+    def zd(self, t, s):
+        return self.h(t) * ca.sin(2 * self.omega * s)
+
     def xd(self, t, s):
         r = self.r(t)
-        yd = self.yd(t,s)
-        zd = self.zd(t,s)
-        return ca.sqrt(r**2 - yd**2 - zd**2)
-    
+        yd = self.yd(t, s)
+        zd = self.zd(t, s)
+        return ca.sqrt(r ** 2 - yd ** 2 - zd ** 2)
+
 
 class FigureEight(ParametrizedPatterns):
 
-    def __init__(self, omega, r0, ry, rz, vr, beta,ky = 1, kz = 1, kappa = 0):
-        self.omega = omega
-        self.r0 = r0
-        self.ry0 = ry
-        self.rz0 = rz
-        self.vr = vr
-        self.beta = beta
-        self.ky = ky
-        self.kz = kz
-        self.kappa = kappa
+    def __init__(self, omega, r0, ry, rz, vr, beta, ky=1, kz=1, kappa=0):
+        super().__init__(omega=omega, r0=r0, ry=ry, rz=rz, vr=vr, beta=beta, ky=ky, kz=kz, kappa=kappa)
 
-     
-    
     def r(self, t):
-        return self.r0 + self.vr*t
-    
+        return self.r0 + self.vr * t
+
     def ry(self, t):
-        return self.ry0*(1 + self.kappa*(self.r(t)/self.r0-1))
-    
+        return self.ry * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+
     def rz(self, t):
-        return self.rz0*(1 + self.kappa*(self.r(t)/self.r0-1))
-    
-    def yd(self,t, s):
-        return self.ry(t)*ca.cos(self.omega * s)/(1 + self.ky*ca.sin(self.omega * s)**2)
-    
-    def zd(self,t, s):
-        return self.rz(t)*ca.sin(self.omega * s)*ca.cos(self.omega * s)/(1 + self.kz*ca.sin(self.omega * s)**2)
-    
+        return self.rz * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+
+    def yd(self, t, s):
+        return self.ry(t) * ca.cos(self.omega * s) / (1 + self.ky * ca.sin(self.omega * s) ** 2)
+
+    def zd(self, t, s):
+        return self.rz(t) * ca.sin(self.omega * s) * ca.cos(self.omega * s) / (1 + self.kz * ca.sin(self.omega * s) ** 2)
+
     def xd(self, t, s):
         r = self.r(t)
-        yd = self.yd(t,s)
-        zd = self.zd(t,s)
-        return ca.sqrt(r**2 - yd**2 - zd**2)
-    
-    # def azimuth(self, t, s):
-    #     return self.ry*ca.cos(self.omega * s)/(1 + self.ky*ca.sin(self.omega * s)**2)
-    
-    # def elevation(self, t, s):
-    #     return self.rz*ca.sin(self.omega * s)*ca.cos(self.omega * s)/(1 + self.kz*ca.sin(self.omega * s)**2) + self.beta
+        yd = self.yd(t, s)
+        zd = self.zd(t, s)
+        return ca.sqrt(r ** 2 - yd ** 2 - zd ** 2)
+
+def create_pattern_from_dict(config: dict, optimize: bool = False) -> ParametrizedPatterns:
+    pattern_type = config.get("pattern_type").lower()
+    params = config.get("initial_parameters", {})
+    optimization_params = config.get("optimization_parameters", {})
+
+    required_params = {
+        "helix": ["omega", "r0", "d0", "vr", "beta", "kappa"],
+        "lissajous": ["omega", "r0", "a0", "h0", "vr", "beta", "kappa"],
+        "figureeight": ["omega", "r0", "ry", "rz", "vr", "beta", "ky", "kz", "kappa"]
+    }
+
+    if pattern_type not in required_params:
+        raise ValueError(f"Unknown pattern type: {pattern_type}")
+
+    missing_params = [param for param in required_params[pattern_type] if param not in params]
+    if missing_params:
+        raise ValueError(f"Missing required parameters in 'initial_parameters' for '{pattern_type}': {', '.join(missing_params)}")
+
+    # Replace optimized parameters with symbolic variables
+    final_params = params.copy()
+    if optimize:
+        for param in optimization_params:
+            if param in required_params[pattern_type]:
+                final_params[param] = ca.SX.sym(param)
+
+    # Instantiate the appropriate pattern class
+    pattern_classes = {
+        "helix": Helix,
+        "lissajous": Lissajous,
+        "figureeight": FigureEight
+    }
+
+    return pattern_classes[pattern_type](**final_params)

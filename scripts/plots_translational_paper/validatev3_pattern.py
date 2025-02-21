@@ -4,7 +4,7 @@ import numpy as np
 from picawe import SystemModel
 import casadi as ca
 import time
-from picawe.timeseries.phase import PhaseParameterized
+from picawe.timeseries.phase_parametrized import PhaseParameterized
 from picawe.kinematics.parametrized_patterns import FigureEight
 from picawe.system.kite import Kite
 import matplotlib.pyplot as plt
