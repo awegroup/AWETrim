@@ -7,7 +7,7 @@ from picawe import SystemModel
 import casadi as ca
 import time as timet
 import json
-from picawe.timeseries.phase import PhaseParameterized
+from picawe.timeseries.phase_parametrized import PhaseParameterized
 
 # -----------------------------------------------
 # Load data and define aerodynamic model

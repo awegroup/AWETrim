@@ -1,11 +1,11 @@
 import casadi as ca
 from picawe.utils.reference_frames import transformation_C_from_W
 class Wind:
-    def __init__(self, model='logarithmic'):
+    def __init__(self, wind_model='logarithmic'):
         self._speed_wind_ref = ca.SX.sym("speed_wind_ref")
         self._speed_friction = ca.SX.sym("speed_friction")
         self._height_ref = 10
-        self.model = model
+        self.wind_model = wind_model
         self.kappa = 0.4
         self.z0 = 0.01
 
@@ -37,9 +37,9 @@ class Wind:
     # Should be renamed to speed_wind_kite
     @property
     def speed_wind(self):
-        if self.model == "uniform":
+        if self.wind_model == "uniform":
             return self.speed_wind_ref
-        elif self.model == "logarithmic":
+        elif self.wind_model == "logarithmic":
             return self._speed_friction/self.kappa * ca.log(self.z/self.z0)
 
     @property
