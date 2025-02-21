@@ -21,7 +21,7 @@ tether1.speed_friction = 2
 tether1.position = position
 tether1.velocity_kite = [0, 50, 0]
 tether1.velocity_wind = [10, 0, 0]
-tether1.velocity_rotation_course_frame = [0,0,-1/4]
+tether1.velocity_rotation_course_frame = [0,0,1/4]
 tether1.z0 = 0.01
 tether1.rho = 1.225
 tether1.g = 9.81
@@ -50,8 +50,8 @@ tether1.azimuth_first_element = sol['x'][1]
 tether1.tether_length = sol['x'][2]
 
 print(tether1.force_tether_at_kite)
-
-system2 = SystemModel(dof=3, quasi_steady=True, wind_model="uniform")
+tether = RigidLumpedTether()
+system2 = SystemModel(dof=3, quasi_steady=True, wind_model="uniform", tether=tether)
 system2.distance_radial = 200
 system2.angle_elevation = elevation
 system2.angle_azimuth = azimuth
@@ -61,7 +61,7 @@ system2.speed_tangential = 50
 system2.tension_tether_ground = 1e5
 system2.speed_wind_ref = 10
 
-print("Rigid Lumped Tether Model")
+print("Rigid Link")
 print("------------------------------")
 print(system2.force_tether_at_kite)
 

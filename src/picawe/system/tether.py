@@ -22,7 +22,14 @@ class Tether(ABC):
     def mass_tether(self):
         return self.density_tether * self.distance_radial * self.area_tether
 
+class RigidLinkTether(Tether):
+    def __init__(self, E=132e9, diameter=0.01, density=970):
+        super().__init__(E, diameter, density)
 
+    @property
+    def force_tether_at_kite(self):
+        force_tension = ca.vertcat(0, 0, -self.tension_tether_ground)
+        return force_tension
 
 class RigidLumpedTether(Tether):
 

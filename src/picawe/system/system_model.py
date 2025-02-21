@@ -1,6 +1,6 @@
 import casadi as ca
 import numpy as np
-from picawe.system.tether import RigidLumpedTether
+from picawe.system.tether import RigidLinkTether
 from picawe.system.kite import Kite
 from picawe.kinematics.Kinematics import KiteKinematics
 from picawe.environment.Wind import Wind
@@ -85,7 +85,7 @@ class SystemModel(KiteKinematics):
 
     def define_tether_model(self, tether):
         if tether is None:
-            tether = RigidLumpedTether()
+            tether = RigidLinkTether()
             print("Tether model not defined. Using default tether model.")
         # Inject all tether attributes into SystemModel so they can be accessed directly
         for attr_name, attr_value in vars(tether).items():
@@ -161,7 +161,7 @@ class SystemModel(KiteKinematics):
             if var.name() not in unknown_vars:
                 inputs.append(var)
         inputs_name = [name.name() for name in inputs]
-
+        
         # NLP problem definition
         nlp = {
             "x": ca.vertcat(*x),
@@ -313,3 +313,4 @@ class SystemModel(KiteKinematics):
             },
             "print_time": False,  # Disables CasADi's internal timing output
         }
+
