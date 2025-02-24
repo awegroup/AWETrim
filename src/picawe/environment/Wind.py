@@ -33,23 +33,37 @@ class Wind:
     @speed_friction.setter
     def speed_friction(self, value):
         self._speed_friction = value
+        self._speed_wind_ref = value/self.kappa*ca.log(self.height_ref/self.z0)
 
     # Should be renamed to speed_wind_kite
-    @property
-    def speed_wind(self):
+    def speed_wind(self,state):
         if self.wind_model == "uniform":
             return self.speed_wind_ref
         elif self.wind_model == "logarithmic":
-            return self._speed_friction/self.kappa * ca.log(self.z/self.z0)
+            return self._speed_friction/self.kappa * ca.log(state.z/self.z0)
 
-    @property
-    def velocity_wind_W(self):
-        return ca.vertcat(self.speed_wind, 0, 0)
+    def velocity_wind_W(self,state):
+        return ca.vertcat(self.speed_wind(state), 0, 0)
     
-    @property
-    def velocity_wind(self):
+    def velocity_wind(self, state):
         """
         Compute the wind velocity in the body frame.
         """
-        T_C_from_W = transformation_C_from_W(self.angle_azimuth, self.angle_elevation, self.angle_course)
-        return T_C_from_W @ self.velocity_wind_W
+        T_C_from_W = transformation_C_from_W(state.angle_azimuth, state.angle_elevation, state.angle_course)
+        return T_C_from_W @ self.velocity_wind_W(state)
+    
+    def speed_wind_at_height(self, height):
+        if self.wind_model == "uniform":
+            return self.speed_wind_ref
+        elif self.wind_model == "logarithmic":
+            return self._speed_friction/self.kappa * ca.log(height/self.z0)
+        
+    def velocity_wind_at_height_W(self, height):
+        return ca.vertcat(self.speed_wind_at_height(height), 0, 0)
+    
+    def velocity_wind_at_height(self, state,height):
+        """
+        Compute the wind velocity in the body frame.
+        """
+        T_C_from_W = transformation_C_from_W(state.angle_azimuth, state.angle_elevation, state.angle_course)
+        return T_C_from_W @ self.velocity_wind_at_height_W(height)

@@ -22,9 +22,9 @@ class SystemModel(KiteKinematics):
         Initialize the kite system with its parameters.
         """
         # Define symbolic variables for the function inputs
+        self.define_tether_model(tether)
         KiteKinematics.__init__(self)
         self.define_wind_model(wind_model)
-        self.define_tether_model(tether)
         self.define_kite_model(kite)
         
         self.steering_control = self.steering_control
@@ -40,8 +40,12 @@ class SystemModel(KiteKinematics):
             self.acceleration_angle_roll = 0
             self.acceleration_angle_yaw = 0
             if self.steering_control == "asymmetric":
-                self.angle_roll = 0
-
+                if self.mass_kcu == 0:
+                    self.angle_roll = 0
+                else:
+                    self.angle_roll = self.roll_kcu
+                    self.angle_pitch = self.pitch_kcu
+                    
         if self.steering_control == "roll":
             self.angle_roll = self.input_steering
 
@@ -87,27 +91,14 @@ class SystemModel(KiteKinematics):
         if tether is None:
             tether = RigidLinkTether()
             print("Tether model not defined. Using default tether model.")
-        # Inject all tether attributes into SystemModel so they can be accessed directly
-        for attr_name, attr_value in vars(tether).items():
-            setattr(self, attr_name, attr_value)
-        for cls in inspect.getmro(tether.__class__):
-            for name, obj in cls.__dict__.items():
-                if isinstance(obj, property) and not hasattr(self.__class__, name):
-                    setattr(self.__class__, name, obj)
+        self.tether = tether
+        self.tension_tether_ground = ca.SX.sym("tension_tether_ground")
 
     def define_wind_model(self, wind_model):
         if wind_model == "logarithmic"or wind_model == "uniform":
-            wind = Wind(wind_model)
+            self.wind = Wind(wind_model)
         else:
             raise ValueError("Invalid wind model. Choose 'logarithmic' or 'uniform'.")
-
-        # Inject all tether attributes into SystemModel so they can be accessed directly
-        for attr_name, attr_value in vars(wind).items():
-            setattr(self, attr_name, attr_value)
-        for prop_name, prop_value in wind.__class__.__dict__.items():
-            if isinstance(prop_value, property):  # ⬅️ Check if it's a @property
-                setattr(SystemModel, prop_name, prop_value)
-
 
     def ode_function(self):
         dot_r = self.speed_radial
