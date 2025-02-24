@@ -1,10 +1,10 @@
 import numpy as np
 DEFAULT_BOUNDS = {
-    "tension_tether_ground": [0, 1e9],
-    "input_steering": [-np.pi/2, np.pi/2],
+    "tension_tether_ground": [800, 1e9],
+    "input_steering": [-5, 5],
     "s_dot": [0.01, 10],
     "s_ddot": [-100, 100],
-    "speed_tangential": [-10, 250],
+    "speed_tangential": [0, 250],
     "angle_roll": [-np.pi/2, np.pi/2],
     "timeder_angle_course": [-np.pi, np.pi],
     "angle_pitch": [-np.pi/4, np.pi/4],
@@ -26,6 +26,7 @@ PLOT_LABELS = {
     'dchi_ds': '$d\\chi / ds$',
     'distance_radial': '$r$ (m)',
     'force_tether_talmar': '$F_{t, \\mathrm{Talmar}}}$',
+    'input_steering': '$u_s$',
     'phi_unwrapped': '$\\phi_a$ ($^\\circ$)',
     'ratio_kinematic': '$\\kappa$',
     'ratio_tether': '$\\frac{F_t}{F_{t, \\mathrm{Talmar}}}}$',

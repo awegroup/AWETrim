@@ -1,5 +1,5 @@
 import casadi as ca
-from picawe.utils.reference_frames import transformation_AZR_from_W
+from picawe.utils.reference_frames import transformation_AZR_from_W, transformation_C_from_W
 
 
 class Position:
@@ -71,7 +71,7 @@ class Position:
     
     @property
     def position_W(self):
-        return ca.transpose(transformation_AZR_from_W(self.angle_azimuth, self.angle_elevation)) @ self.position
+        return ca.transpose(transformation_C_from_W(self.angle_azimuth, self.angle_elevation, self.angle_course)) @ self.position
 
 
 
@@ -114,7 +114,7 @@ class KiteKinematics(Position):
     
     @property
     def velocity_kite_W(self):
-        return ca.transpose(transformation_AZR_from_W(self.angle_azimuth, self.angle_elevation)) @ self.velocity_kite
+        return ca.transpose(transformation_C_from_W(self.angle_azimuth, self.angle_elevation, self.angle_course)) @ self.velocity_kite
 
     @property
     def timeder_speed_tangential(self):

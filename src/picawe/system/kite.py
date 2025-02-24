@@ -159,7 +159,7 @@ class Wing:
     @property
     def velocity_apparent_wind(self):
 
-        return self.velocity_wind - self.velocity_kite
+        return self.wind.velocity_wind(self) - self.velocity_kite
 
     @property
     def velocity_rotation_wing(self):
@@ -257,6 +257,7 @@ class Kite(Wing):
         self.acceleration_angle_yaw = ca.SX.sym("acceleration_angle_yaw")
         self.acceleration_angle_pitch = ca.SX.sym("acceleration_angle_pitch")
         self.acceleration_angle_roll = ca.SX.sym("acceleration_angle_roll")
+        
 
     @property
     def force_gravity_kcu(self):
@@ -343,7 +344,8 @@ class Kite(Wing):
     @property
     def force_external(self):
 
-        return self.force_aerodynamic + self.force_gravity + self.force_tether_at_kite
+        return self.force_aerodynamic + self.force_gravity + self.tether.force_tether_at_kite(self)
+
 
     @property
     def force_residual(self):
@@ -351,7 +353,7 @@ class Kite(Wing):
         Compute the residual for the kite system dynamics.
         """
         # LHS and RHS
-        lhs = (self.mass_wing + self.mass_kcu) * self.acceleration
+        lhs = (self.mass_wing+self.mass_kcu) * self.acceleration
         # Residual
         return -lhs + self.force_external
 
@@ -461,3 +463,20 @@ class Kite(Wing):
 
         elif self.dof == 6:
             return self._angle_yaw
+
+    @property
+    def pitch_kcu(self):
+        
+        numerator = self.mass_kcu * (self.g * ca.cos(self.angle_elevation) * ca.cos(self.angle_course) + (self.speed_tangential * self.speed_radial) / self.distance_radial)
+        denominator = self.tether.tension_kite(self) + self.mass_kcu * (self.g * ca.sin(self.angle_elevation) - (self.speed_tangential ** 2) / self.distance_radial)
+        return ca.arctan(numerator / denominator)
+    
+    @property
+    def roll_kcu(self):
+        numerator = self.mass_kcu * (
+            -(self.speed_tangential ** 2) / self.distance_radial * ca.sin(self.angle_course) * ca.tan(self.angle_elevation) 
+            +self.speed_tangential * self.timeder_angle_course - self.g * ca.cos(self.angle_elevation) * ca.sin(self.angle_course)
+        )
+        denominator = self.tether.tension_kite(self) + self.mass_kcu * (self.g * ca.sin(self.angle_elevation) - (self.speed_tangential ** 2) / self.distance_radial)
+        return ca.arctan(numerator / denominator)
+    
