@@ -3,24 +3,25 @@ from picawe.system.tether import RigidLumpedTether, DistributedDragTether
 import numpy as np
 from picawe.system.system_model import SystemModel
 from picawe.utils.reference_frames import transformation_C_from_W
-import copy
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import json
+from picawe.system.kite import Kite
 
-azimuth = 0
-elevation = np.radians(45)
-distance_radial = 200
-speed_tangential = 40
-diameter_tether = 0.01
-density_tether = 970
-uf = 0.6
 
-position = [distance_radial*np.cos(azimuth)*np.cos(elevation), distance_radial*np.sin(azimuth)*np.cos(elevation), distance_radial*np.sin(elevation)]
+diameter_tether = 0.01  # Diameter of the tether [m]
+density_tether = 970    # Density of the tether [kg/m^3]
+uf = 0.6        # Friction speed of the wind [m/s]
 
+#%%
+# -----------------------------------------------
+# Define the tether models
+# -----------------------------------------------
 
 # Define the tether model
 tether1 = WilliamsTether(diameter=diameter_tether)
-tether1.speed_friction = uf
-tether1.velocity_rotation_course_frame = [0,0,2/4]
-tether1.tension_tether_ground = 1e5
+
 tether1.z0 = 0.01
 tether1.rho = 1.225
 tether1.g = 9.81
@@ -29,31 +30,11 @@ tether1.mass_wing = 20
 tether1.area_wing = 20
 
 
-print("Williams Tether Model")
-print("------------------------------")
-print(tether1.force_tether_at_kite)
-print(tether1.solve_tether_shape(position))
-
-solver,names = tether1.solve_tether_shape(position)
-# Bounds for the constraints
-lbx = [-np.pi/2, -np.pi/2, 100]
-ubx = [np.pi/2, np.pi/2, 300]
-lbg = [0] * 3
-ubg = [0] * 3
-sol = solver(x0 = [0.01,0.01,200], lbg = lbg, ubg = ubg)
-print(sol['x'])
-print(sol['g'])
 
 
-print(tether1.force_tether_at_kite)
 tether2 = DistributedDragTether(diameter=diameter_tether)
-
 system2 = SystemModel(dof=3, quasi_steady=True, wind_model="logarithmic", tether=tether2)
-import copy
-# system2 = copy.deepcopy(system2)
-system2.distance_radial = 200
-system2.angle_elevation = elevation
-system2.angle_azimuth = azimuth
+
 system2.angle_course = np.pi/2
 system2.speed_radial = 0
 system2.speed_tangential = 50
@@ -65,9 +46,7 @@ system2.input_depower = 0
 
 tether3 = RigidLumpedTether(diameter=diameter_tether)
 system3 = SystemModel(dof=3, quasi_steady=True, wind_model="logarithmic", tether=tether3)
-system3.distance_radial = 200
-system3.angle_elevation = elevation
-system3.angle_azimuth = azimuth
+
 system3.angle_course = np.pi/2
 system3.speed_radial = 0
 system3.speed_tangential = 50
@@ -77,33 +56,9 @@ system3.input_depower = 0
 
 
 
-print(system3.tether.force_tether_at_kite(system3))
-
-
-print(system2.tether.force_tether_at_kite(system2))
-
-force1 = tether1.force_tether_at_kite
-
-
-
-T_C_from_W = transformation_C_from_W(azimuth, elevation, np.pi/2)
-print(T_C_from_W@force1(sol["x"][0], sol["x"][1], sol["x"][2]))
-
-
-
-
-
-import numpy as np
-import pandas as pd
-import casadi as ca
-import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-from picawe import SystemModel
-import json
-from picawe.system.kite import Kite
-
+#%%
 # -----------------------------------------------
-# Load data and define aerodynamic model
+# Create a trajectory without a tether model
 # -----------------------------------------------
 
 # Define aerodynamic input
@@ -114,14 +69,13 @@ with open(file_path, "r") as file:
 # -----------------------------------------------
 # Define the system and aerodynamic model
 # -----------------------------------------------
-tether = RigidLumpedTether()
-kite = Kite(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, steering_control="asymmetric")
+
+kite = Kite(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=0, steering_control="asymmetric")
 kite_model = SystemModel(
     dof=3,
     quasi_steady=True,
     wind_model="logarithmic",
     kite=kite,
-    tether=tether,
 )
 
 # Set constant parameters
@@ -129,11 +83,7 @@ kite_model.wind.speed_friction = uf
 kite_model.input_depower = 0.0
 kite_model.timeder_angle_course = np.radians(-2)
 
-# Extract the tension tether function
-aoa_func = kite_model.extract_function("angle_of_attack")
-omega_func = kite_model.extract_function("velocity_rotation_course_frame")
-position_W_func = kite_model.extract_function("position_W")
-velocity_W_func = kite_model.extract_function("velocity_kite_W")
+
 
 # -----------------------------------------------
 # Define simulation parameters and initial state
@@ -157,16 +107,22 @@ qs_guess = [200, 0, 40]
 states = []
 import time as timet
 start_time = timet.time()
+print(kite_model.timeder_angle_course)
 solve_qs, inputs_name = kite_model.solve_quasi_steady_state(
         unknown_vars, solver_options=solver_options
     )
+print(inputs_name)
 # Solve quasi-steady state
 p = [current_state[name] for name in inputs_name]
 
 lbx,ubx,lbg,ubg = kite_model.get_boundaries(unknown_vars)
 sol = solve_qs(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 kite_model.establish_ode()
-
+# Extract the tension tether function
+aoa_func = kite_model.extract_function("angle_of_attack")
+omega_func = kite_model.extract_function("velocity_rotation_course_frame")
+position_W_func = kite_model.extract_function("position_W")
+velocity_W_func = kite_model.extract_function("velocity_kite_W")
 # -----------------------------------------------
 # Time integration loop
 # -----------------------------------------------
@@ -275,8 +231,9 @@ ax.legend()
 
 plt.show()
 
+#%%
 # -----------------------------------------------
-# Print final results
+# Compare tether models
 # -----------------------------------------------
 print("Reel-in elevation angle: ", np.degrees(states[-1]["angle_elevation"]))
 print("Reel-in tether force: ", states[-1]["tension_tether_ground"])

@@ -59,7 +59,8 @@ class RigidLumpedTether(Tether):
             * state.velocity_apparent_wind
             * ca.norm_2(state.velocity_apparent_wind)
         )
-        return ca.vertcat(drag[0], drag[1], 0)
+        # return drag
+        return ca.vertcat(drag[0], drag[1], 0) # neglecting drag in the radial direction
 
     def force_gravity_tether_at_kite(self,state):
         weight = transformation_C_from_W(
@@ -113,8 +114,8 @@ class DistributedDragTether(Tether):
         return 0.5 * state.rho * self.diameter_tether * self.drag_coefficient_tether * np.array([
             drag_integral_tangential / (r**2),
             drag_integral_normal / r,
-            0
-        ])
+            drag_integral_radial
+        ]) 
 
     def force_gravity_tether_at_kite(self,state):
         weight = transformation_C_from_W(
