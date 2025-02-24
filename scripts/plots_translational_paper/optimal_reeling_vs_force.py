@@ -47,7 +47,7 @@ kite = Kite(mass_wing=0, area_wing=20, aero_input=aero_input, mass_kcu=0, steeri
 state = SystemModel(dof=3, quasi_steady=True, wind_model="uniform", kite=kite)
 
 speed_wind = 10
-state.speed_wind_ref = speed_wind
+state.wind.speed_wind_ref = speed_wind
 state.input_depower = 0
 state.timeder_angle_course = 0
 state.distance_radial = 200
@@ -115,7 +115,7 @@ colors = get_color_list()
 plt.figure(figsize=(5,4))
 wind_speeds = [15, 10, 5]
 for vwi,speed_wind in enumerate(wind_speeds):
-    state.speed_wind_ref = speed_wind
+    state.wind.speed_wind_ref = speed_wind
     state.establish_residual()
     variables = ca.symvar(state.residual)
     name_vars = [var.name() for var in variables]
@@ -167,7 +167,7 @@ for vwi,speed_wind in enumerate(wind_speeds):
                         ft[i,j,k] = np.nan
                         print("Failed at azimuth angle: ", phi, " and course angle: ", angle_course)
 
-    plt.scatter(f*state.speed_wind, ft, color = colors[vwi+1], alpha = 0.1, label = "$v_w$ = " + str(speed_wind) + " m/s")
+    plt.scatter(f*state.wind.speed_wind(state), ft, color = colors[vwi+1], alpha = 0.1, label = "$v_w$ = " + str(speed_wind) + " m/s")
 # -----------------------------------------------
 # Plot the results
 # -----------------------------------------------

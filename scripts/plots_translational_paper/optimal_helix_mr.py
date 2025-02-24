@@ -97,7 +97,7 @@ for i,mr in enumerate(mass_ratio_values):
         # Define kite model with current parameters
         kite = Kite(mass_wing=mass_wing, area_wing=area_wing, aero_input=aero_input, mass_kcu=0, steering_control="roll")
         kite_model = SystemModel(dof=dof, quasi_steady=quasi_steady, kite=kite, wind_model="uniform")
-        kite_model.speed_wind_ref = 15
+        kite_model.wind.speed_wind_ref = 15
         kite_model.input_depower = 0
 
 

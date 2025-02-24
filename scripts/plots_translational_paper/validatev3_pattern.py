@@ -116,17 +116,24 @@ r0 = np.linalg.norm(
         flight_data["kite_position_z"].iloc[0],
     ]
 )
-ry = 70
-rz = 25
-beta0 = np.radians(24)
 vr = np.mean(flight_data["tether_reelout_speed"])
-kite_model.speed_wind_ref = np.mean(results["wind_speed_horizontal"])-1
+kite_model.speed_radial = vr+1
+kite_model.wind.speed_wind_ref = np.mean(results["wind_speed_horizontal"])-1
 kite_model.input_depower = 0
-figure_eight = FigureEight(-1, r0, ry, rz * 2, vr, beta0, ky=0.5, kz=1, kappa=1)
-
-pattern = figure_eight
-
-
+pattern_config = {
+    "pattern_type": "figure_eight",
+    "initial_parameters": {
+        "omega": -1.0,
+        "r0": r0,
+        "ry": 70,
+        "rz": 50,
+        "ky": 0.5,
+        "kz": 1,
+        "beta": np.radians(24),
+        "kappa": 1,
+        "vr": vr,   
+    },
+}
 
 start_state = {
     "t": 0,
@@ -144,7 +151,7 @@ dof = 3
 
 
 # Run simulation
-phase = PhaseParameterized(kite_model, pattern, quasi_steady=quasi_steady)
+phase = PhaseParameterized(kite_model, quasi_steady=quasi_steady, pattern_config=pattern_config)
 phase.run_simulation(start_state=start_state, time_array=time)
 # Extract variables
 s = phase.return_variable("s")

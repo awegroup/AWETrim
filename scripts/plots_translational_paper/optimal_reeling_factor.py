@@ -45,7 +45,7 @@ kite = Kite(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, steer
 state = SystemModel(dof=3, quasi_steady=True,  wind_model="uniform", kite=kite)
 
 speed_wind = 10
-state.speed_wind_ref = speed_wind
+state.wind.speed_wind_ref = speed_wind
 state.input_depower = 0
 state.timeder_angle_course = 0
 state.distance_radial = 200

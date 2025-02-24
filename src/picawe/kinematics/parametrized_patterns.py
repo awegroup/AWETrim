@@ -80,16 +80,16 @@ class Lissajous(ParametrizedPatterns):
 class FigureEight(ParametrizedPatterns):
 
     def __init__(self, omega, r0, ry, rz, vr, beta, ky=1, kz=1, kappa=0):
-        super().__init__(omega=omega, r0=r0, ry=ry, rz=rz, vr=vr, beta=beta, ky=ky, kz=kz, kappa=kappa)
+        super().__init__(omega=omega, r0=r0, ry0=ry, rz0=rz, vr=vr, beta=beta, ky=ky, kz=kz, kappa=kappa)
 
     def r(self, t):
         return self.r0 + self.vr * t
 
     def ry(self, t):
-        return self.ry * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+        return self.ry0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
 
     def rz(self, t):
-        return self.rz * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+        return self.rz0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
 
     def yd(self, t, s):
         return self.ry(t) * ca.cos(self.omega * s) / (1 + self.ky * ca.sin(self.omega * s) ** 2)
@@ -111,7 +111,7 @@ def create_pattern_from_dict(config: dict, optimize: bool = False) -> Parametriz
     required_params = {
         "helix": ["omega", "r0", "d0", "vr", "beta", "kappa"],
         "lissajous": ["omega", "r0", "a0", "h0", "vr", "beta", "kappa"],
-        "figureeight": ["omega", "r0", "ry", "rz", "vr", "beta", "ky", "kz", "kappa"]
+        "figure_eight": ["omega", "r0", "ry", "rz", "vr", "beta", "ky", "kz", "kappa"]
     }
 
     if pattern_type not in required_params:
@@ -132,7 +132,7 @@ def create_pattern_from_dict(config: dict, optimize: bool = False) -> Parametriz
     pattern_classes = {
         "helix": Helix,
         "lissajous": Lissajous,
-        "figureeight": FigureEight
+        "figure_eight": FigureEight
     }
 
     return pattern_classes[pattern_type](**final_params)
