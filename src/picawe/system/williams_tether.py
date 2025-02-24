@@ -7,7 +7,7 @@ import numpy as np
 
 class WilliamsTether(Tether):
 
-    def __init__(self, E=132e9, diameter=0.01, density=970, n_elements=10, elastic=False, cf = 0.01):
+    def __init__(self, E=132e9, diameter=0.01, density=970, n_elements=30, elastic=False, cf = 0.01):
         super().__init__(E, diameter, density)
         self.elevation_first_element = ca.SX.sym("elevation_first_element")
         self.azimuth_first_element = ca.SX.sym("azimuth_first_element")
@@ -19,7 +19,16 @@ class WilliamsTether(Tether):
 
     @property
     def force_tether_at_kite(self):
-        return self.tether_shape_symbolic()["tether_force_kite"]
+        x = ca.symvar(self.tether_shape_symbolic()["tether_force_kite"])
+        x_names = [var.name() for var in x]
+        force_fun = ca.Function(
+            "force_tether_at_kite",
+            x,
+            [self.tether_shape_symbolic()["tether_force_kite"]],
+            x_names,
+            ["force_tether_at_kite"],
+        )
+        return force_fun
     
 
     def tether_shape_symbolic(self):
@@ -29,7 +38,6 @@ class WilliamsTether(Tether):
         azimuth_0 = self.azimuth_first_element
         tether_length = self.tether_length
         tension_ground = self.tension_tether_ground
-        v_kite = self.velocity_kite
         diameter = self.diameter_tether
         density = self.density_tether
         cdt = self.drag_coefficient_tether
@@ -43,7 +51,6 @@ class WilliamsTether(Tether):
         uf = self.speed_friction
 
         omega = self.velocity_rotation_course_frame
-        
         tensions = ca.SX.zeros((n_elements, 3))
         tensions[0, 0] = ca.cos(elevation_0) * ca.cos(azimuth_0) * tension_ground
         tensions[0, 1] = ca.cos(elevation_0) * ca.sin(azimuth_0) * tension_ground
@@ -139,39 +146,9 @@ class WilliamsTether(Tether):
                     + tensions[j + 1, :] / ca.norm_2(tensions[j + 1, :]) * l_s
                 )
             elif last_element:
-                next_tension = tensions[j, :].T - fgj - faj  # a_kite gave better fit
-                aerodynamic_force = next_tension
+                next_tension = tensions[j, :].T - fgj - faj  
 
-        va = vwj - vj
-        ez_bridle = -tensions[-1, :].T / ca.norm_2(
-            tensions[-1, :]
-        )  # Bridle direction, pointing down
-        ey_bridle = ca.cross(ez_bridle, -va) / ca.norm_2(
-            ca.cross(ez_bridle, -va)
-        )  # y-axis of bridle frame, perpendicular to va
-        ex_bridle = ca.cross(
-            ey_bridle, ez_bridle
-        )  # x-axis of bridle frame, perpendicular ex and ey
-        dcm_b2w = ca.horzcat(ex_bridle, ey_bridle, ez_bridle)
-
-        ez_bridle = -tensions[-1, :].T / ca.norm_2(
-            tensions[-1, :]
-        )  # Bridle direction, pointing down
-        ey_bridle = ca.cross(ez_bridle, v_kite) / ca.norm_2(
-            ca.cross(ez_bridle, v_kite)
-        )  # y-axis of bridle frame, perpendicular to va
-        ex_bridle = ca.cross(
-            ey_bridle, ez_bridle
-        )  # x-axis of bridle frame, perpendicular ex and ey
-        dcm_b2vel = ca.horzcat(ex_bridle, ey_bridle, ez_bridle)
-
-        # Tether frame at the kite
-        ez_tether = -tensions[-2, :].T / ca.norm_2(tensions[-2, :])
-        ey_tether = ca.cross(ez_tether, -va) / ca.norm_2(ca.cross(ez_tether, -va))
-        ex_tether = ca.cross(ey_tether, ez_tether)
-        dcm_t2w = ca.horzcat(ex_tether, ey_tether, ez_tether)
-
-        tension_kite = tensions[-1, :].T
+        tension_kite = -tensions[-1, :].T
         
         cd_tether = drag_tether / (0.5 * self.rho * ca.norm_2(vaj) ** 2 * self.area_wing)
 
@@ -191,12 +168,20 @@ class WilliamsTether(Tether):
 
     def solve_tether_shape(self, r_kite):
         """Solve tether shape using optimization"""
-
+        solver_opts = {
+            "ipopt": {
+                "print_level": 0,  # Suppresses IPOPT output
+                # 'max_iter': 200,  # Maximum number of iterations
+                "sb": "yes",  # Suppresses more detailed solver information
+            },
+            "print_time": False,  # Disables CasADi's internal timing output
+        }
         f = self.objective_function(r_kite)
         x = ca.symvar(f)
         x_names = [var.name() for var in x]
         nlp = {"x": ca.vertcat(*x), "f": 0, "g": f}
-        solver = ca.nlpsol("solver", "ipopt", nlp)
+        solver = ca.nlpsol("solver", "ipopt", nlp, solver_opts
+        )
 
     
         return solver, x_names
