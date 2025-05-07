@@ -18,8 +18,8 @@ class Wing:
         self.input_steering = ca.SX.sym("input_steering")
         self.input_depower = ca.SX.sym("input_depower")
         # Aerodynamic inputs
-        self.angle_pitch_depower_0 = aero_input["params"].get(
-            "angle_pitch_depower_0", ca.SX.sym("angle_pitch_depower_0")
+        self.angle_pitch_tether = aero_input["params"].get(
+            "angle_pitch_depower_0", ca.SX.sym("angle_pitch_tether")
         )
         self.delta_pitch_depower = aero_input["params"].get(
             "delta_pitch_depower", ca.SX.sym("delta_pitch_depower")
@@ -48,7 +48,7 @@ class Wing:
             "u_s": self.input_steering,
             "u_p": self.input_depower,
             # Dynamically add other variables as dependencies
-            "yaw_rate": self.timeder_angle_course
+            "yaw_rate": self.timeder_angle_yaw
             / ca.norm_2(self.velocity_apparent_wind),
             "sideslip": self.angle_sideslip,
         }
@@ -78,8 +78,10 @@ class Wing:
                 elif coeff_type == "k_cd":
                     C_D += coeff_value * ca.fabs(variables[var])
                 elif coeff_type == "k_cs":
-                    C_S += coeff_value * variables[var]
+                    C_L = C_L*ca.cos(aero_input["dependencies"]["u_s"]["k_cs"]*self.input_steering)
+                    C_S = C_L*ca.sin(aero_input["dependencies"]["u_s"]["k_cs"]*self.input_steering)
 
+        
         # alpha_min = np.radians(-5)
         # alpha_max = np.radians(20)
         # C_L = ca.if_else(
@@ -109,7 +111,7 @@ class Wing:
             "u_s": self.input_steering,
             "u_p": self.input_depower,
             # Dynamically add other variables as dependencies
-            "yaw_rate": self.timeder_angle_course
+            "yaw_rate": self.timeder_angle_yaw
             / ca.norm_2(self.velocity_apparent_wind),
             "sideslip": self.angle_sideslip,
         }
@@ -135,9 +137,7 @@ class Wing:
         """
         Compute the tether angle based on the powered angle and the tether angle at t=0.
         """
-        return (
-            self.angle_pitch_depower_0 + self.input_depower * self.delta_pitch_depower
-        )
+        return self.angle_pitch_tether + self.input_depower * self.delta_pitch_depower
 
     @property
     def angle_sideslip(self):
@@ -207,6 +207,7 @@ class Wing:
         R = transformation_C_from_A(
             self.angle_pitch_aerodynamic, self.angle_yaw_aerodynamic, self.angle_roll
         )
+
         aero_forces = R @ ca.vertcat(-D, S, L)
         return aero_forces
 
@@ -230,7 +231,7 @@ class Kite(Wing):
         rho=1.225,
         center_aerodynamic_wing=[0, 0, 10],
         center_gravity_wing=[0, 0, 10],
-        steering_control = "roll",
+        steering_control="roll",
     ):
         """
         Initialize the kite system with its parameters.
@@ -249,15 +250,33 @@ class Kite(Wing):
         self._override_centripetal = False
         self._override_coriolis = False
         self._angle_yaw = ca.SX.sym("angle_yaw")
-        self.angle_pitch = ca.SX.sym("angle_pitch")
-        self.angle_roll = ca.SX.sym("angle_roll")
+        self._angle_pitch = ca.SX.sym("angle_pitch")
+        self._angle_roll = ca.SX.sym("angle_roll")
         self.timeder_angle_yaw = ca.SX.sym("timeder_angle_yaw")
         self.timeder_angle_pitch = ca.SX.sym("timeder_angle_pitch")
         self.timeder_angle_roll = ca.SX.sym("timeder_angle_roll")
         self.acceleration_angle_yaw = ca.SX.sym("acceleration_angle_yaw")
         self.acceleration_angle_pitch = ca.SX.sym("acceleration_angle_pitch")
         self.acceleration_angle_roll = ca.SX.sym("acceleration_angle_roll")
-        
+
+    @property
+    def angle_roll(self):
+        if self.dof == 6:
+            return self._angle_roll
+        elif self.dof == 3:
+            if self.steering_control == "roll":
+                return self.input_steering
+            elif self.steering_control == "asymmetric":
+                return self.roll_kcu
+            else:
+                raise ValueError("steering_control ha de ser 'roll' o 'asymetric'.")
+
+    @property
+    def angle_pitch(self):
+        if self.dof == 6:
+            return self._angle_pitch
+        elif self.dof == 3:
+            return self.pitch_kcu
 
     @property
     def force_gravity_kcu(self):
@@ -343,9 +362,40 @@ class Kite(Wing):
 
     @property
     def force_external(self):
+        return (
+            self.force_aerodynamic
+            + self.force_gravity
+            + self.force_tether_at_kite
+        )
+    
+    @property
+    def acceleration_external(self):
+        acc = self.force_external/(self.mass_wing + self.mass_kcu)
+        vtau = self.speed_tangential
+        
+        acc[1] = ca.if_else(
+            vtau > 1e-3,
+            -acc[1]/vtau,
+            -ca.sign(acc[1]) *ca.pi/2,
+        )
+        return acc
+        
 
-        return self.force_aerodynamic + self.force_gravity + self.tether.force_tether_at_kite(self)
+    @property
+    def acceleration_inertial(self):
+        return ca.vertcat(
+            -self.speed_tangential * self.speed_radial / self.distance_radial,
+            self.speed_tangential
+            * ca.sin(self.angle_course)
+            * ca.tan(self.angle_elevation)
+            / self.distance_radial,
+            self.speed_tangential**2 / self.distance_radial,
+        )
 
+    @property
+    def acceleration_total(self):
+        
+        return self.acceleration_inertial + self.acceleration_external
 
     @property
     def force_residual(self):
@@ -353,7 +403,7 @@ class Kite(Wing):
         Compute the residual for the kite system dynamics.
         """
         # LHS and RHS
-        lhs = (self.mass_wing+self.mass_kcu) * self.acceleration
+        lhs = (self.mass_wing + self.mass_kcu) * self.acceleration
         # Residual
         return -lhs + self.force_external
 
@@ -466,17 +516,29 @@ class Kite(Wing):
 
     @property
     def pitch_kcu(self):
-        
-        numerator = self.mass_kcu * (self.g * ca.cos(self.angle_elevation) * ca.cos(self.angle_course) + (self.speed_tangential * self.speed_radial) / self.distance_radial)
-        denominator = self.tether.tension_kite(self) + self.mass_kcu * (self.g * ca.sin(self.angle_elevation) - (self.speed_tangential ** 2) / self.distance_radial)
+
+        numerator = self.mass_kcu * (
+            self.g * ca.cos(self.angle_elevation) * ca.cos(self.angle_course)
+            + (self.speed_tangential * self.speed_radial) / self.distance_radial
+        )
+        denominator = self.tension_kite + self.mass_kcu * (
+            self.g * ca.sin(self.angle_elevation)
+            - (self.speed_tangential**2) / self.distance_radial
+        )
         return ca.arctan(numerator / denominator)
-    
+
     @property
     def roll_kcu(self):
         numerator = self.mass_kcu * (
-            -(self.speed_tangential ** 2) / self.distance_radial * ca.sin(self.angle_course) * ca.tan(self.angle_elevation) 
-            +self.speed_tangential * self.timeder_angle_course - self.g * ca.cos(self.angle_elevation) * ca.sin(self.angle_course)
+            -(self.speed_tangential**2)
+            / self.distance_radial
+            * ca.sin(self.angle_course)
+            * ca.tan(self.angle_elevation)
+            + self.speed_tangential * self.timeder_angle_course
+            - self.g * ca.cos(self.angle_elevation) * ca.sin(self.angle_course)
         )
-        denominator = self.tether.tension_kite(self) + self.mass_kcu * (self.g * ca.sin(self.angle_elevation) - (self.speed_tangential ** 2) / self.distance_radial)
+        denominator = self.tension_kite + self.mass_kcu * (
+            self.g * ca.sin(self.angle_elevation)
+            - (self.speed_tangential**2) / self.distance_radial
+        )
         return ca.arctan(numerator / denominator)
-    

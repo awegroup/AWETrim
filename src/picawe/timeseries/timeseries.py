@@ -72,9 +72,12 @@ class TimeSeries:
         var_func = self.kite_model.extract_function(variable)
         var = []
         for state in self.states:
-            input_dict = {name: state[name] for name in var_func.name_in()}
-            output = var_func(**input_dict)[variable]
-            var.append(float(output))
+            if variable in state.keys():
+                var.append(float(state[variable]))
+            else:
+                input_dict = {name: state[name] for name in var_func.name_in()}
+                output = var_func(**input_dict)[variable]
+                var.append(float(output))
 
         return np.array(var)
 

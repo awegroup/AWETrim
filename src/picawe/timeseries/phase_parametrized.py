@@ -6,6 +6,7 @@ import casadi as ca
 import numpy as np
 from picawe.utils.defaults import DEFAULT_PATTERN_CONFIG, DEFAULT_OPTI_LIMITS
 import copy
+from picawe.system.tether import RigidLinkTether
 
 class PhaseParameterized(TimeSeries):
     def __init__(
@@ -30,15 +31,16 @@ class PhaseParameterized(TimeSeries):
         self.target_lift_coefficient = None
         pattern = create_pattern_from_dict(self.pattern_config, optimize=True)
         self.kinematics = ParametrizedKinematics(pattern, self.quasi_steady)
+        self.find_optimal_angle_pitch_tether()
         
     
     def run_simulation(self,start_state, s_array = None, time_array = None):
         self.substitute_parametrized_kinematics()
         self.states = []
         if self.quasi_steady:
-            unknown_vars = ["tension_tether_ground", "input_steering", "s_dot"]
+            unknown_vars = ["length_tether", "input_steering", "s_dot"]
         else:
-            unknown_vars = ["tension_tether_ground", "input_steering", "s_ddot"]
+            unknown_vars = ["length_tether", "input_steering", "s_ddot"]
 
         if self.kite_model.dof == 6:
             unknown_vars += ["angle_roll", "angle_pitch", "angle_yaw"]
@@ -46,10 +48,12 @@ class PhaseParameterized(TimeSeries):
             if var not in start_state:
                 raise ValueError(f"Start state must contain {var}")
         qs_guess = [start_state[name] for name in unknown_vars]
-        solve_func, inputs_name = self.kite_model.solve_quasi_steady_state(
+        solve_func, inputs_name = self.kite_model.setup_qs_solver(
             unknown_vars)
         current_state = start_state
-        
+        speed_radial_func = self.kite_model.extract_function("speed_radial")
+        input_length = speed_radial_func.n_in()
+        distance_radial = self.kinematics.r
         # TODO: Implement the s array
         if time_array is not None:
             s = start_state["s"]
@@ -74,6 +78,10 @@ class PhaseParameterized(TimeSeries):
                         s_dot += float(sol["x"][2])*time_step
                         s += s_dot*time_step
                         current_state = {**dyn_state, "s_dot": s_dot, "s": s, "t": time_array[i], "s_ddot": float(sol["x"][2])}
+                    
+                    if input_length >0:
+                        distance_radial +=  speed_radial_func(current_state["tension_tether_ground"])*time_step
+                        current_state["distance_radial"] = distance_radial
                     self.states.append(current_state)
                 else:
                     print("Warning: Solver did not converge")
@@ -106,12 +114,16 @@ class PhaseParameterized(TimeSeries):
                         s_dot += float(sol["x"][2])*time_step
                         t += time_step
                         current_state = {**dyn_state, "s_dot": s_dot, "s": s_array[i], "t": t}
+                    if input_length >0:
+                        distance_radial +=  speed_radial_func(current_state["tension_tether_ground"])*time_step
+                        current_state["distance_radial"] = distance_radial
                     self.states.append(current_state)
                 else:
                     print("Warning: Solver did not converge")
 
     def optimize_pattern(self, start_state, s_array=None, time_array=None):
         self.set_optimal_speed_radial()
+        self.set_optimal_angle_pitch_tether()
         self.run_simulation(start_state, s_array, time_array)
         self.substitute_optimized_kinematics()
         
@@ -362,73 +374,99 @@ class PhaseParameterized(TimeSeries):
     def target_drag_coefficient(self, value):
         self._target_drag_coefficient = value
 
-    def set_optimal_speed_radial(self):
-        # if self.target_drag_coefficient is None or self.target_lift_coefficient is None or self.target_angle_of_attack is None:
+
+    def find_optimal_angle_pitch_tether(self):
         copy_kite = copy.deepcopy(self.kite_model)
         copy_kite.angle_elevation = 0
         copy_kite.angle_azimuth = 0
         copy_kite.angle_course = np.pi/2
         copy_kite.timeder_speed_tangential = 0
         copy_kite.distance_radial = 200
-        copy_kite.wind_model = 'uniform'
-        copy_kite.speed_wind_ref = 10
+        copy_kite.wind.wind_model = 'uniform'
+        copy_kite.wind.speed_wind_ref = 10
         copy_kite.speed_radial = 0
         copy_kite.timeder_angle_course = 0
         # copy_kite.angle_roll = 0
         copy_kite.timeder_speed_radial = 0
         copy_kite.delta_pitch_depower = 0
         copy_kite.input_depower = 0
-        copy_kite.angle_pitch_depower_0 = ca.SX.sym("angle_pitch_depower_0")
-        copy_kite.aero_input["dependencies"]["u_s"] = {}
+        copy_kite.tether = RigidLinkTether()
+        copy_kite.angle_pitch_tether = ca.SX.sym("angle_pitch_tether")
+        # copy_kite.aero_input["dependencies"]["u_s"] = {}
         # copy_kite.input_steering = 0
         # copy_kite.speed_radial = ca.SX.sym("speed_radial")
+        print(copy_kite.lift_coefficient)
         cl_func = copy_kite.extract_function("lift_coefficient")
         cd_func = copy_kite.extract_function("drag_coefficient")
         aoa_func = copy_kite.extract_function("angle_of_attack")
 
         copy_kite.establish_residual()
-        residual = ca.Function("residual", [copy_kite.speed_tangential, copy_kite.input_steering, copy_kite.tension_tether_ground, copy_kite.angle_pitch_depower_0], [copy_kite.residual])
+        
+        residual = ca.Function("residual", [copy_kite.speed_tangential, copy_kite.input_steering, copy_kite.length_tether, copy_kite.angle_pitch_tether], [copy_kite.residual], ["vtau", "steering", "length_tether", "angle_pitch"], ["residual"])
+        print(residual)
 
 
         opti = ca.Opti()
         vtau = opti.variable()
         steering = opti.variable()
-        tension = opti.variable()
+        lt = opti.variable()
         angle_pitch = opti.variable()
-        opti.subject_to(vtau >= 20)
+        opti.subject_to(vtau >= 0)
         opti.subject_to(vtau <= 300)
         opti.subject_to(steering >= -np.pi/2)
         opti.subject_to(steering <= np.pi/2)
-        opti.subject_to(tension >= 0)
+        opti.subject_to(lt <= copy_kite.distance_radial)
         opti.subject_to(angle_pitch >= np.radians(-5))
-        opti.subject_to(angle_pitch <= np.radians(10))
-        opti.subject_to(residual(vtau, steering, tension, angle_pitch) == 0)
+        opti.subject_to(angle_pitch <= np.radians(15))
+        opti.subject_to(residual(vtau = vtau, steering = steering, length_tether = lt, angle_pitch = angle_pitch)["residual"] == 0)
 
-        opti.set_initial(vtau, 100)
+        opti.set_initial(vtau, 50)
         opti.set_initial(steering, 0)
-        opti.set_initial(tension, 1e5)
+        opti.set_initial(lt, copy_kite.distance_radial)
         opti.set_initial(angle_pitch, 0)
 
-        opti.minimize(-tension)
+        opti.minimize(-lt)
         solver_opts = {"ipopt.print_level": 0, "print_time": 0}
         opti.solver("ipopt", solver_opts)
-
-        sol = opti.solve()
-        vtau = sol.value(vtau)
-        angle_pitch = sol.value(angle_pitch)
-        steering = sol.value(steering)
-
+        try:
+            sol = opti.solve()
+            vtau = sol.value(vtau)
+            angle_pitch = sol.value(angle_pitch)
+            steering = sol.value(steering)
+        except:
+            print("Solver failed")
+            print(opti.debug.value(vtau))
+            print(opti.debug.value(steering))
+            print(opti.debug.value(lt))
+            print(opti.debug.value(angle_pitch))
         print(cl_func)
+        if "u_s" in copy_kite.aero_input.get("dependencies", {}):
+            self.target_lift_coefficient = cl_func(speed_tangential=vtau, angle_pitch_tether=angle_pitch, input_steering=steering)["lift_coefficient"]
+            self.target_drag_coefficient = cd_func(speed_tangential=vtau, angle_pitch_tether=angle_pitch, input_steering=steering)["drag_coefficient"]
+        else:
+            self.target_lift_coefficient = cl_func(speed_tangential=vtau, angle_pitch_tether=angle_pitch)["lift_coefficient"]
+            self.target_drag_coefficient = cd_func(speed_tangential=vtau, angle_pitch_tether=angle_pitch)["drag_coefficient"]
+        self.target_angle_of_attack = aoa_func(speed_tangential=vtau, angle_pitch_tether=angle_pitch)["angle_of_attack"]
+        self.optimal_angle_pitch_tether = float(angle_pitch)
+        # print(self.target_lift_coefficient, self.target_drag_coefficient, self.target_angle_of_attack*180/np.pi)
 
-        self.target_lift_coefficient = cl_func(angle_pitch,vtau)
-        self.target_drag_coefficient = cd_func(angle_pitch,vtau)
-        self.target_angle_of_attack = aoa_func(angle_pitch,vtau)
-        self.kite_model.angle_pitch_depower_0 = float(angle_pitch)
+    def set_optimal_angle_pitch_tether(self):
+        print(f"Angle respect to the tether set to: {np.degrees(self.optimal_angle_pitch_tether)}")
+        self.kite_model.angle_pitch_tether = self.optimal_angle_pitch_tether
+
+    def set_optimal_speed_radial(self):
+        # if self.target_drag_coefficient is None or self.target_lift_coefficient is None or self.target_angle_of_attack is None: 
 
         print(f"Optimal speed radial set according to the target  CL: {self.target_lift_coefficient} CD: {self.target_drag_coefficient} at aoa: {np.degrees(self.target_angle_of_attack)}")
-        print(f"Angle respect to the tether set to: {np.degrees(angle_pitch)}")
-        CR_target = np.sqrt(self.target_lift_coefficient**2 + self.target_drag_coefficient**2)
 
+        CR_target = ca.sqrt(self.target_lift_coefficient**2 + self.target_drag_coefficient**2)
+
+        # self.kinematics.vr = ca.sqrt(
+        #     self.kite_model.tension_tether_ground / (
+        #         2 * 1.225 * self.kite_model.area_wing * CR_target * 
+        #         (1 + (self.target_lift_coefficient / self.target_drag_coefficient)**2)
+        #     )
+        # )
         # Calculate the optimal speed_radial
         self.kite_model.speed_radial = ca.sqrt(
             self.kite_model.tension_tether_ground / (

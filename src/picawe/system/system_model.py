@@ -1,6 +1,6 @@
 import casadi as ca
 import numpy as np
-from picawe.system.tether import RigidLinkTether
+from picawe.system.tether import RigidLinkTether, FlexibleLinkTether
 from picawe.system.kite import Kite
 from picawe.kinematics.Kinematics import KiteKinematics
 from picawe.environment.Wind import Wind
@@ -22,32 +22,25 @@ class SystemModel(KiteKinematics):
         Initialize the kite system with its parameters.
         """
         # Define symbolic variables for the function inputs
-        self.define_tether_model(tether)
         KiteKinematics.__init__(self)
         self.define_wind_model(wind_model)
         self.define_kite_model(kite)
+        self.define_tether_model(tether)
         
         self.steering_control = self.steering_control
 
         if self.steering_control not in ["asymmetric", "roll"]:
             raise ValueError("Invalid steering_control. Choose 'asymmetric' or 'roll'.")
         if dof == 3:
-            self.angle_pitch = 0
+
             self.timeder_angle_pitch = 0
             self.timeder_angle_roll = 0
             self.timeder_angle_yaw = 0
             self.acceleration_angle_pitch = 0
             self.acceleration_angle_roll = 0
             self.acceleration_angle_yaw = 0
-            if self.steering_control == "asymmetric":
-                if self.mass_kcu == 0:
-                    self.angle_roll = 0
-                else:
-                    self.angle_roll = self.roll_kcu
-                    self.angle_pitch = self.pitch_kcu
-                    
-        if self.steering_control == "roll":
-            self.angle_roll = self.input_steering
+
+
 
         if quasi_steady:
             self.timeder_angle_roll = 0
@@ -89,10 +82,17 @@ class SystemModel(KiteKinematics):
 
     def define_tether_model(self, tether):
         if tether is None:
-            tether = RigidLinkTether()
+            tether = FlexibleLinkTether()
             print("Tether model not defined. Using default tether model.")
         self.tether = tether
-        self.tension_tether_ground = ca.SX.sym("tension_tether_ground")
+        # Inject all tether attributes into SystemModel so they can be accessed directly
+        for attr_name, attr_value in vars(tether).items():
+            setattr(self, attr_name, attr_value)
+        # Copy properties from the component's class and its base classes
+        for cls in inspect.getmro(tether.__class__):
+            for name, obj in cls.__dict__.items():
+                if isinstance(obj, property) and not hasattr(self.__class__, name):
+                    setattr(self.__class__, name, obj)
 
     def define_wind_model(self, wind_model):
         if wind_model == "logarithmic"or wind_model == "uniform":
@@ -104,10 +104,11 @@ class SystemModel(KiteKinematics):
         dot_r = self.speed_radial
         dot_beta = self.timeder_angle_elevation
         dot_theta = self.timeder_angle_azimuth
-        dot_chi = self.timeder_angle_course
-        dot_vr = self.timeder_speed_radial
-        dot_vt = self.timeder_speed_tangential
-        ode = ca.vertcat(dot_r, dot_beta, dot_theta, dot_chi, dot_vr, dot_vt)
+        dot_vt = self.acceleration_total[0]
+        dot_chi = self.acceleration_total[1]
+        dot_vr = self.acceleration_total[2]
+        dot_lt = self.timeder_length_tether
+        ode = ca.vertcat(dot_r, dot_beta, dot_theta, dot_vt, dot_chi, dot_vr, dot_lt)
         if self.dof == 6 and not self.quasi_steady:
             ode_add = ca.vertcat(
                 self.timeder_angle_roll,
@@ -124,7 +125,7 @@ class SystemModel(KiteKinematics):
         if self.dof == 6:
             return self.rb_residual
         else:
-            return self.force_residual()
+            return self.force_residual
 
     def establish_residual(self):
         if self.dof == 6:
@@ -132,9 +133,9 @@ class SystemModel(KiteKinematics):
         elif self.dof == 3:
             self.residual = self.force_residual
 
-    def solve_quasi_steady_state(
+    def setup_qs_solver(
         self,
-        unknown_vars=["tension_tether_ground", "input_steering", "speed_tangential"],
+        unknown_vars=["speed_tangential", "timeder_angle_course", "length_tether"],
         solver_options=None,
     ):
         """
@@ -190,21 +191,35 @@ class SystemModel(KiteKinematics):
         """
         return self.tension_tether_ground * self.speed_radial
 
-    def integrate(self, x0, time, time_step):
-
-        x = ca.vertcat(
+    @property
+    def state_vector(self):
+        """
+        Get the state vector of the kite system.
+        """
+        return ca.vertcat(
             self.distance_radial,
             self.angle_elevation,
             self.angle_azimuth,
+            self.speed_tangential,
             self.angle_course,
             self.speed_radial,
-            self.speed_tangential,
+            self.length_tether,
+
         )
-        z = ca.vertcat(
-            self.tension_tether_ground,
-            self.timeder_angle_course,
-            self.timeder_speed_tangential,
+
+    @property
+    def input_vector(self):
+        """
+        Get the input vector of the kite system.
+        """
+        return ca.vertcat(
+            self.input_steering,
+            self.input_depower,
+            self.timeder_length_tether,
         )
+    def integrator(self, time_step):
+
+
         if self.dof == 6 and not self.quasi_steady:
             x_add = ca.vertcat(
                 self.angle_roll,
@@ -223,22 +238,22 @@ class SystemModel(KiteKinematics):
             )
 
         if self.quasi_steady:
-            ode = {"x": x, "ode": self.ode}
-            intg = ca.integrator("intg", "cvodes", ode, time, time + time_step)
-            res = intg(x0=x0)
-            return res["xf"]
+            x = ca.vertcat(self.state_vector[0:3], self.state_vector[4])
+            ode = ca.vertcat(self.ode[0:3], self.ode[4])
+            z = ca.vertcat(self.speed_tangential, self.timeder_angle_course, self.length_tether)
+
+            p = ca.vertcat(self.input_vector[0:2], self.speed_radial)
+            alg = self.algebraic
+            dae = {"x": x, "p": p, "z": z, "p": p, "ode": ode, "alg": alg}
+            # Create the integrator
+            intg = ca.integrator("intg", "idas", dae, 0, time_step)
+            return intg
+            
         else:
+            p = self.input_vector
+            ode = {"x": self.state_vector, "p": p, "ode": self.ode}
 
-            dae = {"x": x, "z": z, "ode": self.ode, "alg": self.algebraic}
-
-            intg = ca.integrator("intg", "idas", dae, time, time + time_step)
-
-            res = intg(x0=x0)
-
-            new_state = res["xf"]
-            zf = res["zf"]
-            # new_state.update(current_state)
-            return new_state, zf
+            return ca.integrator("intg", "cvodes", ode, 0, time_step)
 
     def establish_ode(self):
         """

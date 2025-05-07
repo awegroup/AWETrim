@@ -230,24 +230,23 @@ class ParametrizedKinematics:
 
     @property
     def dbeta_ds2(self):
-        return ca.gradient(self.dbeta_ds, self.s)
+        return ca.gradient(self.dbeta_ds, self.s)+ ca.gradient(self.dbeta_ds, self.t) / self.s_dot
 
     @property
     def dtheta_ds2(self):
-        return ca.gradient(self.dtheta_ds, self.s)
+        return ca.gradient(self.dtheta_ds, self.s) + ca.gradient(self.dtheta_ds, self.t) / self.s_dot
 
     @property
     def chi(self):
         return ca.atan2(
             self.dtheta_ds
-            * self.s_dot
             * ca.cos(self.beta),
-            self.dbeta_ds * self.s_dot,
+            self.dbeta_ds,
         )
 
     @property
     def dot_chi(self):
-        return ca.gradient(self.chi, self.s) * self.s_dot
+        return ca.gradient(self.chi, self.s) * self.s_dot + ca.gradient(self.chi, self.t)
 
     @property
     def sqrt_A(self):

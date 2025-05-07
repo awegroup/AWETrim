@@ -1,6 +1,6 @@
 import numpy as np
 DEFAULT_BOUNDS = {
-    "tension_tether_ground": [800, 1e9],
+    "tension_tether_ground": [0, 1e9],
     "input_steering": [-5, 5],
     "s_dot": [0.01, 10],
     "s_ddot": [-100, 100],
@@ -9,8 +9,10 @@ DEFAULT_BOUNDS = {
     "timeder_angle_course": [-np.pi, np.pi],
     "angle_pitch": [-np.pi/4, np.pi/4],
     "angle_yaw": [-np.pi/4, np.pi/4],
-    "angle_elevation": [0, np.pi],
+    "angle_elevation": [0, 3*np.pi/4],
     "speed_radial": [-10, 10],
+    "length_tether": [0, 1000],
+    "distance_radial": [0, 1000],
 
 }
 
@@ -87,6 +89,6 @@ DEFAULT_OPTI_LIMITS = {
     "kappa": (0, 4),     # Range for kappa: 0 to 5
     "vr": (-10, 10),      # Range for vr: 0 to 100
     "beta": (0.35, 0.873),  # Range for beta: 20 ot 50 degrees
-    "d0": (20, 130),       # Range for d0: 0 to 100
+    "d0": (40, 150),       # Range for d0: 0 to 100
     
 }

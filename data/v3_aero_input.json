@@ -2,17 +2,17 @@
     "model": "coeffs",
     "params": {
         "CD0": 0.12,
-        "CL0": 0.257,
-        "angle_pitch_depower_0": -0.172,
-        "delta_pitch_depower": -0.2,
+        "CL0": 0.1,
+        "angle_pitch_depower_0": -0.15,
+        "delta_pitch_depower": -0.3,
         "Cm_base": 0.05
     },
     "dependencies": {
-        "alpha": { "k_cl": 4.615, "k_cd": 0.027, "k_cs": 0.0, "k_cn": 0.0 , "k_cm": 0},
-        "alpha_squared": { "k_cl": -4.68, "k_cd": 1.217, "k_cs": 0.0, "k_cn": 0.0, "k_cm": -1},
-        "u_s": { "k_cl": -0.05, "k_cd": 0.05, "k_cs": 0.23, "k_cn": 0.005 },
-        "yaw_rate": { "k_cl": 0, "k_cd": 0, "k_cs": -0.01, "k_cn": -0.02 },
-        "sideslip": { "k_cl": 0, "k_cd": 0, "k_cs": 0.01, "k_cn": -0.05 },
-        "u_p": { "k_cl": 0, "k_cd": 0.0, "k_cs": 0, "k_cm": 0.01 }
+        "alpha": { "k_cl": 5.87, "k_cd": 0.3, "k_cs": 0.0, "k_cn": 0.0 , "k_cm": 0},
+        "alpha_squared": { "k_cl": -7.04, "k_cd": 0.22, "k_cs": 0.0, "k_cn": 0.0, "k_cm": -1},
+        "u_s": { "k_cl": 0, "k_cd": 0.05, "k_cs": 0.35, "k_cn": 0.005 },
+        "yaw_rate": { "k_cl": 0, "k_cd": 0, "k_cs": 0, "k_cn": -0.02 },
+        "sideslip": { "k_cl": 0, "k_cd": 0, "k_cs": 0, "k_cn": -0.05 },
+        "u_p": { "k_cl": 0, "k_cd": 0, "k_cs": 0, "k_cm": 0.01 }
     }
 }
