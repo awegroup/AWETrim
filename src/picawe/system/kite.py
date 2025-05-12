@@ -52,6 +52,7 @@ class Wing:
             / ca.norm_2(self.velocity_apparent_wind),
             "sideslip": self.angle_sideslip,
         }
+
         # Initialize base aerodynamic coefficients
         if aero_input["model"] == "inviscid":
             e = aero_input["params"]["oswald_efficiency"]
@@ -151,6 +152,7 @@ class Wing:
         """
         Compute the angle of attack based on the air velocity vector and tether angle.
         """
+        # print("angle_pitch_aerodynamic:",self.angle_pitch_aerodynamic)
 
         return (
             self.angle_pitch_aerodynamic + self.angle_pitch_depower - self.angle_pitch
@@ -158,7 +160,7 @@ class Wing:
 
     @property
     def velocity_apparent_wind(self):
-
+        # print("velocity_apparent_wind:", self.velocity_kite)
         return self.wind.velocity_wind(self) - self.velocity_kite
 
     @property
@@ -176,7 +178,7 @@ class Wing:
 
     @property
     def angle_pitch_aerodynamic(self):
-
+        # print(self.velocity_apparent_wind)
         return ca.atan2(
             self.velocity_apparent_wind_wing[2],
             ca.sqrt(

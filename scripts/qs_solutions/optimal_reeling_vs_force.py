@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 from picawe.system.kite import Kite
-from picawe import SystemModel
+from picawe import SystemModel, State
 import casadi as ca
 import time as timet
 import json
@@ -44,13 +44,13 @@ aero_input =    {
 # State.__bases__ = (KiteKinematics, Tether, Wind, RigidKite)
 mass_wing = 0
 kite = Kite(mass_wing=0, area_wing=20, aero_input=aero_input, mass_kcu=0, steering_control="roll")
-state = SystemModel(dof=3, quasi_steady=True, wind_model="uniform", kite=kite)
+kite_model = SystemModel(dof=3, quasi_steady=True, wind_model="uniform", kite=kite)
 
 speed_wind = 10
-state.wind.speed_wind_ref = speed_wind
-state.input_depower = 0
-state.timeder_angle_course = 0
-state.distance_radial = 200
+kite_model.wind.speed_wind_ref = speed_wind
+kite_model.input_depower = 0
+kite_model.timeder_angle_course = 0
+kite_model.distance_radial = 200
 
 plt.figure()
 CL = 0.75
@@ -83,7 +83,7 @@ plt.show()
 
 
 unknown_vars = ["length_tether", "input_steering", "speed_tangential"]
-solve_func, inputs_name = state.setup_qs_solver(unknown_vars)
+solve_func, inputs_name,_ = kite_model.setup_qs_solver(unknown_vars)
 current_state = {
     "distance_radial": 200,
     "angle_elevation": 0,
@@ -93,11 +93,11 @@ current_state = {
 }
 p = [current_state[name] for name in inputs_name]
 # print(p)
-lbx,ubx,lbg,ubg = state.get_boundaries(unknown_vars)
+lbx,ubx,lbg,ubg = kite_model.get_boundaries(current_state,unknown_vars)
 # print(lbx,ubx,lbg,ubg)
 sol = solve_func(x0=[200,0,100], p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
-CL_fun = state.extract_function("lift_coefficient")
-CD_fun = state.extract_function("drag_coefficient")
+CL_fun = kite_model.extract_function("lift_coefficient")
+CD_fun = kite_model.extract_function("drag_coefficient")
 qs_state = {name:sol["x"][i] for i,name in enumerate(unknown_vars)}
 full_state = {**current_state, **qs_state}
 CL = CL_fun(*[full_state[name] for name in CL_fun.name_in()])
@@ -105,22 +105,22 @@ CD = CD_fun(*[full_state[name] for name in CD_fun.name_in()])
 print(CL, CD)
 
 
-state.mass_wing = 40
+kite_model.mass_wing = 40
 solver_options = {
     "ipopt": {"print_level": 0, "sb": "yes","tol": 1e-8,},
     "print_time": False,
 }
-tension_func = state.extract_function("tension_tether_ground")
+tension_func = kite_model.extract_function("tension_tether_ground")
 # state.override_gravity = True
 colors = get_color_list()
 plt.figure(figsize=(5,4))
 wind_speeds = [15, 10, 5]
 for vwi,speed_wind in enumerate(wind_speeds):
-    state.wind.speed_wind_ref = speed_wind
-    state.establish_residual()
-    variables = ca.symvar(state.residual)
+    kite_model.wind.speed_wind_ref = speed_wind
+    kite_model.establish_residual()
+    variables = ca.symvar(kite_model.residual)
     name_vars = [var.name() for var in variables]
-    residual = ca.Function("residual", variables, [state.residual], name_vars, ["residual"])
+    residual = ca.Function("residual", variables, [kite_model.residual], name_vars, ["residual"])
 
     print(residual)
     angles_elevation = np.linspace(0, 60, 10)/180*np.pi
@@ -169,13 +169,13 @@ for vwi,speed_wind in enumerate(wind_speeds):
                         ft[i,j,k] = np.nan
                         print("Failed at azimuth angle: ", phi, " and course angle: ", angle_course)
 
-    plt.scatter(f*state.wind.speed_wind(state), ft, color = colors[vwi+1], alpha = 0.1, label = "$v_w$ = " + str(speed_wind) + " m/s")
+    plt.scatter(f*kite_model.wind.speed_wind(kite_model), ft, color = colors[vwi+1], alpha = 0.1, label = "$v_w$ = " + str(speed_wind) + " m/s")
 # -----------------------------------------------
 # Plot the results
 # -----------------------------------------------
 CR = np.sqrt(CL**2 + CD**2)
 vr_array = np.linspace(0, 5, 50)
-F_opt = 2*1.225*state.area_wing*CR*vr_array**2*(1+(CL/CD)**2)
+F_opt = 2*1.225*kite_model.area_wing*CR*vr_array**2*(1+(CL/CD)**2)
 
 
 plt.plot(vr_array, F_opt, label = "Analytical", color = "black")

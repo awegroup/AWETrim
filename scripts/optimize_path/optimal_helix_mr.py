@@ -17,7 +17,7 @@ from picawe.system.tether import RigidLumpedTether
 plt.show()
 # Define aerodynamic input
 file_path = "./data/ap2_aero_input.json"
-# file_path = "./data/rigid_kite.json"
+file_path = "./data/v3_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
@@ -46,9 +46,9 @@ pattern_config = {
 start_state = {
     "t": 0,
     "s": -np.pi/2,
-    "s_dot": 10,
+    "s_dot": 5,
     "s_ddot": 0,
-    "tension_tether_ground": 1e3,
+    "length_tether": 199.9,
     "input_steering": 0,
     "angle_roll": 0,
     "angle_pitch": 0,
@@ -66,16 +66,18 @@ phases = {}
 parameters = ["speed_tangential", "tension_tether_ground", "angle_roll"]
 x_param = "s"
 fig, axs = plt.subplots(len(parameters),1, figsize=(10, 4), sharex=True)
-mass_ratio_values = np.linspace(0, 12, 4)
+mass_ratio_values = np.linspace(0, 5, 4)
+mass_ratio_values = [2]
 tether = RigidLumpedTether()
-area_wing = 3
+area_wing = 20
+mass_wing =  2 * area_wing
 for i,mr in enumerate(mass_ratio_values):
     pattern_config = {
         "pattern_type": "helix",
         "initial_parameters": {
             "omega": -1.0,
             "r0": 200.0,
-            "d0": 80.0,
+            "d0": 103.0,
             "vr": 0.2,
             "beta": 0.35,
             "kappa": 0
@@ -87,6 +89,29 @@ for i,mr in enumerate(mass_ratio_values):
             # "beta",
         }
     }
+    pattern_config = {
+        "pattern_type": "figure_eight",
+        "initial_parameters": {
+            "omega": -1.0,
+            "r0": 200.0,
+            "ry": 75,
+            "rz": 72,
+            "ky": 0.5,
+            "kz": 0.5,
+            "vr": 1,
+            "beta": 0.45,
+            "kappa": 0
+        },
+        "optimization_parameters": {
+            # Add any optimization-related parameters here if needed as list of names
+            "ry",
+            "rz",
+            # "ky",
+            # "kz",
+            # "kappa",
+            # "beta",
+        }
+    }
     for quasi_steady in [True,False]:  # Loop over both dynamic and quasi-steady cases
         if quasi_steady:
             linestyle = "--"
@@ -94,30 +119,36 @@ for i,mr in enumerate(mass_ratio_values):
         else:
             linestyle = "-"
             label = r"$\frac{m}{S}=$"+str(mr)
-        mass_wing =  mr * area_wing
+        
         # Define kite model with current parameters
-        kite = Kite(mass_wing=mass_wing, area_wing=area_wing, aero_input=aero_input, mass_kcu=0, steering_control="roll")
+        kite = Kite(mass_wing=mass_wing, area_wing=area_wing, aero_input=aero_input, mass_kcu=0, steering_control="asymmetric")
         kite_model = SystemModel(dof=dof, quasi_steady=quasi_steady, kite=kite, wind_model="uniform")#, tether = tether)
-        kite_model.wind.speed_wind_ref = 9
+        kite_model.wind.speed_wind_ref = 15
         kite_model.input_depower = 0
+        phase = PhaseParameterized(kite_model, quasi_steady=quasi_steady, pattern_config=pattern_config)
 
-
-        # Run simulation
-        if mr == 0 and not quasi_steady:
-            pass
-        else:
-            phase = PhaseParameterized(kite_model, quasi_steady=quasi_steady, pattern_config=pattern_config)
-            phase.set_optimal_speed_radial()
+        # # Run simulation
+        # if mr == 0 and not quasi_steady:
+        #     pass
+        # else:
+            # phase = PhaseParameterized(kite_model, quasi_steady=quasi_steady, pattern_config=pattern_config)
+            # phase.set_optimal_speed_radial()
 
         if quasi_steady:
-            pattern_config = phase.optimize_pattern(start_state=start_state,  s_array=s_array)
-            print(pattern_config)
+            phase.optimize_pattern(start_state=start_state,  s_array=s_array)
             start_state = phase.states[0]
-        elif not quasi_steady:
-            phase.set_optimal_angle_pitch_tether()
-            phase.set_optimal_speed_radial()
-            phase.run_simulation(start_state=start_state, s_array=s_array)
+            pattern_config = phase.pattern_config
+
+        # kite = Kite(mass_wing=mass_wing, area_wing=area_wing, aero_input=aero_input, mass_kcu=0, steering_control="asymmetric")
+        # kite_model = SystemModel(dof=dof, quasi_steady=quasi_steady, kite=kite, wind_model="uniform")#, tether = tether)
+        # kite_model.wind.speed_wind_ref = 15
+        # kite_model.input_depower = 0
+        # phase.kite_model = kite_model
+        print(quasi_steady)
+        # phase = PhaseParameterized(kite_model, quasi_steady=quasi_steady, pattern_config=pattern_config)
+        # phase.set_optimal_angle_pitch_tether()
         # phase.run_simulation(start_state=start_state, s_array=s_array)
+        phase.run_simulation(start_state=start_state, s_array=s_array)
         # Extract variables
         s = phase.return_variable("s")
         s_dot = phase.return_variable("s_dot")
@@ -127,7 +158,7 @@ for i,mr in enumerate(mass_ratio_values):
         print(np.mean(aoa)*180/np.pi)
         phases[(mr, quasi_steady)] = phase
         print(s_dot[0])
-        start_state["s_dot"] = s_dot[0]
+        # start_state["s_dot"] = s_dot[0]
 
 
 # fig, slider = phase.interactive_plot()
@@ -164,7 +195,7 @@ ax2.set_ylabel(PLOT_LABELS["angle_elevation"])
 ax5.set_xlabel(PLOT_LABELS["phase"])
 ax3.set_ylabel(PLOT_LABELS["speed_tangential"])
 ax4.set_ylabel(PLOT_LABELS["tension_tether_ground"])
-ax5.set_ylabel(PLOT_LABELS["angle_roll"])
+ax5.set_ylabel(PLOT_LABELS["angle_of_attack"])
 ax6.set_ylabel(PLOT_LABELS["speed_radial"])
 
 
@@ -229,8 +260,8 @@ for i, mr in enumerate(mass_ratio_values):
         ax3.plot(np.degrees(s_qs), vtau_qs, linestyle="--", color=colors[idx])
         ax4.plot(np.degrees(s_dyn), tension_dyn/1000, label=f"$\frac{{m}}{{S}} = {mr}$", color=colors[idx])
         ax4.plot(np.degrees(s_qs), tension_qs/1000, linestyle="--", color=colors[idx])
-        ax5.plot(np.degrees(s_dyn), np.degrees(roll_dyn), label=f"$\frac{{m}}{{S}} = {mr}$", color=colors[idx])
-        ax5.plot(np.degrees(s_qs), np.degrees(roll_qs), linestyle="--", color=colors[idx])
+        ax5.plot(np.degrees(s_dyn), np.degrees(aoa_dyn), label=f"$\frac{{m}}{{S}} = {mr}$", color=colors[idx])
+        ax5.plot(np.degrees(s_qs), np.degrees(aoa_qs), linestyle="--", color=colors[idx])
         ax6.plot(np.degrees(s_dyn), vr_dyn, label=f"$\frac{{m}}{{S}} = {mr}$", color=colors[idx])
         ax6.plot(np.degrees(s_qs), vr_qs, linestyle="--", color=colors[idx])
     

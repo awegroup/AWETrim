@@ -17,7 +17,7 @@ from picawe.system.tether import FlexibleLinkTether, RigidLumpedTether, Flexible
 plt.show()
 # Define aerodynamic input
 file_path = "./data/v3_aero_input.json"
-# file_path = "./data/ap2_aero_input.json"
+file_path = "./data/ap2_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
@@ -38,26 +38,26 @@ pattern_config = {
         # "beta",
     }
 }
-pattern_config = {
-    "pattern_type": "figure_eight",
-    "initial_parameters": {
-        "omega": -1.0,
-        "r0": 200.0,
-        "ry": 100,
-        "rz": 100,
-        "ky": 0.5,
-        "kz": 0.5,
-        "vr": 0,
-        "beta": 0.45,
-        "kappa": 0
-    },
-    "optimization_parameters": {
-        # Add any optimization-related parameters here if needed as list of names
-        "d0",
-        # "kappa",
-        # "beta",
-    }
-}
+# pattern_config = {
+#     "pattern_type": "figure_eight",
+#     "initial_parameters": {
+#         "omega": -1.0,
+#         "r0": 200.0,
+#         "ry": 100,
+#         "rz": 100,
+#         "ky": 0.5,
+#         "kz": 0.5,
+#         "vr": 1,
+#         "beta": 0.45,
+#         "kappa": 0
+#     },
+#     "optimization_parameters": {
+#         # Add any optimization-related parameters here if needed as list of names
+#         "d0",
+#         # "kappa",
+#         # "beta",
+#     }
+# }
 
 
 # -----------------------------------------------
@@ -86,7 +86,7 @@ phases = {}
 parameters = ["speed_tangential", "input_steering", "length_tether"]
 x_param = "s"
 fig, axs = plt.subplots(len(parameters),1, figsize=(10, 4), sharex=True)
-mass_ratio_values = [2]
+mass_ratio_values = [5]
 tether_angles = np.radians([5,5,-1,0])
 area_wing = 20
 from picawe.system.tether import RigidLumpedTether

@@ -6,6 +6,10 @@ from picawe.kinematics.Kinematics import KiteKinematics
 from picawe.environment.Wind import Wind
 from picawe.utils.defaults import DEFAULT_BOUNDS
 import inspect
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 
 class SystemModel(KiteKinematics):
@@ -55,6 +59,17 @@ class SystemModel(KiteKinematics):
 
         self.dof = dof
         self.quasi_steady = quasi_steady
+        self._qs_solver = None
+        self._qs_vars = None
+        self._qs_inputs = None
+        self.default_unknown_vars = ["speed_tangential", "timeder_angle_course", "length_tether"]
+        self.derived_function_names = [
+            "angle_of_attack",
+            "tension_tether_ground",
+            "lift_coefficient",
+            "drag_coefficient"
+        ]
+        self._derived_functions = None
 
 
     def define_kite_model(self, kite):
@@ -135,7 +150,7 @@ class SystemModel(KiteKinematics):
 
     def setup_qs_solver(
         self,
-        unknown_vars=["speed_tangential", "timeder_angle_course", "length_tether"],
+        unknown_vars=None,
         solver_options=None,
     ):
         """
@@ -145,6 +160,8 @@ class SystemModel(KiteKinematics):
         :param unknown_vars: List of unknown state variables to solve for.
         :return: Dictionary of unknown state variables and their values.
         """
+        if unknown_vars is None:
+            unknown_vars = self.default_unknown_vars
         self.establish_residual()
         x = [getattr(self, name) for name in unknown_vars]
 
@@ -168,21 +185,69 @@ class SystemModel(KiteKinematics):
         # Define the NLP solver
         solver = ca.nlpsol("solver", "ipopt", nlp, solver_options)
 
-        return solver, inputs_name
+        return solver, inputs_name, unknown_vars
+    
+    def solve_quasi_steady(self, state_obj, unknown_vars=None):
+        if unknown_vars is None:
+            unknown_vars = self.default_unknown_vars
 
-    def get_boundaries(self, unkown_vars):
+        state_dict = state_obj.to_dict()
+
+        if self._qs_solver is None or self._qs_vars != unknown_vars:
+            self._qs_solver, self._qs_inputs, self._qs_vars = self.setup_qs_solver(unknown_vars)
+
+        p = [state_dict[name] for name in self._qs_inputs]
+        lbx, ubx, lbg, ubg = self.get_boundaries(state_dict, unknown_vars)
+        x0 = [state_dict.get(var, 1.0) for var in unknown_vars]
+        # Solve the quasi-steady state equations
+        sol = self._qs_solver(x0=x0, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+        
+        if np.linalg.norm(sol["g"]) > 1:
+            # logger.warning("Initial guess: %s", x0)
+            # logger.warning("lbx: %s", lbx)
+            # logger.warning("ubx: %s", ubx)
+            # logger.warning("unknown_vars: %s", unknown_vars)
+            # logger.warning("Quasi-steady solver did not converge. Residual norm: %.4f", np.linalg.norm(sol["g"]))
+            # logger.warning("Solver output: %s", sol)
+            # raise RuntimeError("Quasi-steady solver did not converge.")
+            return None
+
+        # Update with solved variables
+        for i, var in enumerate(unknown_vars):
+            state_dict[var] = float(sol["x"][i])
+
+        derived_funcs = self.get_derived_functions()
+        for name, func in derived_funcs.items():
+            args = [state_dict[n] for n in func.name_in()]
+            state_dict[name] = float(func(*args))
+
+        return State(**state_dict)
+
+    def get_boundaries(self, current_state,unkown_vars = ["speed_tangential", "timeder_angle_course", "length_tether"]):
 
         lbx = []
         ubx = []
         for var in unkown_vars:
-            lbx.append(DEFAULT_BOUNDS[var][0])
-            ubx.append(DEFAULT_BOUNDS[var][1])
+            if var == "length_tether":
+                lbx.append(current_state["distance_radial"]*0.95)
+                ubx.append(current_state["distance_radial"])
+            else:
+                lbx.append(DEFAULT_BOUNDS[var][0])
+                ubx.append(DEFAULT_BOUNDS[var][1])
 
         # Bounds for the constraints
         lbg = [0] * self.residual.size1()  # Lower bounds (0 for residuals)
         ubg = [0] * self.residual.size1()  # Upper bounds (0 for residuals)
 
         return lbx, ubx, lbg, ubg
+
+    def get_derived_functions(self):
+        if self._derived_functions is None:
+            self._derived_functions = {
+                name: self.extract_function(name) for name in self.derived_function_names
+            }
+        return self._derived_functions
+
 
     @property
     def mechanical_power(self):
@@ -319,4 +384,48 @@ class SystemModel(KiteKinematics):
             },
             "print_time": False,  # Disables CasADi's internal timing output
         }
+    
+    def reset_solver(self):
+        """
+        Reset the solver to its initial state.
+        """
+        self._qs_solver = None
+        self._qs_vars = None
+        self._qs_inputs = None
+        self._derived_functions = None
 
+
+from dataclasses import dataclass, asdict, field
+from typing import Optional
+
+@dataclass
+class State:
+    distance_radial: float = None
+    angle_elevation: float = None
+    angle_azimuth: float = None
+    angle_course: float = None
+    speed_radial: float = None
+    speed_tangential: float = None
+    input_depower: float = None
+    input_steering: float = None
+    timeder_angle_course: float = None
+    length_tether: float = None
+    # Optional inputs
+    angle_roll: Optional[float] = None
+    angle_pitch: Optional[float] = None
+    angle_yaw: Optional[float] = None
+
+    # Optional outputs
+    angle_of_attack: Optional[float] = None
+    tension_tether_ground: Optional[float] = None
+    lift_coefficient: Optional[float] = None
+    drag_coefficient: Optional[float] = None
+
+    # Parametrization
+    s: Optional[float] = None
+    s_dot: Optional[float] = None
+    s_ddot: Optional[float] = None
+    t: Optional[float] = None  # optionally track simulation time
+
+    def to_dict(self):
+        return asdict(self)

@@ -28,6 +28,7 @@ aero_input =    {
             "aspect_ratio": 10,
             "oswald_efficiency": 1,
             "angle_pitch_depower_0": 0,
+            "delta_pitch_depower": 0,
         },
        "dependencies": {
         # "u_s": { "k_cl": 0, "k_cd": 0.0, "k_cs": 0.23, "k_cn": 0.005 },
@@ -37,104 +38,76 @@ aero_input =    {
 # -----------------------------------------------
 # Define the state
 # -----------------------------------------------
-# State.__bases__ = (KiteKinematics, Tether, Wind, RigidKite)
-kite = Kite(mass_wing=80, area_wing=20, aero_input=aero_input, mass_kcu=0, steering_control="roll")
-state = SystemModel(dof=3, quasi_steady=True, wind_model="uniform", kite=kite)
+# kite_model.__bases__ = (KiteKinematics, Tether, Wind, RigidKite)
+kite = Kite(mass_wing=20, area_wing=20, aero_input=aero_input, mass_kcu=0, steering_control="roll")
+kite_model = SystemModel(dof=3, quasi_steady=True, wind_model="uniform", kite=kite)
 
-speed_wind = 10
-state.wind.speed_wind_ref = speed_wind
-state.input_depower = 0
+speed_wind = 12
+kite_model.wind.speed_wind_ref = speed_wind
+
+from picawe.system.system_model import State  # ensure you're importing State
 
 unknown_vars = ["length_tether", "input_steering", "speed_tangential"]
+kite_model.default_unknown_vars = unknown_vars  # optional if you want to persist it
 
-
-aoa_func = state.extract_function("angle_of_attack")    
-CL_func = state.extract_function("lift_coefficient")
-CD_func = state.extract_function("drag_coefficient")
-tension_func = state.extract_function("tension_tether_ground")
-solve_func, inputs_name = state.setup_qs_solver(
-        unknown_vars
-    )
-
+angles_elevation = np.radians(np.linspace(0, 60, 10))
+angles_course = np.linspace(0, 2 * np.pi, 100)
 speed_radial = 0
-angles_elevation = np.linspace(0,75,10)/180*np.pi
-angles_course = np.linspace(0, 2*np.pi, 100)
 
 elevation_states = []
-for i, elevation in enumerate(angles_elevation):
-    qs_guess = [200, 0, 100]
+
+for elevation in angles_elevation:
     states = []
-    for j, course in enumerate(angles_course):
-    
-        current_state = {
-            "distance_radial": 200,
-            "angle_elevation": elevation,
-            "angle_azimuth": 0,
-            "speed_radial": speed_radial,
-            "angle_course": course,
-            "timeder_angle_course": 0,
-        }
-        p = [current_state[name] for name in inputs_name]
+    for course in angles_course:
+        state_obj = State(
+            distance_radial=200,
+            angle_elevation=elevation,
+            angle_azimuth=0,
+            speed_radial=speed_radial,
+            angle_course=course,
+            timeder_angle_course=0,
+            input_depower=0,
+            input_steering=0,  # placeholder, to be solved
+            speed_tangential=100,  # placeholder, to be solved
+            length_tether=200      # placeholder, to be solved
+        )
 
-        lbx,ubx,lbg,ubg = state.get_boundaries(unknown_vars)
-        sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
-
-        qs_guess = sol["x"]
-        if np.linalg.norm(sol["g"]) > 1e-6:
-            print(sol["g"])
-            break
+        new_state = kite_model.solve_quasi_steady(state_obj, unknown_vars=unknown_vars)
+        if new_state:
+            states.append(new_state.to_dict())
         else:
-            qs_state = {name: float(sol["x"][i]) for i, name in enumerate(unknown_vars)}
+            break  # exit inner loop on failure
 
-            
-            full_state = {**current_state, **qs_state}
-            full_state["angle_of_attack"] = float(aoa_func(*[full_state[name] for name in aoa_func.name_in()]))
-            full_state["lift_coefficient"] = float(CL_func(*[full_state[name] for name in CL_func.name_in()]))
-            full_state["drag_coefficient"] = float(CD_func(*[full_state[name] for name in CD_func.name_in()]))
-            full_state["tension_tether_ground"] = float(tension_func(*[full_state[name] for name in tension_func.name_in()]))
-            # print(full_state["angle_of_attack"])
-            states.append(full_state)
     elevation_states.append(pd.DataFrame(states))
+
 
 
 angles_azimuth = np.linspace(0,60,10)/180*np.pi
 angles_course = np.linspace(0, 2*np.pi, 100)
 
 azimuth_states = []
-for i, azimuth in enumerate(angles_azimuth):
-    qs_guess = [200, 0, 100]
+for azimuth in angles_azimuth:
     states = []
-    for j, course in enumerate(angles_course):
-    
-        current_state = {
-            "distance_radial": 200,
-            "angle_elevation": 0,
-            "angle_azimuth": azimuth,
-            "speed_radial": speed_radial,
-            "angle_course": course,
-            "timeder_angle_course": 0,
-        }
-        p = [current_state[name] for name in inputs_name]
+    for course in angles_course:
+        state_obj = State(
+            distance_radial=200,
+            angle_elevation=0,
+            angle_azimuth=azimuth,
+            speed_radial=speed_radial,
+            angle_course=course,
+            timeder_angle_course=0,
+            input_depower=0,
+            input_steering=0,     # placeholder, to be solved
+            speed_tangential=100, # placeholder, to be solved
+            length_tether=200     # placeholder, to be solved
+        )
 
-        lbx,ubx,lbg,ubg = state.get_boundaries(unknown_vars)
-        sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
-
-        
-        if np.linalg.norm(sol["g"]) > 1e-3:
-            print(sol["g"])
-            break
+        new_state = kite_model.solve_quasi_steady(state_obj, unknown_vars=unknown_vars)
+        if new_state:
+            states.append(new_state.to_dict())
         else:
-            qs_guess = sol["x"]
-            qs_state = {name: float(sol["x"][i]) for i, name in enumerate(unknown_vars)}
+            break  # Exit inner loop if solver fails
 
-            
-            full_state = {**current_state, **qs_state}
-            full_state["angle_of_attack"] = float(aoa_func(*[full_state[name] for name in aoa_func.name_in()]))
-            full_state["lift_coefficient"] = float(CL_func(*[full_state[name] for name in CL_func.name_in()]))
-            full_state["drag_coefficient"] = float(CD_func(*[full_state[name] for name in CD_func.name_in()]))
-            full_state["tension_tether_ground"] = float(tension_func(*[full_state[name] for name in tension_func.name_in()]))
-            # print(full_state["angle_of_attack"])
-            states.append(full_state)
     azimuth_states.append(pd.DataFrame(states))
 
 
@@ -205,38 +178,29 @@ speeds_radial = np.linspace(0, 10, 500)
 angles_course = [np.pi/2,0,np.pi]
 
 course_states = []
-for i, course in enumerate(angles_course):
-    qs_guess = [200, 0, 100]
+
+for course in angles_course:
     states = []
-    for j, vr in enumerate(speeds_radial):
-    
-        current_state = {
-            "distance_radial": 200,
-            "angle_elevation": np.radians(0),
-            "angle_azimuth": 0,
-            "speed_radial": vr,
-            "angle_course": course,
-            "timeder_angle_course": 0,
-        }
-        p = [current_state[name] for name in inputs_name]
+    for vr in speeds_radial:
+        state_obj = State(
+            distance_radial=200,
+            angle_elevation=np.radians(0),
+            angle_azimuth=0,
+            speed_radial=vr,
+            angle_course=course,
+            timeder_angle_course=0,
+            input_depower=0,
+            input_steering=0,     # placeholder to be solved
+            speed_tangential=100, # placeholder to be solved
+            length_tether=200     # placeholder to be solved
+        )
 
-        lbx,ubx,lbg,ubg = state.get_boundaries(unknown_vars)
-        sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
-
-        qs_guess = sol["x"]
-        if np.linalg.norm(sol["g"]) > 1e-6:
-            print(sol["g"])
-            break
+        new_state = kite_model.solve_quasi_steady(state_obj, unknown_vars=unknown_vars)
+        if new_state:
+            states.append(new_state.to_dict())
         else:
-            qs_state = {name: float(sol["x"][i]) for i, name in enumerate(unknown_vars)}
+            break  # Exit if solver fails
 
-            
-            full_state = {**current_state, **qs_state}
-            full_state["angle_of_attack"] = float(aoa_func(*[full_state[name] for name in aoa_func.name_in()]))
-            full_state["lift_coefficient"] = float(CL_func(*[full_state[name] for name in CL_func.name_in()]))
-            full_state["drag_coefficient"] = float(CD_func(*[full_state[name] for name in CD_func.name_in()]))
-            full_state["tension_tether_ground"] = float(tension_func(*[full_state[name] for name in tension_func.name_in()]))
-            states.append(full_state)
     course_states.append(pd.DataFrame(states))
 
 
@@ -246,7 +210,7 @@ fig, axs = plt.subplots(1, 2, figsize=(10, 4))
 for i,state_i in enumerate(course_states):
     state_i = state_i[state_i["angle_of_attack"]*180/np.pi < 20]
     reeling_factor = state_i["speed_radial"]/speed_wind
-    power_harvesting_factor = state_i["tension_tether_ground"]*state_i["speed_radial"]/(0.5*state.rho*state.area_wing*speed_wind**3)
+    power_harvesting_factor = state_i["tension_tether_ground"]*state_i["speed_radial"]/(0.5*kite_model.rho*kite_model.area_wing*speed_wind**3)
     max_idx = np.argmax(state_i["tension_tether_ground"]*state_i["speed_radial"])
     axs[0].plot(reeling_factor, power_harvesting_factor, label=f"$\chi$ = {np.degrees(state_i['angle_course'].iloc[0])}$^\circ$")
     axs[0].axvline(reeling_factor[max_idx], linestyle='--', color = colors[i])
@@ -276,50 +240,35 @@ plt.legend()
 plt.show()
 
 
+angles_course = [0]  # or as defined
+speeds_radial = np.linspace(-5, 0, 100)
 unknown_vars = ["length_tether", "input_steering", "angle_elevation"]
 
-
-solve_func, inputs_name = state.setup_qs_solver(
-        unknown_vars
-    )
-
-speeds_radial = np.linspace(-5, 0, 100)
-angles_course = [0]
-
 course_states = []
-for i, course in enumerate(angles_course):
-    qs_guess = [200, 0, np.radians(80)]
+
+for course in angles_course:
     states = []
-    for j, vr in enumerate(speeds_radial):
-        current_state = {
-            "distance_radial": 200,
-            "speed_tangential": 0,
-            "angle_azimuth": 0,
-            "speed_radial": vr,
-            "angle_course": course,
-            "timeder_angle_course": 0,
-        }
-        p = [current_state[name] for name in inputs_name]
+    for vr in speeds_radial:
+        state_obj = State(
+            distance_radial=200,
+            speed_tangential=0,
+            angle_azimuth=0,
+            speed_radial=vr,
+            angle_course=course,
+            timeder_angle_course=0,
+            input_depower=0,
+            input_steering=0,      # to be solved
+            length_tether=200,     # to be solved
+            angle_elevation=np.radians(40)  # initial guess for solve
+        )
 
-        lbx,ubx,lbg,ubg = state.get_boundaries(unknown_vars)
-        # lbx[0] = 195
-        # ubx[0] = 200
-        sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
-
-        
-        if np.linalg.norm(sol["g"]) > 1:
-            print(sol["g"])
+        new_state = kite_model.solve_quasi_steady(state_obj, unknown_vars=unknown_vars)
+        if new_state:
+            print(np.degrees(new_state.angle_elevation))
+            states.append(new_state.to_dict())
         else:
-            qs_state = {name: float(sol["x"][i]) for i, name in enumerate(unknown_vars)}
-            qs_guess = sol["x"]
-            
-            full_state = {**current_state, **qs_state}
-            full_state["angle_of_attack"] = float(aoa_func(*[full_state[name] for name in aoa_func.name_in()]))
-            full_state["lift_coefficient"] = float(CL_func(*[full_state[name] for name in CL_func.name_in()]))
-            full_state["drag_coefficient"] = float(CD_func(*[full_state[name] for name in CD_func.name_in()]))
-            full_state["tension_tether_ground"] = float(tension_func(*[full_state[name] for name in tension_func.name_in()]))
-            states.append(full_state)
-        print(j)
+            continue  # optionally break instead if desired
+
     course_states.append(pd.DataFrame(states))
 
 set_plot_style_no_latex()

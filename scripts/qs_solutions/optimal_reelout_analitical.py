@@ -12,6 +12,9 @@ import numpy as np
 import casadi as ca
 import matplotlib.pyplot as plt
 import logging
+from picawe.utils.color_palette import set_plot_style
+
+set_plot_style()
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
