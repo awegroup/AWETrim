@@ -9,7 +9,7 @@ DEFAULT_BOUNDS = {
     "timeder_angle_course": [-np.pi, np.pi],
     "angle_pitch": [-np.pi/4, np.pi/4],
     "angle_yaw": [-np.pi/4, np.pi/4],
-    "angle_elevation": [0, 3*np.pi/4],
+    "angle_elevation": [-np.pi, np.pi],
     "speed_radial": [-10, 10],
     "length_tether": [0, 1000],
     "distance_radial": [0, 1000],
@@ -82,7 +82,7 @@ DEFAULT_PATTERN_CONFIG = {
 # defaults.py (This is your file containing the limits)
 DEFAULT_OPTI_LIMITS = {
     "tension_tether_ground": (0, 1e9),  # Range for tension_tether_ground: 0 to 1e9
-    "input_steering": (-np.pi/2, np.pi/2),  # Range for input_steering: -pi/2 to pi/2
+    "input_steering": [-2, 2],  # Range for input_steering: -pi/2 to pi/2
     "s_dot": (0.01, 10),  # Range for s_dot: 0 to 10
     "angle_elevation": (0.0, np.pi/2),  # Range for angle_elevation: 0 to pi
     # HElix
@@ -90,5 +90,9 @@ DEFAULT_OPTI_LIMITS = {
     "vr": (-10, 10),      # Range for vr: 0 to 100
     "beta": (0.35, 0.873),  # Range for beta: 20 ot 50 degrees
     "d0": (40, 150),       # Range for d0: 0 to 100
-    
+    # Figure Eight
+    "ry": (70, 150),        # Range for ry: 0 to 100
+    "rz": (70, 150),        # Range for rz: 0 to 100
+    "ky": (0, 1),         # Range for ky: 0 to 100
+    "kz": (0, 1),         # Range for kz: 0 to 100
 }

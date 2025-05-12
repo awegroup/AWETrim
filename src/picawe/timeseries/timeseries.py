@@ -72,7 +72,7 @@ class TimeSeries:
         var_func = self.kite_model.extract_function(variable)
         var = []
         for state in self.states:
-            if variable in state.keys():
+            if variable in state.keys() and state[variable] is not None:
                 var.append(float(state[variable]))
             else:
                 input_dict = {name: state[name] for name in var_func.name_in()}

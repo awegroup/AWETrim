@@ -108,6 +108,8 @@ def create_pattern_from_dict(config: dict, optimize: bool = False) -> Parametriz
     params = config.get("initial_parameters", {})
     optimization_params = config.get("optimization_parameters", {})
 
+    print(params)
+
     required_params = {
         "helix": ["omega", "r0", "d0", "vr", "beta", "kappa"],
         "lissajous": ["omega", "r0", "a0", "h0", "vr", "beta", "kappa"],
