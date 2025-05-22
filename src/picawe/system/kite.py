@@ -26,6 +26,8 @@ class Wing:
         )
         # self.aerodynamic_coeffs_function(aero_input)
         self.aero_input = aero_input
+        
+        
 
     def define_symbolic_variables_wing(self):
         """
@@ -40,20 +42,22 @@ class Wing:
 
     @property
     def aerodynamic_force_coefficients(self):
+        import casadi as ca
+
         aero_input = self.aero_input
+
         # Define symbolic variables
         variables = {
             "alpha": self.angle_of_attack,
-            "alpha_squared": self.angle_of_attack**2,
             "u_s": self.input_steering,
             "u_p": self.input_depower,
-            # Dynamically add other variables as dependencies
-            "yaw_rate": self.timeder_angle_yaw
-            / ca.norm_2(self.velocity_apparent_wind),
+            "yaw_rate": self.timeder_angle_yaw / ca.norm_2(self.velocity_apparent_wind),
             "sideslip": self.angle_sideslip,
         }
+        # Also support derived variables
+        variables["alpha_squared"] = variables["alpha"] ** 2
 
-        # Initialize base aerodynamic coefficients
+        # Inviscid model
         if aero_input["model"] == "inviscid":
             e = aero_input["params"]["oswald_efficiency"]
             AR = aero_input["params"]["aspect_ratio"]
@@ -61,26 +65,36 @@ class Wing:
             C_L = 2 * ca.pi * variables["alpha"]
             C_D = C_L**2 / (ca.pi * e * AR) + CD0
             C_S = 0
+            return C_L, C_D, C_S
+
+        # Coeff-based model
         elif aero_input["model"] == "coeffs":
             C_L = aero_input["params"].get("CL0", 0)
             C_D = aero_input["params"].get("CD0", 0)
             C_S = aero_input["params"].get("CS0", 0)
-        else:
-            raise ValueError(
-                "Invalid aerodynamic model type. Choose 'inviscid' or 'coeffs'."
-            )
 
-        # Apply dependencies dynamically for CL, CD, CS, C_m, C_l, and C_n
-        for var, coeffs in aero_input.get("dependencies", {}).items():
-            for coeff_type, coeff_value in coeffs.items():
-                # print(C_L)
-                if coeff_type == "k_cl":
-                    C_L += coeff_value * variables[var]
-                elif coeff_type == "k_cd":
-                    C_D += coeff_value * ca.fabs(variables[var])
-                elif coeff_type == "k_cs":
-                    C_L = C_L*ca.cos(aero_input["dependencies"]["u_s"]["k_cs"]*self.input_steering)
-                    C_S = C_L*ca.sin(aero_input["dependencies"]["u_s"]["k_cs"]*self.input_steering)
+            # Loop over defined terms per coefficient
+            for coeff_key, terms in aero_input.get("coefficients", {}).items():
+                for term in terms:
+                    var = term["var"]
+                    power = term.get("power", 1)
+                    coef = term["coef"]
+                    if var in variables:
+                        value = variables[var] ** power
+                        if coeff_key == "CL":
+                            C_L += coef * value
+                        elif coeff_key == "CD":
+                            C_D += coef * ca.fabs(value)
+                        elif coeff_key == "CS":
+                            C_S += coef * value
+            return C_L, C_D, C_S
+
+        else:
+            raise ValueError("Invalid aerodynamic model type. Choose 'inviscid' or 'coeffs'.")
+                # elif coeff_type == "k_cs":
+                    # if self.steering_control == "asymmetric":
+                    #     C_L = C_L*ca.cos(aero_input["dependencies"]["u_s"]["k_cs"]*self.input_steering)
+                    #     C_S = C_L*ca.sin(aero_input["dependencies"]["u_s"]["k_cs"]*self.input_steering)
 
         
         # alpha_min = np.radians(-5)
@@ -91,8 +105,6 @@ class Wing:
         # C_D = ca.if_else(
         #     ca.logic_and(variables["alpha"] >= alpha_min, variables["alpha"] <= alpha_max), C_D, 1
         # )
-
-        return C_L, C_D, C_S
 
     @property
     def lift_coefficient(self):
@@ -153,7 +165,7 @@ class Wing:
         Compute the angle of attack based on the air velocity vector and tether angle.
         """
         # print("angle_pitch_aerodynamic:",self.angle_pitch_aerodynamic)
-
+        
         return (
             self.angle_pitch_aerodynamic + self.angle_pitch_depower - self.angle_pitch
         )
@@ -207,7 +219,7 @@ class Wing:
         S = 0.5 * self.rho * V_a_sq * self.area_wing * CS
 
         R = transformation_C_from_A(
-            self.angle_pitch_aerodynamic, self.angle_yaw_aerodynamic, self.angle_roll
+            self.angle_pitch_aerodynamic, self.angle_yaw_aerodynamic, self.angle_roll_aerodynamic+self.angle_roll
         )
 
         aero_forces = R @ ca.vertcat(-D, S, L)
@@ -260,19 +272,24 @@ class Kite(Wing):
         self.acceleration_angle_yaw = ca.SX.sym("acceleration_angle_yaw")
         self.acceleration_angle_pitch = ca.SX.sym("acceleration_angle_pitch")
         self.acceleration_angle_roll = ca.SX.sym("acceleration_angle_roll")
+        if self.steering_control == "asymmetric":
+            cs_terms = aero_input["coefficients"].get("CS", [])
+            k_steering = -next((term["coef"] for term in cs_terms if term["var"] == "u_s"), 0.0)
+            self.k_steering = k_steering
 
     @property
     def angle_roll(self):
         if self.dof == 6:
             return self._angle_roll
         elif self.dof == 3:
-            if self.steering_control == "roll":
-                return self.input_steering
-            elif self.steering_control == "asymmetric":
-                return self.roll_kcu
-            else:
-                raise ValueError("steering_control ha de ser 'roll' o 'asymetric'.")
+            return self.roll_kcu
 
+    @property
+    def angle_roll_aerodynamic(self):
+        if self.steering_control == "roll":
+            return self.input_steering
+        elif self.steering_control == "asymmetric":
+            return self.input_steering*self.k_steering
     @property
     def angle_pitch(self):
         if self.dof == 6:
@@ -378,7 +395,7 @@ class Kite(Wing):
         acc[1] = ca.if_else(
             vtau > 1e-3,
             -acc[1]/vtau,
-            -ca.sign(acc[1]) *ca.pi/2,
+            -ca.sign(acc[1]) * 1e-1,
         )
         return acc
         

@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from picawe import SystemModel
 from picawe.system.kite import Kite
-from picawe.system.tether import RigidLumpedTether, FlexibleLumpedTether
+from picawe.system.tether import RigidLumpedTether, FlexibleLumpedTether, RigidLinkTether
 import casadi as ca
 import time
 import matplotlib.pyplot as plt
@@ -70,7 +70,8 @@ def read_dict_from_group(group):
 
 results, flight_data, config_data = read_results("2019", "10", "08", "v3", addition="_va")
 # mask = (flight_data.cycle>10)&(flight_data.cycle<70)
-mask = flight_data.cycle.isin([61,62])
+mask = flight_data.cycle.isin(range(63,66))
+# mask = (flight_data.cycle==65)
 # mask = mask & (flight_data.kite_elevation < 0.75) 
 flight_data = flight_data[mask]
 results = results[mask]
@@ -92,15 +93,16 @@ import json
 
 # Define aerodynamic input
 file_path = "./data/v3_aero_input.json"
+# file_path = "./data/v3_aero_input_identified.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
-tether = FlexibleLumpedTether()
+tether = RigidLumpedTether()
 # Example Usage
-kite = Kite(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=28, steering_control="asymmetric")
+kite = Kite(mass_wing=18, area_wing=20, aero_input=aero_input, mass_kcu=28, steering_control="asymmetric")
 kite_model = SystemModel(dof=3, quasi_steady=True, kite=kite, tether=tether)
-# kite2 = Kite(mass_wing=43, area_wing=20, aero_input=aero_input, mass_kcu=0, steering_control="asymmetric")
-# kite_model2 = SystemModel(dof=3, quasi_steady=True, kite=kite2, tether=tether)
+kite2 = Kite(mass_wing=43, area_wing=20, aero_input=aero_input, mass_kcu=0, steering_control="roll")
+kite_model2 = SystemModel(dof=3, quasi_steady=True, kite=kite2, tether=tether)
 # kite_model2 = kite_model
 
 
@@ -115,7 +117,7 @@ vw_averaged = []
 wdir_window = []
 
 unknown_vars = [
-    "length_tether",
+    "tension_tether_ground",
     "input_steering",
     "speed_tangential",
 ]
@@ -126,13 +128,13 @@ unknown_vars = [
 solver_options = {
     "ipopt": {
         "print_level": 0,  # Suppresses IPOPT output
-        'max_iter': 400,  # Maximum number of iterations
+        # 'max_iter': 400,  # Maximum number of iterations
         "sb": "yes",  # Suppresses more detailed solver information
     },
     "print_time": False,  # Disables CasADi's internal timing output
 }
 # Sliding window size
-window_size = 2
+window_size = 5
 position = np.array(
     [results.kite_position_x, results.kite_position_y, results.kite_position_z]
 ).T
@@ -141,12 +143,12 @@ velocity = np.array(
 ).T
 distance_radial = np.linalg.norm(position, axis=1)
 speed_tangential = np.linalg.norm(velocity, axis=1)
-qs_guess = [distance_radial[0], 0, 20]
+qs_guess = [1e5, 0, 20]
 qs_guess2 = qs_guess
-flight_data.kite_azimuth = flight_data.kite_azimuth-0.18
+flight_data.kite_azimuth = flight_data.kite_azimuth#-0.1            # Calculate misalignment!!! at each cycle
 
-print(kite_model.tension_kite)
-solve_func, inputs_name = kite_model.setup_qs_solver(
+# print(kite_model.tension_kite)
+solve_func, inputs_name,_ = kite_model.setup_qs_solver(
         unknown_vars, solver_options=solver_options
     )
 
@@ -182,16 +184,17 @@ for i, row in flight_data.iterrows():
 
     p = [current_state[name] for name in inputs_name]
     # print(p)
-    lbx,ubx,lbg,ubg = kite_model.get_boundaries(unknown_vars)
-    lbx[0] = distance_radial[i]*0.9
-    ubx[0] = distance_radial[i]
+    lbx,ubx,lbg,ubg = kite_model.get_boundaries(current_state,unknown_vars)
+
+    # qs_guess[0] = 1e5
+    # qs_guess[2] = 20
     # print(lbx,ubx,lbg,ubg)
     sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
     qs_guess = sol["x"]
     if np.linalg.norm(sol["g"]) < 1:
         qs_state = {name: float(qs_guess[i]) for i, name in enumerate(unknown_vars)}
-
+        
 
         state_combined = {**qs_state, **current_state}
 
@@ -223,63 +226,62 @@ for i, row in flight_data.iterrows():
 end = time.time()
 print(f"Time taken: {end - start} seconds for {len(flight_data)} iterations")
 
-# solve_func2, inputs_name2 = kite_model2.setup_qs_solver(
-#         unknown_vars, solver_options=solver_options
-#     )
-# cl_func2 = kite_model2.extract_function("lift_coefficient")
-# cd_func2 = kite_model2.extract_function("drag_coefficient")
-# aoa_func2 = kite_model2.extract_function("angle_of_attack")
-# tension_func2 = kite_model2.extract_function("tension_kite")
-# for i, row in flight_data.iterrows():
+solve_func2, inputs_name2,_ = kite_model2.setup_qs_solver(
+        unknown_vars, solver_options=solver_options
+    )
+cl_func2 = kite_model2.extract_function("lift_coefficient")
+cd_func2 = kite_model2.extract_function("drag_coefficient")
+aoa_func2 = kite_model2.extract_function("angle_of_attack")
+tension_func2 = kite_model2.extract_function("tension_kite")
+for i, row in flight_data.iterrows():
 
-#     # Wind speed (vw) sliding window average
-#     uf_window.append(results.wind_speed_horizontal[i]*kite_model.wind.kappa/np.log(results.kite_position_z[i]/kite_model.wind.z0))
-#     wdir_window.append(results.wind_direction[i])
-#     if len(uf_window) > window_size:
-#         uf_window.pop(0)  # Keep the window size constant
-#         wdir_window.pop(0)
-#     # print(i)
-#     uf = np.mean(uf_window)  # Compute the average of the current window
+    # Wind speed (vw) sliding window average
+    uf_window.append(results.wind_speed_horizontal[i]*kite_model.wind.kappa/np.log(results.kite_position_z[i]/kite_model.wind.z0))
+    wdir_window.append(results.wind_direction[i])
+    if len(uf_window) > window_size:
+        uf_window.pop(0)  # Keep the window size constant
+        wdir_window.pop(0)
+    # print(i)
+    uf = np.mean(uf_window)  # Compute the average of the current window
 
 
-#     current_state = {
-#         "distance_radial": distance_radial[i],
-#         "angle_course": row.kite_course,
-#         "speed_radial": row.tether_reelout_speed,
-#         "angle_azimuth": row.kite_azimuth,
-#         "angle_elevation": row.kite_elevation,
-#         "speed_friction": uf,
-#         "timeder_angle_course": row.kite_yaw_rate_1,
-#         "input_depower": row.up,
-#     }
+    current_state = {
+        "distance_radial": distance_radial[i],
+        "angle_course": row.kite_course,
+        "speed_radial": row.tether_reelout_speed,
+        "angle_azimuth": row.kite_azimuth,
+        "angle_elevation": row.kite_elevation,
+        "speed_friction": uf,
+        "timeder_angle_course": row.kite_yaw_rate_1,
+        "input_depower": row.up,
+    }
 
-#     p = [current_state[name] for name in inputs_name2]
-#     # print(p)
-#     lbx,ubx,lbg,ubg = kite_model2.get_boundaries(unknown_vars)
-#     lbx[0] = distance_radial[i]*0.95
-#     ubx[0] = distance_radial[i]
-#     # print(lbx,ubx,lbg,ubg)
-#     sol2 = solve_func2(x0=qs_guess2, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+    p = [current_state[name] for name in inputs_name2]
+    # print(p)
+    lbx,ubx,lbg,ubg = kite_model2.get_boundaries(current_state,unknown_vars)
 
-#     qs_guess2 = sol2["x"]
+    # print(lbx,ubx,lbg,ubg)
+    sol2 = solve_func2(x0=qs_guess2, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
-#     qs_state2 = {name: float(sol2["x"][i]) for i, name in enumerate(unknown_vars)}
+    qs_guess2 = sol2["x"]
 
-#     state_combined2 = {**qs_state2, **current_state}
+    qs_state2 = {name: float(sol2["x"][i]) for i, name in enumerate(unknown_vars)}
+
+    state_combined2 = {**qs_state2, **current_state}
     
-#     state_combined2["lift_coefficient"] = float(cl_func2(
-#         *[state_combined2[name] for name in cl_func2.name_in()]
-#     ))
-#     state_combined2["drag_coefficient"] = float(cd_func2(
-#         *[state_combined2[name] for name in cd_func2.name_in()]
-#     ))
-#     state_combined2["angle_of_attack"] = float(aoa_func2(
-#         *[state_combined2[name] for name in aoa_func2.name_in()]
-#     ))
-#     state_combined2["tension_tether_ground"] = float(tension_func2(
-#         *[state_combined2[name] for name in tension_func2.name_in()]
-#     ))
-#     solutions2.append(state_combined2)
+    state_combined2["lift_coefficient"] = float(cl_func2(
+        *[state_combined2[name] for name in cl_func2.name_in()]
+    ))
+    state_combined2["drag_coefficient"] = float(cd_func2(
+        *[state_combined2[name] for name in cd_func2.name_in()]
+    ))
+    state_combined2["angle_of_attack"] = float(aoa_func2(
+        *[state_combined2[name] for name in aoa_func2.name_in()]
+    ))
+    state_combined2["tension_tether_ground"] = float(tension_func2(
+        *[state_combined2[name] for name in tension_func2.name_in()]
+    ))
+    solutions2.append(state_combined2)
 
 
 
@@ -293,7 +295,7 @@ print(f"Time per iteration: {time_per_iteration} seconds")
 # Display the solutions
 
 solutions_df = pd.DataFrame(solutions)
-# solutions_df2 = pd.DataFrame(solutions2)
+solutions_df2 = pd.DataFrame(solutions2)
 # Filter out rows where 'T' is None
 solutions_df = solutions_df[solutions_df["tension_tether_ground"].notna()]
 
@@ -302,17 +304,19 @@ total_time = len(flight_data) * dt
 # print('Estimated power: ', sum(solutions_df['T']*solutions_df['v_r']*dt)/total_time, 'W')
 # print('Measured power: ', sum(flight_data['ground_tether_force']*flight_data['tether_reelout_speed']*dt)/total_time, 'W')
 
-CD = results["wing_drag_coefficient"] + results["kcu_drag_coefficient"]+ results["bridles_drag_coefficient"]+ results["tether_drag_coefficient"]
+CD = results["wing_drag_coefficient"] + results["kcu_drag_coefficient"]+ results["bridles_drag_coefficient"]#+ results["tether_drag_coefficient"]
 # Print mean CL and CD
 mask_pow = (flight_data.up<0.1)&(flight_data.kite_elevation<0.75)
-print("Mean CL, exp. data: ", np.mean(results["wing_lift_coefficient"][mask_pow]))
-print("Mean CD, exp. data: ", np.mean(CD[mask_pow]))
+print("Mean CL powered, exp. data: ", np.mean(results["wing_lift_coefficient"][mask_pow]))
+print("Mean CD powered, exp. data: ", np.mean(CD[mask_pow]))
 print('Mean CL powered,  kcu: ', np.mean(solutions_df['lift_coefficient'][mask_pow]))
 print('Mean CD powered,  kcu: ', np.mean(solutions_df['drag_coefficient'][mask_pow]))
+print("Mean CL depowered, exp. data: ", np.mean(results["wing_lift_coefficient"][~mask_pow]))
+print("Mean CD depowered, exp. data: ", np.mean(CD[~mask_pow]))
 print('Mean CL depowered,  kcu: ', np.mean(solutions_df['lift_coefficient'][~mask_pow]))
 print('Mean CD depowered,  kcu: ', np.mean(solutions_df['drag_coefficient'][~mask_pow]))
-# print('Mean CL,  no kcu: ', np.mean(solutions_df2['lift_coefficient'][mask_pow]))
-# print('Mean CD,  no kcu: ', np.mean(solutions_df2['drag_coefficient'][mask_pow]))
+print('Mean CL,  no kcu: ', np.mean(solutions_df2['lift_coefficient'][mask_pow]))
+print('Mean CD,  no kcu: ', np.mean(solutions_df2['drag_coefficient'][mask_pow]))
 
 
 print("Mean aoa, exp. data: ", np.mean(results["wing_angle_of_attack_bridle"]))
@@ -325,15 +329,31 @@ total_power = (
     sum(solutions_df["tension_tether_ground"][mask] * solutions_df["speed_radial"][mask] * dt) / total_time
 )
 total_power2 = (
-    # sum(solutions_df2["tension_tether_ground"][mask] * solutions_df2["speed_radial"][mask] * dt) / total_time
+    sum(solutions_df2["tension_tether_ground"][mask] * solutions_df2["speed_radial"][mask] * dt) / total_time
 )
 measured_power = (
     sum(flight_data["ground_tether_force"][mask] * flight_data["tether_reelout_speed"][mask] * dt)
     / total_time
 )
-print("Estimated power KCU: ", total_power, "W")
-print("Estimated power no KCU: ", total_power2, "W")
-print("Measured power: ", measured_power, "W")
+print("Estimated power KCU reelout: ", total_power, "W")
+print("Estimated power no KCU reelout: ", total_power2, "W")
+print("Measured power reelout: ", measured_power, "W")
+
+# -----------------------------------------
+mask_dep = ~mask_pow
+total_power_dep = (
+    sum(solutions_df["tension_tether_ground"][mask_dep] * solutions_df["speed_radial"][mask_dep] * dt) / total_time
+)
+total_power2_dep = (
+    sum(solutions_df2["tension_tether_ground"][mask_dep] * solutions_df2["speed_radial"][mask_dep] * dt) / total_time
+)
+measured_power_dep = (
+    sum(flight_data["ground_tether_force"][mask_dep] * flight_data["tether_reelout_speed"][mask_dep] * dt)
+    / total_time
+)
+print("Estimated power KCU depower: ", total_power_dep, "W")
+print("Estimated power no KCU depower: ", total_power2_dep, "W")
+print("Measured power depower: ", measured_power_dep, "W")
 
 
 from picawe.utils.color_palette import set_plot_style
@@ -396,15 +416,15 @@ scatter = ax2.scatter(
 
 ax3.plot(flight_data["time"], speed_tangential, label="Meas. $v_{\\tau}$")
 ax3.plot(solutions_df["time"], solutions_df["speed_tangential"], label="QS $v_{\\tau}$, KCU")
-# ax3.plot(flight_data["time"], solutions_df2["speed_tangential"], label="QS $v_{\\tau}$, no KCU")
+ax3.plot(flight_data["time"], solutions_df2["speed_tangential"], label="QS $v_{\\tau}$, no KCU")
 
 ax4.plot(flight_data["time"], flight_data["ground_tether_force"], label="Meas. $F_{t,g}$")
 ax4.plot(solutions_df["time"], solutions_df["tension_tether_ground"], label="QS $F_{t,g}$, KCU")
-# ax4.plot(flight_data["time"], solutions_df2["tension_tether_ground"], label="QS $F_{t,g}$, no KCU")
+ax4.plot(flight_data["time"], solutions_df2["tension_tether_ground"], label="QS $F_{t,g}$, no KCU")
 
 ax5.plot(flight_data["time"], flight_data["kcu_actual_steering"]/100, label="Meas. $u_s$")
 ax5.plot(solutions_df["time"], solutions_df["input_steering"], label="QS $u_s$, KCU")
-# ax5.plot(flight_data["time"], solutions_df2["input_steering"], label="QS $u_s$, no KCU")
+ax5.plot(flight_data["time"], solutions_df2["input_steering"], label="QS $u_s$, no KCU")
 ax5.set_ylim(-2, 2)
 
 #Save the figure as pdf

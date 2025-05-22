@@ -20,20 +20,23 @@ class Tether(ABC):
 class RigidLinkTether(Tether):
     def __init__(self, E=132e9, diameter=0.01, density=970):
         super().__init__(E, diameter, density)
+        self.tension_tether_ground = ca.SX.sym("tension_tether_ground")
+        self.is_tether_rigid = True
         
-
-    def force_tether_at_kite(self,state):
-        force_tension = ca.vertcat(0, 0, -state.tension_tether_ground)
+    @property
+    def force_tether_at_kite(self):
+        force_tension = ca.vertcat(0, 0, -self.tension_tether_ground)
         return force_tension
-    
-    def tension_kite(self,state):
-        return state.tension_tether_ground
+    @property 
+    def tension_kite(self):
+        return self.tension_tether_ground
     
 class FlexibleLinkTether(Tether):
     def __init__(self, E=132e9, diameter=0.01, density=970):
         super().__init__(E, diameter, density)
         self.length_tether = ca.SX.sym("length_tether")
         self.timeder_length_tether = ca.SX.sym("timeder_length_tether")
+        self.is_tether_rigid = False
 
     @property
     def force_tether_at_kite(self):
@@ -51,18 +54,21 @@ class RigidLumpedTether(Tether):
 
     def __init__(self, E=132e9, diameter=0.01, density=970):
         super().__init__(E, diameter, density)
+        self.tension_tether_ground = ca.SX.sym("tension_tether_ground")
+        self.is_tether_rigid = True
 
-
-    def force_tether_at_kite(self,state):
-        force_tension = ca.vertcat(0, 0, -state.tension_tether_ground)
+    @property
+    def force_tether_at_kite(self):
+        force_tension = ca.vertcat(0, 0, -self.tension_tether_ground)
         force_drag = self.drag_tether_at_kite
         force_gravity = self.force_gravity_tether_at_kite
-        return force_tension + force_drag(state) + force_gravity(state)
+        return force_tension + force_drag + force_gravity
     
-    def tension_kite(self,state):
-        return ca.norm_2(self.force_tether_at_kite(state))
-
-    def drag_tether_at_kite(self, state):
+    @property
+    def tension_kite(self):
+        return ca.norm_2(self.force_tether_at_kite)
+    @property
+    def drag_tether_at_kite(self):
         """
         Returns the product of drag coefficient and tether surface area dependent on the position of the tether end.
         See right side of eq.14 in Van Der Vlugt et al. (2019).
@@ -70,19 +76,19 @@ class RigidLumpedTether(Tether):
         drag = (
             0.125
             * self.drag_coefficient_tether
-            * state.distance_radial
+            * self.distance_radial
             * self.diameter_tether
-            * state.rho
-            * state.velocity_apparent_wind
-            * ca.norm_2(state.velocity_apparent_wind)
+            * self.rho
+            * self.velocity_apparent_wind
+            * ca.norm_2(self.velocity_apparent_wind)
         )
         # return drag
         return ca.vertcat(drag[0], drag[1], drag[2]) # neglecting drag in the radial direction
-
-    def force_gravity_tether_at_kite(self,state):
+    @property
+    def force_gravity_tether_at_kite(self):
         weight = transformation_C_from_W(
-            state.angle_azimuth, state.angle_elevation, state.angle_course
-        ) @ ca.vertcat(0, 0, -self.mass_tether(state) * state.g)
+            self.angle_azimuth, self.angle_elevation, self.angle_course
+        ) @ ca.vertcat(0, 0, -self.mass_tether * self.g)
         return ca.vertcat(weight[0] / 2, weight[1] / 2, weight[2])
 
 class DistributedDragTether(Tether):
@@ -146,6 +152,7 @@ class FlexibleLumpedTether(Tether):
         super().__init__(E, diameter, density)
         self.length_tether = ca.SX.sym("length_tether")
         self.timeder_length_tether = ca.SX.sym("timeder_length_tether")
+        self.is_tether_rigid = False
     
     @property
     def force_tether_at_kite(self):

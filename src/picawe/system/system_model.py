@@ -31,7 +31,7 @@ class SystemModel(KiteKinematics):
         self.define_kite_model(kite)
         self.define_tether_model(tether)
         
-        self.steering_control = self.steering_control
+        # self.steering_control = self.steering_control
 
         if self.steering_control not in ["asymmetric", "roll"]:
             raise ValueError("Invalid steering_control. Choose 'asymmetric' or 'roll'.")
@@ -62,7 +62,12 @@ class SystemModel(KiteKinematics):
         self._qs_solver = None
         self._qs_vars = None
         self._qs_inputs = None
-        self.default_unknown_vars = ["speed_tangential", "timeder_angle_course", "length_tether"]
+        self.ode = None
+        self.algebraic = None
+        if self.is_tether_rigid:
+            self.default_unknown_vars = ["speed_tangential", "timeder_angle_course", "tension_tether_ground"]
+        else:
+            self.default_unknown_vars = ["speed_tangential", "timeder_angle_course", "length_tether"]
         self.derived_function_names = [
             "angle_of_attack",
             "tension_tether_ground",
@@ -229,7 +234,7 @@ class SystemModel(KiteKinematics):
         ubx = []
         for var in unkown_vars:
             if var == "length_tether":
-                lbx.append(current_state["distance_radial"]*0.95)
+                lbx.append(current_state["distance_radial"]*0.9)
                 ubx.append(current_state["distance_radial"])
             else:
                 lbx.append(DEFAULT_BOUNDS[var][0])
@@ -261,16 +266,26 @@ class SystemModel(KiteKinematics):
         """
         Get the state vector of the kite system.
         """
-        return ca.vertcat(
-            self.distance_radial,
-            self.angle_elevation,
-            self.angle_azimuth,
-            self.speed_tangential,
-            self.angle_course,
-            self.speed_radial,
-            self.length_tether,
+        if self.is_tether_rigid:
+            return ca.vertcat(
+                self.distance_radial,
+                self.angle_elevation,
+                self.angle_azimuth,
+                self.speed_tangential,
+                self.angle_course,
+                self.speed_radial,
+            )
+        else:
+            return ca.vertcat(
+                self.distance_radial,
+                self.angle_elevation,
+                self.angle_azimuth,
+                self.speed_tangential,
+                self.angle_course,
+                self.speed_radial,
+                self.length_tether,
 
-        )
+            )
 
     @property
     def input_vector(self):
@@ -282,8 +297,12 @@ class SystemModel(KiteKinematics):
             self.input_depower,
             self.timeder_length_tether,
         )
-    def integrator(self, time_step):
+    def integrator(self, time_step, inputs = None):
 
+        if self.ode is None:
+            self.establish_ode()
+        if self.algebraic is None:
+            self.establish_algebraic()
 
         if self.dof == 6 and not self.quasi_steady:
             x_add = ca.vertcat(
@@ -303,15 +322,34 @@ class SystemModel(KiteKinematics):
             )
 
         if self.quasi_steady:
-            x = ca.vertcat(self.state_vector[0:3], self.state_vector[4])
-            ode = ca.vertcat(self.ode[0:3], self.ode[4])
-            z = ca.vertcat(self.speed_tangential, self.timeder_angle_course, self.length_tether)
+            
+
 
             p = ca.vertcat(self.input_vector[0:2], self.speed_radial)
+
+            x = ca.vertcat(self.state_vector[0:3], self.state_vector[4])
+            ode = ca.vertcat(self.ode[0:3], self.ode[4])
+            # p = ca.vertcat(self.timeder_angle_course, self.input_depower, self.speed_radial)
+            if self.is_tether_rigid:
+                z = ca.vertcat(self.speed_tangential, self.timeder_angle_course, self.tension_tether_ground)
+            else:
+                z = ca.vertcat(self.speed_tangential, self.timeder_angle_course, self.length_tether)
+
             alg = self.algebraic
             dae = {"x": x, "p": p, "z": z, "p": p, "ode": ode, "alg": alg}
             # Create the integrator
-            intg = ca.integrator("intg", "idas", dae, 0, time_step)
+            opts = {
+                "abstol": 1e-6,
+                "reltol": 1e-6,
+                "max_num_steps": 20000,
+                "max_step_size": 0.01  # Or even 1e-3 if very stiff
+            }
+            
+            print("x", x)
+            print("p", p)
+            print("z", z)
+            # intg = ca.integrator("intg", "idas", dae, opts)
+            intg = ca.integrator("intg", "idas", dae, 0, time_step,opts)
             return intg
             
         else:
@@ -410,6 +448,7 @@ class State:
     input_steering: float = None
     timeder_angle_course: float = None
     length_tether: float = None
+    tension_tether_ground: float = None
     # Optional inputs
     angle_roll: Optional[float] = None
     angle_pitch: Optional[float] = None
@@ -417,7 +456,7 @@ class State:
 
     # Optional outputs
     angle_of_attack: Optional[float] = None
-    tension_tether_ground: Optional[float] = None
+    
     lift_coefficient: Optional[float] = None
     drag_coefficient: Optional[float] = None
 

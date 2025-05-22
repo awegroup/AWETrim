@@ -10,7 +10,10 @@ from picawe.system.tether import RigidLinkTether
 from picawe import State
 from picawe.system.kite import Kite
 
+import logging
 
+
+logger = logging.getLogger(__name__)
 class PhaseParameterized(TimeSeries):
     def __init__(
         self,
@@ -35,15 +38,30 @@ class PhaseParameterized(TimeSeries):
         # self.find_optimal_angle_pitch_tether()
         
     
-    def run_simulation(self, start_state, s_array=None, time_array=None):
-        import logging
+    def run_simulation(self, start_state = None):
         
-
-        logger = logging.getLogger(__name__)
+        if start_state is None:
+            start_state = {"t": 0, "s": 0, "s_dot": 2, "s_ddot": 0, "input_steering": 0, "tension_tether_ground": 1e5, "input_depower": self.pattern_config["control"]["input_depower"]}
         self.substitute_parametrized_kinematics()
         self.states = []
         self.kite_model.reset_solver()
 
+        if self.pattern_config["start_path_angle"] is not None:
+            s_array = np.linspace(
+                self.pattern_config["start_path_angle"],
+                self.pattern_config["end_path_angle"],
+                self.pattern_config["n_points"],
+            )
+            time_array = None
+        elif self.pattern_config["start_time"] is not None:
+            time_array = np.linspace(
+                self.pattern_config["start_time"],
+                self.pattern_config["end_time"],
+                self.pattern_config["n_points"],
+            )
+            s_array = None
+        else:
+            raise ValueError("Either path_angle or time bounds must be provided in the pattern_config.")
 
         if self.quasi_steady:
             unknown_vars = ["length_tether", "input_steering", "s_dot"]
@@ -53,6 +71,8 @@ class PhaseParameterized(TimeSeries):
         if self.kite_model.dof == 6:
             unknown_vars += ["angle_roll", "angle_pitch", "angle_yaw"]
 
+        if self.kite_model.is_tether_rigid:
+            unknown_vars[0] = "tension_tether_ground"
         # Initialize state
         if isinstance(start_state, dict):
             state_obj = State(**start_state)
@@ -106,6 +126,7 @@ class PhaseParameterized(TimeSeries):
             t = state_obj.t
             s_dot = state_obj.s_dot
             for i in range(len(s_array)):
+                state_obj.s = s_array[i]
                 if distance_radial_func.n_in() == 0:
                     state_obj.distance_radial = float(distance_radial_func()["distance_radial"])
                 else:
@@ -115,15 +136,17 @@ class PhaseParameterized(TimeSeries):
                 new_state = self.kite_model.solve_quasi_steady(state_obj, unknown_vars)
                 if new_state:
                     if i < len(s_array) - 1:
+                        s_dot = new_state.s_dot
                         delta_s = s_array[i + 1] - s_array[i]
-                        time_step = delta_s / s_dot if s_dot != 0 else 0.01
-                    else:
-                        time_step = 0.01
+                        time_step = delta_s / s_dot #if s_dot != 0 else 0.01
+                        # print(time_step)
+                    # else:
+                    #     time_step = 0.01
 
                     if self.quasi_steady:
                         t += time_step
-                        new_state.s = s_array[i]
                         new_state.t = t
+                        new_state.s = s_array[i]
                         new_state.s_ddot = 0
                     else:
                         s_dot += new_state.s_ddot * time_step
@@ -142,10 +165,27 @@ class PhaseParameterized(TimeSeries):
                     logger.warning("Solver did not converge at s index %d", i)
 
 
-    def optimize_pattern(self, start_state, s_array=None, time_array=None):
+    def optimize_pattern(self, start_state):
         # self.set_optimal_speed_radial()
         # self.set_optimal_angle_pitch_tether()
-        self.run_simulation(start_state, s_array, time_array)
+
+        if self.pattern_config["start_path_angle"] is not None:
+            s_array = np.linspace(
+                self.pattern_config["start_path_angle"],
+                self.pattern_config["end_path_angle"],
+                self.pattern_config["n_points"],
+            )
+            time_array = None
+        elif self.pattern_config["start_time"] is not None:
+            time_array = np.linspace(
+                self.pattern_config["start_time"],
+                self.pattern_config["end_time"],
+                self.pattern_config["n_points"],
+            )
+            s_array = None
+        else:
+            raise ValueError("Either path_angle or time bounds must be provided in the pattern_config.")
+        self.run_simulation(start_state)
         # self.kite_model.reset_solver()
         pattern_inputs = self.substitute_optimized_kinematics()
         # print(self.kite_model.force_aerodynamic)
@@ -179,7 +219,7 @@ class PhaseParameterized(TimeSeries):
 
         path_angle_dot = opti.variable(N)
         input_steering = opti.variable(N)
-        length_tether = opti.variable(N)
+        tension_tether_ground = opti.variable(N)
 
         # Store optimization variables dynamically
         opti_variables = {
@@ -187,19 +227,18 @@ class PhaseParameterized(TimeSeries):
             "s": path_angle,
             "s_dot": path_angle_dot,
             "input_steering": input_steering,
-            "length_tether": length_tether,
+            "tension_tether_ground": tension_tether_ground,
         }
 
         # Add optimization parameters
         for var in self.optimization_vars:
             opti_variables[var] = self.optimization_vars[var]
 
-
         # Define the residual function
         residual = ca.Function(
             "residual",
             [self.kite_model.t, self.kite_model.s, self.kite_model.s_dot,
-            self.kite_model.input_steering, self.kite_model.length_tether] + pattern_inputs,  
+            self.kite_model.input_steering, self.kite_model.tension_tether_ground] + pattern_inputs,  
             [self.kite_model.residual]
         )
 
@@ -219,16 +258,36 @@ class PhaseParameterized(TimeSeries):
         power = 0  # Initialize power
         angle_elevation = ca.MX.zeros(N)
 
+        def call_distance_radial_func_casadi(func, t, vr=None):
+            if func.n_in() == 2:
+                return func(t, vr)
+            return func(t)
+        
+        def call_tension_tether_func(func, length_tether, t, vr=None):
+            if func.n_in() == 3:
+                return func(length_tether, t, vr)
+            return func(length_tether, t)
+        
+        def call_vr_func(func, vr):
+            if func.n_in() == 1:
+                return func(vr)
+            return vr
+        
+        if "vr" not in opti_variables.keys():
+            opti_variables["vr"] = self.pattern_config["parameters"]["vr"]
+
         for i in range(N):
             # Dynamically pass opti variables into residual function
             residual_inputs = [opti_variables["t"][i], opti_variables["s"][i], opti_variables["s_dot"][i],
-                            opti_variables["input_steering"][i], opti_variables["length_tether"][i]] \
+                            opti_variables["input_steering"][i], opti_variables["tension_tether_ground"][i]] \
                             + [opti_variables[var] for var in self.optimization_vars]
             res = residual(*residual_inputs)
             # opti.subject_to(ca.norm_2(res) <= 1e-2)
-            opti.subject_to(res == 0)
-            # opti.subject_to(opti_variables["length_tether"][i] <= distance_radial_func(opti_variables["t"][i]))
-            # opti.subject_to(opti_variables["length_tether"][i] >= 0.95*distance_radial_func(opti_variables["t"][i]))
+            # print(res)
+            opti.subject_to(res[0] == 0)
+            opti.subject_to(res[1] == 0)
+            opti.subject_to(res[2] == 0)
+
             if time_array is not None:
 
                 # Compute power
@@ -239,34 +298,37 @@ class PhaseParameterized(TimeSeries):
                     opti.subject_to(path_angle[i + 1] == path_angle[i] + time_step * path_angle_dot[i])
 
             elif s_array is not None:
-
+                
                 if i < len(s_array)-1:
-                    time_step = timestep_func(opti_variables["s"][i], opti_variables["s"][i+1], opti_variables["s_dot"][i])
-                    opti.subject_to(time[i+1] == time[i] + time_step)
+                    time_step = (opti_variables["s"][i+1] - opti_variables["s"][i]) / opti_variables["s_dot"][i]
+                    opti.subject_to(time[i+1] == time[i] +  time_step)
 
-            power += tension_tether_func(length_tether[i],time[i]) * time_step * vr_func()["speed_radial"]
+            power += tension_tether_ground[i] * time_step * call_vr_func(vr_func, opti_variables["vr"])
 
             # Compute angle elevation
             angle_elevation[i] = angle_elevation_fun(opti_variables["t"][i], opti_variables["s"][i],
                                                     *[opti_variables[var] for var in self.optimization_vars])
 
         
+        reelin_speed = 6
+        reelin_time = 0#distance / reelin_speed
         # Normalize power
-        power = power/ time[-1]
+        power = (power-1000*reelin_speed*reelin_time)/ (time[-1]+reelin_time)/1000
 
         ### APPLY CONSTRAINTS DYNAMICALLY FROM DEFAULT_OPTI_LIMITS ###
         for var_name, opti_var in opti_variables.items():
-            if var_name in DEFAULT_OPTI_LIMITS:
-                if var_name in self.optimization_vars:
-                    print(f"Applying constraints for {var_name}")
-                    lb, ub = DEFAULT_OPTI_LIMITS[var_name]
-                    opti.subject_to(lb <= opti_var)
-                    opti.subject_to(opti_var <= ub)
-                else:
-                    print(f"Applying constraints for {var_name}")
-                    lb, ub = DEFAULT_OPTI_LIMITS[var_name]
-                    opti.subject_to(lb <= opti_var[:])
-                    opti.subject_to(opti_var[:] <= ub)
+            if isinstance(opti_var, ca.MX):
+                if var_name in DEFAULT_OPTI_LIMITS:
+                    if var_name in self.optimization_vars:
+                        print(f"Applying constraints for {var_name}")
+                        lb, ub = DEFAULT_OPTI_LIMITS[var_name]
+                        opti.subject_to(lb <= opti_var)
+                        opti.subject_to(opti_var <= ub)
+                    else:
+                        print(f"Applying constraints for {var_name}")
+                        lb, ub = DEFAULT_OPTI_LIMITS[var_name]
+                        opti.subject_to(lb <= opti_var[:])
+                        opti.subject_to(opti_var[:] <= ub)
 
         #Constraint for angle_elevation
         # opti.subject_to(angle_elevation >= DEFAULT_OPTI_LIMITS["angle_elevation"][0])
@@ -274,23 +336,44 @@ class PhaseParameterized(TimeSeries):
 
 
         ### APPLY INITIAL VALUES FROM RESULTS ###
+        opti.subject_to(time[0] == self.return_variable("t")[0])
         opti.set_initial(opti_variables["t"], self.return_variable("t"))
+        
         # opti.set_initial(opti_variables["s"], self.return_variable("s"))
         opti.set_initial(opti_variables["s_dot"], self.return_variable("s_dot"))
         opti.set_initial(opti_variables["input_steering"], self.return_variable("input_steering"))
-        opti.set_initial(opti_variables["length_tether"], self.return_variable("length_tether"))
+        opti.set_initial(opti_variables["tension_tether_ground"], self.return_variable("tension_tether_ground"))
+
+        opti.subject_to(opti_variables["input_steering"] <= 1)
+        opti.subject_to(opti_variables["input_steering"] >= -1)
+        opti.subject_to(opti_variables["tension_tether_ground"] <= 1e8)
+        opti.subject_to(opti_variables["tension_tether_ground"] >= 100)
         # opti.set_initial(path_angle, self.return_variable("s"))
 
         # Set initial conditions for optimization parameters
         for var in self.optimization_vars:
-            opti.set_initial(self.optimization_vars[var], self.pattern_config["initial_parameters"][var])
+            print(f"Setting initial value for {var}: {self.pattern_config['parameters'][var]}")
+            opti.set_initial(self.optimization_vars[var], self.pattern_config["parameters"][var])
 
-        opti.subject_to(time[:]>=0)
-        opti.subject_to(power >= 0)  # Power must be positive
+        # opti.subject_to(time[:]>=0)
+        # opti.subject_to(power >= 0)  # Power must be positive
         opti.minimize(-power)  # Minimize negative power
 
-        opti.solver("ipopt")
-        # opti.solver("sqpmethod")
+        opti.solver("ipopt", {
+            "ipopt": {"max_iter": 100,"bound_relax_factor": 0,        
+                        "tol": 1e-3,                     # Main tolerance
+                        "acceptable_iter": 3,         # Accept if solution is good for 3 iter
+                        "acceptable_tol": 1e-5,          # Acceptable early termination
+                        "constr_viol_tol": 1e-6,         # Constraint violation tolerance
+                        "dual_inf_tol": 1e-6,            # Dual infeasibility}#,"mu_init": 1e-2},
+            }
+            # "max_iter": 500,
+            # "bound_relax_factor": 0,  # <--- critical
+            # "mu_init": 1e-2,
+            # "acceptable_tol": 1e-4
+        })
+
+        # opti.solver("fatrop")
         # sol = opti.solve()
         # Reset kite_model
         
@@ -303,10 +386,20 @@ class PhaseParameterized(TimeSeries):
             for var_name, var in self.optimization_vars.items():
                 print(f"  {var_name}: {opti.debug.value(var):.6f}")
                 optimized_config = self.pattern_config.copy()
-                optimized_config["initial_parameters"].update({var_name: opti.debug.value(var)})
+                optimized_config["parameters"].update({var_name: opti.debug.value(var)})
                 self.pattern_config = optimized_config
-                # self.pattern_config["initial_parameters"].update({var_name: opti.debug.value(var)})
-
+                # self.pattern_config["parameters"].update({var_name: opti.debug.value(var)})
+            import matplotlib.pyplot as plt
+            plt.plot(sol.value(time),sol.value(opti_variables["s"]), label="s")
+            plt.plot(self.return_variable("t"),self.return_variable("s"), label="s_initial")
+            plt.xlabel("Time (s)")
+            plt.ylabel("s (m)")
+            plt.show()
+            
+            plt.figure()
+            plt.plot(sol.value(time),sol.value(opti_variables["s_dot"]), label="s_dot")
+            plt.plot(self.return_variable("t"),self.return_variable("s_dot"), label="s_dot_initial")
+            plt.show()
 
 
             # Print the final power value
@@ -329,7 +422,7 @@ class PhaseParameterized(TimeSeries):
                 
                 try:
                     print(f"  {var_name}: {opti.debug.value(var):.6f}")
-                    self.pattern_config["initial_parameters"].update({var_name: opti.debug.value(var)})
+                    self.pattern_config["parameters"].update({var_name: opti.debug.value(var)})
                     # self.run_simulation(start_state, s_array, time_array)
                 except:
                     print(f"  {var_name}: (No value available)")

@@ -1,12 +1,22 @@
 {
-    "model": "coeffs",
-    "params": {
-        "CD0": 0.0457,
-        "CL0": 0.5495,
-        "angle_pitch_depower_0": 0.12
-    },
-    "dependencies": {
-        "alpha": { "k_cl": 5.0359, "k_cd": -0.0385, "k_cn": 0.0 , "k_cm": 0},
-        "alpha_squared": { "k_cl": -5.2724, "k_cd": 1.102, "k_cn": 0.0, "k_cm": -1}
-    }
+  "model": "coeffs",
+  "params": {
+    "CD0": 0.0457,
+    "CL0": 0.5495,
+    "angle_pitch_depower_0": 0.05,
+    "delta_pitch_depower": -0.3
+  },
+  "coefficients": {
+    "CL": [
+      { "var": "alpha", "power": 1, "coef": 5.0359 },
+      { "var": "alpha", "power": 2, "coef": -5.2724 }
+    ],
+    "CD": [
+      { "var": "alpha", "power": 1, "coef": -0.0385 },
+      { "var": "alpha", "power": 2, "coef": 1.102 }
+    ],
+    "CM": [
+      { "var": "alpha", "power": 2, "coef": -1 }
+    ]
+  }
 }

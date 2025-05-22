@@ -2,7 +2,7 @@ import numpy as np
 DEFAULT_BOUNDS = {
     "tension_tether_ground": [0, 1e9],
     "input_steering": [-5, 5],
-    "s_dot": [0.01, 10],
+    "s_dot": [0.01, 20],
     "s_ddot": [-100, 100],
     "speed_tangential": [0, 250],
     "angle_roll": [-np.pi/2, np.pi/2],
@@ -82,17 +82,20 @@ DEFAULT_PATTERN_CONFIG = {
 # defaults.py (This is your file containing the limits)
 DEFAULT_OPTI_LIMITS = {
     "tension_tether_ground": (0, 1e9),  # Range for tension_tether_ground: 0 to 1e9
-    "input_steering": [-2, 2],  # Range for input_steering: -pi/2 to pi/2
-    "s_dot": (0.01, 10),  # Range for s_dot: 0 to 10
+    "input_steering": [-1, 1],  # Range for input_steering: -pi/2 to pi/2
+    "s_dot": (0.01, 20),  # Range for s_dot: 0 to 10
+    # "s": (0, 10),  # Range for s: 0 to 10
     "angle_elevation": (0.0, np.pi/2),  # Range for angle_elevation: 0 to pi
+    
     # HElix
     "kappa": (0, 4),     # Range for kappa: 0 to 5
-    "vr": (-10, 10),      # Range for vr: 0 to 100
-    "beta": (0.35, 0.873),  # Range for beta: 20 ot 50 degrees
+    # "vr": (-10, 10),      # Range for vr: 0 to 100
+    "beta0": (0.2, 0.873),  # Range for beta: 20 ot 50 degrees
     "d0": (40, 150),       # Range for d0: 0 to 100
     # Figure Eight
-    "ry": (70, 150),        # Range for ry: 0 to 100
-    "rz": (70, 150),        # Range for rz: 0 to 100
-    "ky": (0, 1),         # Range for ky: 0 to 100
-    "kz": (0, 1),         # Range for kz: 0 to 100
+    "ry": (60, 180),        # Range for ry: 0 to 100
+    "rz": (60, 180),        # Range for rz: 0 to 100
+    "ky": (0.5, 1),         # Range for ky: 0 to 100
+    "kz": (0.5, 1),         # Range for kz: 0 to 100
+    "vr": (0.5, 8),  # Range for vr: 0 to 100
 }

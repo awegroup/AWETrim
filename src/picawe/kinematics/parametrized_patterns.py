@@ -11,10 +11,10 @@ class ParametrizedPatterns(ABC):
                 self.optimization_vars[key] = value
 
     def x(self, t, s):
-        return self.xd(t, s) * ca.cos(self.beta) - self.zd(t, s) * ca.sin(self.beta)
+        return self.xd(t, s) * ca.cos(self.beta(t)) - self.zd(t, s) * ca.sin(self.beta(t))
 
     def z(self, t, s):
-        return self.xd(t, s) * ca.sin(self.beta) + self.zd(t, s) * ca.cos(self.beta)
+        return self.xd(t, s) * ca.sin(self.beta(t)) + self.zd(t, s) * ca.cos(self.beta(t))
 
     def y(self, t, s):
         return self.yd(t, s)
@@ -28,9 +28,12 @@ class ParametrizedPatterns(ABC):
 
 class Helix(ParametrizedPatterns):
 
-    def __init__(self, omega, r0, d0, vr, beta, kappa=1):
-        super().__init__(omega=omega, r0=r0, d0=d0, vr=vr, beta=beta, kappa=kappa)
+    def __init__(self, omega, r0, d0, vr, beta0, kappa=1, kbeta=0):
+        super().__init__(omega=omega, r0=r0, d0=d0, vr=vr, beta0=beta0, kappa=kappa, kbeta=kbeta)
 
+    def beta(self, t):
+        return self.beta0 * (1 + self.kbeta * (self.r0/self.r(t) - 1))
+    
     def d(self, t):
         return self.d0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
 
@@ -52,8 +55,8 @@ class Helix(ParametrizedPatterns):
 
 class Lissajous(ParametrizedPatterns):
 
-    def __init__(self, omega, r0, a0, h0, vr, beta, kappa=0):
-        super().__init__(omega=omega, r0=r0, a0=a0, h0=h0, vr=vr, beta=beta, kappa=kappa)
+    def __init__(self, omega, r0, a0, h0, vr, beta0, kappa=0):
+        super().__init__(omega=omega, r0=r0, a0=a0, h0=h0, vr=vr, beta0=beta0, kappa=kappa)
 
     def a(self, t):
         return self.a0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
@@ -79,9 +82,12 @@ class Lissajous(ParametrizedPatterns):
 
 class FigureEight(ParametrizedPatterns):
 
-    def __init__(self, omega, r0, ry, rz, vr, beta, ky=1, kz=1, kappa=0):
-        super().__init__(omega=omega, r0=r0, ry0=ry, rz0=rz, vr=vr, beta=beta, ky=ky, kz=kz, kappa=kappa)
+    def __init__(self, omega, r0, ry, rz, vr, beta0, ky=1, kz=1, kappa=0, kbeta=0):
+        super().__init__(omega=omega, r0=r0, ry0=ry, rz0=rz, vr=vr, ky=ky, kz=kz, kappa=kappa, beta0=beta0, kbeta=kbeta)
 
+    def beta(self, t):
+        return self.beta0 * (1 + self.kbeta * (self.r0/self.r(t) - 1))
+    
     def r(self, t):
         return self.r0 + self.vr * t
 
@@ -105,15 +111,15 @@ class FigureEight(ParametrizedPatterns):
 
 def create_pattern_from_dict(config: dict, optimize: bool = False) -> ParametrizedPatterns:
     pattern_type = config.get("pattern_type").lower()
-    params = config.get("initial_parameters", {})
+    params = config.get("parameters", {})
     optimization_params = config.get("optimization_parameters", {})
 
     print(params)
 
     required_params = {
-        "helix": ["omega", "r0", "d0", "vr", "beta", "kappa"],
+        "helix": ["omega", "r0", "d0", "vr", "beta0", "kappa"],
         "lissajous": ["omega", "r0", "a0", "h0", "vr", "beta", "kappa"],
-        "figure_eight": ["omega", "r0", "ry", "rz", "vr", "beta", "ky", "kz", "kappa"]
+        "figure_eight": ["omega", "r0", "ry", "rz", "vr", "beta0", "ky", "kz", "kappa"]
     }
 
     if pattern_type not in required_params:

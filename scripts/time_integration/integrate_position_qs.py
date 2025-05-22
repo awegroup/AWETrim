@@ -41,13 +41,13 @@ aoa_func = kite_model.extract_function("angle_of_attack")
 # -----------------------------------------------
 unknown_vars = ["speed_tangential", "timeder_angle_course", "length_tether"]
 current_state = {
-    "distance_radial": 200,
-    "angle_elevation": np.radians(5),
+    "distance_radial": 400,
+    "angle_elevation": np.radians(30),
     "angle_azimuth": 0,
     "angle_course": 0,
-    "speed_radial": -1,
-    "speed_tangential": 10,
-    "input_depower": 0.0,
+    "speed_radial": -4,
+    "speed_tangential": 15,
+    "input_depower": 1.0,
     "input_steering": 0
 }
 solver_options = {
@@ -55,18 +55,18 @@ solver_options = {
     "print_time": False,
 }
 time_step = 0.01
-time = np.arange(0, 50, time_step)
-qs_guess = [200, 0, 40]
+time = np.arange(0, 100, time_step)
+qs_guess = [40,0, 399]
 states = []
 import time as timet
 start_time = timet.time()
-solve_qs, inputs_name = kite_model.setup_qs_solver(
+solve_qs, inputs_name,_ = kite_model.setup_qs_solver(
         unknown_vars, solver_options=solver_options
     )
 # Solve quasi-steady state
 p = [current_state[name] for name in inputs_name]
 
-lbx,ubx,lbg,ubg = kite_model.get_boundaries(unknown_vars)
+lbx,ubx,lbg,ubg = kite_model.get_boundaries(current_state,unknown_vars)
 sol = solve_qs(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 z0 = sol['x']
 kite_model.establish_ode()
@@ -83,17 +83,23 @@ x0 = [
 # Time integration loop
 # -----------------------------------------------
 intg = kite_model.integrator(time_step)
-inputs = {"input_steering": 0.0, "input_depower": 0.0, "speed_radial": 0.0}
+inputs = {"input_steering": 0.0, "input_depower": 1.0, "speed_radial": -4.0}
 p = [inputs[name] for name in inputs.keys()]
 for t in time:
 
     # Integrate the dynamics
-    sol = intg(x0=x0, z0=z0, p=p)
+    try:
+        sol = intg(x0=x0, z0=z0, p=p)
+    except Exception as e:
+        print("Integration error:", e)
+        break
     xf = sol["xf"]
     zf = sol["zf"]
     x0 = xf
     z0 = zf
-
+    # if t > 10:
+    #     inputs["input_steering"] = 0.01
+    #     p = [inputs[name] for name in inputs.keys()]
     # Update the current state
     # current_state = {name: float(xf[i]) for i, name in enumerate(current_state.keys())}
 
@@ -104,6 +110,7 @@ for t in time:
                     'speed_tangential': float(zf[0]),
                     'timeder_angle_course': float(zf[1]),
                     'length_tether': float(zf[2]),
+                    "time": t,
 
     }
 
@@ -116,11 +123,13 @@ for t in time:
     states.append({**full_state})#, "aoa": float(aoa)})
 
     # Stop if the system reaches critical limits
-    if current_state["angle_elevation"] < 0 or current_state["distance_radial"] < 20:
+    if current_state["angle_elevation"] < 0 or full_state["distance_radial"] < 100:
         break
 
 print("Elapsed time: ", timet.time() - start_time)
-print("Simulated time: ", time[-1])
+print("Simulated time: ", full_state["time"])
+
+print("Final elevation angle: ", np.degrees(states[-1]["angle_elevation"]))
 # -----------------------------------------------
 # Process and visualize results
 # -----------------------------------------------

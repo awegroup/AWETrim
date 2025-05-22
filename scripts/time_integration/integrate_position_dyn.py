@@ -36,20 +36,20 @@ def get_simulation_config() -> dict:
     return {
         "file_path": "./data/v3_aero_input.json",
         "kite_config": {
-            "mass_wing": 5.0,
+            "mass_wing": 15.0,
             "area_wing": 20.0,
             "mass_kcu": 0.0,
             "steering_control": "asymmetric",
         },
         "wind_speed_ref": 10.0,
         "initial_state": {
-            "angle_elevation": np.radians(0.0),
+            "angle_elevation": np.radians(30.0),
             "angle_azimuth": 0.0,
             "angle_course": 0,
             "speed_radial": 0.0,
             "speed_tangential": 0.0,
             "timeder_speed_radial": 0.0,
-            "distance_radial": 200.0,
+            "distance_radial": 400.0,
             "input_depower": 0.0,
             "timeder_angle_course": 0.0,
             "timeder_speed_tangential": 0.0,
@@ -58,13 +58,13 @@ def get_simulation_config() -> dict:
             "ipopt": {"print_level": 0, "sb": "yes"},
             "print_time": False,
         },
-        "quasi_steady_guess": [40.0, 0.0, 200.0],
+        "quasi_steady_guess": [40.0, 0.0, 199.0],
         "time_step": 0.01,
-        "duration": 100.0,
+        "duration": 200.0,
         "control_inputs": {
             "input_steering": 0.0,
-            "input_depower": 0.0,
-            "timeder_length_tether": 0.0,
+            "input_depower": 1.0,
+            "timeder_length_tether": -4.0,
         },
     }
 
@@ -78,28 +78,31 @@ def main():
 
     # Setup kite and model
     kite = Kite(aero_input=aero_input, **cfg["kite_config"])
-    model = SystemModel(dof=3, quasi_steady=False, wind_model="uniform", kite=kite)
+    model = SystemModel(dof=3, quasi_steady=True, wind_model="uniform", kite=kite)
     model.wind.speed_wind_ref = cfg["wind_speed_ref"]
 
     initial_state = cfg["initial_state"]
 
     # Solve quasi-steady state
     unknown_vars = ["speed_tangential", "input_steering", "length_tether"]
-    solve_qs, inputs_name = model.setup_qs_solver(
+    solve_qs, inputs_name,_ = model.setup_qs_solver(
         unknown_vars=unknown_vars,
         solver_options=cfg["solver_options"],
     )
 
     p = [initial_state[name] for name in inputs_name]
-    lbx, ubx, lbg, ubg = model.get_boundaries(unknown_vars)
-    ubx[0] = initial_state["distance_radial"]  # Constraint
+    lbx, ubx, lbg, ubg = model.get_boundaries(initial_state,unknown_vars)
 
+    
     sol = solve_qs(x0=cfg["quasi_steady_guess"], p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)["x"]
     qs_state = {name: float(sol[i]) for i, name in enumerate(unknown_vars)}
     logger.info("Quasi-steady state solution:")
     for k, v in qs_state.items():
         logger.info(f"{k}: {v:.4f}")
-
+    
+    kite = Kite(aero_input=aero_input, **cfg["kite_config"])
+    model = SystemModel(dof=3, quasi_steady=False, wind_model="uniform", kite=kite)
+    model.wind.speed_wind_ref = cfg["wind_speed_ref"]
     # Merge all known values
     all_values = {**initial_state, **qs_state}
     current_keys = ["distance_radial", "angle_elevation", "angle_azimuth",
@@ -117,7 +120,8 @@ def main():
     # Integrate over time
     time_range = np.arange(0, cfg["duration"], cfg["time_step"])
     states: List[Dict[str, float]] = []
-
+    transition = False
+    # x0[3] =
     with timed_block("Time integration"):
         for t in time_range:
             try:
@@ -125,8 +129,37 @@ def main():
                 x0 = xf
                 state_now = {key: float(xf[i]) for i, key in enumerate(current_keys)}
                 aoa = aoa_func(*[state_now.get(k, control_inputs.get(k)) for k in aoa_func.name_in()])
-                states.append({**state_now, "aoa": float(aoa)})
+                # if control_inputs["timeder_length_tether"] < 3:
+                #     control_inputs["timeder_length_tether"] += 1 * cfg["time_step"]
+                # if state_now["angle_elevation"] < np.radians(30):
+                #     break
+                # if state_now["length_tether"] < 200 and control_inputs["timeder_length_tether"] < 0:
+                #    transition = True
+                #    control_inputs["timeder_length_tether"] += 0.1*cfg["time_step"]
+                #    if control_inputs["input_depower"] > 0.01:
+                #         control_inputs["input_depower"] -= 0.1*cfg["time_step"]
+                #         print(f"Depowering: {control_inputs['input_depower']:.2f}")
+                    
+                    
+                # if state_now["speed_tangential"] < 0:
+                #     state_now["angle_course"] = np.pi
+                #     state_now["speed_tangential"] = -state_now["speed_tangential"]
+                #    p_input = list(control_inputs.values())
+
+                # if state_now["speed_tangential"] < 0.1:
+                #     transition = True
+                # if transition:
+                #     if control_inputs["input_depower"] > 0.1:
+                #         control_inputs["input_depower"] -= 0.1*cfg["time_step"]
+                #         print(f"Depowering: {control_inputs['input_depower']:.2f}")
+                p_input = list(control_inputs.values())
+                    # control_inputs["input_steering"] = 0.1
+
+                states.append({**state_now, **control_inputs,"aoa": float(aoa)})
+                if state_now["distance_radial"] < 100:
+                    break
             except Exception as e:
+                print(f"Integration error at time {t:.2f}s: {e}")
                 logger.error(f"Integration failed at time {t:.2f}s: {e}")
                 break
 
@@ -144,6 +177,7 @@ def visualize_results(df: pd.DataFrame) -> None:
     plt.figure()
     plt.plot(df["speed_tangential"], label="Tangential Speed")
     plt.plot(df["speed_radial"], label="Radial Speed")
+    plt.plot(df["timeder_length_tether"], label="Tether Length")
     plt.xlabel("Time Steps")
     plt.ylabel("Speed [m/s]")
     plt.legend()
@@ -155,7 +189,7 @@ def visualize_results(df: pd.DataFrame) -> None:
     plt.legend()
 
     plt.figure()
-    plt.plot(np.degrees(df["angle_course"]), label="Course Angle [deg]")
+    plt.plot(np.degrees(df["angle_elevation"]), label="Course Angle [deg]")
     plt.legend()
 
     r, theta, phi = df["distance_radial"], df["angle_azimuth"], df["angle_elevation"]

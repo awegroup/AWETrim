@@ -7,7 +7,7 @@ from picawe import SystemModel, State
 from picawe.utils.color_palette import set_plot_style, get_color_list
 from picawe.timeseries.phase_parametrized import PhaseParameterized
 from picawe.system.kite import Kite
-from picawe.system.tether import FlexibleLumpedTether
+from picawe.system.tether import FlexibleLumpedTether, RigidLumpedTether
 from picawe.utils.defaults import PLOT_LABELS
 
 # -------------------- Configuration --------------------
@@ -16,89 +16,61 @@ file_path = "./data/v3_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
+# aero_input["params"]["angle_pitch_depower_0"] = 0.05
+
 pattern_config = {
     "pattern_type": "helix",
-    "initial_parameters": {
+    "parameters": {
         "omega": -1.0,
         "r0": 200.0,
-        "d0": 82.0,
-        "vr": 0.2,
-        "beta": 0.35,
-        "kappa": 0
+        "d0": 100.0,
+        "vr": 1,
+        "beta0": 0.45,
+        "kappa": 1,
+        "kbeta": 0,
     },
     "optimization_parameters": {
-        # Add any optimization-related parameters here if needed as list of names
         "d0",
-        # "kappa",
-        # "beta",
     }
 }
-# pattern_config = {
-#     "pattern_type": "figure_eight",
-#     "initial_parameters": {
-#         "omega": -1.0,
-#         "r0": 200.0,
-#         "ry": 100,
-#         "rz": 100,
-#         "ky": 0.5,
-#         "kz": 0.5,
-#         "vr": 1,
-#         "beta": 0.45,
-#         "kappa": 0
-#     },
-#     "optimization_parameters": {
-#         # Add any optimization-related parameters here if needed as list of names
-#         "d0",
-#         # "kappa",
-#         # "beta",
-#     }
-# }
 
+pattern_config = {
+    "pattern_type": "figure_eight",
+    "parameters": {
+        "omega": -1.0,
+        "r0": 200.0,
+        "ry": 70,
+        "rz": 60,
+        "ky": 0.8,
+        "kz": 0.6,
+        "vr": 1,
+        "beta0": 0.35,
+        "kappa": 0
+    },
+    "start_path_angle": -np.pi/2,
+    "end_path_angle": 6*np.pi + np.pi/2,
+    "n_points": 400,
+    "optimization_parameters": {
+        # Add any optimization-related parameters here if needed as list of names
+        # "ry",
+        # "rz",
+        # "ky",
+        # "kz",
+        "kappa",
+        # "beta",
+        "vr",
+    }
+}
 
-start_state = State(
-    t=0,
-    s=np.pi/2,
-    s_dot=2,
-    s_ddot=0,
-    length_tether=200,
-    input_steering=0,
-    angle_roll=0,
-    angle_pitch=0,
-    angle_yaw=0,
-)
-
-s_array = np.linspace(np.pi/2, 9*np.pi/2, 400)
-colors = get_color_list()
-save_folder = "./results/figures/translational_paper/"
-
-# -------------------- Setup and Simulation --------------------
 mass_ratio = 2
-dof = 3
 area_wing = 20
-mass_wing = mass_ratio * area_wing
-
-tether = FlexibleLumpedTether()
-kite = Kite(mass_wing=mass_wing, area_wing=area_wing, aero_input=aero_input, steering_control="asymmetric")
-
-phases = {}
-for quasi_steady in [True, False]:
-    model = SystemModel(dof=dof, quasi_steady=quasi_steady, kite=kite, wind_model="uniform", tether=tether)
-    model.wind.speed_wind_ref = 9
-    model.input_depower = 0
-    model.speed_radial = 0
-
-    phase = PhaseParameterized(model, quasi_steady=quasi_steady, pattern_config=pattern_config)
-    phase.run_simulation(start_state=start_state, s_array=s_array)
-
-    if quasi_steady:
-        start_state = phase.states[0]
-        start_state["s_dot"] = phase.return_variable("s_dot")[0]
-
-    phases[quasi_steady] = phase
+s_array = np.linspace(-np.pi/2, 2*2*np.pi+np.pi/2, 800)
+save_folder = "./results/figures/"
+colors = get_color_list()
 
 # -------------------- Plot Layout --------------------
-fig = plt.figure(figsize=(12, 6))
-gs = fig.add_gridspec(8, 3, width_ratios=[1, 0.25, 2], height_ratios=[1, 1, 1, 1, 1, 1, 1, 1])
+fig = plt.figure(figsize=(14, 8))
+gs = fig.add_gridspec(8, 3, width_ratios=[1, 0.25, 2], height_ratios=[1]*8)
 
 ax1 = fig.add_subplot(gs[:4, 0])
 ax2 = fig.add_subplot(gs[4:, 0])
@@ -107,12 +79,43 @@ ax4 = fig.add_subplot(gs[2:4, 2])
 ax5 = fig.add_subplot(gs[4:6, 2])
 ax6 = fig.add_subplot(gs[6:, 2])
 
-for i, quasi_steady in enumerate([True, False]):
-    linestyle = "--" if quasi_steady else "-"
-    label = "Quasi-steady" if quasi_steady else "Dynamic"
-    color = colors[i]
+scatter = None
+results = {}
 
-    phase = phases[quasi_steady]
+mass_wing = mass_ratio * area_wing
+tether = RigidLumpedTether(diameter=0.02)
+kite = Kite(mass_wing=mass_wing, area_wing=area_wing, aero_input=aero_input, steering_control="roll")
+
+start_state = State(
+    t=0,
+    s=np.pi/2,
+    s_dot=2,
+    s_ddot=0,
+    length_tether=199.6,
+    input_steering=0,
+    angle_roll=0,
+    angle_pitch=0,
+    angle_yaw=0,
+    tension_tether_ground=1e8,
+)
+
+for j, quasi_steady in enumerate([True, False]):
+    linestyle = "--" if quasi_steady else "-"
+    label = f"{'Quasi-Steady' if quasi_steady else 'Dynamic'}"
+    color = colors[j % len(colors)]
+
+    model = SystemModel(dof=3, quasi_steady=quasi_steady, kite=kite, wind_model="uniform", tether=tether)
+    model.wind.speed_wind_ref = 11
+    model.input_depower = 0
+    # model.speed_radial = 0
+
+    phase = PhaseParameterized(model, quasi_steady=quasi_steady, pattern_config=pattern_config)
+    phase.run_simulation(start_state=start_state)
+
+    if quasi_steady:
+        start_state = phase.states[0]
+        start_state["s_dot"] = phase.return_variable("s_dot")[0]
+
     s = np.degrees(phase.return_variable("s") - 5*np.pi/2)
     vtau = phase.return_variable("speed_tangential")
     tension = phase.return_variable("tension_tether_ground") / 1000
@@ -121,7 +124,13 @@ for i, quasi_steady in enumerate([True, False]):
     azimuth = np.degrees(phase.return_variable("angle_azimuth"))
     elevation = np.degrees(phase.return_variable("angle_elevation"))
 
-    print(np.sum(phase.return_variable("tension_tether_ground")) / 1000)
+    results["qs" if quasi_steady else "dyn"] = {
+        "s": s,
+        "vtau": vtau,
+        "tension": tension,
+        "vr": phase.return_variable("speed_radial"),
+        "t": phase.return_variable("t"),
+    }
 
     ax3.plot(s, vtau, linestyle=linestyle, color=color, label=label)
     ax4.plot(s, tension, linestyle=linestyle, color=color)
@@ -131,6 +140,7 @@ for i, quasi_steady in enumerate([True, False]):
     ax = ax2 if quasi_steady else ax1
     scatter = ax.scatter(azimuth, elevation, c=vtau, cmap="viridis", s=10)
 
+# -------------------- Finalize Plot --------------------
 cbar_ax = fig.add_axes([0.35, 0.3, 0.02, 0.4])
 cbar = fig.colorbar(scatter, cax=cbar_ax)
 cbar.set_label(PLOT_LABELS["speed_tangential"])
@@ -144,13 +154,101 @@ ax5.set_ylabel(PLOT_LABELS["angle_roll"])
 ax6.set_ylabel(PLOT_LABELS["angle_of_attack"])
 ax6.set_xlabel(PLOT_LABELS["phase"])
 
-ax3.set_xlim([0, 360])
-ax4.set_xlim([0, 360])
-ax5.set_xlim([0, 360])
-ax6.set_xlim([0, 360])
+for a in [ax1, ax2]:
+    a.set_ylim(0, 60)
+    a.set_xlim(-30, 30)
+for a in [ax3, ax4, ax5, ax6]:
+    a.set_xlim([0, 360])
 
 ax3.legend()
+
+
+
+
+# -------------------- Difference Analysis --------------------
+s_qs = results["qs"]["s"]
+s_dyn = results["dyn"]["s"]
+mask_qs = (s_qs > 0)
+mask_dyn = (s_dyn > 0)
+# mask_qs = (s_qs > 360) & (s_qs < 360+360)
+# mask_dyn = (s_dyn > 360) & (s_dyn < 360+360)
+vtau_qs = results["qs"]["vtau"][mask_qs]
+vtau_dyn = results["dyn"]["vtau"][mask_dyn]
+tension_qs = results["qs"]["tension"][mask_qs]
+tension_dyn = results["dyn"]["tension"][mask_dyn]
+vr_qs = results["qs"]["vr"][mask_qs]
+vr_dyn = results["dyn"]["vr"][mask_dyn]
+s_qs = s_qs[mask_qs]
+s_dyn = s_dyn[mask_dyn]
+t_qs = results["qs"]["t"][mask_qs]
+t_dyn = results["dyn"]["t"][mask_dyn]
+
+# Phase difference in maxima and minima
+s_max_qs = s_qs[np.argmax(vtau_qs)]
+s_max_dyn = s_qs[np.argmax(vtau_dyn)]
+s_min_qs = s_qs[np.argmin(vtau_qs)]
+s_min_dyn = s_qs[np.argmin(vtau_dyn)]
+
+phase_diff_max = s_max_dyn - s_max_qs
+phase_diff_min = s_min_dyn - s_min_qs
+
+mean_vtau_diff = (np.max(vtau_dyn) - np.max(vtau_qs)) / np.max(vtau_dyn) * 100
+
+mean_tension_diff = (np.mean(tension_dyn) - np.mean(tension_qs)) / np.mean(tension_dyn) * 100
+
+# Calculate the difference in sum(tension * vr*dt)
+sum_energy_qs = np.sum(tension_qs * vr_qs * np.diff(t_qs, prepend=t_qs[0]))
+sum_energy_dyn = np.sum(tension_dyn * vr_dyn * np.diff(t_dyn, prepend=t_dyn[0]))
+sum_force_work_diff = (sum_energy_dyn - sum_energy_qs) / sum_energy_dyn * 100
+
+sum_pow_qs = sum_energy_qs / (t_qs[-1] - t_qs[0])
+sum_pow_dyn = sum_energy_dyn / (t_dyn[-1] - t_dyn[0])
+print("Power QS:", sum_pow_qs)
+print("Power Dyn:", sum_pow_dyn)
+
+print("Phase difference at max vtau:", phase_diff_max)
+print("Phase difference at min vtau:", phase_diff_min)
+print("Max vtau difference:", (np.max(vtau_dyn) - np.max(vtau_qs)) / np.max(vtau_dyn) * 100)
+print("Max tether tension difference:", (np.max(tension_dyn) - np.max(tension_qs)) / np.max(tension_dyn) * 100)
+print("Mean tether tension difference:", mean_tension_diff)
+print("Difference in energy:", sum_force_work_diff)
+print("Power difference:", (sum_pow_dyn - sum_pow_qs) / sum_pow_dyn * 100)
+# Mark max and min vtau on left-hand plots
+def find_angle_at_extreme(phase_obj, vtau, kind="max"):
+    idx = np.argmax(vtau) if kind == "max" else np.argmin(vtau)
+    az = np.degrees(phase_obj.return_variable("angle_azimuth")[idx])
+    el = np.degrees(phase_obj.return_variable("angle_elevation")[idx])
+    return az, el
+
+az_max_dyn, el_max_dyn = find_angle_at_extreme(phase, vtau_dyn, kind="max")
+az_min_dyn, el_min_dyn = find_angle_at_extreme(phase, vtau_dyn, kind="min")
+az_max_qs, el_max_qs = find_angle_at_extreme(phase, vtau_qs, kind="max")
+az_min_qs, el_min_qs = find_angle_at_extreme(phase, vtau_qs, kind="min")
+
+ax1.plot(az_max_dyn, el_max_dyn, "ro", label="Max $v_\\tau$")
+ax1.plot(az_min_dyn, el_min_dyn, "bo", label="Min $v_\\tau$")
+ax2.plot(az_max_qs, el_max_qs, "ro", label="Max $v_\\tau$")
+ax2.plot(az_min_qs, el_min_qs, "bo", label="Min $v_\\tau$")
+
+for ax in [ax1, ax2]:
+    ax.legend(loc="lower right", fontsize=10)
+ax1.text(
+    0.95, 0.95, "Dynamic",
+    transform=ax1.transAxes,
+    ha="right", va="top",
+    fontsize=12, weight="bold",
+    bbox=dict(facecolor="white", edgecolor="gray", alpha=0.8)
+)
+ax2.text(
+    0.95, 0.95, "Quasi-Steady",
+    transform=ax2.transAxes,
+    ha="right", va="top",
+    fontsize=12, weight="bold",
+    bbox=dict(facecolor="white", edgecolor="gray", alpha=0.8)
+)
+
 set_plot_style()
-plt.tight_layout()
-plt.savefig(save_folder + "parametrized_circle_results_combined.pdf", bbox_inches='tight')
+# plt.tight_layout()
+# fig.suptitle(f"Trajectory Comparison for Mass Ratio = {mass_ratio}", fontsize=16)
+plt.savefig(save_folder + "parametrized_circle_results_single_mr.png", bbox_inches='tight', dpi = 300)
 plt.show()
