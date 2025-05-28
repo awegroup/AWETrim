@@ -108,6 +108,43 @@ class FigureEight(ParametrizedPatterns):
         yd = self.yd(t, s)
         zd = self.zd(t, s)
         return ca.sqrt(r ** 2 - yd ** 2 - zd ** 2)
+    
+class ParametrizedPatternsAngles(ParametrizedPatterns):
+    def __init__(self, **kwargs):
+        self.optimization_vars = {}  # Dictionary to store symbolic optimization variables
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+            if isinstance(value, ca.SX):  # If value is symbolic, store it separately
+                self.optimization_vars[key] = value
+    def x(self, t, s):
+        return self.r(t) * ca.cos(self.azimuth(t, s)) * ca.cos(self.elevation(t, s))
+    def y(self, t, s):
+        return self.r(t) * ca.sin(self.azimuth(t, s)) * ca.cos(self.elevation(t, s))
+    def z(self, t, s):
+        return self.r(t) * ca.sin(self.elevation(t, s))
+        
+class FigureEightAngles(ParametrizedPatternsAngles):
+
+    def __init__(self, omega, r0, az_amp0, beta_amp0, vr, beta0, ky=1, kz=1, kappa=0, kbeta=0):
+        super().__init__(omega=omega, r0=r0, az_amp0=az_amp0, beta_amp0=beta_amp0, vr=vr, ky=ky, kz=kz, kappa=kappa, beta0=beta0, kbeta=kbeta)
+
+    def beta(self, t):
+        return self.beta0 * (1 + self.kbeta * (self.r0/self.r(t) - 1))
+
+    def r(self, t):
+        return self.r0 + self.vr * t
+
+    def az_amp(self, t):
+        return self.az_amp0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+
+    def beta_amp(self, t):
+        return self.beta_amp0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+
+    def azimuth(self, t, s):
+        return self.az_amp(t) * ca.cos(self.omega * s) / (1 + self.ky * ca.sin(self.omega * s) ** 2)
+
+    def elevation(self, t, s):
+        return self.beta_amp(t) * ca.sin(self.omega * s) * ca.cos(self.omega * s) / (1 + self.kz * ca.sin(self.omega * s) ** 2)+ self.beta(t)
 
 def create_pattern_from_dict(config: dict, optimize: bool = False) -> ParametrizedPatterns:
     pattern_type = config.get("pattern_type").lower()
@@ -119,7 +156,8 @@ def create_pattern_from_dict(config: dict, optimize: bool = False) -> Parametriz
     required_params = {
         "helix": ["omega", "r0", "d0", "vr", "beta0", "kappa"],
         "lissajous": ["omega", "r0", "a0", "h0", "vr", "beta", "kappa"],
-        "figure_eight": ["omega", "r0", "ry", "rz", "vr", "beta0", "ky", "kz", "kappa"]
+        "figure_eight": ["omega", "r0", "ry", "rz", "vr", "beta0", "ky", "kz", "kappa"],
+        "figure_eight_angles": ["omega", "r0", "az_amp0", "beta_amp0", "vr", "beta0", "ky", "kz", "kappa"]
     }
 
     if pattern_type not in required_params:
@@ -140,7 +178,9 @@ def create_pattern_from_dict(config: dict, optimize: bool = False) -> Parametriz
     pattern_classes = {
         "helix": Helix,
         "lissajous": Lissajous,
-        "figure_eight": FigureEight
+        "figure_eight": FigureEight,
+        "figure_eight_angles": FigureEightAngles
+
     }
 
     return pattern_classes[pattern_type](**final_params)

@@ -1,6 +1,8 @@
 # User defined files and folders
 results/
-
+data/LEI-V9-KITE/
+flight_logs/
+*.prof
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

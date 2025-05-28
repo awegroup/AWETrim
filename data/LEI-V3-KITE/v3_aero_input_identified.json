@@ -1,0 +1,37 @@
+{
+  "model": "coeffs",
+  "params": {
+    "CD0": 0.12,
+    "CL0": 0.257,
+    "Cm_base": 0.05,
+    "angle_pitch_depower_0": -0.172,
+    "delta_pitch_depower": -0.18
+  },
+  "coefficients": {
+    "CL": [
+      { "var": "alpha", "power": 1, "coef": 5.55 },
+      { "var": "alpha", "power": 2, "coef": -5.55 },
+      { "var": "u_s", "power": 1, "coef": 0 },
+      { "var": "u_p", "power": 1, "coef": -0.4 }
+    ],
+    "CD": [
+      { "var": "alpha", "power": 1, "coef": 0.027 },
+      { "var": "alpha", "power": 2, "coef": 1.217 },
+      { "var": "u_s", "power": 1, "coef": 0.05 }
+    ],
+    "CS": [
+      { "var": "u_s", "power": 1, "coef": 0.23 },
+      { "var": "yaw_rate", "power": 1, "coef": -0.01 },
+      { "var": "sideslip", "power": 1, "coef": 0.01 }
+    ],
+    "CN": [
+      { "var": "u_s", "power": 1, "coef": 0.005 },
+      { "var": "yaw_rate", "power": 1, "coef": -0.02 },
+      { "var": "sideslip", "power": 1, "coef": -0.05 }
+    ],
+    "CM": [
+      { "var": "alpha", "power": 2, "coef": -1 },
+      { "var": "u_p", "power": 1, "coef": 0.01 }
+    ]
+  }
+}

@@ -18,7 +18,7 @@ class SystemModel(KiteKinematics):
         self,
         dof=6,
         quasi_steady=False,
-        wind_model="logarithmic",
+        wind_model=None,
         tether=None,
         kite = None,
     ):
@@ -75,6 +75,7 @@ class SystemModel(KiteKinematics):
             "drag_coefficient"
         ]
         self._derived_functions = None
+        self_ode = None
 
 
     def define_kite_model(self, kite):
@@ -115,10 +116,10 @@ class SystemModel(KiteKinematics):
                     setattr(self.__class__, name, obj)
 
     def define_wind_model(self, wind_model):
-        if wind_model == "logarithmic"or wind_model == "uniform":
-            self.wind = Wind(wind_model)
+        if wind_model is None:
+            self.wind = Wind("uniform")
         else:
-            raise ValueError("Invalid wind model. Choose 'logarithmic' or 'uniform'.")
+            self.wind = wind_model
 
     def ode_function(self):
         dot_r = self.speed_radial
@@ -215,14 +216,18 @@ class SystemModel(KiteKinematics):
             # logger.warning("Quasi-steady solver did not converge. Residual norm: %.4f", np.linalg.norm(sol["g"]))
             # logger.warning("Solver output: %s", sol)
             # raise RuntimeError("Quasi-steady solver did not converge.")
+            logger.warning("Quasi-steady solver did not converge. Residual norm: %.4f", np.linalg.norm(sol["g"]))
             return None
 
         # Update with solved variables
         for i, var in enumerate(unknown_vars):
             state_dict[var] = float(sol["x"][i])
 
-        derived_funcs = self.get_derived_functions()
-        for name, func in derived_funcs.items():
+        if self._derived_functions is None:
+            self._derived_functions = {
+                name: self.extract_function(name) for name in self.derived_function_names
+            }
+        for name, func in self._derived_functions.items():
             args = [state_dict[n] for n in func.name_in()]
             state_dict[name] = float(func(*args))
 
@@ -246,12 +251,9 @@ class SystemModel(KiteKinematics):
 
         return lbx, ubx, lbg, ubg
 
-    def get_derived_functions(self):
-        if self._derived_functions is None:
-            self._derived_functions = {
-                name: self.extract_function(name) for name in self.derived_function_names
-            }
-        return self._derived_functions
+    # def get_derived_functions(self):
+        
+    #     return self._derived_functions
 
 
     @property
@@ -300,7 +302,7 @@ class SystemModel(KiteKinematics):
     def integrator(self, time_step, inputs = None):
 
         if self.ode is None:
-            self.establish_ode()
+            self._ode = self.ode_function()
         if self.algebraic is None:
             self.establish_algebraic()
 
@@ -325,15 +327,15 @@ class SystemModel(KiteKinematics):
             
 
 
-            p = ca.vertcat(self.input_vector[0:2], self.speed_radial)
+            p = ca.vertcat(self.timeder_angle_course,self.input_depower, self.speed_radial)
 
             x = ca.vertcat(self.state_vector[0:3], self.state_vector[4])
-            ode = ca.vertcat(self.ode[0:3], self.ode[4])
+            ode = ca.vertcat(self._ode[0:3], self._ode[4])
             # p = ca.vertcat(self.timeder_angle_course, self.input_depower, self.speed_radial)
             if self.is_tether_rigid:
-                z = ca.vertcat(self.speed_tangential, self.timeder_angle_course, self.tension_tether_ground)
+                z = ca.vertcat(self.speed_tangential, self.input_steering, self.tension_tether_ground)
             else:
-                z = ca.vertcat(self.speed_tangential, self.timeder_angle_course, self.length_tether)
+                z = ca.vertcat(self.speed_tangential, self.input_steering, self.length_tether)
 
             alg = self.algebraic
             dae = {"x": x, "p": p, "z": z, "p": p, "ode": ode, "alg": alg}
@@ -345,9 +347,6 @@ class SystemModel(KiteKinematics):
                 "max_step_size": 0.01  # Or even 1e-3 if very stiff
             }
             
-            print("x", x)
-            print("p", p)
-            print("z", z)
             # intg = ca.integrator("intg", "idas", dae, opts)
             intg = ca.integrator("intg", "idas", dae, 0, time_step,opts)
             return intg
@@ -357,12 +356,6 @@ class SystemModel(KiteKinematics):
             ode = {"x": self.state_vector, "p": p, "ode": self.ode}
 
             return ca.integrator("intg", "cvodes", ode, 0, time_step)
-
-    def establish_ode(self):
-        """
-        Establish the ordinary differential equations for the kite system.
-        """
-        self.ode = self.ode_function()
 
     def establish_algebraic(self):
         """
@@ -417,7 +410,7 @@ class SystemModel(KiteKinematics):
         return {
             "ipopt": {
                 "print_level": 0,  # Suppresses IPOPT output
-                # 'max_iter': 200,  # Maximum number of iterations
+                'max_iter': 200,  # Maximum number of iterations
                 "sb": "yes",  # Suppresses more detailed solver information
             },
             "print_time": False,  # Disables CasADi's internal timing output

@@ -1,4 +1,5 @@
 from .system import SystemModel, State
+from .timeseries import Cycle
 from .utils import defaults, reference_frames, color_palette, utils
 import logging
 

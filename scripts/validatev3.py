@@ -4,6 +4,7 @@ import numpy as np
 from picawe import SystemModel
 from picawe.system.kite import Kite
 from picawe.system.tether import RigidLumpedTether, FlexibleLumpedTether, RigidLinkTether
+from picawe.environment.Wind import Wind
 import casadi as ca
 import time
 import matplotlib.pyplot as plt
@@ -98,11 +99,14 @@ with open(file_path, "r") as file:
     aero_input = json.load(file)
 
 tether = RigidLumpedTether()
+wind_model = Wind(
+    wind_model="logarithmic",
+    z0=0.01)
 # Example Usage
 kite = Kite(mass_wing=18, area_wing=20, aero_input=aero_input, mass_kcu=28, steering_control="asymmetric")
-kite_model = SystemModel(dof=3, quasi_steady=True, kite=kite, tether=tether)
+kite_model = SystemModel(dof=3, quasi_steady=True, kite=kite, tether=tether, wind_model=wind_model)
 kite2 = Kite(mass_wing=43, area_wing=20, aero_input=aero_input, mass_kcu=0, steering_control="roll")
-kite_model2 = SystemModel(dof=3, quasi_steady=True, kite=kite2, tether=tether)
+kite_model2 = SystemModel(dof=3, quasi_steady=True, kite=kite2, tether=tether, wind_model=wind_model)
 # kite_model2 = kite_model
 
 

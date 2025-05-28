@@ -26,19 +26,12 @@ class Wing:
         )
         # self.aerodynamic_coeffs_function(aero_input)
         self.aero_input = aero_input
-        
-        
+        self._velocity_apparent_wind_wing = None
+        self._angle_of_attack = None  
+        self._lift_coefficient = None
+        self._drag_coefficient = None
 
-    def define_symbolic_variables_wing(self):
-        """
-        Define symbolic variables used in the model.
-        """
-        base_symbolic_variables = {
-            "input_steering": "input_steering",
-            "input_depower": "input_depower",
-        }
-        for var_name in base_symbolic_variables.keys():
-            setattr(self, var_name, ca.SX.sym(var_name))
+
 
     @property
     def aerodynamic_force_coefficients(self):
@@ -108,12 +101,15 @@ class Wing:
 
     @property
     def lift_coefficient(self):
-        return self.aerodynamic_force_coefficients[0]
+        if self._lift_coefficient is None:
+            self._lift_coefficient = self.aerodynamic_force_coefficients[0]
+        return self._lift_coefficient
 
     @property
     def drag_coefficient(self):
-        return self.aerodynamic_force_coefficients[1]
-
+        if self._drag_coefficient is None:
+            self._drag_coefficient = self.aerodynamic_force_coefficients[1]
+        return self._drag_coefficient
     @property
     def aerodynamic_moment_coefficients(self):
         aero_input = self.aero_input
@@ -165,10 +161,9 @@ class Wing:
         Compute the angle of attack based on the air velocity vector and tether angle.
         """
         # print("angle_pitch_aerodynamic:",self.angle_pitch_aerodynamic)
-        
-        return (
-            self.angle_pitch_aerodynamic + self.angle_pitch_depower - self.angle_pitch
-        )
+        if self._angle_of_attack is None:
+            self._angle_of_attack = self.angle_pitch_aerodynamic + self.angle_pitch_depower - self.angle_pitch
+        return self._angle_of_attack
 
     @property
     def velocity_apparent_wind(self):
@@ -180,13 +175,18 @@ class Wing:
         return ca.vertcat(
             self.timeder_angle_roll, self.timeder_angle_pitch, self.timeder_angle_yaw
         )
-
+    
     @property
     def velocity_apparent_wind_wing(self):
-        velocity_wing_rotation = ca.cross(
-            self.velocity_rotation_wing, self.center_gravity_wing_course
-        )
-        return self.velocity_apparent_wind - velocity_wing_rotation
+        if self._velocity_apparent_wind_wing is None:
+            velocity_wing_rotation = ca.cross(
+                self.velocity_rotation_wing, self.center_gravity_wing_course
+            )
+            self._velocity_apparent_wind_wing = (
+                self.velocity_apparent_wind - velocity_wing_rotation
+            )
+        return self._velocity_apparent_wind_wing
+
 
     @property
     def angle_pitch_aerodynamic(self):
@@ -276,6 +276,8 @@ class Kite(Wing):
             cs_terms = aero_input["coefficients"].get("CS", [])
             k_steering = -next((term["coef"] for term in cs_terms if term["var"] == "u_s"), 0.0)
             self.k_steering = k_steering
+        
+        self._acceleration_total = None  # Cache for total acceleration
 
     @property
     def angle_roll(self):
@@ -413,8 +415,9 @@ class Kite(Wing):
 
     @property
     def acceleration_total(self):
-        
-        return self.acceleration_inertial + self.acceleration_external
+        if self._acceleration_total is None:
+            self._acceleration_total = self.acceleration_inertial + self.acceleration_external
+        return self._acceleration_total
 
     @property
     def force_residual(self):
