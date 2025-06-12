@@ -27,14 +27,13 @@ class ReelinPhase(TimeSeries):
 
         self.kite_model = kite_model
 
-    def run_simulation(self, start_state: State, settings: dict = None):
+    def run_simulation(self, start_state, settings):
         """
-        Simulate reeling-out followed by reeling-in transition of the kite.
-        The depower is increased progressively until max during reel-out,
-        and decreased progressively during transition to reel-in.
+        Simulate reeling-in cycle: RORI -> REEL-IN -> RIRO
         """
+
         # --- Configuration ---
-        reeling_acceleration = 2  # [m/s²] acceleration/deceleration of reeling
+        reeling_acceleration = 2  # [m/s²]
         time_step = settings["time_step"]
         max_depower = 1.0
         min_depower = 0.0
@@ -50,10 +49,10 @@ class ReelinPhase(TimeSeries):
                 start_state.distance_radial,
                 start_state.angle_elevation,
                 start_state.angle_azimuth,
-                start_state.angle_course,  # angle_course is the course angle
+                start_state.angle_course,
             ]
             p = [
-                start_state.timeder_angle_course,  # input_steering (assumed constant)
+                start_state.timeder_angle_course,
                 start_state.input_depower,
                 start_state.speed_radial,
             ]
@@ -68,10 +67,10 @@ class ReelinPhase(TimeSeries):
                 start_state.angle_elevation,
                 start_state.angle_azimuth,
                 start_state.speed_tangential,
-                start_state.angle_course,  # angle_course is the course angle
+                start_state.angle_course,
             ]
             p = [
-                start_state.timeder_angle_course,  # input_steering (assumed constant)
+                start_state.timeder_angle_course,
                 start_state.input_depower,
                 start_state.speed_radial,
             ]
@@ -80,226 +79,193 @@ class ReelinPhase(TimeSeries):
                 start_state.input_steering,
                 start_state.tension_tether_ground,
             ]
+
         t = start_state.t
         self.states = []
+        phase = "rori"
 
-        # --- Control flags ---
-        transition = False
-        riro = False  # reel-in roll-out condition met
-        rori = True
-        is_tension_low = False  # flag for low tension condition
         for i in range(10000):
             try:
                 sol = intg(x0=x0, z0=z0, p=p)
             except Exception as e:
-                print("Integration error:", e)
-                print("Iteration:", i)
+                print(f"Integration error at iteration {i}: {e}")
                 break
 
             xf, zf = sol["xf"], sol["zf"]
             x0, z0 = xf, zf
             t += time_step
-            print(z0[1])
-            # --- Assemble full state ---
-            if self.kite_model.quasi_steady:
-                full_state = {
-                    "distance_radial": float(xf[0]),
-                    "angle_elevation": float(xf[1]),
-                    "angle_azimuth": float(xf[2]),
-                    "angle_course": float(xf[3]),
-                    "speed_tangential": float(zf[0]),
-                    "timeder_angle_course": float(p[0]),
-                    "tension_tether_ground": float(zf[2]),
-                    "t": t,
-                    "input_steering": float(zf[1]),
-                    "speed_radial": float(p[2]),
-                    "length_tether": float(xf[0]),
-                    "input_depower": float(p[1]),
-                }
-            else:
-                full_state = {
-                    "distance_radial": float(xf[0]),
-                    "angle_elevation": float(xf[1]),
-                    "angle_azimuth": float(xf[2]),
-                    "speed_tangential": float(xf[3]),
-                    "angle_course": float(xf[4]),
-                    "timeder_angle_course": float(p[0]),
-                    "tension_tether_ground": float(zf[2]),
-                    "t": t,
-                    "input_steering": float(zf[1]),
-                    "speed_radial": float(p[2]),
-                    "length_tether": float(zf[2]),
-                    "input_depower": float(p[1]),
-                    "timeder_speed_tangential": float(zf[0]),
-                }
-            # print("State at iteration", i, ":", full_state)
+
+            full_state = self.assemble_full_state(xf, zf, p, t)
             self.states.append(full_state)
 
-            if not transition and not riro and full_state["angle_course"] > 0.05:
+            if phase == "rori":
+                phase = self.control_rori(full_state, p)
+            elif phase == "reel-in":
+                phase = self.control_reel_in(
+                    full_state,
+                    p,
+                    settings,
+                    time_step,
+                    reeling_acceleration,
+                    depower_rate,
+                    max_depower,
+                    min_depower,
+                )
+            elif phase == "riro":
+                finished = self.control_riro(
+                    full_state,
+                    p,
+                    settings,
+                    start_state,
+                    time_step,
+                    reeling_acceleration,
+                    depower_rate,
+                    min_depower,
+                )
+                if finished:
+                    break
+
+    # ---------- CONTROL FUNCTIONS ----------
+
+    def control_rori(self, full_state, p):
+        if full_state["angle_course"] > 0.05:
+            p[0] = -1
+        elif full_state["angle_course"] < -0.05:
+            p[0] = 1
+        else:
+            p[0] = 0
+            return "reel-in"
+        return "rori"
+
+    def control_reel_in(
+        self,
+        full_state,
+        p,
+        settings,
+        time_step,
+        reeling_acceleration,
+        depower_rate,
+        max_depower,
+        min_depower,
+    ):
+        if full_state["speed_radial"] > settings["control"]["reeling_speed"]:
+            p[2] -= time_step * reeling_acceleration
+
+        if full_state["angle_elevation"] > settings["control"]["min_elevation"]:
+            p[1] = min(max_depower, p[1] + depower_rate * time_step)
+
+        if full_state["angle_elevation"] > settings["control"]["max_elevation"]:
+            print("Transition: angle_elevation max reached.")
+            p[0] = -0.35
+            return "riro"
+
+        if full_state["tension_tether_ground"] < self.min_safe_tension():
+            if p[1] > min_depower:
+                print("Tension too low. Reducing depower.")
+                p[1] = max(min_depower, p[1] - depower_rate * time_step)
+            else:
+                print("Tension too low. Forcing transition.")
+                p[0] = -0.35
+                return "riro"
+
+        if full_state["speed_tangential"] < 0:
+            print("Tangential speed negative. Forcing transition.")
+            p[0] = -0.35
+            return "riro"
+
+        stop_threshold = settings["control"]["length_tether_ro"] + (
+            (settings["control"]["reeling_speed"]) ** 2
+        ) / (2 * reeling_acceleration)
+
+        if full_state["distance_radial"] < stop_threshold:
+            print("Transition: Distance threshold reached.")
+            p[0] = -0.35
+            return "riro"
+
+        return "reel-in"
+
+    def control_riro(
+        self,
+        full_state,
+        p,
+        settings,
+        start_state,
+        time_step,
+        reeling_acceleration,
+        depower_rate,
+        min_depower,
+    ):
+        p[1] = max(min_depower, p[1] - depower_rate * time_step)
+
+        if full_state["angle_elevation"] < settings["control"]["riro_elevation"] + 0.13:
+            if self.wrap_to_pi(full_state["angle_course"]) > np.pi / 2:
                 p[0] = -1
-            elif not transition and not riro and full_state["angle_course"] < -0.05:
-                p[0] = 1
-            elif not transition and not riro:
+                print("Course angle too high. Adjusting course.")
+            else:
                 p[0] = 0
-                rori = False  # reset rori when transition or riro is active
-
-            # --- Exit condition ---
+            p[2] = min(
+                start_state.speed_radial, p[2] + time_step * reeling_acceleration
+            )
+        else:
+            if full_state["angle_course"] < -np.pi:
+                p[0] = -0.5
             if (
-                transition
-                and full_state["angle_elevation"]
-                < settings["control"]["riro_elevation"] + 0.13
-                and not riro
-            ):
-                self.states.pop()
-                # x0[3] = np.pi/2
-                if self.kite_model.quasi_steady:
-                    x0[1] = self.states[-1]["angle_elevation"]
-                    z0[0] = 40
-                    z0[2] = 1e5
-
-                riro = True
-                # Erase last state to avoid transition loop
-
-                print("Transition to riro")
-
-            if (
-                riro
-                and full_state["angle_azimuth"] > settings["control"]["riro_azimuth"]
-            ):
-                print("Finished reeling-in phase.")
-                break
-
-            # --- Progressive depower control ---
-            if (
-                not transition
-                and p[1] < max_depower
-                and not is_tension_low
+                full_state["speed_radial"] < 0
+                and full_state["distance_radial"]
+                < settings["control"]["length_tether_ro"]
                 and full_state["angle_elevation"] > settings["control"]["min_elevation"]
             ):
-                p[1] = min(max_depower, p[1] + depower_rate * time_step)
-
-            if transition and p[1] > min_depower:
-                p[1] = max(min_depower, p[1] - depower_rate * time_step)
-
-            # --- Start transition at high elevation ---
-            if (
-                not transition
-                and full_state["angle_elevation"] > settings["control"]["max_elevation"]
-                and not riro
+                p[2] += time_step * reeling_acceleration
+            elif (
+                full_state["distance_radial"] < settings["control"]["length_tether_ro"]
             ):
-                print("Transition: angle_elevation max reached.")
-                if self.kite_model.quasi_steady:
-                    x0[3] = np.pi
-                    z0[0] = 100
-                    z0[2] = 1e8
-                else:
-                    x0[4] = np.pi
-                    # x[3] += 2 #A
-                transition = True
+                p[2] = 0
 
-            # --- Maintain course and course rate ---
-            if riro:
-                if full_state["angle_course"] > np.pi / 2:
-                    # x0[3] += -1.5* time_step # keep course at pi/2
-                    p[0] = -1
-                    # z0[0] = 40
-                    # z0[2] = 1e5
-                    print("Course angle too high. Adjusting course.")
-                else:
-                    # x0[4] = np.pi / 2  # keep course at pi/2
-                    p[0] = 0
+        if full_state["angle_azimuth"] > settings["control"]["riro_azimuth"]:
+            print("Finished reeling-in phase.")
+            return True
+        return False
 
-                # x0[3] = np.pi/2  # keep course at pi/2
-                p[2] = min(
-                    start_state.speed_radial, p[2] + time_step * reeling_acceleration
-                )
-            # elif not rori:
-            # x0[3] = np.pi if transition else 0
+    # ---------- HELPER FUNCTIONS ----------
 
-            # z0[1] = 0
+    def assemble_full_state(self, xf, zf, p, t):
+        if self.kite_model.quasi_steady:
+            return {
+                "distance_radial": float(xf[0]),
+                "angle_elevation": float(xf[1]),
+                "angle_azimuth": float(xf[2]),
+                "angle_course": float(xf[3]),
+                "speed_tangential": float(zf[0]),
+                "timeder_angle_course": float(p[0]),
+                "tension_tether_ground": float(zf[2]),
+                "t": t,
+                "input_steering": float(zf[1]),
+                "speed_radial": float(p[2]),
+                "length_tether": float(xf[0]),
+                "input_depower": float(p[1]),
+            }
+        else:
+            return {
+                "distance_radial": float(xf[0]),
+                "angle_elevation": float(xf[1]),
+                "angle_azimuth": float(xf[2]),
+                "speed_tangential": float(xf[3]),
+                "angle_course": float(xf[4]),
+                "timeder_angle_course": float(p[0]),
+                "tension_tether_ground": float(zf[2]),
+                "t": t,
+                "input_steering": float(zf[1]),
+                "speed_radial": float(p[2]),
+                "length_tether": float(zf[2]),
+                "input_depower": float(p[1]),
+                "timeder_speed_tangential": float(zf[0]),
+            }
 
-            # --- Stop reeling out when speed exceeds control threshold ---
-            if (
-                not transition
-                and not rori
-                and not riro
-                and full_state["speed_radial"] > settings["control"]["reeling_speed"]
-            ):
-                p[2] -= time_step * reeling_acceleration  # decelerate
+    def min_safe_tension(self):
+        return 1.05 * (self.kite_model.mass_wing + self.kite_model.mass_kcu) * 9.81
 
-            # --- Ensure tension is above safe minimum ---
-            min_tension = (
-                1.05 * (self.kite_model.mass_wing + self.kite_model.mass_kcu) * 9.81
-            )
-            if not transition and full_state["tension_tether_ground"] < min_tension:
-                if p[1] > min_depower:
-                    print("Tension too low. Reducing depower.")
-                    p[1] = max(min_depower, p[1] - depower_rate * time_step)
-                    is_tension_low = True
-                else:
-                    print("Tension too low. Forcing transition.")
-                    if self.kite_model.quasi_steady:
-                        x0[3] = np.pi
-                        z0[0] = 100
-                        z0[2] = 1e8
-                    else:
-                        x0[4] = np.pi
-
-                    transition = True
-
-            # --- Handle tangential stall (negative v_tau) ---
-            if not transition and full_state["speed_tangential"] < 0 and not riro:
-                print("Tangential speed negative. Forcing transition.")
-                x0[2] = 0  # reset angle_azimuth
-                x0[3] = np.pi
-                z0[0] = 100
-                z0[1] = 0
-                p[0] = 0
-                z0[2] = 1e8
-                transition = True
-
-            # --- Check if close to switching to reel-in based on kinematic constraint ---
-            stop_threshold = settings["control"]["length_tether_ro"] + (
-                (settings["control"]["reeling_speed"]) ** 2
-            ) / (2 * reeling_acceleration)
-            if (
-                not transition
-                and full_state["distance_radial"] < stop_threshold
-                and not riro
-            ):
-                print("Transition: Distance threshold reached.")
-                if self.kite_model.quasi_steady:
-                    x0[3] = np.pi
-                    z0[0] = 50
-                    z0[2] = 1e5
-                else:
-                    p[0] = -0.35
-                transition = True
-
-            # --- Transition: reel-in until target length reached ---
-            if transition and not riro:
-                print(
-                    full_state["angle_course"] * 180 / np.pi,
-                    full_state["angle_elevation"] * 180 / np.pi,
-                    full_state["distance_radial"],
-                )
-                if full_state["angle_course"] < -np.pi:
-                    # TODO: Improve logic behind controlling the kite towards the initial position of reelout
-                    p[0] = -0.5
-                if (
-                    full_state["speed_radial"] < 0
-                    and full_state["distance_radial"]
-                    < settings["control"]["length_tether_ro"]
-                    and full_state["angle_elevation"]
-                    > settings["control"]["min_elevation"]
-                ):
-                    p[2] += time_step * reeling_acceleration
-                    # p[0] = -1.5
-                elif (
-                    full_state["distance_radial"]
-                    < settings["control"]["length_tether_ro"]
-                ):
-                    p[2] = 0
+    def wrap_to_pi(self, angle):
+        return (angle + np.pi) % (2 * np.pi) - np.pi
 
     def integrator(self, time_step, inputs=None):
         self.kite_model.timeder_speed_radial = 0
@@ -384,3 +350,19 @@ class ReelinPhase(TimeSeries):
             # intg = ca.integrator("intg", "idas", dae, opts)
             intg = ca.integrator("intg", "idas", dae, 0, time_step, opts)
             return intg
+
+    def compute_course_target(self, azimuth, elevation, az_target, el_target):
+        delta_chi = self.wrap_to_pi(az_target - azimuth)
+
+        y = np.sin(delta_chi) * np.cos(el_target)
+        x = np.cos(elevation) * np.sin(el_target) - np.sin(elevation) * np.cos(
+            el_target
+        ) * np.cos(delta_chi)
+
+        psi_target = np.arctan2(y, x)
+        return self.wrap_to_pi(psi_target)
+
+
+def wrap_to_pi(angle):
+    """Wrap angle to [-pi, pi]"""
+    return (angle + np.pi) % (2 * np.pi) - np.pi
