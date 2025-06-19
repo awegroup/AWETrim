@@ -27,11 +27,9 @@ class Wing:
         # self.aerodynamic_coeffs_function(aero_input)
         self.aero_input = aero_input
         self._velocity_apparent_wind_wing = None
-        self._angle_of_attack = None  
+        self._angle_of_attack = None
         self._lift_coefficient = None
         self._drag_coefficient = None
-
-
 
     @property
     def aerodynamic_force_coefficients(self):
@@ -57,7 +55,8 @@ class Wing:
             CD0 = aero_input["params"]["CD0"]
             C_L = 2 * ca.pi * variables["alpha"]
             C_D = C_L**2 / (ca.pi * e * AR) + CD0
-            C_S = 0
+            C_L = C_L * ca.cos(self.input_steering * self.k_steering)
+            C_S = C_L * ca.sin(self.input_steering * self.k_steering)
             return C_L, C_D, C_S
 
         # Coeff-based model
@@ -80,24 +79,25 @@ class Wing:
                             C_D += coef * ca.fabs(value)
                         elif coeff_key == "CS":
                             C_S += coef * value
+                    # alpha_min = 0 / 180 * ca.pi
+                    # alpha_max = 15 / 180 * ca.pi
+                    # C_L = ca.if_else(
+                    #     variables["alpha"] <= alpha_max,
+                    #     C_L,
+                    #     1.2,
+                    # )
+            C_L = C_L * ca.cos(self.input_steering * self.k_steering)
+            C_S = C_L * ca.sin(self.input_steering * self.k_steering)
             return C_L, C_D, C_S
 
         else:
-            raise ValueError("Invalid aerodynamic model type. Choose 'inviscid' or 'coeffs'.")
-                # elif coeff_type == "k_cs":
-                    # if self.steering_control == "asymmetric":
-                    #     C_L = C_L*ca.cos(aero_input["dependencies"]["u_s"]["k_cs"]*self.input_steering)
-                    #     C_S = C_L*ca.sin(aero_input["dependencies"]["u_s"]["k_cs"]*self.input_steering)
-
-        
-        # alpha_min = np.radians(-5)
-        # alpha_max = np.radians(20)
-        # C_L = ca.if_else(
-        #     ca.logic_and(variables["alpha"] >= alpha_min, variables["alpha"] <= alpha_max), C_L, 0
-        # )
-        # C_D = ca.if_else(
-        #     ca.logic_and(variables["alpha"] >= alpha_min, variables["alpha"] <= alpha_max), C_D, 1
-        # )
+            raise ValueError(
+                "Invalid aerodynamic model type. Choose 'inviscid' or 'coeffs'."
+            )
+            # elif coeff_type == "k_cs":
+            # if self.steering_control == "asymmetric":
+            #     C_L = C_L*ca.cos(aero_input["dependencies"]["u_s"]["k_cs"]*self.input_steering)
+            #     C_S = C_L*ca.sin(aero_input["dependencies"]["u_s"]["k_cs"]*self.input_steering)
 
     @property
     def lift_coefficient(self):
@@ -110,6 +110,7 @@ class Wing:
         if self._drag_coefficient is None:
             self._drag_coefficient = self.aerodynamic_force_coefficients[1]
         return self._drag_coefficient
+
     @property
     def aerodynamic_moment_coefficients(self):
         aero_input = self.aero_input
@@ -120,8 +121,7 @@ class Wing:
             "u_s": self.input_steering,
             "u_p": self.input_depower,
             # Dynamically add other variables as dependencies
-            "yaw_rate": self.timeder_angle_yaw
-            / ca.norm_2(self.velocity_apparent_wind),
+            "yaw_rate": self.timeder_angle_yaw / ca.norm_2(self.velocity_apparent_wind),
             "sideslip": self.angle_sideslip,
         }
 
@@ -162,12 +162,17 @@ class Wing:
         """
         # print("angle_pitch_aerodynamic:",self.angle_pitch_aerodynamic)
         if self._angle_of_attack is None:
-            self._angle_of_attack = self.angle_pitch_aerodynamic + self.angle_pitch_depower - self.angle_pitch
+            self._angle_of_attack = (
+                self.angle_pitch_aerodynamic
+                + self.angle_pitch_depower
+                - self.angle_pitch
+            )
         return self._angle_of_attack
 
     @property
     def velocity_apparent_wind(self):
         # print("velocity_apparent_wind:", self.velocity_kite)
+        # print(self.wind)
         return self.wind.velocity_wind(self) - self.velocity_kite
 
     @property
@@ -175,7 +180,7 @@ class Wing:
         return ca.vertcat(
             self.timeder_angle_roll, self.timeder_angle_pitch, self.timeder_angle_yaw
         )
-    
+
     @property
     def velocity_apparent_wind_wing(self):
         if self._velocity_apparent_wind_wing is None:
@@ -186,7 +191,6 @@ class Wing:
                 self.velocity_apparent_wind - velocity_wing_rotation
             )
         return self._velocity_apparent_wind_wing
-
 
     @property
     def angle_pitch_aerodynamic(self):
@@ -219,7 +223,9 @@ class Wing:
         S = 0.5 * self.rho * V_a_sq * self.area_wing * CS
 
         R = transformation_C_from_A(
-            self.angle_pitch_aerodynamic, self.angle_yaw_aerodynamic, self.angle_roll_aerodynamic+self.angle_roll
+            self.angle_pitch_aerodynamic,
+            self.angle_yaw_aerodynamic,
+            0,
         )
 
         aero_forces = R @ ca.vertcat(-D, S, L)
@@ -272,11 +278,16 @@ class Kite(Wing):
         self.acceleration_angle_yaw = ca.SX.sym("acceleration_angle_yaw")
         self.acceleration_angle_pitch = ca.SX.sym("acceleration_angle_pitch")
         self.acceleration_angle_roll = ca.SX.sym("acceleration_angle_roll")
+        # print(aero_input)
         if self.steering_control == "asymmetric":
             cs_terms = aero_input["coefficients"].get("CS", [])
-            k_steering = -next((term["coef"] for term in cs_terms if term["var"] == "u_s"), 0.0)
+            k_steering = -next(
+                (term["coef"] for term in cs_terms if term["var"] == "u_s"), 0.0
+            )
             self.k_steering = k_steering
-        
+        else:
+            self.k_steering = 1.0
+
         self._acceleration_total = None  # Cache for total acceleration
 
     @property
@@ -288,10 +299,8 @@ class Kite(Wing):
 
     @property
     def angle_roll_aerodynamic(self):
-        if self.steering_control == "roll":
-            return self.input_steering
-        elif self.steering_control == "asymmetric":
-            return self.input_steering*self.k_steering
+        return self.input_steering * self.k_steering
+
     @property
     def angle_pitch(self):
         if self.dof == 6:
@@ -383,24 +392,19 @@ class Kite(Wing):
 
     @property
     def force_external(self):
-        return (
-            self.force_aerodynamic
-            + self.force_gravity
-            + self.force_tether_at_kite
-        )
-    
+        return self.force_aerodynamic + self.force_gravity + self.force_tether_at_kite
+
     @property
     def acceleration_external(self):
-        acc = self.force_external/(self.mass_wing + self.mass_kcu)
+        acc = self.force_external / (self.mass_wing + self.mass_kcu)
         vtau = self.speed_tangential
-        
+
         acc[1] = ca.if_else(
             vtau > 1e-3,
-            -acc[1]/vtau,
-            -ca.sign(acc[1]) * 1e-1,
+            -acc[1] / vtau,
+            -ca.sign(acc[1]) * 1,
         )
         return acc
-        
 
     @property
     def acceleration_inertial(self):
@@ -416,7 +420,9 @@ class Kite(Wing):
     @property
     def acceleration_total(self):
         if self._acceleration_total is None:
-            self._acceleration_total = self.acceleration_inertial + self.acceleration_external
+            self._acceleration_total = (
+                self.acceleration_inertial + self.acceleration_external
+            )
         return self._acceleration_total
 
     @property

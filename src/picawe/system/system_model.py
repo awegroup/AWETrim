@@ -11,7 +11,6 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-
 class SystemModel(KiteKinematics):
 
     def __init__(
@@ -20,7 +19,7 @@ class SystemModel(KiteKinematics):
         quasi_steady=False,
         wind_model=None,
         tether=None,
-        kite = None,
+        kite=None,
     ):
         """
         Initialize the kite system with its parameters.
@@ -30,7 +29,7 @@ class SystemModel(KiteKinematics):
         self.define_wind_model(wind_model)
         self.define_kite_model(kite)
         self.define_tether_model(tether)
-        
+
         # self.steering_control = self.steering_control
 
         if self.steering_control not in ["asymmetric", "roll"]:
@@ -44,8 +43,6 @@ class SystemModel(KiteKinematics):
             self.acceleration_angle_roll = 0
             self.acceleration_angle_yaw = 0
 
-
-
         if quasi_steady:
             self.timeder_angle_roll = 0
             self.timeder_angle_pitch = 0
@@ -56,6 +53,8 @@ class SystemModel(KiteKinematics):
             self.timeder_length_tether = self.speed_radial
             self.timeder_speed_tangential = 0
             self.timeder_speed_radial = 0
+        else:
+            self.timeder_length_tether = ca.SX.sym("timeder_length_tether")
 
         self.dof = dof
         self.quasi_steady = quasi_steady
@@ -65,33 +64,43 @@ class SystemModel(KiteKinematics):
         self.ode = None
         self.algebraic = None
         if self.is_tether_rigid:
-            self.default_unknown_vars = ["speed_tangential", "timeder_angle_course", "tension_tether_ground"]
+            self.default_unknown_vars = [
+                "speed_tangential",
+                "timeder_angle_course",
+                "tension_tether_ground",
+            ]
         else:
-            self.default_unknown_vars = ["speed_tangential", "timeder_angle_course", "length_tether"]
+            self.default_unknown_vars = [
+                "speed_tangential",
+                "timeder_angle_course",
+                "length_tether",
+            ]
         self.derived_function_names = [
             "angle_of_attack",
             "tension_tether_ground",
             "lift_coefficient",
-            "drag_coefficient"
+            "drag_coefficient",
         ]
         self._derived_functions = None
         self_ode = None
 
-
     def define_kite_model(self, kite):
         if kite is None:
-            kite = Kite(mass_wing= 20,
-                        area_wing= 20,
-                        aero_input=   {
-                        "model": "inviscid",
-                        "params": {
-                            "CD0": 0.05,
-                            "aspect_ratio": 10,
-                            "oswald_efficiency": 1,
-                            "angle_pitch_depower_0": 0,
-                        }}) 
+            kite = Kite(
+                mass_wing=20,
+                area_wing=20,
+                aero_input={
+                    "model": "inviscid",
+                    "params": {
+                        "CD0": 0.05,
+                        "aspect_ratio": 10,
+                        "oswald_efficiency": 1,
+                        "angle_pitch_depower_0": 0,
+                    },
+                },
+            )
             print("Kite model not defined. Using default kite model.")
-                
+
         # Inject all tether attributes into SystemModel so they can be accessed directly
         for attr_name, attr_value in vars(kite).items():
             setattr(self, attr_name, attr_value)
@@ -121,7 +130,7 @@ class SystemModel(KiteKinematics):
         else:
             self.wind = wind_model
 
-    def ode_function(self):
+    def establish_ode_function(self):
         dot_r = self.speed_radial
         dot_beta = self.timeder_angle_elevation
         dot_theta = self.timeder_angle_azimuth
@@ -140,7 +149,7 @@ class SystemModel(KiteKinematics):
                 self.acceleration_angle_yaw,
             )
             ode = ca.vertcat(ode, ode_add)
-        return ode
+        self._ode = ode
 
     def algebraic_function(self):
         if self.dof == 6:
@@ -176,7 +185,7 @@ class SystemModel(KiteKinematics):
             if var.name() not in unknown_vars:
                 inputs.append(var)
         inputs_name = [name.name() for name in inputs]
-        
+
         # NLP problem definition
         nlp = {
             "x": ca.vertcat(*x),
@@ -192,7 +201,7 @@ class SystemModel(KiteKinematics):
         solver = ca.nlpsol("solver", "ipopt", nlp, solver_options)
 
         return solver, inputs_name, unknown_vars
-    
+
     def solve_quasi_steady(self, state_obj, unknown_vars=None):
         if unknown_vars is None:
             unknown_vars = self.default_unknown_vars
@@ -200,14 +209,16 @@ class SystemModel(KiteKinematics):
         state_dict = state_obj.to_dict()
 
         if self._qs_solver is None or self._qs_vars != unknown_vars:
-            self._qs_solver, self._qs_inputs, self._qs_vars = self.setup_qs_solver(unknown_vars)
+            self._qs_solver, self._qs_inputs, self._qs_vars = self.setup_qs_solver(
+                unknown_vars
+            )
 
         p = [state_dict[name] for name in self._qs_inputs]
         lbx, ubx, lbg, ubg = self.get_boundaries(state_dict, unknown_vars)
         x0 = [state_dict.get(var, 1.0) for var in unknown_vars]
         # Solve the quasi-steady state equations
         sol = self._qs_solver(x0=x0, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
-        
+
         if np.linalg.norm(sol["g"]) > 1:
             # logger.warning("Initial guess: %s", x0)
             # logger.warning("lbx: %s", lbx)
@@ -216,7 +227,10 @@ class SystemModel(KiteKinematics):
             # logger.warning("Quasi-steady solver did not converge. Residual norm: %.4f", np.linalg.norm(sol["g"]))
             # logger.warning("Solver output: %s", sol)
             # raise RuntimeError("Quasi-steady solver did not converge.")
-            logger.warning("Quasi-steady solver did not converge. Residual norm: %.4f", np.linalg.norm(sol["g"]))
+            logger.warning(
+                "Quasi-steady solver did not converge. Residual norm: %.4f",
+                np.linalg.norm(sol["g"]),
+            )
             return None
 
         # Update with solved variables
@@ -225,7 +239,8 @@ class SystemModel(KiteKinematics):
 
         if self._derived_functions is None:
             self._derived_functions = {
-                name: self.extract_function(name) for name in self.derived_function_names
+                name: self.extract_function(name)
+                for name in self.derived_function_names
             }
         for name, func in self._derived_functions.items():
             args = [state_dict[n] for n in func.name_in()]
@@ -233,13 +248,17 @@ class SystemModel(KiteKinematics):
 
         return State(**state_dict)
 
-    def get_boundaries(self, current_state,unkown_vars = ["speed_tangential", "timeder_angle_course", "length_tether"]):
+    def get_boundaries(
+        self,
+        current_state,
+        unkown_vars=["speed_tangential", "timeder_angle_course", "length_tether"],
+    ):
 
         lbx = []
         ubx = []
         for var in unkown_vars:
             if var == "length_tether":
-                lbx.append(current_state["distance_radial"]*0.9)
+                lbx.append(current_state["distance_radial"] * 0.9)
                 ubx.append(current_state["distance_radial"])
             else:
                 lbx.append(DEFAULT_BOUNDS[var][0])
@@ -252,9 +271,8 @@ class SystemModel(KiteKinematics):
         return lbx, ubx, lbg, ubg
 
     # def get_derived_functions(self):
-        
-    #     return self._derived_functions
 
+    #     return self._derived_functions
 
     @property
     def mechanical_power(self):
@@ -286,7 +304,6 @@ class SystemModel(KiteKinematics):
                 self.angle_course,
                 self.speed_radial,
                 self.length_tether,
-
             )
 
     @property
@@ -299,10 +316,11 @@ class SystemModel(KiteKinematics):
             self.input_depower,
             self.timeder_length_tether,
         )
-    def integrator(self, time_step, inputs = None):
+
+    def integrator(self, time_step, inputs=None):
 
         if self.ode is None:
-            self._ode = self.ode_function()
+            self.establish_ode_function()
         if self.algebraic is None:
             self.establish_algebraic()
 
@@ -324,18 +342,24 @@ class SystemModel(KiteKinematics):
             )
 
         if self.quasi_steady:
-            
 
-
-            p = ca.vertcat(self.timeder_angle_course,self.input_depower, self.speed_radial)
+            p = ca.vertcat(
+                self.timeder_angle_course, self.input_depower, self.speed_radial
+            )
 
             x = ca.vertcat(self.state_vector[0:3], self.state_vector[4])
             ode = ca.vertcat(self._ode[0:3], self._ode[4])
             # p = ca.vertcat(self.timeder_angle_course, self.input_depower, self.speed_radial)
             if self.is_tether_rigid:
-                z = ca.vertcat(self.speed_tangential, self.input_steering, self.tension_tether_ground)
+                z = ca.vertcat(
+                    self.speed_tangential,
+                    self.input_steering,
+                    self.tension_tether_ground,
+                )
             else:
-                z = ca.vertcat(self.speed_tangential, self.input_steering, self.length_tether)
+                z = ca.vertcat(
+                    self.speed_tangential, self.input_steering, self.length_tether
+                )
 
             alg = self.algebraic
             dae = {"x": x, "p": p, "z": z, "p": p, "ode": ode, "alg": alg}
@@ -344,13 +368,13 @@ class SystemModel(KiteKinematics):
                 "abstol": 1e-6,
                 "reltol": 1e-6,
                 "max_num_steps": 20000,
-                "max_step_size": 0.01  # Or even 1e-3 if very stiff
+                "max_step_size": 0.01,  # Or even 1e-3 if very stiff
             }
-            
+
             # intg = ca.integrator("intg", "idas", dae, opts)
-            intg = ca.integrator("intg", "idas", dae, 0, time_step,opts)
+            intg = ca.integrator("intg", "idas", dae, 0, time_step, opts)
             return intg
-            
+
         else:
             p = self.input_vector
             ode = {"x": self.state_vector, "p": p, "ode": self.ode}
@@ -410,12 +434,12 @@ class SystemModel(KiteKinematics):
         return {
             "ipopt": {
                 "print_level": 0,  # Suppresses IPOPT output
-                'max_iter': 200,  # Maximum number of iterations
+                "max_iter": 200,  # Maximum number of iterations
                 "sb": "yes",  # Suppresses more detailed solver information
             },
             "print_time": False,  # Disables CasADi's internal timing output
         }
-    
+
     def reset_solver(self):
         """
         Reset the solver to its initial state.
@@ -428,6 +452,7 @@ class SystemModel(KiteKinematics):
 
 from dataclasses import dataclass, asdict, field
 from typing import Optional
+
 
 @dataclass
 class State:
@@ -442,6 +467,7 @@ class State:
     timeder_angle_course: float = None
     length_tether: float = None
     tension_tether_ground: float = None
+    timeder_speed_tangential: Optional[float] = None
     # Optional inputs
     angle_roll: Optional[float] = None
     angle_pitch: Optional[float] = None
@@ -449,7 +475,7 @@ class State:
 
     # Optional outputs
     angle_of_attack: Optional[float] = None
-    
+
     lift_coefficient: Optional[float] = None
     drag_coefficient: Optional[float] = None
 
