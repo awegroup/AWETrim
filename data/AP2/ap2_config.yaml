@@ -1,0 +1,14 @@
+year: '2019'                       # Year of the flight
+month: '10'                         # Month of the flight
+day: '08'                           # Day of the flight
+
+kite:
+  model_name: 'v3'                # Kite model
+  mass: 15                        # Mass of the kite in kg
+  area: 3                    # Area of the kite in m^2
+  span: 5.5                      # Span of the kite in m
+
+tether:
+  material_name: 'Dyneema-SK78'   # Material name of the tether
+  diameter: 0.01               # Diameter of the tether in m
+  n_elements: 5                # Number of tether elements

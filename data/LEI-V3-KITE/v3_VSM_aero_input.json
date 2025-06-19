@@ -1,10 +1,10 @@
 {
   "model": "coeffs",
   "params": {
-    "CD0": 0.136,
+    "CD0": 0.04601264643797974,
     "CL0": 0.16934083409422257,
-    "angle_pitch_depower_0": -0.16,
-    "delta_pitch_depower": -0.35
+    "angle_pitch_depower_0": -0.04,
+    "delta_pitch_depower": -0.32
   },
   "coefficients": {
     "CL": [
@@ -43,20 +43,20 @@
       {
         "var": "u_s",
         "power": 1,
-        "coef": 0.044
+        "coef": 0.0
       },
       {
         "var": "u_p",
         "power": 1,
-        "coef": 0.008
+        "coef": -0.04
       }
     ],
     "CS": [
       {
         "var": "u_s",
         "power": 1,
-        "coef": 0.5
+        "coef": -0.25
       }
-    ]	
+    ]
   }
 }

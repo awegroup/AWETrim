@@ -85,6 +85,8 @@ dependencies = [
   "pandas>=1.5.3", 
   "matplotlib>=3.7.1",
   "casadi",
+  "h5py",
+  "scipy",
 ]
 
 # You can define additional groups of dependencies here (e.g., development dependencies).

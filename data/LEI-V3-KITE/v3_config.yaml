@@ -1,0 +1,23 @@
+year: '2019'                       # Year of the flight
+month: '10'                         # Month of the flight
+day: '08'                           # Day of the flight
+
+kite:
+  model_name: 'v3'                # Kite model
+  mass: 15                        # Mass of the kite in kg
+  area: 19.75                    # Area of the kite in m^2
+  span: 10                      # Span of the kite in m
+  sensor_ids:                     # Sensor IDs of the kite
+    - 0
+    - 1
+kcu:
+  length: 1                     # Length of the KCU in m
+  diameter: 0.48                      # Width of the KCU in m
+  mass: 27.6                       # Mass of the KCU in kg
+  distance_kcu_kite: 11.5        # Distance from the KCU cg to the kite cg in m
+  total_length_bridle_lines: 96  # Total length of the bridle lines in m
+  diameter_bridle_lines: 0.0025    # Diameter of the bridle lines in m
+tether:
+  material_name: 'Dyneema-SK78'   # Material name of the tether
+  diameter: 0.01               # Diameter of the tether in m
+  n_elements: 5                # Number of tether elements
