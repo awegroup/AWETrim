@@ -100,7 +100,14 @@ class ReelinPhase(TimeSeries):
 
             if phase == "rori":
                 phase = self.control_rori(full_state, p)
+                if phase == "reel-in":
+                    p[2] -= time_step * reeling_acceleration
+                    if self.kite_model.quasi_steady:
+                        z0[0] = 100
+                        z0[2] = 1e6
+                        x0[3] = 0
             elif phase == "reel-in":
+                print("Reel-in phase control.")
                 phase = self.control_reel_in(
                     full_state,
                     p,
@@ -122,6 +129,7 @@ class ReelinPhase(TimeSeries):
                     depower_rate,
                     min_depower,
                 )
+                # z0[1] = -0.
                 if finished:
                     break
 
@@ -134,6 +142,8 @@ class ReelinPhase(TimeSeries):
             p[0] = 1
         else:
             p[0] = 0
+            print("Transition: angle_course zeroed.")
+
             return "reel-in"
         return "rori"
 
@@ -148,11 +158,10 @@ class ReelinPhase(TimeSeries):
         max_depower,
         min_depower,
     ):
+        print("Reeling-in phase control.")
+        is_tension_low = False
         if full_state["speed_radial"] > settings["control"]["reeling_speed"]:
             p[2] -= time_step * reeling_acceleration
-
-        if full_state["angle_elevation"] > settings["control"]["min_elevation"]:
-            p[1] = min(max_depower, p[1] + depower_rate * time_step)
 
         if full_state["angle_elevation"] > settings["control"]["max_elevation"]:
             print("Transition: angle_elevation max reached.")
@@ -163,10 +172,14 @@ class ReelinPhase(TimeSeries):
             if p[1] > min_depower:
                 print("Tension too low. Reducing depower.")
                 p[1] = max(min_depower, p[1] - depower_rate * time_step)
+                is_tension_low = True
             else:
                 print("Tension too low. Forcing transition.")
                 p[0] = -0.35
                 return "riro"
+
+        if not is_tension_low:
+            p[1] = min(max_depower, p[1] + depower_rate * time_step)
 
         if full_state["speed_tangential"] < 0:
             print("Tangential speed negative. Forcing transition.")
@@ -196,19 +209,26 @@ class ReelinPhase(TimeSeries):
         min_depower,
     ):
         p[1] = max(min_depower, p[1] - depower_rate * time_step)
+        steering_gain = 2
+        max_steering = 1
+        print(p[0])
+        print(full_state["input_steering"])
+        if full_state["angle_elevation"] < settings["control"]["riro_elevation"]:
+            # Stage 2: apply spherical targeting only once properly aligned
+            psi_target = self.compute_course_target(
+                full_state["angle_azimuth"],
+                full_state["angle_elevation"],
+                settings["control"]["riro_azimuth"],
+                settings["control"]["riro_elevation"],
+            )
 
-        if full_state["angle_elevation"] < settings["control"]["riro_elevation"] + 0.13:
-            if self.wrap_to_pi(full_state["angle_course"]) > np.pi / 2:
-                p[0] = -1
-                print("Course angle too high. Adjusting course.")
-            else:
-                p[0] = 0
+            course_error = self.wrap_to_pi(psi_target - full_state["angle_course"])
+            p[0] = np.clip(course_error * steering_gain, -max_steering, max_steering)
             p[2] = min(
                 start_state.speed_radial, p[2] + time_step * reeling_acceleration
             )
         else:
-            if full_state["angle_course"] < -np.pi:
-                p[0] = -0.5
+            p[0] = max(-max_steering, p[0] - 0.1 * time_step)
             if (
                 full_state["speed_radial"] < 0
                 and full_state["distance_radial"]
