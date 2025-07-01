@@ -162,11 +162,8 @@ flight_data.kite_azimuth = (
 )  # - 0.1  # Calculate misalignment!!! at each cycle
 
 # print(kite_model.tension_kite)
-solve_func, inputs_name, _ = kite_model.setup_qs_solver(
-    unknown_vars, solver_options=solver_options
-)
+kite_model.setup_qs_solver(unknown_vars, solver_options=solver_options)
 
-print(solve_func)
 vtau = []
 cl_func = kite_model.extract_function("lift_coefficient")
 cd_func = kite_model.extract_function("drag_coefficient")
@@ -215,14 +212,14 @@ for i, row in flight_data.iterrows():
         "input_depower": row.up,
     }
 
-    p = [current_state[name] for name in inputs_name]
+    p = [current_state[name] for name in kite_model._qs_inputs]
     # print(p)
     lbx, ubx, lbg, ubg = kite_model.get_boundaries(current_state, unknown_vars)
 
     # qs_guess[0] = 1e5
     # qs_guess[2] = 20
     # print(lbx,ubx,lbg,ubg)
-    sol = solve_func(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+    sol = kite_model._qs_solver(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
     if np.linalg.norm(sol["g"]) < 0.1:
         qs_guess = sol["x"]

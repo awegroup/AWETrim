@@ -12,7 +12,7 @@ from picawe.system.kite import Kite
 # -----------------------------------------------
 
 # Define aerodynamic input
-file_path = "./data/v3_aero_input.json"
+file_path = "./data/LEI-V3-KITE/v3_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
@@ -20,11 +20,16 @@ with open(file_path, "r") as file:
 # Define the system and aerodynamic model
 # -----------------------------------------------
 
-kite = Kite(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, steering_control="asymmetric")
+kite = Kite(
+    mass_wing=15,
+    area_wing=20,
+    aero_input=aero_input,
+    mass_kcu=25,
+    steering_control="asymmetric",
+)
 kite_model = SystemModel(
     dof=3,
     quasi_steady=True,
-    wind_model="uniform",
     kite=kite,
 )
 
@@ -48,7 +53,7 @@ current_state = {
     "speed_radial": -4,
     "speed_tangential": 15,
     "input_depower": 1.0,
-    "input_steering": 0
+    "input_steering": 0,
 }
 solver_options = {
     "ipopt": {"print_level": 0, "sb": "yes"},
@@ -56,20 +61,19 @@ solver_options = {
 }
 time_step = 0.01
 time = np.arange(0, 100, time_step)
-qs_guess = [40,0, 399]
+qs_guess = [40, 0, 399]
 states = []
 import time as timet
-start_time = timet.time()
-solve_qs, inputs_name,_ = kite_model.setup_qs_solver(
-        unknown_vars, solver_options=solver_options
-    )
-# Solve quasi-steady state
-p = [current_state[name] for name in inputs_name]
 
-lbx,ubx,lbg,ubg = kite_model.get_boundaries(current_state,unknown_vars)
-sol = solve_qs(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
-z0 = sol['x']
-kite_model.establish_ode()
+start_time = timet.time()
+kite_model.setup_qs_solver(unknown_vars, solver_options=solver_options)
+# Solve quasi-steady state
+p = [current_state[name] for name in kite_model._qs_inputs]
+
+lbx, ubx, lbg, ubg = kite_model.get_boundaries(current_state, unknown_vars)
+sol = kite_model._qs_solver(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+z0 = sol["x"]
+kite_model.establish_ode_function()
 kite_model.establish_algebraic()
 # Construct initial conditions for integration
 x0 = [
@@ -78,7 +82,7 @@ x0 = [
     current_state["angle_azimuth"],
     current_state["angle_course"],
 ]
-    
+
 # -----------------------------------------------
 # Time integration loop
 # -----------------------------------------------
@@ -103,15 +107,15 @@ for t in time:
     # Update the current state
     # current_state = {name: float(xf[i]) for i, name in enumerate(current_state.keys())}
 
-    full_state = { "distance_radial": float(xf[0]),
-                    'angle_elevation': float(xf[1]),
-                    'angle_azimuth': float(xf[2]),
-                    'angle_course': float(xf[3]),
-                    'speed_tangential': float(zf[0]),
-                    'timeder_angle_course': float(zf[1]),
-                    'length_tether': float(zf[2]),
-                    "time": t,
-
+    full_state = {
+        "distance_radial": float(xf[0]),
+        "angle_elevation": float(xf[1]),
+        "angle_azimuth": float(xf[2]),
+        "angle_course": float(xf[3]),
+        "speed_tangential": float(zf[0]),
+        "timeder_angle_course": float(zf[1]),
+        "length_tether": float(zf[2]),
+        "time": t,
     }
 
     # Evaluate tension tether
@@ -120,7 +124,7 @@ for t in time:
     #     *[full_state[name] for name in aoa_func.name_in()]
     # )
 
-    states.append({**full_state})#, "aoa": float(aoa)})
+    states.append({**full_state})  # , "aoa": float(aoa)})
 
     # Stop if the system reaches critical limits
     if current_state["angle_elevation"] < 0 or full_state["distance_radial"] < 100:
@@ -150,7 +154,7 @@ plt.legend()
 # plt.ylabel("Tether Tension [N]")
 # plt.legend()
 
-#Plot angle of attack
+# Plot angle of attack
 # plt.figure()
 # plt.plot(solution_df["aoa"]*180/np.pi, label="Angle of Attack")
 # plt.xlabel("Time [s]")

@@ -72,7 +72,7 @@ class SystemModel(KiteKinematics):
         else:
             self.default_unknown_vars = [
                 "speed_tangential",
-                "timeder_angle_course",
+                "input_steering",
                 "length_tether",
             ]
         self.derived_function_names = [
@@ -199,8 +199,12 @@ class SystemModel(KiteKinematics):
             solver_options = self.solver_options()
         # Define the NLP solver
         solver = ca.nlpsol("solver", "ipopt", nlp, solver_options)
-
-        return solver, inputs_name, unknown_vars
+        self._qs_solver, self._qs_inputs, self._qs_vars = (
+            solver,
+            inputs_name,
+            unknown_vars,
+        )
+        # return solver, inputs_name, unknown_vars
 
     def solve_quasi_steady(self, state_obj, unknown_vars=None):
         if unknown_vars is None:
@@ -209,14 +213,13 @@ class SystemModel(KiteKinematics):
         state_dict = state_obj.to_dict()
 
         if self._qs_solver is None or self._qs_vars != unknown_vars:
-            self._qs_solver, self._qs_inputs, self._qs_vars = self.setup_qs_solver(
-                unknown_vars
-            )
+            self.setup_qs_solver(unknown_vars)
 
         p = [state_dict[name] for name in self._qs_inputs]
         lbx, ubx, lbg, ubg = self.get_boundaries(state_dict, unknown_vars)
         x0 = [state_dict.get(var, 1.0) for var in unknown_vars]
         # Solve the quasi-steady state equations
+
         sol = self._qs_solver(x0=x0, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
         if np.linalg.norm(sol["g"]) > 1:
@@ -362,6 +365,7 @@ class SystemModel(KiteKinematics):
                 )
 
             alg = self.algebraic
+
             dae = {"x": x, "p": p, "z": z, "p": p, "ode": ode, "alg": alg}
             # Create the integrator
             opts = {
@@ -377,8 +381,7 @@ class SystemModel(KiteKinematics):
 
         else:
             p = self.input_vector
-            ode = {"x": self.state_vector, "p": p, "ode": self.ode}
-
+            ode = {"x": self.state_vector, "p": p, "ode": self._ode}
             return ca.integrator("intg", "cvodes", ode, 0, time_step)
 
     def establish_algebraic(self):

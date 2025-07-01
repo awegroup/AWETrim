@@ -13,12 +13,12 @@ from picawe.utils.defaults import PLOT_LABELS
 # -------------------- Configuration --------------------
 # file_path = "./data/LEI-V3-KITE/v3_aero_input.json"
 file_path = "./data/AP2/ap2_aero_input.json"
-file_path = "./data/LEI-V9-KITE/v9_aero_input.json"
+file_path = "./data/LEI-V3-KITE/v3_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
 # aero_input["params"]["angle_pitch_depower_0"] = 0.05
-wind_speed = 15  # m/s
+wind_speed = 10  # m/s
 pattern_config = {
     "pattern_type": "helix",
     "parameters": {
@@ -38,36 +38,36 @@ pattern_config = {
     },
 }
 
-# pattern_config = {
-#     "pattern_type": "figure_eight",
-#     "parameters": {
-#         "omega": -1.0,
-#         "r0": 200.0,
-#         "ry": 70,
-#         "rz": 60,
-#         "ky": 0.8,
-#         "kz": 0.6,
-#         "vr": 1,
-#         "beta0": 0.35,
-#         "kappa": 0,
-#     },
-#     "start_path_angle": -np.pi / 2,
-#     "end_path_angle": 6 * np.pi + np.pi / 2,
-#     "n_points": 400,
-#     "optimization_parameters": {
-#         # Add any optimization-related parameters here if needed as list of names
-#         # "ry",
-#         # "rz",
-#         # "ky",
-#         # "kz",
-#         "kappa",
-#         # "beta",
-#         "vr",
-#     },
-# }
+pattern_config = {
+    "pattern_type": "figure_eight",
+    "parameters": {
+        "omega": -1.0,
+        "r0": 200.0,
+        "ry": 70,
+        "rz": 60,
+        "ky": 0.8,
+        "kz": 0.6,
+        "vr": wind_speed / 3,
+        "beta0": 0.35,
+        "kappa": 0,
+    },
+    "start_path_angle": -np.pi / 2,
+    "end_path_angle": 6 * np.pi + np.pi / 2,
+    "n_points": 400,
+    "optimization_parameters": {
+        # Add any optimization-related parameters here if needed as list of names
+        # "ry",
+        # "rz",
+        # "ky",
+        # "kz",
+        "kappa",
+        # "beta",
+        "vr",
+    },
+}
 
-mass_ratio = 10
-area_wing = 20
+mass_ratio = 1
+area_wing = 10
 s_array = np.linspace(-np.pi / 2, 2 * 2 * np.pi + np.pi / 2, 800)
 save_folder = "./results/figures/"
 colors = get_color_list()

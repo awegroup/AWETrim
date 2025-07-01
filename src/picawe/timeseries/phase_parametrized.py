@@ -51,6 +51,7 @@ class PhaseParameterized(TimeSeries):
                 "tension_tether_ground": 1e5,
                 "input_depower": self.pattern_config["control"]["input_depower"],
             }
+
         self.substitute_parametrized_kinematics()
         self.states = []
         self.kite_model.reset_solver()
@@ -140,7 +141,7 @@ class PhaseParameterized(TimeSeries):
                     logger.warning("Solver did not converge at time index %d", i)
                     if not allow_failure:
                         break
-
+        kite_model = copy.deepcopy(self.kite_model)
         if s_array is not None:
             t = state_obj.t
             s_dot = state_obj.s_dot
@@ -159,7 +160,7 @@ class PhaseParameterized(TimeSeries):
                             ]
                         )
                     )
-                new_state = self.kite_model.solve_quasi_steady(state_obj, unknown_vars)
+                new_state = kite_model.solve_quasi_steady(state_obj, unknown_vars)
                 if new_state:
                     if i < len(s_array) - 1:
                         s_dot = new_state.s_dot
@@ -196,6 +197,8 @@ class PhaseParameterized(TimeSeries):
         # self.set_optimal_speed_radial()
         # self.set_optimal_angle_pitch_tether()
 
+        self.kite_model_opt = copy.deepcopy(self.kite_model)
+
         if self.pattern_config["start_path_angle"] is not None:
             s_array = np.linspace(
                 self.pattern_config["start_path_angle"],
@@ -216,7 +219,8 @@ class PhaseParameterized(TimeSeries):
             )
         self.run_simulation(start_state)
         # self.kite_model.reset_solver()
-        pattern_inputs = self.substitute_optimized_kinematics()
+        pattern_inputs = self.substitute_parametrized_kinematics(True)
+
         # print(self.kite_model.force_aerodynamic)
 
         opti = ca.Opti()
@@ -225,8 +229,6 @@ class PhaseParameterized(TimeSeries):
         # Create optimization variables for parameters to optimize
         for var in self.pattern_config["optimization_parameters"]:
             self.optimization_vars[var] = opti.variable()  # No bounds if not specified
-
-        self.kite_model.establish_residual()
 
         if time_array is not None:
             # Create other required variables
@@ -261,6 +263,14 @@ class PhaseParameterized(TimeSeries):
             opti_variables[var] = self.optimization_vars[var]
 
         # Define the residual function
+        # Choose the correct variable depending on tether type
+        if self.kite_model.is_tether_rigid:
+            unknown_var = self.kite_model.tension_tether_ground
+        else:
+            unknown_var = self.kite_model.length_tether
+
+        print(f"Unknown variable: {unknown_var}")
+        self.kite_model.establish_residual()
         residual = ca.Function(
             "residual",
             [
@@ -268,7 +278,7 @@ class PhaseParameterized(TimeSeries):
                 self.kite_model.s,
                 self.kite_model.s_dot,
                 self.kite_model.input_steering,
-                self.kite_model.tension_tether_ground,
+                unknown_var,
             ]
             + pattern_inputs,
             [self.kite_model.residual],
@@ -509,9 +519,15 @@ class PhaseParameterized(TimeSeries):
             except:
                 print("\n Power Value: (No value available)")
 
-    def substitute_parametrized_kinematics(self):
-        pattern = create_pattern_from_dict(self.pattern_config, optimize=False)
+    def substitute_parametrized_kinematics(self, optimize=False):
+
+        pattern = create_pattern_from_dict(self.pattern_config, optimize=optimize)
         kinematics = ParametrizedKinematics(pattern, self.quasi_steady)
+
+        self.kite_model.s = kinematics.s
+        self.kite_model.t = kinematics.t
+        self.kite_model.s_dot = kinematics.s_dot
+        self.kite_model.s_ddot = kinematics.s_ddot
 
         self.kite_model.distance_radial = kinematics.r
         self.kite_model.angle_course = kinematics.chi
@@ -527,36 +543,9 @@ class PhaseParameterized(TimeSeries):
 
         self.kite_model.angle_azimuth = kinematics.phi
         self.kite_model.angle_elevation = kinematics.beta
-        self.kite_model.s = kinematics.s
-        self.kite_model.t = kinematics.t
-        self.kite_model.s_dot = kinematics.s_dot
-        self.kite_model.s_ddot = kinematics.s_ddot
 
-    def substitute_optimized_kinematics(self):
-
-        pattern = create_pattern_from_dict(self.pattern_config, optimize=True)
-        kinematics = ParametrizedKinematics(pattern, self.quasi_steady)
-
-        self.kite_model.distance_radial = kinematics.r
-        self.kite_model.angle_course = kinematics.chi
-        self.kite_model.angle_elevation = kinematics.beta
-        # Optimal analytical solution for speed_radial should be part of the pattern class
-        # self.kite_model.speed_radial = self.kite_model.speed_radial
-        # print(self.kite_model.speed_radial)
-        self.kite_model.speed_radial = kinematics.vr
-        self.kite_model.speed_tangential = kinematics.vtau
-        self.kite_model.timeder_angle_course = kinematics.dot_chi
-        self.kite_model.timeder_speed_radial = kinematics.dot_vr
-        self.kite_model.timeder_speed_tangential = kinematics.dot_vtau
-
-        self.kite_model.angle_azimuth = kinematics.phi
-        self.kite_model.angle_elevation = kinematics.beta
-        self.kite_model.s = kinematics.s
-        self.kite_model.t = kinematics.t
-        self.kite_model.s_dot = kinematics.s_dot
-        self.kite_model.s_ddot = kinematics.s_ddot
-
-        return list(kinematics.pattern.optimization_vars.values())
+        if optimize:
+            return list(kinematics.pattern.optimization_vars.values())
 
     @property
     def target_lift_coefficient(self):

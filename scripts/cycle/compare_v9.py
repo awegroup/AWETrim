@@ -258,6 +258,7 @@ def simulate_cycles_from_stats(aero_input_path, sim_config, flight_stats):
             "start_path_angle": -np.pi / 2,
             "end_path_angle": np.pi / 2 + np.pi,
             "n_points": 300,
+            "quasi_steady": True,
         }
         print(pattern_config)
         # raise ValueError("Pattern config not implemented yet")
@@ -268,11 +269,11 @@ def simulate_cycles_from_stats(aero_input_path, sim_config, flight_stats):
             "reelout": pattern_config,
             "reelin": {
                 "control": {
-                    "max_elevation": np.radians(85),
+                    "max_elevation": np.radians(100),
                     "min_elevation": np.radians(25),
-                    "reeling_speed": row["avg_reeling_speed_RI_mps"],
+                    "reeling_speed": -2.5,
                     "min_tether_force": sim_config["mass_wing"] * 9.81,
-                    "length_tether_ro": r0,
+                    "length_tether_ro": pattern_config["parameters"]["r0"],
                 },
                 "initial_state": {
                     "angle_course": 0,
@@ -283,6 +284,7 @@ def simulate_cycles_from_stats(aero_input_path, sim_config, flight_stats):
                     "tension_tether_ground": 1e4,
                 },
                 "time_step": 0.1,
+                "quasi_steady": False,
             },
         }
         # --- Energy calculations ---

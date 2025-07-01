@@ -1,10 +1,9 @@
-
 import json
 import numpy as np
 from picawe import Cycle
 
 # -------------------- Load Aero Input --------------------
-with open("./data/v9_aero_input.json", "r") as file:
+with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
     aero_input = json.load(file)
 
 # -------------------- Simulation Config --------------------
@@ -38,17 +37,19 @@ PATTERN_CONFIG = {
     "control": {
         "input_depower": 0.0,
     },
-    "start_path_angle": -np.pi/2,
-    "end_path_angle": 3*np.pi/2 + np.pi,
+    "start_path_angle": -np.pi / 2,
+    "end_path_angle": 3 * np.pi / 2 + np.pi,
     "n_points": 200,
+    "quasi_steady": True,
 }
 
 CYCLE_SETTINGS = {
     "reelout": PATTERN_CONFIG,
     "reelin": {
         "control": {
-            "max_elevation": np.degrees(85),
-            "reeling_speed": -3.5,
+            "max_elevation": np.radians(100),
+            "min_elevation": np.radians(25),
+            "reeling_speed": -2.5,
             "min_tether_force": SIMULATION_CONFIG["mass_wing"] * 9.81,
             "length_tether_ro": PATTERN_CONFIG["parameters"]["r0"],
         },
@@ -60,8 +61,9 @@ CYCLE_SETTINGS = {
             "timeder_angle_course": 0,
             "tension_tether_ground": 1e4,
         },
-        "time_step": 0.1
-    }
+        "time_step": 0.1,
+        "quasi_steady": False,
+    },
 }
 
 if __name__ == "__main__":
@@ -77,4 +79,6 @@ if __name__ == "__main__":
     profiler.disable()
     stats = pstats.Stats(profiler).sort_stats("cumtime")
     stats.dump_stats("cycle_profile.prof")
-    print("Profiling complete. Use snakeviz or another viewer to analyze 'cycle_profile.prof'")
+    print(
+        "Profiling complete. Use snakeviz or another viewer to analyze 'cycle_profile.prof'"
+    )

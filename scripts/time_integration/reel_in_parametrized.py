@@ -12,7 +12,7 @@ from picawe.system.kite import Kite
 # -----------------------------------------------
 
 # Define aerodynamic input
-file_path = "./data/v3_aero_input.json"
+file_path = "./data/LEI-V3-KITE/v3_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
@@ -20,11 +20,16 @@ with open(file_path, "r") as file:
 # Define the system and aerodynamic model
 # -----------------------------------------------
 
-kite = Kite(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=25, steering_control="asymmetric")
+kite = Kite(
+    mass_wing=15,
+    area_wing=20,
+    aero_input=aero_input,
+    mass_kcu=25,
+    steering_control="asymmetric",
+)
 kite_model = SystemModel(
     dof=3,
     quasi_steady=True,
-    wind_model="uniform",
     kite=kite,
 )
 
@@ -48,7 +53,7 @@ current_state = {
     "speed_radial": 0,
     "speed_tangential": 10,
     "input_depower": 0.0,
-    "input_steering": 0
+    "input_steering": 0,
 }
 solver_options = {
     "ipopt": {"print_level": 0, "sb": "yes"},
@@ -59,17 +64,16 @@ time = np.arange(0, 100, time_step)
 qs_guess = [200, 0, 40]
 states = []
 import time as timet
-start_time = timet.time()
-solve_qs, inputs_name,_ = kite_model.setup_qs_solver(
-        unknown_vars, solver_options=solver_options
-    )
-# Solve quasi-steady state
-p = [current_state[name] for name in inputs_name]
 
-lbx,ubx,lbg,ubg = kite_model.get_boundaries(current_state,unknown_vars)
-sol = solve_qs(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
-z0 = sol['x']
-kite_model.establish_ode()
+start_time = timet.time()
+kite_model.setup_qs_solver(unknown_vars, solver_options=solver_options)
+# Solve quasi-steady state
+p = [current_state[name] for name in kite_model._qs_inputs]
+
+lbx, ubx, lbg, ubg = kite_model.get_boundaries(current_state, unknown_vars)
+sol = kite_model._qs_solver(x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+z0 = sol["x"]
+kite_model.establish_ode_function()
 kite_model.establish_algebraic()
 # Construct initial conditions for integration
 x0 = [
@@ -83,7 +87,7 @@ reelin_speed = -4
 # Time integration loop
 # -----------------------------------------------
 input_names = ["timeder_angle_course", "input_depower", "speed_radial"]
-intg = kite_model.integrator(time_step,input_names)
+intg = kite_model.integrator(time_step, input_names)
 inputs = {"timeder_angle_course": 0, "input_depower": 0.0, "speed_radial": 0.0}
 p = [inputs[name] for name in inputs.keys()]
 transition = False
@@ -104,34 +108,34 @@ for t in time:
     # Update the current state
     # current_state = {name: float(xf[i]) for i, name in enumerate(current_state.keys())}
 
-    full_state = { "distance_radial": float(xf[0]),
-                    'angle_elevation': float(xf[1]),
-                    'angle_azimuth': float(xf[2]),
-                    'angle_course': float(xf[3]),
-                    'speed_tangential': float(zf[0]),
-                    'input_steering': float(zf[1]),
-                    'length_tether': float(zf[2]),
-                    "time": t,
-
+    full_state = {
+        "distance_radial": float(xf[0]),
+        "angle_elevation": float(xf[1]),
+        "angle_azimuth": float(xf[2]),
+        "angle_course": float(xf[3]),
+        "speed_tangential": float(zf[0]),
+        "input_steering": float(zf[1]),
+        "length_tether": float(zf[2]),
+        "time": t,
     }
 
     if not transition and inputs["speed_radial"] > reelin_speed:
         # Update the radial speed
-        inputs["speed_radial"] -= time_step*0.2
+        inputs["speed_radial"] -= time_step * 0.2
     elif transition and inputs["speed_radial"] < 0:
         # Update the radial speed
-        inputs["speed_radial"] += time_step*0.2
+        inputs["speed_radial"] += time_step * 0.2
     else:
         # Maintain the radial speed
         inputs["speed_radial"] = reelin_speed
 
-    if inputs["input_depower"] <1:
+    if inputs["input_depower"] < 1:
         inputs["input_depower"] += time_step
     else:
         inputs["input_depower"] = 1
 
     if not transition and full_state["angle_course"] > 0:
-        inputs["timeder_angle_course"] = -0.2*full_state["angle_course"]
+        inputs["timeder_angle_course"] = -0.2 * full_state["angle_course"]
     else:
         inputs["timeder_angle_course"] = 0.0
 
@@ -140,10 +144,9 @@ for t in time:
 
     # if transition and inputs["speed_radial"] < 0:
     #     inputs["speed_radial"] += time_step
-    
+
     # if transition and full_state["angle_course"] > -np.radians(90):
     #     inputs["timeder_angle_course"] = 0.1
-
 
     # Evaluate tension tether
 
@@ -151,7 +154,7 @@ for t in time:
     #     *[full_state[name] for name in aoa_func.name_in()]
     # )
 
-    states.append({**full_state,**inputs})#, "aoa": float(aoa)})
+    states.append({**full_state, **inputs})  # , "aoa": float(aoa)})
 
     # Stop if the system reaches critical limits
     # if full_state["length_tether"] < 200:
@@ -172,7 +175,7 @@ plt.ylabel("Speed [m/s]")
 plt.legend()
 
 plt.figure()
-plt.plot(solution_df["angle_course"]*180/np.pi, label="Course Angle")
+plt.plot(solution_df["angle_course"] * 180 / np.pi, label="Course Angle")
 plt.plot(solution_df["input_steering"], label="Steering Angle")
 plt.xlabel("Time [s]")
 plt.ylabel("Course Angle [deg]")
@@ -191,7 +194,7 @@ plt.legend()
 # plt.ylabel("Tether Tension [N]")
 # plt.legend()
 
-#Plot angle of attack
+# Plot angle of attack
 # plt.figure()
 # plt.plot(solution_df["aoa"]*180/np.pi, label="Angle of Attack")
 # plt.xlabel("Time [s]")

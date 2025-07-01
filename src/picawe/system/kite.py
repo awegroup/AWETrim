@@ -161,18 +161,19 @@ class Wing:
         Compute the angle of attack based on the air velocity vector and tether angle.
         """
         # print("angle_pitch_aerodynamic:",self.angle_pitch_aerodynamic)
+        angle_of_attack = (
+            self.angle_pitch_aerodynamic + self.angle_pitch_depower - self.angle_pitch
+        )
         if self._angle_of_attack is None:
-            self._angle_of_attack = (
-                self.angle_pitch_aerodynamic
-                + self.angle_pitch_depower
-                - self.angle_pitch
-            )
-        return self._angle_of_attack
+            self._angle_of_attack = angle_of_attack
+
+        return angle_of_attack
 
     @property
     def velocity_apparent_wind(self):
         # print("velocity_apparent_wind:", self.velocity_kite)
         # print(self.wind)
+
         return self.wind.velocity_wind(self) - self.velocity_kite
 
     @property
@@ -183,14 +184,17 @@ class Wing:
 
     @property
     def velocity_apparent_wind_wing(self):
+
+        velocity_wing_rotation = ca.cross(
+            self.velocity_rotation_wing, self.center_gravity_wing_course
+        )
+        velocity_apparent_wind_wing = (
+            self.velocity_apparent_wind - velocity_wing_rotation
+        )
         if self._velocity_apparent_wind_wing is None:
-            velocity_wing_rotation = ca.cross(
-                self.velocity_rotation_wing, self.center_gravity_wing_course
-            )
-            self._velocity_apparent_wind_wing = (
-                self.velocity_apparent_wind - velocity_wing_rotation
-            )
-        return self._velocity_apparent_wind_wing
+            self._velocity_apparent_wind_wing = velocity_apparent_wind_wing
+
+        return velocity_apparent_wind_wing
 
     @property
     def angle_pitch_aerodynamic(self):
@@ -217,6 +221,7 @@ class Wing:
         V_a_sq = ca.mtimes(self.velocity_apparent_wind.T, self.velocity_apparent_wind)
 
         CL, CD, CS = self.aerodynamic_force_coefficients
+
         # Aerodynamic forces
         D = 0.5 * self.rho * V_a_sq * self.area_wing * CD
         L = 0.5 * self.rho * V_a_sq * self.area_wing * CL
@@ -227,7 +232,6 @@ class Wing:
             self.angle_yaw_aerodynamic,
             0,
         )
-
         aero_forces = R @ ca.vertcat(-D, S, L)
         return aero_forces
 
@@ -392,6 +396,8 @@ class Kite(Wing):
 
     @property
     def force_external(self):
+        # print("force_external:", self.force_aerodynamic, self.force_gravity)
+
         return self.force_aerodynamic + self.force_gravity + self.force_tether_at_kite
 
     @property
@@ -433,6 +439,8 @@ class Kite(Wing):
         # LHS and RHS
         lhs = (self.mass_wing + self.mass_kcu) * self.acceleration
         # Residual
+        # print(self.force_external)
+        # print(lhs)
         return -lhs + self.force_external
 
     @property

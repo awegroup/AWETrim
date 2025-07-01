@@ -69,6 +69,9 @@ class Lissajous(ParametrizedPatterns):
             omega=omega, r0=r0, a0=a0, h0=h0, vr=vr, beta0=beta0, kappa=kappa
         )
 
+    def beta(self, t):
+        return self.beta0 * (1 + self.kbeta * (self.r0 / self.r(t) - 1))
+
     def a(self, t):
         return self.a0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
 
@@ -211,7 +214,7 @@ def create_pattern_from_dict(
     params = config.get("parameters", {})
     optimization_params = config.get("optimization_parameters", {})
 
-    # print(params)
+    print(params)
 
     required_params = {
         "helix": ["omega", "r0", "d0", "vr", "beta0", "kappa"],
@@ -238,7 +241,7 @@ def create_pattern_from_dict(
     ]
     if missing_params:
         raise ValueError(
-            f"Missing required parameters in 'initial_parameters' for '{pattern_type}': {', '.join(missing_params)}"
+            f"Missing required parameters in 'parameters' for '{pattern_type}': {', '.join(missing_params)}"
         )
 
     # Replace optimized parameters with symbolic variables

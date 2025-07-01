@@ -3,8 +3,11 @@ import numpy as np
 from picawe import Cycle
 
 # -------------------- Load Aero Input --------------------
-with open("./data/LEI-V9-KITE/v9_aero_input2.json", "r") as file:
+with open("./data/V11/v11_aero_input.json", "r") as file:
     aero_input = json.load(file)
+
+# with open("./data/LEI-V9-KITE/v9_aero_input2.json", "r") as file:
+#     aero_input = json.load(file)
 
 # -------------------- Simulation Config --------------------
 SIMULATION_CONFIG = {

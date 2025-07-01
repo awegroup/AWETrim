@@ -34,7 +34,7 @@ def timed_block(name: str):
 def get_simulation_config() -> dict:
     """Centralized definition of all simulation input parameters."""
     return {
-        "file_path": "./data/v3_aero_input.json",
+        "file_path": "./data/LEI-V3-KITE/v3_aero_input.json",
         "kite_config": {
             "mass_wing": 15.0,
             "area_wing": 20.0,
@@ -78,40 +78,48 @@ def main():
 
     # Setup kite and model
     kite = Kite(aero_input=aero_input, **cfg["kite_config"])
-    model = SystemModel(dof=3, quasi_steady=True, wind_model="uniform", kite=kite)
+    model = SystemModel(dof=3, quasi_steady=True, kite=kite)
     model.wind.speed_wind_ref = cfg["wind_speed_ref"]
 
     initial_state = cfg["initial_state"]
 
     # Solve quasi-steady state
     unknown_vars = ["speed_tangential", "input_steering", "length_tether"]
-    solve_qs, inputs_name,_ = model.setup_qs_solver(
+    model.setup_qs_solver(
         unknown_vars=unknown_vars,
         solver_options=cfg["solver_options"],
     )
 
-    p = [initial_state[name] for name in inputs_name]
-    lbx, ubx, lbg, ubg = model.get_boundaries(initial_state,unknown_vars)
+    p = [initial_state[name] for name in model._qs_inputs]
+    lbx, ubx, lbg, ubg = model.get_boundaries(initial_state, unknown_vars)
 
-    
-    sol = solve_qs(x0=cfg["quasi_steady_guess"], p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)["x"]
+    sol = model._qs_solver(
+        x0=cfg["quasi_steady_guess"], p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg
+    )["x"]
     qs_state = {name: float(sol[i]) for i, name in enumerate(unknown_vars)}
     logger.info("Quasi-steady state solution:")
     for k, v in qs_state.items():
         logger.info(f"{k}: {v:.4f}")
-    
+
     kite = Kite(aero_input=aero_input, **cfg["kite_config"])
-    model = SystemModel(dof=3, quasi_steady=False, wind_model="uniform", kite=kite)
+    model = SystemModel(dof=3, quasi_steady=False, kite=kite)
     model.wind.speed_wind_ref = cfg["wind_speed_ref"]
     # Merge all known values
     all_values = {**initial_state, **qs_state}
-    current_keys = ["distance_radial", "angle_elevation", "angle_azimuth",
-                    "speed_tangential", "angle_course", "speed_radial", "length_tether"]
+    current_keys = [
+        "distance_radial",
+        "angle_elevation",
+        "angle_azimuth",
+        "speed_tangential",
+        "angle_course",
+        "speed_radial",
+        "length_tether",
+    ]
     x0 = [all_values[k] for k in current_keys]
 
     # Prepare simulation model
     aoa_func = model.extract_function("angle_of_attack")
-    model.establish_ode()
+    model.establish_ode_function()
     model.establish_algebraic()
     integrator = model.integrator(cfg["time_step"])
     control_inputs = {**cfg["control_inputs"]}
@@ -128,7 +136,12 @@ def main():
                 xf = integrator(x0=x0, p=p_input)["xf"]
                 x0 = xf
                 state_now = {key: float(xf[i]) for i, key in enumerate(current_keys)}
-                aoa = aoa_func(*[state_now.get(k, control_inputs.get(k)) for k in aoa_func.name_in()])
+                aoa = aoa_func(
+                    *[
+                        state_now.get(k, control_inputs.get(k))
+                        for k in aoa_func.name_in()
+                    ]
+                )
                 # if control_inputs["timeder_length_tether"] < 3:
                 #     control_inputs["timeder_length_tether"] += 1 * cfg["time_step"]
                 # if state_now["angle_elevation"] < np.radians(30):
@@ -139,8 +152,7 @@ def main():
                 #    if control_inputs["input_depower"] > 0.01:
                 #         control_inputs["input_depower"] -= 0.1*cfg["time_step"]
                 #         print(f"Depowering: {control_inputs['input_depower']:.2f}")
-                    
-                    
+
                 # if state_now["speed_tangential"] < 0:
                 #     state_now["angle_course"] = np.pi
                 #     state_now["speed_tangential"] = -state_now["speed_tangential"]
@@ -153,9 +165,9 @@ def main():
                 #         control_inputs["input_depower"] -= 0.1*cfg["time_step"]
                 #         print(f"Depowering: {control_inputs['input_depower']:.2f}")
                 p_input = list(control_inputs.values())
-                    # control_inputs["input_steering"] = 0.1
+                # control_inputs["input_steering"] = 0.1
 
-                states.append({**state_now, **control_inputs,"aoa": float(aoa)})
+                states.append({**state_now, **control_inputs, "aoa": float(aoa)})
                 if state_now["distance_radial"] < 100:
                     break
             except Exception as e:
@@ -167,8 +179,12 @@ def main():
         logger.warning("No states collected.")
         return
 
-    logger.info(f"Final elevation angle: {np.degrees(states[-1]['angle_elevation']):.2f}°")
-    logger.info(f"Final tether force (if available): {states[-1].get('tension_tether_ground', 'N/A')}")
+    logger.info(
+        f"Final elevation angle: {np.degrees(states[-1]['angle_elevation']):.2f}°"
+    )
+    logger.info(
+        f"Final tether force (if available): {states[-1].get('tension_tether_ground', 'N/A')}"
+    )
     visualize_results(pd.DataFrame(states))
 
 

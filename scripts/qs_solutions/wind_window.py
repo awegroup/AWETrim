@@ -13,7 +13,7 @@ from picawe.system.system_model import State
 # ------------------------------
 # Load aerodynamic input
 # ------------------------------
-file_path = "./data/v3_aero_input.json"
+file_path = "./data/LEI-V3-KITE/v3_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
@@ -21,8 +21,14 @@ with open(file_path, "r") as file:
 # Setup system model
 # ------------------------------
 tether = FlexibleLumpedTether()
-kite = Kite(mass_wing=15, area_wing=20, aero_input=aero_input, mass_kcu=28, steering_control="asymmetric")
-kite_model = SystemModel(dof=3, quasi_steady=True, kite=kite, tether=tether, wind_model="uniform")
+kite = Kite(
+    mass_wing=15,
+    area_wing=20,
+    aero_input=aero_input,
+    mass_kcu=28,
+    steering_control="asymmetric",
+)
+kite_model = SystemModel(dof=3, quasi_steady=True, kite=kite, tether=tether)
 
 # Configure constants
 kite_model.wind.speed_wind_ref = 10
@@ -61,7 +67,10 @@ for phi, beta in zip(phi_combinations, beta_combinations):
         length_tether=199.99,
     )
 
-    new_state = kite_model.solve_quasi_steady(state_obj, unknown_vars=["speed_tangential", "timeder_angle_course", "length_tether"])
+    new_state = kite_model.solve_quasi_steady(
+        state_obj,
+        unknown_vars=["speed_tangential", "timeder_angle_course", "length_tether"],
+    )
     if new_state is not None:
         new_state_dict = new_state.to_dict()
         solutions.append(new_state_dict)
@@ -71,19 +80,21 @@ print(f"Time taken: {end - start:.2f}s for {len(phi_combinations)} iterations")
 print(f"Time per iteration: {(end - start) / len(phi_combinations):.4f}s")
 
 
-
 # ------------------------------
 # Filter and visualize solutions
 # ------------------------------
 solutions_df = pd.DataFrame(solutions)
 solutions_df = solutions_df[solutions_df["tension_tether_ground"].notna()]
-solutions_df = solutions_df[(np.degrees(solutions_df['angle_of_attack']) < 20) & (np.degrees(solutions_df['angle_of_attack']) > -5)]
+solutions_df = solutions_df[
+    (np.degrees(solutions_df["angle_of_attack"]) < 20)
+    & (np.degrees(solutions_df["angle_of_attack"]) > -5)
+]
 solutions_df.reset_index(drop=True, inplace=True)
 
 # Convert to Cartesian for 3D plotting
 phi = solutions_df["angle_azimuth"].values
 beta = solutions_df["angle_elevation"].values
-alpha_values = np.degrees(solutions_df['angle_of_attack'].values)
+alpha_values = np.degrees(solutions_df["angle_of_attack"].values)
 tether_tensions = solutions_df["tension_tether_ground"].values
 x = np.cos(beta) * np.sin(phi)
 y = np.cos(beta) * np.cos(phi)
@@ -103,7 +114,7 @@ ax1.set_zlabel("Z")
 
 # Angle of Attack
 ax2 = fig.add_subplot(122, projection="3d")
-sc2 = ax2.scatter(x, y, z, c=alpha_values, cmap='plasma')
+sc2 = ax2.scatter(x, y, z, c=alpha_values, cmap="plasma")
 fig.colorbar(sc2, ax=ax2, label="Angle of Attack (degrees)")
 ax2.set_title("Angle of Attack (3D)")
 ax2.set_xlabel("X")

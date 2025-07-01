@@ -16,7 +16,7 @@ class Cycle:
         self.kite = Kite(
             mass_wing=sim_config["mass_wing"],
             area_wing=sim_config["area_wing"],
-            mass_kcu=sim_config["mass_kcu"],
+            mass_kcu=self.sim_config.get("mass_kcu", 0),
             aero_input=aero_input,
             steering_control=sim_config.get("steering_control", "roll"),
         )
@@ -36,6 +36,7 @@ class Cycle:
     def run_cycle(self, cycle_settings):
         pattern_config = cycle_settings["reelout"]
         model_ro = self.create_model()
+        print(cycle_settings["reelout"])
         phase_ro = PhaseParameterized(
             model_ro,
             quasi_steady=cycle_settings["reelout"]["quasi_steady"],

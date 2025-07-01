@@ -1,0 +1,62 @@
+{
+  "model": "coeffs",
+  "params": {
+    "CD0": 0.2,
+    "CL0": 0.24251402378796255,
+    "angle_pitch_depower_0": 0.01,
+    "delta_pitch_depower": -0.28
+  },
+  "coefficients": {
+    "CL": [
+      {
+        "var": "alpha",
+        "power": 1,
+        "coef": 5.96588084450818
+      },
+      {
+        "var": "alpha",
+        "power": 2,
+        "coef": -8.6969360631198
+      },
+      {
+        "var": "u_s",
+        "power": 1,
+        "coef": 0.0
+      },
+      {
+        "var": "u_p",
+        "power": 1,
+        "coef": -0.0
+      }
+    ],
+    "CD": [
+      {
+        "var": "alpha",
+        "power": 1,
+        "coef": -0.01955148115440794
+      },
+      {
+        "var": "alpha",
+        "power": 2,
+        "coef": 1.518888816766879
+      },
+      {
+        "var": "u_s",
+        "power": 1,
+        "coef": 0.0
+      },
+      {
+        "var": "u_p",
+        "power": 1,
+        "coef": -0.07
+      }
+    ],
+    "CS": [
+      {
+        "var": "u_s",
+        "power": 1,
+        "coef": 0.17
+      }
+    ]
+  }
+}
