@@ -60,10 +60,8 @@ def solve_qs_system(
     guess: List[float],
     solver_options: Dict,
 ) -> Tuple[Dict[str, float], Dict[str, float], bool]:
-    solve_qs, inputs_name, _ = model.setup_qs_solver(
-        unknown_vars=unknowns, solver_options=solver_options
-    )
-    p = [initial_state[name] for name in inputs_name]
+    model.setup_qs_solver(unknown_vars=unknowns, solver_options=solver_options)
+    p = [initial_state[name] for name in model._qs_inputs]
     lbx, ubx, lbg, ubg = model.get_boundaries(initial_state, unknowns)
 
     if "length_tether" in unknowns:
@@ -71,7 +69,7 @@ def solve_qs_system(
         ubx[idx] = initial_state["distance_radial"]
 
     try:
-        sol = solve_qs(x0=guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+        sol = model._qs_solver(x0=guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
         g_val = np.abs(np.array(sol["g"]))
         if np.any(np.isnan(g_val)) or np.any(np.isinf(g_val)) or np.any(g_val > 1e-3):
             print(f"[WARN] Solver failed: g_val = {g_val}")

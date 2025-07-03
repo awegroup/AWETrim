@@ -15,7 +15,7 @@ class SystemModel(KiteKinematics):
 
     def __init__(
         self,
-        dof=6,
+        dof=3,
         quasi_steady=False,
         wind_model=None,
         tether=None,

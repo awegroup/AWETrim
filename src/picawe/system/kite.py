@@ -53,7 +53,7 @@ class Wing:
             e = aero_input["params"]["oswald_efficiency"]
             AR = aero_input["params"]["aspect_ratio"]
             CD0 = aero_input["params"]["CD0"]
-            C_L = 2 * ca.pi * variables["alpha"]
+            C_L = 2 * ca.pi * variables["alpha"] / (1 + 2 / (AR * e))
             C_D = C_L**2 / (ca.pi * e * AR) + CD0
             C_L = C_L * ca.cos(self.input_steering * self.k_steering)
             C_S = C_L * ca.sin(self.input_steering * self.k_steering)
@@ -103,13 +103,13 @@ class Wing:
     def lift_coefficient(self):
         if self._lift_coefficient is None:
             self._lift_coefficient = self.aerodynamic_force_coefficients[0]
-        return self._lift_coefficient
+        return self.aerodynamic_force_coefficients[0]
 
     @property
     def drag_coefficient(self):
         if self._drag_coefficient is None:
             self._drag_coefficient = self.aerodynamic_force_coefficients[1]
-        return self._drag_coefficient
+        return self.aerodynamic_force_coefficients[1]
 
     @property
     def aerodynamic_moment_coefficients(self):

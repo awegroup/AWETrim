@@ -135,6 +135,7 @@ for i in range(N):
             kite_model, quasi_steady=quasi_steady, pattern_config=pattern_config
         )
         phase.run_simulation(start_state=start_state)
+        # TODO: One should not run the simulation twice, but rather use the optimized pattern, but somehow there is a problem using the optimized pattern directly
         # phase.run_simulation(start_state=start_state, s_array=s_array)
         # Extract variables
         s = phase.return_variable("s")

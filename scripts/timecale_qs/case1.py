@@ -22,11 +22,12 @@ AERO_INPUT_FILE = "./data/LEI-V9-KITE/v9_aero_input.json"
 
 SELECTED_STATES = [
     "speed_tangential",
-    # "angle_course",
+    "angle_course",
     "speed_radial",
     "distance_radial",
-    # "angle_elevation",
-    # "angle_azimuth",
+    "angle_elevation",
+    "angle_azimuth",
+    "length_tether",
 ]
 
 # 🧩 CONFIGURABLE PARAMETERS
