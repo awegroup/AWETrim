@@ -93,7 +93,7 @@ DEFAULT_OPTI_LIMITS = {
     "kappa": (0, 4),  # Range for kappa: 0 to 5
     # "vr": (-10, 10),      # Range for vr: 0 to 100
     "beta0": (0.2, 0.873),  # Range for beta: 20 ot 50 degrees
-    "d0": (40, 150),  # Range for d0: 0 to 100
+    "d0": (40, 500),  # Range for d0: 0 to 100
     # Figure Eight
     "ry": (60, 180),  # Range for ry: 0 to 100
     "rz": (60, 180),  # Range for rz: 0 to 100

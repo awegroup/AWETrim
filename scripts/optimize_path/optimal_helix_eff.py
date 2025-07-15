@@ -3,9 +3,9 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from picawe.kinematics.parametrized_patterns import Helix, Lissajous, FigureEight
 from picawe.system.kite import Kite
-from picawe.system.tether import RigidLinkTether
+from picawe.system.tether import RigidLinkTether, RigidLumpedTether
 from picawe.kinematics.Kinematics import ParametrizedKinematics, KiteKinematics
-from picawe import SystemModel
+from picawe import SystemModel, State
 from picawe.utils.color_palette import set_plot_style_no_latex, get_color_list
 from picawe.timeseries.phase_parametrized import PhaseParameterized
 import json
@@ -14,9 +14,7 @@ import copy
 
 # Show the structure of the figure
 plt.show()
-# Define aerodynamic input
-file_path = "./data/LEI-V3-KITE/v3_aero_input.json"
-# file_path = "./data/rigid_kite.json"
+file_path = "./data/Megawes/megawes_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
@@ -24,36 +22,38 @@ with open(file_path, "r") as file:
 # -----------------------------------------------
 # Define the parametrized path
 # -----------------------------------------------
+wind_speed = 12  # m/s
 pattern_config = {
     "pattern_type": "helix",
-    "initial_parameters": {
+    "parameters": {
         "omega": -1.0,
-        "r0": 200.0,
-        "d0": 120.0,
-        "vr": 0.2,
-        "beta": 0.35,
-        "kappa": 0,
+        "r0": 600.0,
+        "d0": 227.0,
+        "vr": 4,
+        "beta0": 25 / 180 * np.pi,  # Convert degrees to radians
+        "kappa": 1,
+        "kbeta": 0,
     },
+    "start_path_angle": -np.pi / 2,
+    "end_path_angle": 4 * np.pi + 3 * np.pi / 2,
+    "n_points": 400,
     "optimization_parameters": {
-        # Add any optimization-related parameters here if needed as list of names
         "d0",
-        # "kappa",
-        # "beta",
     },
 }
 
-start_state = {
-    "t": 0,
-    "s": -np.pi / 2,
-    "s_dot": 4,
-    "s_ddot": 0,
-    "tension_tether_ground": 1e5,
-    "input_steering": 0,
-    "angle_roll": 0,
-    "angle_pitch": 0,
-    "angle_yaw": 0,
-    "length_tether": 200,
-}
+start_state = State(
+    t=0,
+    s=np.pi / 2,
+    s_dot=2,
+    s_ddot=0,
+    length_tether=199.6,
+    input_steering=0,
+    angle_roll=0,
+    angle_pitch=0,
+    angle_yaw=0,
+    tension_tether_ground=1e8,
+)
 time = np.arange(0, 50, 0.1)
 s_array = np.linspace(5 * np.pi / 2, 9 * np.pi / 2, 200)
 dof = 3
@@ -68,9 +68,9 @@ x_param = "s"
 fig, axs = plt.subplots(len(parameters), 1, figsize=(10, 4), sharex=True)
 
 N = 1
-tether = RigidLinkTether()
-area_wing = 3
-mass_wing = area_wing * 2
+tether = RigidLumpedTether(diameter=0.009)
+mass_wing = 443
+area_wing = 15.44
 phases_qs = []
 phases_dyn = []
 for i in range(N):
@@ -79,21 +79,19 @@ for i in range(N):
         "pattern_type": "helix",
         "parameters": {
             "omega": -1.0,
-            "r0": 200.0,
-            "d0": 60.0,
-            "vr": 0.2,
-            "beta0": 0.0,
-            "kappa": 0,
-        },
-        "optimization_parameters": {
-            # Add any optimization-related parameters here if needed as list of names
-            "d0",
-            # "kappa",
-            "beta0",
+            "r0": 600.0,
+            "d0": 230.0,
+            "vr": 2,
+            "beta0": 25 / 180 * np.pi,  # Convert degrees to radians
+            "kappa": 1,
+            "kbeta": 0,
         },
         "start_path_angle": -np.pi / 2,
-        "end_path_angle": 6 * np.pi + np.pi / 2,
+        "end_path_angle": 4 * np.pi + 3 * np.pi / 2,
         "n_points": 400,
+        "optimization_parameters": {
+            "d0",
+        },
     }
     for quasi_steady in [True, False]:  # Loop over both dynamic and quasi-steady cases
 
@@ -109,7 +107,7 @@ for i in range(N):
         kite_model = SystemModel(
             dof=dof, quasi_steady=quasi_steady, kite=kite, tether=tether
         )
-        kite_model.wind.speed_wind_ref = 15
+        kite_model.wind.speed_wind_ref = 12
         kite_model.input_depower = 0
 
         # Run simulation
@@ -119,17 +117,24 @@ for i in range(N):
         )
         # phase.set_optimal_speed_radial()
 
-        if quasi_steady:
-            phase.optimize_pattern(start_state=start_state)
-            pattern_config = phase.pattern_config
-            print("Optimized pattern configuration:")
-            print(pattern_config)
-            start_state = phase.states[0]
-            # phase.substitute_parametrized_kinematics()
+        # if quasi_steady:
+        phase.optimize_pattern(start_state=start_state)
+        pattern_config = phase.pattern_config
+        print("Optimized pattern configuration:")
+        print(pattern_config)
+        start_state = phase.states[0]
+        # phase.substitute_parametrized_kinematics()
+        kite = Kite(
+            mass_wing=mass_wing,
+            area_wing=area_wing,
+            aero_input=aero_input,
+            mass_kcu=0,
+            steering_control="roll",
+        )
         kite_model = SystemModel(
             dof=dof, quasi_steady=quasi_steady, kite=kite, tether=tether
         )
-        kite_model.wind.speed_wind_ref = 15
+        kite_model.wind.speed_wind_ref = 12
         kite_model.input_depower = 0
         phase = PhaseParameterized(
             kite_model, quasi_steady=quasi_steady, pattern_config=pattern_config
@@ -149,6 +154,10 @@ for i in range(N):
 
         print(s_dot[0])
         start_state["s_dot"] = s_dot[0]
+        start_state["s"] = s[0]
+        start_state["tension_tether_ground"] = phase.return_variable(
+            "tension_tether_ground"
+        )[0]
 
 
 # fig, slider = phase.interactive_plot()
@@ -220,8 +229,8 @@ for i in range(N):
     power_dyn = phase_dyn.return_variable("mechanical_power")[mask_dyn]
     tension_qs = phase_qs.return_variable("tension_tether_ground")[mask_qs]
     tension_dyn = phase_dyn.return_variable("tension_tether_ground")[mask_dyn]
-    roll_qs = phase_qs.return_variable("angle_roll")[mask_qs]
-    roll_dyn = phase_dyn.return_variable("angle_roll")[mask_dyn]
+    roll_qs = phase_qs.return_variable("input_steering")[mask_qs]
+    roll_dyn = phase_dyn.return_variable("input_steering")[mask_dyn]
     azimuth_qs = phase_qs.return_variable("angle_azimuth")[mask_qs]
     azimuth_dyn = phase_dyn.return_variable("angle_azimuth")[mask_dyn]
     elevation_qs = phase_qs.return_variable("angle_elevation")[mask_qs]

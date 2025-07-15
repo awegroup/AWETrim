@@ -163,25 +163,54 @@ class PhaseParameterized(TimeSeries):
                 new_state = kite_model.solve_quasi_steady(state_obj, unknown_vars)
                 if new_state:
                     if i < len(s_array) - 1:
-                        s_dot = new_state.s_dot
                         delta_s = s_array[i + 1] - s_array[i]
-                        time_step = delta_s / s_dot  # if s_dot != 0 else 0.01
-                        # print(time_step)
-                    # else:
-                    #     time_step = 0.01
 
+                        if self.quasi_steady:
+                            # Use direct relation from known s_dot
+                            s_dot = new_state.s_dot
+                            time_step = delta_s / s_dot if s_dot != 0 else 0.01
+
+                        else:
+                            # Constant acceleration: solve for time_step using quadratic formula
+                            s_dot = new_state.s_dot
+                            s_ddot = (
+                                new_state.s_ddot
+                                if new_state.s_ddot is not None
+                                else 0.0
+                            )
+
+                            # Equation: Δs = v * Δt + 0.5 * a * Δt^2 → 0.5*a*dt^2 + v*dt - Δs = 0
+                            a = 0.5 * s_ddot
+                            b = s_dot
+                            c = -delta_s
+
+                            discriminant = b**2 - 4 * a * c
+                            if discriminant >= 0 and abs(a) > 1e-8:
+                                sqrt_disc = discriminant**0.5
+                                dt1 = (-b + sqrt_disc) / (2 * a)
+                                dt2 = (-b - sqrt_disc) / (2 * a)
+                                # Pick positive, realistic time step
+                                time_step = dt1 if dt1 > 0 else dt2
+                                if time_step <= 0:
+                                    time_step = 0.01  # fallback
+                            else:
+                                # If acceleration is zero or near-zero, fallback to linear
+                                time_step = delta_s / s_dot if s_dot != 0 else 0.01
+
+                    # Time and state update
                     if self.quasi_steady:
                         t += time_step
                         new_state.t = t
                         new_state.s = s_array[i]
                         new_state.s_ddot = 0
+
                     else:
-                        s_dot += new_state.s_ddot * time_step
+                        s_ddot = new_state.s_ddot
+                        s_dot += s_ddot * time_step
                         t += time_step
                         new_state.s_dot = s_dot
                         new_state.s = s_array[i]
                         new_state.t = t
-
                     # if input_length > 0:
                     #     distance_radial += speed_radial_func(new_state.tension_tether_ground) * time_step
                     #     new_state.distance_radial = distance_radial
@@ -245,18 +274,18 @@ class PhaseParameterized(TimeSeries):
             ts = (sf - si) / s_dot_sym
             timestep_func = ca.Function("t_func", [si, sf, s_dot_sym], [ts])
 
-        path_angle_dot = opti.variable(N)
-        input_steering = opti.variable(N)
-        tension_tether_ground = opti.variable(N)
-
         # Store optimization variables dynamically
         opti_variables = {
             "t": time,
             "s": path_angle,
-            "s_dot": path_angle_dot,
-            "input_steering": input_steering,
-            "tension_tether_ground": tension_tether_ground,
+            "s_dot": opti.variable(N),
+            "input_steering": opti.variable(N),
+            "tension_tether_ground": opti.variable(N),
         }
+        if self.quasi_steady:
+            opti_variables["s_ddot"] = ca.MX.zeros(N)  # Quasi-steady, no acceleration
+        else:
+            opti_variables["s_ddot"] = opti.variable(N)
 
         # Add optimization parameters
         for var in self.optimization_vars:
@@ -271,18 +300,33 @@ class PhaseParameterized(TimeSeries):
 
         print(f"Unknown variable: {unknown_var}")
         self.kite_model.establish_residual()
-        residual = ca.Function(
-            "residual",
-            [
-                self.kite_model.t,
-                self.kite_model.s,
-                self.kite_model.s_dot,
-                self.kite_model.input_steering,
-                unknown_var,
-            ]
-            + pattern_inputs,
-            [self.kite_model.residual],
-        )
+        if self.quasi_steady:
+            residual = ca.Function(
+                "residual",
+                [
+                    self.kite_model.t,
+                    self.kite_model.s,
+                    self.kite_model.s_dot,
+                    self.kite_model.input_steering,
+                    unknown_var,
+                ]
+                + pattern_inputs,
+                [self.kite_model.residual],
+            )
+        else:
+            residual = ca.Function(
+                "residual",
+                [
+                    self.kite_model.t,
+                    self.kite_model.s,
+                    self.kite_model.s_dot,
+                    self.kite_model.s_ddot,
+                    self.kite_model.input_steering,
+                    unknown_var,
+                ]
+                + pattern_inputs,
+                [self.kite_model.residual],
+            )
 
         # Define angle elevation function
         angle_elevation_fun = ca.Function(
@@ -297,7 +341,7 @@ class PhaseParameterized(TimeSeries):
         distance_radial_func = self.kite_model.extract_function("distance_radial")
         print(distance_radial_func)
 
-        power = 0  # Initialize power
+        energy = 0  # Initialize power
         angle_elevation = ca.MX.zeros(N)
 
         def call_distance_radial_func_casadi(func, t, vr=None):
@@ -320,13 +364,24 @@ class PhaseParameterized(TimeSeries):
 
         for i in range(N):
             # Dynamically pass opti variables into residual function
-            residual_inputs = [
-                opti_variables["t"][i],
-                opti_variables["s"][i],
-                opti_variables["s_dot"][i],
-                opti_variables["input_steering"][i],
-                opti_variables["tension_tether_ground"][i],
-            ] + [opti_variables[var] for var in self.optimization_vars]
+            if self.quasi_steady:
+                residual_inputs = [
+                    opti_variables["t"][i],
+                    opti_variables["s"][i],
+                    opti_variables["s_dot"][i],
+                    opti_variables["input_steering"][i],
+                    opti_variables["tension_tether_ground"][i],
+                ] + [opti_variables[var] for var in self.optimization_vars]
+            else:
+                # For dynamic case, include s_ddot
+                residual_inputs = [
+                    opti_variables["t"][i],
+                    opti_variables["s"][i],
+                    opti_variables["s_dot"][i],
+                    opti_variables["s_ddot"][i],
+                    opti_variables["input_steering"][i],
+                    opti_variables["tension_tether_ground"][i],
+                ] + [opti_variables[var] for var in self.optimization_vars]
             res = residual(*residual_inputs)
             # opti.subject_to(ca.norm_2(res) <= 1e-2)
             # print(res)
@@ -336,30 +391,52 @@ class PhaseParameterized(TimeSeries):
 
             if time_array is not None:
 
-                # Compute power
                 time_step = (
                     (time_array[i + 1] - time_array[i])
                     if i < len(time_array) - 1
-                    else 1.0
+                    else 0.1
                 )
 
                 # Add dynamic constraint on path angle
                 if i < len(time_array) - 1:
                     opti.subject_to(
                         path_angle[i + 1]
-                        == path_angle[i] + time_step * path_angle_dot[i]
+                        == path_angle[i] + time_step * opti_variables["s_dot"][i]
                     )
+                    if not self.quasi_steady:
+                        opti.subject_to(
+                            opti_variables["s_ddot"][i]
+                            == (
+                                opti_variables["s_dot"][i + 1]
+                                - opti_variables["s_dot"][i]
+                            )
+                            / time_step
+                        )
 
             elif s_array is not None:
 
                 if i < len(s_array) - 1:
-                    time_step = (
-                        opti_variables["s"][i + 1] - opti_variables["s"][i]
-                    ) / opti_variables["s_dot"][i]
+                    delta_s = s_array[i + 1] - s_array[i]
+
+                    # Avoid divide-by-zero
+                    epsilon = 1e-6
+                    time_step = delta_s / (opti_variables["s_dot"][i] + epsilon)
+
+                    if not self.quasi_steady:
+                        # Euler update for s_dot
+                        opti.subject_to(
+                            opti_variables["s_dot"][i + 1]
+                            == opti_variables["s_dot"][i]
+                            + opti_variables["s_ddot"][i] * time_step
+                        )
+
+                    # Euler update for time
                     opti.subject_to(time[i + 1] == time[i] + time_step)
 
-            power += (
-                tension_tether_ground[i]
+                    # # Optional: explicitly relate s_ddot to s_dot differences (redundant, but valid if needed)
+                    # opti.subject_to(s_ddot[i] == (s_dot[i + 1] - s_dot[i]) / time_step)
+            energy += (
+                opti_variables["tension_tether_ground"][i]
                 * time_step
                 * call_vr_func(vr_func, opti_variables["vr"])
             )
@@ -371,14 +448,16 @@ class PhaseParameterized(TimeSeries):
                 *[opti_variables[var] for var in self.optimization_vars],
             )
 
-        reelin_speed = 6
-        reelin_time = 0  # distance / reelin_speed
+        # reelin_speed = 6
+        # reelin_time = 0  # distance / reelin_speed
+        # # Normalize power
+        # power = (
+        #     (power - 1000 * reelin_speed * reelin_time)
+        #     / (time[-1] + reelin_time)
+        #     / 1000
+        # )
         # Normalize power
-        power = (
-            (power - 1000 * reelin_speed * reelin_time)
-            / (time[-1] + reelin_time)
-            / 1000
-        )
+        power = energy / (time[-1] - time[0]) / 1000
 
         ### APPLY CONSTRAINTS DYNAMICALLY FROM DEFAULT_OPTI_LIMITS ###
         for var_name, opti_var in opti_variables.items():
@@ -401,6 +480,7 @@ class PhaseParameterized(TimeSeries):
 
         ### APPLY INITIAL VALUES FROM RESULTS ###
         opti.subject_to(time[0] == self.return_variable("t")[0])
+        opti.subject_to(opti_variables["s_dot"][0] == self.return_variable("s_dot")[0])
         opti.set_initial(opti_variables["t"], self.return_variable("t"))
 
         # opti.set_initial(opti_variables["s"], self.return_variable("s"))
