@@ -9,6 +9,7 @@ from picawe.timeseries.phase_parametrized import PhaseParameterized
 from picawe.system.kite import Kite
 from picawe.system.tether import FlexibleLumpedTether, RigidLumpedTether
 from picawe.utils.defaults import PLOT_LABELS
+from scipy.interpolate import interp1d
 
 # -------------------- Configuration --------------------
 # file_path = "./data/LEI-V3-KITE/v3_aero_input.json"
@@ -24,7 +25,7 @@ pattern_config = {
     "parameters": {
         "omega": -1.0,
         "r0": 300.0,
-        "d0": 110.0,
+        "d0": 130.0,
         "vr": 1.5,
         "beta0": 25 / 180 * np.pi,  # Convert degrees to radians
         "kappa": 1,
@@ -45,9 +46,9 @@ pattern_config = {
         "r0": 200.0,
         "ry": 70,
         "rz": 60,
-        "ky": 0.8,
+        "ky": 0.6,
         "kz": 0.6,
-        "vr": wind_speed / 3,
+        "vr": 1,
         "beta0": 0.35,
         "kappa": 0,
     },
@@ -66,7 +67,7 @@ pattern_config = {
     },
 }
 
-mass_ratio = 1
+mass_ratio = 2
 area_wing = 10
 s_array = np.linspace(-np.pi / 2, 2 * 2 * np.pi + np.pi / 2, 800)
 save_folder = "./results/figures/"
@@ -230,6 +231,48 @@ print(
 print("Mean tether tension difference:", mean_tension_diff)
 print("Difference in energy:", sum_force_work_diff)
 print("Power difference:", (sum_pow_dyn - sum_pow_qs) / sum_pow_dyn * 100)
+
+# Assegurem que estem comparant les dues senyals sobre el mateix temps
+t_common = np.linspace(max(t_qs[0], t_dyn[0]), min(t_qs[-1], t_dyn[-1]), 1000)
+
+# Interpolació de les dues senyals
+vtau_qs_interp = interp1d(t_qs, vtau_qs, kind="linear", fill_value="extrapolate")(
+    t_common
+)
+vtau_dyn_interp = interp1d(t_dyn, vtau_dyn, kind="linear", fill_value="extrapolate")(
+    t_common
+)
+
+# Treure la mitjana per a centrar les senyals
+v1 = vtau_qs_interp - np.mean(vtau_qs_interp)
+v2 = vtau_dyn_interp - np.mean(vtau_dyn_interp)
+
+# Correlació creuada
+corr = np.correlate(v1, v2, mode="full")
+lags = np.arange(-len(v1) + 1, len(v1))
+dt = t_common[1] - t_common[0]
+time_lags = lags * dt
+
+# Trobar retard
+best_lag_index = np.argmax(corr)
+best_lag_seconds = time_lags[best_lag_index]
+
+print(f"Retard temporal estimat: {best_lag_seconds:.3f} segons")
+plt.figure()
+# Gràfic de la correlació
+plt.plot(time_lags, corr)
+plt.xlabel("Retard (s)")
+plt.ylabel("Correlació")
+plt.title("Correlació creuada entre vtau_qs i vtau_dyn")
+plt.axvline(
+    best_lag_seconds,
+    color="r",
+    linestyle="--",
+    label=f"Retard: {best_lag_seconds:.3f} s",
+)
+plt.legend()
+plt.grid(True)
+plt.show()
 
 
 # Mark max and min vtau on left-hand plots
