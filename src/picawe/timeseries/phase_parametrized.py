@@ -480,7 +480,10 @@ class PhaseParameterized(TimeSeries):
 
         ### APPLY INITIAL VALUES FROM RESULTS ###
         opti.subject_to(time[0] == self.return_variable("t")[0])
-        opti.subject_to(opti_variables["s_dot"][0] == self.return_variable("s_dot")[0])
+        if not self.quasi_steady:
+            opti.subject_to(
+                opti_variables["s_dot"][0] == self.return_variable("s_dot")[0]
+            )
         opti.set_initial(opti_variables["t"], self.return_variable("t"))
 
         # opti.set_initial(opti_variables["s"], self.return_variable("s"))
