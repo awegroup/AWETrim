@@ -6,8 +6,8 @@ from picawe import Cycle
 with open("./data/V11/v11_aero_input.json", "r") as file:
     aero_input = json.load(file)
 
-# with open("./data/LEI-V9-KITE/v9_aero_input2.json", "r") as file:
-#     aero_input = json.load(file)
+with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
+    aero_input = json.load(file)
 
 # -------------------- Simulation Config --------------------
 SIMULATION_CONFIG = {
@@ -41,7 +41,7 @@ PATTERN_CONFIG = {
         "input_depower": 0.0,
     },
     "start_path_angle": -np.pi / 4,
-    "end_path_angle": np.pi / 4 + 2 * np.pi,
+    "end_path_angle": np.pi / 4 + 2 * np.pi + np.pi / 8,
     "n_points": 400,
     "quasi_steady": True,
 }
@@ -53,9 +53,10 @@ CYCLE_SETTINGS = {
         "control": {
             "max_elevation": np.radians(100),
             "min_elevation": np.radians(25),
-            "reeling_speed": -2.5,
+            "reeling_speed": -3,
             "min_tether_force": SIMULATION_CONFIG["mass_wing"] * 9.81,
             "length_tether_ro": PATTERN_CONFIG["parameters"]["r0"],
+            "ri_elevation": np.radians(40),  # Initial elevation for reeling in
         },
         "initial_state": {
             "angle_course": 0,
@@ -66,7 +67,7 @@ CYCLE_SETTINGS = {
             "tension_tether_ground": 1e6,
         },
         "time_step": 0.1,
-        "quasi_steady": False,
+        "quasi_steady": True,
     },
 }
 
