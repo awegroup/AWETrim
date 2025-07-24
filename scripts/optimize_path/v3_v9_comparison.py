@@ -23,25 +23,6 @@ with open(file_path, "r") as file:
 # Define the parametrized path
 # -----------------------------------------------
 wind_speed = 12  # m/s
-pattern_config = {
-    "pattern_type": "helix",
-    "parameters": {
-        "omega": -1.0,
-        "r0": 600.0,
-        "d0": 227.0,
-        "vr": 4,
-        "beta0": 25 / 180 * np.pi,  # Convert degrees to radians
-        "kappa": 1,
-        "kbeta": 0,
-    },
-    "start_path_angle": -np.pi / 2,
-    "end_path_angle": 4 * np.pi + 3 * np.pi / 2,
-    "n_points": 400,
-    "optimization_parameters": {
-        "d0",
-    },
-}
-
 start_state = State(
     t=0,
     s=np.pi / 2,
@@ -69,7 +50,7 @@ fig, axs = plt.subplots(len(parameters), 1, figsize=(10, 4), sharex=True)
 
 N = 1
 tether = RigidLumpedTether(diameter=0.01)
-mass_wing = 78
+mass_wing = 90
 area_wing = 47
 phases_qs = []
 phases_dyn = []
@@ -80,10 +61,10 @@ for i in range(N):
         "parameters": {
             "omega": -1.0,
             "r0": 200.0,
-            "ry": 90,
+            "ry": 70,
             "rz": 60,
-            "ky": 0.7,
-            "kz": 0.7,
+            "ky": 0.5,
+            "kz": 0.5,
             "vr": 1,
             "beta0": 0.35,
             "kappa": 0,
@@ -93,11 +74,11 @@ for i in range(N):
         "n_points": 100,
         "optimization_parameters": {
             # Add any optimization-related parameters here if needed as list of names
-            # "ry",
-            # "rz",
-            "ky",
-            "kz",
-            "kappa",
+            "ry",
+            "rz",
+            # "ky",
+            # "kz",
+            # "kappa",
             # "beta",
             # "vr",
         },
