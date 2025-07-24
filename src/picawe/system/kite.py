@@ -84,7 +84,12 @@ class Wing:
                     # C_L = ca.if_else(
                     #     variables["alpha"] <= alpha_max,
                     #     C_L,
-                    #     1.2,
+                    #     1.1,
+                    # )
+                    # C_D = ca.if_else(
+                    #     variables["alpha"] <= alpha_max,
+                    #     C_D,
+                    #     0.3,
                     # )
             C_L = C_L * ca.cos(self.input_steering * self.k_steering)
             C_S = C_L * ca.sin(self.input_steering * self.k_steering)
@@ -103,13 +108,13 @@ class Wing:
     def lift_coefficient(self):
         if self._lift_coefficient is None:
             self._lift_coefficient = self.aerodynamic_force_coefficients[0]
-        return self.aerodynamic_force_coefficients[0]
+        return self._lift_coefficient
 
     @property
     def drag_coefficient(self):
         if self._drag_coefficient is None:
             self._drag_coefficient = self.aerodynamic_force_coefficients[1]
-        return self.aerodynamic_force_coefficients[1]
+        return self._drag_coefficient
 
     @property
     def aerodynamic_moment_coefficients(self):
@@ -161,13 +166,16 @@ class Wing:
         Compute the angle of attack based on the air velocity vector and tether angle.
         """
         # print("angle_pitch_aerodynamic:",self.angle_pitch_aerodynamic)
-        angle_of_attack = (
-            self.angle_pitch_aerodynamic + self.angle_pitch_depower - self.angle_pitch
-        )
+
         if self._angle_of_attack is None:
+            angle_of_attack = (
+                self.angle_pitch_aerodynamic
+                + self.angle_pitch_depower
+                - self.angle_pitch
+            )
             self._angle_of_attack = angle_of_attack
 
-        return angle_of_attack
+        return self._angle_of_attack
 
     @property
     def velocity_apparent_wind(self):
