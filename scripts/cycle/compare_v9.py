@@ -101,8 +101,8 @@ def find_RO_pattern_param(df_RO):
     df_RO = df_RO.reset_index(drop=True)
 
     def extract_complete_peaks(sig):
-        peaks, _ = signal.find_peaks(sig, distance=5)
-        valleys, _ = signal.find_peaks(-sig, distance=5)
+        peaks, _ = signal.find_peaks(sig, distance=10)
+        valleys, _ = signal.find_peaks(-sig, distance=10)
 
         complete_peaks = []
 
@@ -154,7 +154,7 @@ results = []
 import matplotlib.pyplot as plt
 
 valid_cycle_dfs = []
-for df in cycle_dfs[2:-2]:
+for df in cycle_dfs[2:10]:
     # df = df.reset_index(drop=True)
     # plt.plot(df.tether_reelout_speed, label="Kite Actual Depower")
     # plt.show()
@@ -186,6 +186,34 @@ for df in cycle_dfs[2:-2]:
     # plt.show()
     ground_mech_power = df.ground_tether_force * df.tether_reelout_speed
     df["ground_mech_power"] = ground_mech_power
+
+    energy_ro = np.sum(ground_mech_power[df.kcu_actual_depower < 42] * 0.1)
+    energy_ri = np.sum(ground_mech_power[df.kcu_actual_depower > 42] * 0.1)
+    print(
+        f"Energy RO: {energy_ro:.2f} J, Energy RI: {energy_ri:.2f} J, Total: {energy_ro + energy_ri:.2f} J"
+    )
+
+    dt = np.diff(df.time, prepend=df.time[0])
+    dt_ri = dt[df.kcu_actual_depower > 42]
+    dt_ro = dt[df.kcu_actual_depower < 42]
+    wind_speed_cols = [col for col in df.columns if col.endswith("m_Wind_Speed_m_s")]
+
+    # Parse heights from column names (e.g., "200m_Wind_Speed_m_s" → 200.0)
+    heights = [float(col.split("m_")[0]) for col in wind_speed_cols]
+
+    # Compute average wind speed at each height
+    mean_speeds = [np.mean(df[col]) for col in wind_speed_cols]
+
+    # Convert to tabulated format
+    tabulated_heights = list(heights)
+    tabulated_speeds = list(mean_speeds)
+
+    # Optional: sort by height
+    tabulated_heights, tabulated_speeds = zip(
+        *sorted(zip(tabulated_heights, tabulated_speeds))
+    )
+    tabulated_heights = list(tabulated_heights)
+    tabulated_speeds = list(tabulated_speeds)
     results.append(
         {
             "RO_max_azimuth_rad": max_az_trac,
@@ -198,18 +226,18 @@ for df in cycle_dfs[2:-2]:
             "min_reeling_speed_RI_mps": np.min(
                 df[df.kcu_actual_depower > 42].tether_reelout_speed
             ),
-            "wind_speed_200m_mps": np.mean(df["200m_Wind_Speed_m_s"]),
-            "avg_mechanical_power": np.mean(df.ground_mech_power),
+            "tabulated_heights": tabulated_heights,
+            "tabulated_speeds": tabulated_speeds,
+            "avg_mechanical_power": np.sum(df.ground_mech_power * 0.1)
+            / (df.time.iloc[-1] - df.time.iloc[0]),
             "avg_mechanical_power_RO": np.mean(
                 df[df.kcu_actual_depower < 42].ground_mech_power
             ),
             "avg_mechanical_power_RI": np.mean(
                 df[df.kcu_actual_depower > 42].ground_mech_power
             ),
-            "total_time_RO": df[df.kcu_actual_depower < 42].time.max()
-            - df[df.kcu_actual_depower < 42].time.min(),
-            "total_time_RI": df[df.kcu_actual_depower > 42].time.max()
-            - df[df.kcu_actual_depower > 42].time.min(),
+            "total_time_RO": np.sum(dt_ro),
+            "total_time_RI": np.sum(dt_ri),
             "n_peaks_RO": n_peaks,
         }
     )
@@ -224,7 +252,9 @@ from picawe import Cycle
 
 
 # Function to simulate experimental cycles using stats extracted from flight logs
-def simulate_cycles_from_stats(aero_input_path, sim_config, flight_stats):
+def simulate_cycles_from_stats(
+    aero_input_path, sim_config, flight_stats, cycle_dfs=None
+):
     with open(aero_input_path, "r") as file:
         aero_input = json.load(file)
 
@@ -233,7 +263,6 @@ def simulate_cycles_from_stats(aero_input_path, sim_config, flight_stats):
         az_max = row["RO_max_azimuth_rad"]
         rel_elevation = row["RO_rel_elevation_rad"]
         avg_elevation = row["RO_avg_elevation_rad"]
-        print(row["n_peaks_RO"], "peaks in RO cycle")
         r0 = row["RO_min_tether_length_m"]
         ry = r0 * np.sin(az_max)
         rz = r0 * np.sin(rel_elevation) * 2 / 0.8
@@ -256,14 +285,12 @@ def simulate_cycles_from_stats(aero_input_path, sim_config, flight_stats):
                 "input_depower": 0.0,
             },
             "start_path_angle": -np.pi / 2,
-            "end_path_angle": np.pi / 2 + np.pi,
+            "end_path_angle": np.pi / 2 + np.pi * (row["n_peaks_RO"] - 2) + np.pi / 4,
             "n_points": 300,
             "quasi_steady": True,
         }
-        print(pattern_config)
         # raise ValueError("Pattern config not implemented yet")
         # print("reeling speed RO:", row["avg_reeling_speed_RO_mps"])
-        print("avg reeling speed RI:", row["avg_reeling_speed_RI_mps"])
         # print("min reeling speed RI:", row["min_reeling_speed_RI_mps"])
         CYCLE_SETTINGS = {
             "reelout": pattern_config,
@@ -271,9 +298,10 @@ def simulate_cycles_from_stats(aero_input_path, sim_config, flight_stats):
                 "control": {
                     "max_elevation": np.radians(100),
                     "min_elevation": np.radians(25),
-                    "reeling_speed": -2.5,
+                    "reeling_speed": row["avg_reeling_speed_RI_mps"],
                     "min_tether_force": sim_config["mass_wing"] * 9.81,
                     "length_tether_ro": pattern_config["parameters"]["r0"],
+                    "ri_elevation": np.radians(40),  # Initial elevation for reeling in
                 },
                 "initial_state": {
                     "angle_course": 0,
@@ -284,17 +312,13 @@ def simulate_cycles_from_stats(aero_input_path, sim_config, flight_stats):
                     "tension_tether_ground": 1e4,
                 },
                 "time_step": 0.1,
-                "quasi_steady": False,
+                "quasi_steady": True,
             },
         }
         # --- Energy calculations ---
 
-        speed_friction = (
-            row["wind_speed_200m_mps"] * 0.4 / np.log(200 / sim_config["z0"])
-        )
-        # print(f"Wind speed at 100m: {row['wind_speed_100m_mps']} m/s")
-        print(f"Wind speed at 100m: {speed_friction} m/s")
-        sim_config["speed_friction"] = speed_friction
+        sim_config["tabulated_heights"] = row["tabulated_heights"]
+        sim_config["tabulated_speeds"] = row["tabulated_speeds"]
         cycle_sim = Cycle(aero_input, sim_config)
         # dt_reelout = np.diff(phase_ro.return_variable("t"), prepend=0.0)
         # total_reelout_time = np.sum(dt_reelout)
@@ -303,7 +327,10 @@ def simulate_cycles_from_stats(aero_input_path, sim_config, flight_stats):
 
             energy_ro = np.sum(
                 phase_ro.return_variable("mechanical_power")
-                * np.diff(phase_ro.return_variable("t"), prepend=0.0)
+                * np.diff(
+                    phase_ro.return_variable("t"),
+                    prepend=phase_ro.return_variable("t")[0],
+                )
             )
             energy_ri = np.sum(
                 phase_ri.return_variable("mechanical_power")
@@ -312,7 +339,6 @@ def simulate_cycles_from_stats(aero_input_path, sim_config, flight_stats):
                     prepend=phase_ri.return_variable("t")[0],
                 )
             )
-            print(energy_ro, energy_ri)
             avg_power_ro = energy_ro / (
                 phase_ro.return_variable("t")[-1] - phase_ro.return_variable("t")[0]
             )
@@ -327,7 +353,10 @@ def simulate_cycles_from_stats(aero_input_path, sim_config, flight_stats):
                 if phase_ri is not None
                 else 0
             )
-            avg_power = (energy_ro + energy_ri) / (phase_ri.return_variable("t")[-1])
+            avg_power = (energy_ro + energy_ri) / (
+                (phase_ri.return_variable("t")[-1] - phase_ri.return_variable("t")[0])
+                + (phase_ro.return_variable("t")[-1] - phase_ro.return_variable("t")[0])
+            )
             results = {
                 # Reelout (RO) phase
                 "RO_max_azimuth_rad": phase_ro.return_variable("angle_azimuth")[-1],
@@ -355,8 +384,54 @@ def simulate_cycles_from_stats(aero_input_path, sim_config, flight_stats):
                     else np.nan
                 ),
             }
-            print
+            if cycle_dfs is not None:
+                time_ro = (
+                    phase_ro.return_variable("t")
+                    + phase_ri.return_variable("t")[-1]
+                    - phase_ri.return_variable("t")[0]
+                )
+                time_ri = (
+                    phase_ri.return_variable("t") - phase_ri.return_variable("t")[0]
+                )
+                plt.figure()
+                plt.plot(
+                    cycle_dfs[i]["time"] - cycle_dfs[i]["time"].iloc[0],
+                    cycle_dfs[i]["ground_tether_force"],
+                    label="Cycle DFS",
+                )
+                plt.plot(
+                    time_ro,
+                    phase_ro.return_variable("tension_tether_ground"),
+                    label="Reelout Tension",
+                )
+                plt.plot(
+                    time_ri,
+                    phase_ri.return_variable("tension_tether_ground"),
+                    label="Reelin Tension",
+                )
+                plt.xlabel("Wind Speed at 200m (m/s)")
+                plt.ylabel("Mechanical Power (W)")
+                plt.legend()
+
+                plt.figure()
+                plt.plot(
+                    time_ri,
+                    phase_ri.return_variable("speed_radial"),
+                    label="Reelin Speed Radial",
+                )
+                plt.plot(
+                    time_ro,
+                    phase_ro.return_variable("speed_radial"),
+                    label="Reelout Speed Radial",
+                )
+                plt.plot(
+                    cycle_dfs[i]["time"] - cycle_dfs[i]["time"].iloc[0],
+                    cycle_dfs[i]["tether_reelout_speed"],
+                    label="Cycle DFS Reelout Speed",
+                )
+                plt.show()
             cycle_results.append(results)
+
         except Exception as e:
             print(f"Cycle {i+1} simulation failed: {e}")
             cycle_results.append(
@@ -377,25 +452,23 @@ def simulate_cycles_from_stats(aero_input_path, sim_config, flight_stats):
 
 
 # Store the code in a callable function for later use
-def run_flight_log_simulation(df_results):
+def run_flight_log_simulation(df_results, cycle_dfs=None):
     aero_input_path = "./data/LEI-V9-KITE/v9_aero_input.json"
     SIMULATION_CONFIG = {
         "dof": 3,
         "area_wing": 47,
-        "mass_wing": 78,
+        "mass_wing": 90,
         "mass_kcu": 0,  # Assuming no mass for KCU in this simulation
         "tether_diameter": 0.014,
         "quasi_steady": True,
-        "wind_model": "logarithmic",
-        "speed_friction": 0.45,
-        "z0": 0.1,
+        "wind_model": "tabulated",
         "steering_control": "roll",
     }
     return simulate_cycles_from_stats(aero_input_path, SIMULATION_CONFIG, df_results)
 
 
 # Run the simulation with the extracted flight log statistics
-cycle_results = run_flight_log_simulation(df_results)
+cycle_results = run_flight_log_simulation(df_results, cycle_dfs)
 import matplotlib.pyplot as plt
 
 plt.figure(figsize=(12, 8))
@@ -427,14 +500,20 @@ plt.ylabel("Mechanical Power (W)")
 plt.legend()
 # plt.show()
 
+wind_speed_200m = []
+for i, row in df_results.iterrows():
+    idx_200_height = row["tabulated_heights"].index(200)
+    wind_speed_200m.append(row["tabulated_speeds"][idx_200_height])
+
+
 plt.figure(figsize=(12, 8))
 plt.scatter(
-    df_results["wind_speed_200m_mps"],
+    wind_speed_200m,
     cycle_results["avg_mechanical_power"],
     label="Avg Mechanical Power",
 )
 plt.scatter(
-    df_results["wind_speed_200m_mps"],
+    wind_speed_200m,
     df_results["avg_mechanical_power"],
     label="Flight Log Avg Mechanical Power",
     linestyle="--",
@@ -463,6 +542,15 @@ plt.plot(
 plt.plot(cycle_results["total_time_RI"], label="RI Total Time (s)")
 plt.plot(
     df_results["total_time_RI"], label="Flight Log RI Total Time (s)", linestyle="--"
+)
+plt.plot(
+    cycle_results["total_time_RO"] + cycle_results["total_time_RI"],
+    label="Total Time (s)",
+)
+plt.plot(
+    df_results["total_time_RO"] + df_results["total_time_RI"],
+    label="Flight Log Total Time (s)",
+    linestyle="--",
 )
 plt.xlabel("Cycle Index")
 plt.ylabel("Total Time (s)")

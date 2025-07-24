@@ -11,8 +11,20 @@ class Cycle:
     def __init__(self, aero_input, sim_config):
         self.aero_input = aero_input
         self.sim_config = sim_config
-        self.wind_model = Wind(wind_model=sim_config["wind_model"], z0=sim_config["z0"])
-        self.wind_model.speed_friction = sim_config["speed_friction"]
+        if sim_config["wind_model"] == "logarithmic":
+            self.wind_model = Wind(
+                wind_model=sim_config["wind_model"], z0=sim_config["z0"]
+            )
+            self.wind_model.speed_friction = sim_config["speed_friction"]
+        elif sim_config["wind_model"] == "uniform":
+            self.wind_model = Wind(wind_model=sim_config["wind_model"])
+            self.wind_model._speed_wind_ref = sim_config["speed_wind_ref"]
+        elif sim_config["wind_model"] == "tabulated":
+            self.wind_model = Wind(
+                wind_model=sim_config["wind_model"],
+                tabulated_heights=sim_config["tabulated_heights"],
+                tabulated_speeds=sim_config["tabulated_speeds"],
+            )
         self.kite = Kite(
             mass_wing=sim_config["mass_wing"],
             area_wing=sim_config["area_wing"],
@@ -30,7 +42,12 @@ class Cycle:
             wind_model=self.wind_model,
             tether=self.tether,
         )
-        model.wind.speed_friction = self.sim_config["speed_friction"]
+        if self.sim_config["wind_model"] == "logarithmic":
+            model.wind.z0 = self.sim_config["z0"]
+            model.wind.speed_friction = self.sim_config["speed_friction"]
+        elif self.sim_config["wind_model"] == "uniform":
+            model.wind.speed_wind_ref = self.sim_config["speed_wind_ref"]
+        # model.wind.speed_friction = self.sim_config["speed_friction"]
         return model
 
     def run_cycle(self, cycle_settings):
