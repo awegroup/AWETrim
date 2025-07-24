@@ -76,21 +76,33 @@ phases_dyn = []
 for i in range(N):
 
     pattern_config = {
-        "pattern_type": "helix",
+        "pattern_type": "figure_eight",
         "parameters": {
             "omega": -1.0,
             "r0": 200.0,
-            "d0": 50.0,
+            "ry": 90,
+            "rz": 60,
+            "ky": 0.7,
+            "kz": 0.7,
             "vr": 1,
-            "beta0": 25 / 180 * np.pi,  # Convert degrees to radians
-            "kappa": 1,
-            "kbeta": 0,
+            "beta0": 0.35,
+            "kappa": 0,
         },
         "start_path_angle": -np.pi / 2,
         "end_path_angle": 2 * np.pi + np.pi / 2,
-        "n_points": 50,
-        "optimization_parameters": {"d0", "vr"},
+        "n_points": 100,
+        "optimization_parameters": {
+            # Add any optimization-related parameters here if needed as list of names
+            # "ry",
+            # "rz",
+            "ky",
+            "kz",
+            "kappa",
+            # "beta",
+            # "vr",
+        },
     }
+
     for quasi_steady in [True, False]:  # Loop over both dynamic and quasi-steady cases
 
         # aero_input["params"]["angle_pitch_depower_0"] = thetat
