@@ -23,7 +23,7 @@ save_folder = "./results/figures/translational_paper/"
 # file_name = "helix_quasi_steady.csv"
 # results = pd.read_csv(os.path.join(file_path, file_name))
 
-set_plot_style_no_latex()
+set_plot_style()
 # Define aerodynamic input
 file_path = "./data/LEI-V9-KITE/v9_aero_input.json"
 with open(file_path, "r") as file:
@@ -130,14 +130,14 @@ plt.xlabel(r"Course angle $\chi$ ($^\circ$)")
 plt.ylabel(r"Optimal reeling factor $f$ (-)")
 # Save the figure as pdf
 plt.tight_layout()
-# plt.savefig(save_folder + "optimal_reeling_factor_elevation.pdf")
-plt.show()
+plt.savefig(save_folder + "optimal_reeling_factor_elevation.pdf")
+# plt.show()
 
 
 angles_azimuth = np.linspace(0, 45, 10) / 180 * np.pi
 angles_course = np.linspace(0, 2 * np.pi, 100)
-f_az = np.zeros((len(angles_elevation), len(angles_course)))
-ft_az = np.zeros((len(angles_elevation), len(angles_course)))
+f_az = np.zeros((len(angles_azimuth), len(angles_course)))
+ft_az = np.zeros((len(angles_azimuth), len(angles_course)))
 for i, angle_azimuth in enumerate(angles_azimuth):
     for j, angle_course in enumerate(angles_course):
         opti = ca.Opti()
@@ -170,7 +170,7 @@ for i, angle_azimuth in enumerate(angles_azimuth):
         opti.solver("ipopt", solver_options)
         try:
             sol = opti.solve()
-            f[i, j] = sol.value(reeling_factor)
+            f_az[i, j] = sol.value(reeling_factor)
             ft[i, j] = sol.value(200 - length_tether)
         except:
             print("Solver failed")
@@ -179,24 +179,24 @@ for i, angle_azimuth in enumerate(angles_azimuth):
 
 X, Z = np.meshgrid(np.degrees(angles_course), np.degrees(angles_azimuth))
 
-Y = f
-Y1 = ft / (0.5 * 1.225 * speed_wind**2 / f * state.area_wing)
+Y = f_az
+# Y1 = ft / (0.5 * 1.225 * speed_wind**2 / f * state.area_wing)
 
 print(max(ft[0, :]))
 
 fig = plt.figure(figsize=(5, 4))
 
-contour = plt.contour(X, Y, Z, levels=5, colors="black")  # Contour lines
-contour1 = plt.contour(X, Y1, Z, levels=5, colors="red")  # Contour lines
+contour = plt.contour(X, Y, Z, levels=4, colors="black")  # Contour lines
+# contour1 = plt.contour(X, Y1, Z, levels=5, colors="red")  # Contour lines
 plt.clabel(contour, inline=True, fontsize=12, fmt="%.2f")  # Remove line at label
-plt.clabel(contour1, inline=True, fontsize=12, fmt="%.2f")  # Remove line at label
+# plt.clabel(contour1, inline=True, fontsize=12, fmt="%.2f")  # Remove line at label
 # Set x-ticks explicitly
 plt.xticks([0, 90, 180, 270, 360])
 plt.xlabel(r"Course angle $\chi$ ($^\circ$)")
 plt.ylabel(r"Optimal reeling factor $f$ (-)")
 # Save the figure as pdf
 plt.tight_layout()
-# plt.savefig(save_folder + "optimal_reeling_factor_azimuth.pdf")
+plt.savefig(save_folder + "optimal_reeling_factor_azimuth.pdf")
 
 
 colors = get_color_list()

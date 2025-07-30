@@ -62,11 +62,52 @@ class Helix(ParametrizedPatterns):
         return ca.sqrt(r**2 - yd**2 - zd**2)
 
 
+class LissajousAngles(ParametrizedPatterns):
+    def __init__(self, omega, r0, az_amp0, beta_amp0, vr, beta0, kappa=0, kbeta=0):
+        super().__init__(
+            omega=omega,
+            r0=r0,
+            az_amp0=az_amp0,
+            beta_amp0=beta_amp0,
+            vr=vr,
+            beta0=beta0,
+            kappa=kappa,
+            kbeta=kbeta,
+        )
+
+    def beta(self, t):
+        return self.beta0 * (1 + self.kbeta * (self.r0 / self.r(t) - 1))
+
+    def r(self, t):
+        return self.r0 + self.vr * t
+
+    def az_amp(self, t):
+        return self.az_amp0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+
+    def beta_amp(self, t):
+        return self.beta_amp0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+
+    def azimuth(self, t, s):
+        return self.az_amp(t) * ca.cos(self.omega * s)
+
+    def elevation(self, t, s):
+        return self.beta_amp(t) * ca.sin(self.omega * s) * ca.cos(
+            self.omega * s
+        ) + self.beta(t)
+
+
 class Lissajous(ParametrizedPatterns):
 
-    def __init__(self, omega, r0, a0, h0, vr, beta0, kappa=0):
+    def __init__(self, omega, r0, a0, h0, vr, beta0, kappa=0, kbeta=0):
         super().__init__(
-            omega=omega, r0=r0, a0=a0, h0=h0, vr=vr, beta0=beta0, kappa=kappa
+            omega=omega,
+            r0=r0,
+            a0=a0,
+            h0=h0,
+            vr=vr,
+            beta0=beta0,
+            kappa=kappa,
+            kbeta=kbeta,
         )
 
     def beta(self, t):
@@ -218,7 +259,16 @@ def create_pattern_from_dict(
 
     required_params = {
         "helix": ["omega", "r0", "d0", "vr", "beta0", "kappa"],
-        "lissajous": ["omega", "r0", "a0", "h0", "vr", "beta", "kappa"],
+        "lissajous": ["omega", "r0", "a0", "h0", "vr", "beta0", "kappa"],
+        "lissajous_angles": [
+            "omega",
+            "r0",
+            "az_amp0",
+            "beta_amp0",
+            "vr",
+            "beta0",
+            "kappa",
+        ],
         "figure_eight": ["omega", "r0", "ry", "rz", "vr", "beta0", "ky", "kz", "kappa"],
         "figure_eight_angles": [
             "omega",
@@ -255,6 +305,7 @@ def create_pattern_from_dict(
     pattern_classes = {
         "helix": Helix,
         "lissajous": Lissajous,
+        "lissajous_angles": LissajousAngles,
         "figure_eight": FigureEight,
         "figure_eight_angles": FigureEightAngles,
     }

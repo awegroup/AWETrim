@@ -11,58 +11,40 @@ from picawe.system.tether import RigidLumpedTether
 from picawe.utils.defaults import PLOT_LABELS
 
 # ---------- Config ----------
-wind_speed = 10
+wind_speed = 15  # m/s
 colors = get_color_list()
 
 # ---------- Paths ----------
-with open("./data/LEI-V3-KITE/v3_aero_input.json", "r") as file:
-    aero_input_v3 = json.load(file)
-with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
-    aero_input_v9 = json.load(file)
+with open("./data/AP2/ap2_aero_input.json", "r") as file:
+    aero_input_ap2 = json.load(file)
 
 # ---------- Pattern configs ----------
-pattern_config_v3 = {
-    "pattern_type": "lissajous_angles",
+mass_ap2 = 35
+area_ap2 = 3
+tether_diameter_ap2 = 0.0025
+pattern_config_ap2 = {
+    "pattern_type": "helix",
     "parameters": {
         "omega": -1.0,
-        "r0": 200.0,
-        "az_amp0": np.radians(20),
-        "beta_amp0": np.radians(10),
-        # "ky": 1,
-        # "kz": 1,
-        "vr": 1,
-        "beta0": 0.55,
-        "kappa": 0,
-    },
-    "start_time": 0,
-    "end_time": 100,
-    "n_points": 600,
-    "optimization_parameters": ["vr", "kappa"],
-}
-pattern_config_v9 = {
-    "pattern_type": "lissajous_angles",
-    "parameters": {
-        "omega": -1.0,
-        "r0": 220.0,
-        "az_amp0": np.radians(40),
-        "beta_amp0": np.radians(20),
-        # "ky": 1,
-        # "kz": 1,
-        "vr": 1.5,
-        "beta0": 0.5,
-        "kappa": 0,
+        "r0": 400.0,
+        "d0": 100.0,
+        "vr": 0.5,
+        "beta0": 25 / 180 * np.pi,  # Convert degrees to radians
+        "kappa": 1,
+        "kbeta": 0,
     },
     "start_path_angle": -np.pi / 2,
-    "end_path_angle": 2 * np.pi + np.pi / 2,
-    "n_points": 600,
-    "optimization_parameters": ["vr", "kappa"],
+    "end_path_angle": 4 * np.pi + 3 * np.pi / 2,
+    "n_points": 400,
+    "optimization_parameters": {
+        "d0",
+    },
 }
-
 # ---------- Starting state ----------
 base_start_state = State(
     t=0,
     s=np.pi / 2,
-    s_dot=3,
+    s_dot=5,
     s_ddot=0,
     length_tether=199.6,
     input_steering=0,
@@ -91,7 +73,6 @@ def run_sim(
     area_wing,
     tether_diameter,
     color_base,
-    marker="o",
 ):
     result = {}
     start_state = base_start_state
@@ -106,7 +87,7 @@ def run_sim(
             mass_wing=mass_wing,
             area_wing=area_wing,
             aero_input=aero_input,
-            steering_control="asymmetric",
+            steering_control="roll",
         )
         model = SystemModel(dof=3, quasi_steady=quasi_steady, kite=kite, tether=tether)
         model.wind.speed_wind_ref = wind_speed
@@ -131,13 +112,12 @@ def run_sim(
             "aoa": np.degrees(phase.return_variable("angle_of_attack")),
             "az": np.degrees(phase.return_variable("angle_azimuth")),
             "el": np.degrees(phase.return_variable("angle_elevation")),
-            "y": phase.return_variable("y"),
-            "x": phase.return_variable("x"),
-            "z": phase.return_variable("z"),
             "vr": phase.return_variable("speed_radial"),
             "t": phase.return_variable("t"),
             "phase": phase,
+            "lift_coefficient": phase.return_variable("lift_coefficient"),
         }
+
         ax = ax2 if quasi_steady else ax1
         scatter = ax.scatter(
             result["qs" if quasi_steady else "dyn"]["az"],
@@ -146,7 +126,7 @@ def run_sim(
             cmap=custom_cmap,
             s=10,
             vmin=20,
-            vmax=40,
+            vmax=120,
         )
 
         ax3.plot(
@@ -164,7 +144,7 @@ def run_sim(
         )
         ax5.plot(
             s,
-            result["qs" if quasi_steady else "dyn"]["input_steering"],
+            result["qs" if quasi_steady else "dyn"]["roll"],
             linestyle=linestyle,
             color=color,
         )
@@ -174,68 +154,24 @@ def run_sim(
             linestyle=linestyle,
             color=color,
         )
-    # Calculate locations of maximum and minimum speed
-    for i, quasi_steady in enumerate([True, False]):
-        s = result["qs" if quasi_steady else "dyn"]["s"]
-        vtau = result["qs" if quasi_steady else "dyn"]["vtau"][s > 180]
-        max_speed_idx = np.argmax(vtau)
-        min_speed_idx = np.argmin(vtau)
-        # Plot into ax a point at the maximum and minimum speed
-        ax = ax2 if quasi_steady else ax1
-        ax.plot(
-            result["qs" if quasi_steady else "dyn"]["az"][s > 180][max_speed_idx],
-            result["qs" if quasi_steady else "dyn"]["el"][s > 180][max_speed_idx],
-            marker,
-            color=colors[6],
-            label=f"{label_prefix} Max Speed",
-        )
-        ax.plot(
-            result["qs" if quasi_steady else "dyn"]["az"][s > 180][min_speed_idx],
-            result["qs" if quasi_steady else "dyn"]["el"][s > 180][min_speed_idx],
-            marker,
-            color=colors[5],
-            label=f"{label_prefix} Min Speed",
-        )
-
     return result, scatter
 
 
-results_v3, scatter_v3 = run_sim(
-    aero_input_v3, pattern_config_v3, "V3", 43, 20, 0.01, 1
+results_ap2, scatter_ap2 = run_sim(
+    aero_input_ap2,
+    pattern_config_ap2,
+    "ap2",
+    mass_ap2,
+    area_ap2,
+    tether_diameter_ap2,
+    1,
 )
-results_v9, scatter_v9 = run_sim(
-    aero_input_v9, pattern_config_v9, "V9", 94, 47, 0.014, 2, marker="^"
-)
+
 
 # ---------- Final plot formatting ----------
 cbar_ax = fig.add_axes([0.35, 0.3, 0.02, 0.4])
-cbar = fig.colorbar(scatter_v9, cax=cbar_ax)
+cbar = fig.colorbar(scatter_ap2, cax=cbar_ax)
 cbar.set_label(PLOT_LABELS["speed_tangential"])
-
-# Add text labels to identify Dynamic and Quasi-Steady plots
-ax1.text(
-    0.95,
-    0.95,
-    "Dynamic",
-    transform=ax1.transAxes,
-    ha="right",
-    va="top",
-    fontsize=12,
-    weight="bold",
-    bbox=dict(facecolor="white", edgecolor="gray", alpha=0.8),
-)
-ax2.text(
-    0.95,
-    0.95,
-    "Quasi-Steady",
-    transform=ax2.transAxes,
-    ha="right",
-    va="top",
-    fontsize=12,
-    weight="bold",
-    bbox=dict(facecolor="white", edgecolor="gray", alpha=0.8),
-)
-
 
 for ax in [ax1, ax2]:
     ax.set_ylim(0, 50)
@@ -250,7 +186,7 @@ ax2.set_xlabel(PLOT_LABELS["angle_azimuth"])
 ax2.set_ylabel(PLOT_LABELS["angle_elevation"])
 ax3.set_ylabel(PLOT_LABELS["speed_tangential"])
 ax4.set_ylabel("Tension [kN]")
-ax5.set_ylabel(PLOT_LABELS["input_steering"])
+ax5.set_ylabel(PLOT_LABELS["angle_roll"])
 ax6.set_ylabel(PLOT_LABELS["angle_of_attack"])
 ax6.set_xlabel(PLOT_LABELS["phase"])
 ax3.legend()
@@ -300,5 +236,4 @@ def compute_energy_metrics(results, label=""):
     print(f"Estimated time lag: {best_lag:.3f} s")
 
 
-compute_energy_metrics(results_v3, "V3")
-compute_energy_metrics(results_v9, "V9")
+compute_energy_metrics(results_ap2, "V9")

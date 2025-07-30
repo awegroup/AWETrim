@@ -1,0 +1,21 @@
+100kW:
+Mass: 443.67 kg
+Area: 15.44 m^2
+CL polynomial coefficients: -0.00088*x^2 + 0.1214*x + 0.3022
+CD polynomial coefficients: 0.00012*x^2 + 0.0011*x + 0.0107
+tether diameter: 0.00921 m
+rated wind: 12 ms^-1
+average CL @rated: 1.63
+average turn radius @rated: 113.49 m
+average reel-out speed @rated: 6.71 ms^-1
+ 
+3MW:
+Mass: 14859.12 kg
+Area: 126.80 m^2
+CL polynomial coefficients: -0.00034*x^2 + 0.0939*x + 0.2706
+CD polynomial coefficients: 0.00021*x^2 + 0.0025*x + 0.0105
+tether diameter: 0.04443 m
+rated wind: 16 ms^-1
+average CL @rated: 1.98
+average turn radius @rated: 108.35 m
+average reel-out speed @rated: 5.17 ms^-1

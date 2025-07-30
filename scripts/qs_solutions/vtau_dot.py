@@ -23,7 +23,7 @@ with open(file_path, "r") as file:
 # Initialize system model
 # ------------------------------
 kite = Kite(
-    mass_wing=45,
+    mass_wing=120,
     area_wing=20,
     aero_input=aero_input,
     mass_kcu=0,
@@ -48,10 +48,10 @@ courses = [np.pi / 2, 0, np.pi]  # course angles in radians
 speed_tangential = np.linspace(20, 60, 100)
 colors = get_color_list()
 
-fig, ax1 = plt.subplots(1, 1, figsize=(5, 7))
-ax2 = ax1.twiny()  # Create second x-axis
+fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(7, 3), sharey=True)
 
 ax1.axhline(y=0, color="gray", linewidth=0.5)
+ax2.axhline(y=0, color="gray", linewidth=0.5)
 
 # Evaluate force residual and angle of attack across speeds
 for i, course in enumerate(courses):
@@ -65,7 +65,7 @@ for i, course in enumerate(courses):
         vtau_dot.append(float(state.force_residual[0]))
         aoa.append(float(state.angle_of_attack))
 
-    # Plot vtau_dot vs speed_tangential on bottom x-axis (solid line)
+    # Plot vtau_dot vs speed_tangential on left subplot
     ax1.plot(
         speed_tangential,
         vtau_dot,
@@ -74,7 +74,7 @@ for i, course in enumerate(courses):
         label=f"$\\chi$: {np.degrees(course)}°",
     )
 
-    # Plot vtau_dot vs angle of attack on top x-axis (dashed line)
+    # Plot vtau_dot vs angle of attack on right subplot
     ax2.plot(np.degrees(aoa), vtau_dot, color=color, linestyle="--")
 
 # ------------------------------
@@ -84,11 +84,10 @@ ax1.set_xlabel(r"$v_{\tau}$ [m/s]")
 ax1.set_ylabel(r"$\dot{v}_\tau$ [m/s²]")
 ax2.set_xlabel(r"$\alpha$ [°]")
 
-# Style the alpha axis with dashed grid
-ax2.grid(True, linestyle="--", alpha=0.3)
 ax1.grid(True, linestyle="-", alpha=0.3)
+ax2.grid(True, linestyle="--", alpha=0.3)
 
-# Only show legend for course angles
+# Only show legend for course angles on the left subplot
 ax1.legend(loc="lower center", frameon=True)
 
 plt.tight_layout()

@@ -9,7 +9,7 @@ from picawe.utils.color_palette import (
 
 
 colors = get_color_list()
-set_plot_style_no_latex()
+set_plot_style()
 save_folder = "./results/figures/translational_paper/"
 
 
@@ -29,12 +29,12 @@ def W_from_AZR(phi, beta, r):
 omega = -2 * np.pi
 r0 = 100
 d0 = 60
-vr = 2.414
-beta_p = np.radians(30)
+vr = 2.41
+beta_p = np.radians(0)
 a0 = 30
-h0 = 20
+h0 = 10
 helix = Helix(omega, r0, d0, vr, beta_p)
-lissajous = FigureEight(omega, r0, a0, h0, vr, beta_p)
+lissajous = Lissajous(omega, r0, a0, h0, vr, beta_p)
 
 s = np.linspace(0, 4, 1000)
 t = np.linspace(0, 30, 1000)
@@ -131,14 +131,14 @@ plt.savefig(save_folder + "lissajous_parametrization_3d.pdf", bbox_inches="tight
 
 # plt.show()
 
-helix.r0 = 100
-helix.vr = 0
-# helix.beta = 0
-lissajous.r0 = 100
-lissajous.vr = 0
+# helix.r0 = 100
+# helix.vr = 0
+# # helix.beta = 0
+# lissajous.r0 = 100
+# lissajous.vr = 0
 # lissajous.beta0 = 0
-lissajous.a0 = 30
-lissajous.h0 = 10
+# lissajous.a0 = 30
+# lissajous.h0 = 30
 s = np.linspace(0, 1, 1000)
 
 fig, axs = plt.subplots(1, 2, figsize=(10, 3))

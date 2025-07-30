@@ -56,14 +56,14 @@ class PhaseParameterized(TimeSeries):
         self.states = []
         self.kite_model.reset_solver()
 
-        if self.pattern_config["start_path_angle"] is not None:
+        if self.pattern_config.get("start_path_angle") is not None:
             s_array = np.linspace(
                 self.pattern_config["start_path_angle"],
                 self.pattern_config["end_path_angle"],
                 self.pattern_config["n_points"],
             )
             time_array = None
-        elif self.pattern_config["start_time"] is not None:
+        elif self.pattern_config.get("start_time") is not None:
             time_array = np.linspace(
                 self.pattern_config["start_time"],
                 self.pattern_config["end_time"],
@@ -126,7 +126,7 @@ class PhaseParameterized(TimeSeries):
                         new_state.s_ddot = 0
                     else:
                         s_dot += new_state.s_ddot * time_step
-                        s += s_dot * time_step
+                        s += s_dot * time_step + 0.5 * new_state.s_ddot * time_step**2
                         new_state.s_dot = s_dot
                         new_state.s = s
                         new_state.t = time_array[i]
