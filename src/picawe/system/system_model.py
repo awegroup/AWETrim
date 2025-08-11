@@ -54,7 +54,7 @@ class SystemModel(KiteKinematics):
             self.timeder_speed_tangential = 0
             self.timeder_speed_radial = 0
         else:
-            self.timeder_length_tether = ca.SX.sym("timeder_length_tether")
+            self.timeder_length_tether = ca.MX.sym("timeder_length_tether")
 
         self.dof = dof
         self.quasi_steady = quasi_steady
@@ -217,7 +217,8 @@ class SystemModel(KiteKinematics):
 
         p = [state_dict[name] for name in self._qs_inputs]
         lbx, ubx, lbg, ubg = self.get_boundaries(state_dict, unknown_vars)
-        x0 = [state_dict.get(var, 1.0) for var in unknown_vars]
+
+        x0 = [safe_value(state_dict.get(var, 1.0)) for var in unknown_vars]
         # Solve the quasi-steady state equations
 
         sol = self._qs_solver(x0=x0, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
@@ -490,3 +491,7 @@ class State:
 
     def to_dict(self):
         return asdict(self)
+
+
+def safe_value(val):
+    return 0.0 if val is None else val

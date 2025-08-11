@@ -1,5 +1,8 @@
 import casadi as ca
-from picawe.utils.reference_frames import transformation_AZR_from_W, transformation_C_from_W
+from picawe.utils.reference_frames import (
+    transformation_AZR_from_W,
+    transformation_C_from_W,
+)
 
 
 class Position:
@@ -21,12 +24,14 @@ class Position:
         """
 
         # Spherical coordinates of point particle in ground reference frame.
-        self._angle_azimuth = ca.SX.sym("angle_azimuth")
-        self._angle_elevation = ca.SX.sym("angle_elevation")
-        self._distance_radial = ca.SX.sym("distance_radial")
+        self._angle_azimuth = ca.MX.sym("angle_azimuth")
+        self._angle_elevation = ca.MX.sym("angle_elevation")
+        self._distance_radial = ca.MX.sym("distance_radial")
 
     @property
-    def angle_azimuth(self):  # We cache these as properties because they are overridden in ParameterizedKinematics
+    def angle_azimuth(
+        self,
+    ):  # We cache these as properties because they are overridden in ParameterizedKinematics
         return self._angle_azimuth
 
     @angle_azimuth.setter
@@ -51,7 +56,7 @@ class Position:
 
     @property
     def polar_angle(self):
-        return ca.pi/2 - self.angle_elevation
+        return ca.pi / 2 - self.angle_elevation
 
     @property
     def x(self):
@@ -68,19 +73,25 @@ class Position:
     @property
     def position(self):
         return ca.vertcat(0, 0, self.distance_radial)
-    
+
     @property
     def position_W(self):
-        return ca.transpose(transformation_C_from_W(self.angle_azimuth, self.angle_elevation, self.angle_course)) @ self.position
-
+        return (
+            ca.transpose(
+                transformation_C_from_W(
+                    self.angle_azimuth, self.angle_elevation, self.angle_course
+                )
+            )
+            @ self.position
+        )
 
 
 class KiteKinematics(Position):
 
     def __init__(self):
         super().__init__()  # Initialize the base class
-        self._timeder_speed_tangential = ca.SX.sym("timeder_speed_tangential")
-        self._timeder_speed_radial = ca.SX.sym("timeder_speed_radial")
+        self._timeder_speed_tangential = ca.MX.sym("timeder_speed_tangential")
+        self._timeder_speed_radial = ca.MX.sym("timeder_speed_radial")
         self._define_symbolic_variables_kin()
 
     def _define_symbolic_variables_kin(self):
@@ -94,7 +105,7 @@ class KiteKinematics(Position):
             "angle_course": "angle_course",
         }
         for var_name in base_symbolic_variables.keys():
-            setattr(self, var_name, ca.SX.sym(var_name))
+            setattr(self, var_name, ca.MX.sym(var_name))
 
     @property
     def timeder_angle_elevation(self):
@@ -111,10 +122,17 @@ class KiteKinematics(Position):
     @property
     def velocity_kite(self):
         return ca.vertcat(self.speed_tangential, 0, self.speed_radial)
-    
+
     @property
     def velocity_kite_W(self):
-        return ca.transpose(transformation_C_from_W(self.angle_azimuth, self.angle_elevation, self.angle_course)) @ self.velocity_kite
+        return (
+            ca.transpose(
+                transformation_C_from_W(
+                    self.angle_azimuth, self.angle_elevation, self.angle_course
+                )
+            )
+            @ self.velocity_kite
+        )
 
     @property
     def timeder_speed_tangential(self):
@@ -139,37 +157,30 @@ class KiteKinematics(Position):
             self.speed_tangential / self.distance_radial,
             self.speed_tangential
             / self.distance_radial
-            * ca.tan(self.angle_elevation)
+            * ca.tan(self.angle_elevation + 1e-6)  # Avoid division by zero
             * ca.sin(self.angle_course)
             - self.timeder_angle_course,
         )
-    
-    
 
-
- 
 
 class ParametrizedKinematics:
 
-    def __init__(self, pattern, quasi_steady=False):
+    def __init__(self, pattern, phase):
         self.pattern = pattern
 
-        self.s = ca.SX.sym("s")
-        self.t = ca.SX.sym("t")
-        self.s_dot = ca.SX.sym("s_dot")
-        if quasi_steady:
-            self.s_ddot = 0
-        else:
-            self.s_ddot = ca.SX.sym("s_ddot")
+        self.s = phase.s
+        self.t = phase.t
+        self.s_dot = phase.s_dot
+        self.s_ddot = phase.s_ddot
 
     @property
     def beta(self):
         return self.pattern.elevation(self.t, self.s)
-    
+
     @property
     def phi(self):
         return self.pattern.azimuth(self.t, self.s)
-    
+
     @property
     def r(self):
         return self.pattern.r(self.t)
@@ -177,15 +188,13 @@ class ParametrizedKinematics:
     @property
     def dtheta_ds(self):
         return (
-            ca.gradient(self.phi, self.s)
-            + ca.gradient(self.phi, self.t) / self.s_dot
+            ca.gradient(self.phi, self.s) + ca.gradient(self.phi, self.t) / self.s_dot
         )
 
     @property
     def dbeta_ds(self):
         return (
-            ca.gradient(self.beta, self.s)
-            + ca.gradient(self.beta, self.t) / self.s_dot
+            ca.gradient(self.beta, self.s) + ca.gradient(self.beta, self.t) / self.s_dot
         )
 
     @property
@@ -199,9 +208,7 @@ class ParametrizedKinematics:
     @property
     def dR_ds(self):
         return ca.vertcat(
-            self.r
-            * self.dtheta_ds
-            * ca.cos(self.beta),
+            self.r * self.dtheta_ds * ca.cos(self.beta),
             self.r * self.dbeta_ds,
             self.dr_ds,
         )
@@ -230,23 +237,30 @@ class ParametrizedKinematics:
 
     @property
     def dbeta_ds2(self):
-        return ca.gradient(self.dbeta_ds, self.s)+ ca.gradient(self.dbeta_ds, self.t) / self.s_dot
+        return (
+            ca.gradient(self.dbeta_ds, self.s)
+            + ca.gradient(self.dbeta_ds, self.t) / self.s_dot
+        )
 
     @property
     def dtheta_ds2(self):
-        return ca.gradient(self.dtheta_ds, self.s) + ca.gradient(self.dtheta_ds, self.t) / self.s_dot
+        return (
+            ca.gradient(self.dtheta_ds, self.s)
+            + ca.gradient(self.dtheta_ds, self.t) / self.s_dot
+        )
 
     @property
     def chi(self):
         return ca.atan2(
-            self.dtheta_ds
-            * ca.cos(self.beta),
+            self.dtheta_ds * ca.cos(self.beta),
             self.dbeta_ds,
         )
 
     @property
     def dot_chi(self):
-        return ca.gradient(self.chi, self.s) * self.s_dot + ca.gradient(self.chi, self.t)
+        return ca.gradient(self.chi, self.s) * self.s_dot + ca.gradient(
+            self.chi, self.t
+        )
 
     @property
     def sqrt_A(self):
@@ -260,19 +274,24 @@ class ParametrizedKinematics:
             * (
                 self.dbeta_ds * self.dbeta_ds2
                 + self.dtheta_ds * self.dtheta_ds2 * ca.cos(self.beta) ** 2
-                - self.dtheta_ds**2 * self.dbeta_ds * ca.sin(self.beta) * ca.cos(self.beta)
+                - self.dtheta_ds**2
+                * self.dbeta_ds
+                * ca.sin(self.beta)
+                * ca.cos(self.beta)
             )
         )
 
     def extract_function(self, attr_name):
         """
         Returns a CasADi function for a given symbolic attribute name.
-        
+
         :param attr_name: Name of the attribute (string)
         :return: CasADi function
         """
         if not hasattr(self, attr_name):
-            raise AttributeError(f"'ParametrizedKinematics' has no attribute '{attr_name}'")
+            raise AttributeError(
+                f"'ParametrizedKinematics' has no attribute '{attr_name}'"
+            )
 
         expression = getattr(self, attr_name)  # Get the symbolic expression
         if not isinstance(expression, ca.MX) and not isinstance(expression, ca.SX):
@@ -282,4 +301,10 @@ class ParametrizedKinematics:
         variables = list(ca.symvar(expression))
         variables.sort(key=lambda x: x.name())  # Ensure consistent ordering
 
-        return ca.Function(attr_name, variables, [expression], [var.name() for var in variables], [attr_name])
+        return ca.Function(
+            attr_name,
+            variables,
+            [expression],
+            [var.name() for var in variables],
+            [attr_name],
+        )

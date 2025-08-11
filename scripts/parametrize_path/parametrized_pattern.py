@@ -40,35 +40,25 @@ pattern_config = {
 }
 
 pattern_config = {
-    "pattern_type": "figure_eight",
+    "pattern_type": "lissajous_angles",
     "parameters": {
         "omega": -1.0,
         "r0": 200.0,
-        "ry": 70,
-        "rz": 60,
-        "ky": 0.6,
-        "kz": 0.6,
+        "az_amp0": np.radians(20),
+        "beta_amp0": np.radians(10),
+        # "ky": 1,
+        # "kz": 1,
         "vr": 1,
-        "beta0": 0.35,
+        "beta0": 0.55,
         "kappa": 0,
     },
-    "start_path_angle": -np.pi / 2,
-    "end_path_angle": 6 * np.pi + np.pi / 2,
-    "n_points": 400,
-    "optimization_parameters": {
-        # Add any optimization-related parameters here if needed as list of names
-        # "ry",
-        # "rz",
-        # "ky",
-        # "kz",
-        "kappa",
-        # "beta",
-        "vr",
-    },
+    "start_time": 0,
+    "end_time": 100,
+    "n_points": 600,
+    "optimization_parameters": ["vr", "kappa"],
 }
-
 mass_ratio = 2
-area_wing = 10
+area_wing = 20
 s_array = np.linspace(-np.pi / 2, 2 * 2 * np.pi + np.pi / 2, 800)
 save_folder = "./results/figures/"
 colors = get_color_list()
@@ -88,12 +78,12 @@ scatter = None
 results = {}
 
 mass_wing = mass_ratio * area_wing
-tether = RigidLumpedTether(diameter=0.01)
+tether = RigidLumpedTether(diameter=0.005)
 kite = Kite(
     mass_wing=mass_wing,
     area_wing=area_wing,
     aero_input=aero_input,
-    steering_control="roll",
+    steering_control="asymmetric",
 )
 
 start_state = State(
@@ -114,11 +104,11 @@ for j, quasi_steady in enumerate([True, False]):
     label = f"{'Quasi-Steady' if quasi_steady else 'Dynamic'}"
     color = colors[j % len(colors)]
 
-    model = SystemModel(dof=3, quasi_steady=quasi_steady, kite=kite)  # , tether=tether)
+    model = SystemModel(dof=3, quasi_steady=quasi_steady, kite=kite, tether=tether)
     model.wind.speed_wind_ref = wind_speed
     model.input_depower = 0
     # model.speed_radial = 0
-
+    print(model.timeder_speed_tangential)
     phase = PhaseParameterized(
         model, quasi_steady=quasi_steady, pattern_config=pattern_config
     )
@@ -127,6 +117,7 @@ for j, quasi_steady in enumerate([True, False]):
     if quasi_steady:
         start_state = phase.states[0]
         start_state["s_dot"] = phase.return_variable("s_dot")[0]
+        start_state["s"] = phase.return_variable("s")[0]
 
     s = np.degrees(phase.return_variable("s") - 5 * np.pi / 2)
     vtau = phase.return_variable("speed_tangential")
@@ -174,7 +165,7 @@ for a in [ax3, ax4, ax5, ax6]:
 
 ax3.legend()
 
-
+plt.show()
 # -------------------- Difference Analysis --------------------
 s_qs = results["qs"]["s"]
 s_dyn = results["dyn"]["s"]

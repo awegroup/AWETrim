@@ -15,14 +15,14 @@ class Wing:
         """
         self.mass_wing = mass_wing
         self.area_wing = area_wing
-        self.input_steering = ca.SX.sym("input_steering")
-        self.input_depower = ca.SX.sym("input_depower")
+        self.input_steering = ca.MX.sym("input_steering")
+        self.input_depower = ca.MX.sym("input_depower")
         # Aerodynamic inputs
         self.angle_pitch_tether = aero_input["params"].get(
-            "angle_pitch_depower_0", ca.SX.sym("angle_pitch_tether")
+            "angle_pitch_depower_0", ca.MX.sym("angle_pitch_tether")
         )
         self.delta_pitch_depower = aero_input["params"].get(
-            "delta_pitch_depower", ca.SX.sym("delta_pitch_depower")
+            "delta_pitch_depower", ca.MX.sym("delta_pitch_depower")
         )
         # self.aerodynamic_coeffs_function(aero_input)
         self.aero_input = aero_input
@@ -212,13 +212,15 @@ class Wing:
             ca.sqrt(
                 self.velocity_apparent_wind_wing[0] ** 2
                 + self.velocity_apparent_wind_wing[1] ** 2
+                + 1e-6
             ),
         )
 
     @property
     def angle_yaw_aerodynamic(self):
         return -ca.atan(
-            self.velocity_apparent_wind_wing[1] / self.velocity_apparent_wind_wing[0]
+            self.velocity_apparent_wind_wing[1]
+            / (self.velocity_apparent_wind_wing[0] + 1e-6)
         )
 
     @property
@@ -281,15 +283,15 @@ class Kite(Wing):
         self._override_gravity = False
         self._override_centripetal = False
         self._override_coriolis = False
-        self._angle_yaw = ca.SX.sym("angle_yaw")
-        self._angle_pitch = ca.SX.sym("angle_pitch")
-        self._angle_roll = ca.SX.sym("angle_roll")
-        self.timeder_angle_yaw = ca.SX.sym("timeder_angle_yaw")
-        self.timeder_angle_pitch = ca.SX.sym("timeder_angle_pitch")
-        self.timeder_angle_roll = ca.SX.sym("timeder_angle_roll")
-        self.acceleration_angle_yaw = ca.SX.sym("acceleration_angle_yaw")
-        self.acceleration_angle_pitch = ca.SX.sym("acceleration_angle_pitch")
-        self.acceleration_angle_roll = ca.SX.sym("acceleration_angle_roll")
+        self._angle_yaw = ca.MX.sym("angle_yaw")
+        self._angle_pitch = ca.MX.sym("angle_pitch")
+        self._angle_roll = ca.MX.sym("angle_roll")
+        self.timeder_angle_yaw = ca.MX.sym("timeder_angle_yaw")
+        self.timeder_angle_pitch = ca.MX.sym("timeder_angle_pitch")
+        self.timeder_angle_roll = ca.MX.sym("timeder_angle_roll")
+        self.acceleration_angle_yaw = ca.MX.sym("acceleration_angle_yaw")
+        self.acceleration_angle_pitch = ca.MX.sym("acceleration_angle_pitch")
+        self.acceleration_angle_roll = ca.MX.sym("acceleration_angle_roll")
         # print(aero_input)
         if self.steering_control == "asymmetric":
             cs_terms = aero_input["coefficients"].get("CS", [])
@@ -416,7 +418,7 @@ class Kite(Wing):
         acc[1] = ca.if_else(
             vtau > 1e-3,
             -acc[1] / vtau,
-            -ca.sign(acc[1]) * 1,
+            -ca.sign(acc[1] + 1e-6) * 1,
         )
         return acc
 
@@ -512,13 +514,13 @@ class Kite(Wing):
         m_w = self.mass_wing
         # Create the block matrix
         M = ca.vertcat(
-            ca.horzcat(m * ca.SX.eye(3), -m_w * x_cg_c_cross),
+            ca.horzcat(m * ca.MX.eye(3), -m_w * x_cg_c_cross),
             ca.horzcat(m_w * x_cg_c_cross, I),
         )
 
         ROT = ca.vertcat(
-            ca.horzcat(omega_cross, ca.SX.zeros(3, 3)),
-            ca.horzcat(ca.SX.zeros(3, 3), omega_cross),
+            ca.horzcat(omega_cross, ca.MX.zeros(3, 3)),
+            ca.horzcat(ca.MX.zeros(3, 3), omega_cross),
         )
 
         acceleration = ca.vertcat(
@@ -569,7 +571,7 @@ class Kite(Wing):
             self.g * ca.sin(self.angle_elevation)
             - (self.speed_tangential**2) / self.distance_radial
         )
-        return ca.arctan(numerator / denominator)
+        return ca.arctan(numerator / (denominator + 1e-6))
 
     @property
     def roll_kcu(self):
@@ -585,4 +587,4 @@ class Kite(Wing):
             self.g * ca.sin(self.angle_elevation)
             - (self.speed_tangential**2) / self.distance_radial
         )
-        return ca.arctan(numerator / denominator)
+        return ca.arctan(numerator / (denominator + 1e-6))

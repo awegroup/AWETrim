@@ -10,7 +10,7 @@ class ParametrizedPatterns(ABC):
         )  # Dictionary to store symbolic optimization variables
         for key, value in kwargs.items():
             setattr(self, key, value)
-            if isinstance(value, ca.SX):  # If value is symbolic, store it separately
+            if isinstance(value, ca.MX):  # If value is symbolic, store it separately
                 self.optimization_vars[key] = value
 
     def x(self, t, s):
@@ -60,6 +60,37 @@ class Helix(ParametrizedPatterns):
         yd = self.yd(t, s)
         zd = self.zd(t, s)
         return ca.sqrt(r**2 - yd**2 - zd**2)
+
+
+class HelixAngles(ParametrizedPatterns):
+    def __init__(self, omega, r0, amp0, vr, beta0, kappa=1, kbeta=0):
+        super().__init__(
+            omega=omega,
+            r0=r0,
+            amp0=amp0,
+            vr=vr,
+            beta0=beta0,
+            kappa=kappa,
+            kbeta=kbeta,
+        )
+
+    def beta(self, t):
+        return self.beta0 * (1 + self.kbeta * (self.r0 / self.r(t) - 1))
+
+    def az_amp(self, t):
+        return self.az_amp0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+
+    def beta_amp(self, t):
+        return self.beta_amp0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+
+    def r(self, t):
+        return self.r0 + self.vr * t
+
+    def azimuth(self, t, s):
+        return self.az_amp(t) * ca.cos(self.omega * s)
+
+    def elevation(self, t, s):
+        return self.beta_amp(t) * ca.sin(self.omega * s)
 
 
 class LissajousAngles(ParametrizedPatterns):
@@ -192,7 +223,7 @@ class ParametrizedPatternsAngles(ParametrizedPatterns):
         )  # Dictionary to store symbolic optimization variables
         for key, value in kwargs.items():
             setattr(self, key, value)
-            if isinstance(value, ca.SX):  # If value is symbolic, store it separately
+            if isinstance(value, ca.MX):  # If value is symbolic, store it separately
                 self.optimization_vars[key] = value
 
     def x(self, t, s):
@@ -299,7 +330,7 @@ def create_pattern_from_dict(
     if optimize:
         for param in optimization_params:
             if param in required_params[pattern_type]:
-                final_params[param] = ca.SX.sym(param)
+                final_params[param] = ca.MX.sym(param)
 
     # Instantiate the appropriate pattern class
     pattern_classes = {

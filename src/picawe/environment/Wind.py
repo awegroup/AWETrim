@@ -10,8 +10,8 @@ class Wind:
         tabulated_heights=None,
         tabulated_speeds=None,
     ):
-        self._speed_wind_ref = ca.SX.sym("speed_wind_ref")
-        self._speed_friction = ca.SX.sym("speed_friction")
+        self._speed_wind_ref = ca.MX.sym("speed_wind_ref")
+        self._speed_friction = ca.MX.sym("speed_friction")
         self._height_ref = 10
         self.wind_model = wind_model
         self.kappa = 0.41

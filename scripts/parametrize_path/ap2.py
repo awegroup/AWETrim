@@ -33,8 +33,8 @@ pattern_config_ap2 = {
         "kappa": 1,
         "kbeta": 0,
     },
-    "start_path_angle": -np.pi / 2,
-    "end_path_angle": 4 * np.pi + 3 * np.pi / 2,
+    "start_time": 0,
+    "end_time": 40,
     "n_points": 400,
     "optimization_parameters": {
         "d0",

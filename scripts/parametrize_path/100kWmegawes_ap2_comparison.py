@@ -35,8 +35,8 @@ pattern_config_100kw = {
         "kappa": 1,
         "kbeta": 0,
     },
-    "start_path_angle": -np.pi / 2,
-    "end_path_angle": 2 * np.pi + np.pi / 2,
+    "start_time": 0,
+    "end_time": 30,
     "n_points": 600,
     "optimization_parameters": {
         "d0",
@@ -56,8 +56,8 @@ pattern_config_ap2 = {
         "kappa": 1,
         "kbeta": 0,
     },
-    "start_path_angle": -np.pi / 2,
-    "end_path_angle": 2 * np.pi + np.pi / 2,
+    "start_time": 0,
+    "end_time": 30,
     "n_points": 600,
     "optimization_parameters": {
         "d0",
@@ -125,8 +125,9 @@ def run_sim(
         if quasi_steady:
             start_state = phase.states[0]
             start_state["s_dot"] = phase.return_variable("s_dot")[0]
+            start_state["s"] = phase.return_variable("s")[0]
 
-        s = np.degrees(phase.return_variable("s") - np.pi / 2)
+        s = np.degrees(phase.return_variable("s")) - 450
         result["qs" if quasi_steady else "dyn"] = {
             "s": s,
             "vtau": phase.return_variable("speed_tangential"),
@@ -161,7 +162,8 @@ def run_sim(
         )
         ax4.plot(
             s,
-            result["qs" if quasi_steady else "dyn"]["tension"],
+            result["qs" if quasi_steady else "dyn"]["tension"]
+            / np.mean(result["qs" if quasi_steady else "dyn"]["tension"]),
             linestyle=linestyle,
             color=color,
         )
@@ -227,7 +229,7 @@ cbar = fig.colorbar(scatter_ap2, cax=cbar_ax)
 cbar.set_label(PLOT_LABELS["speed_tangential"])
 
 for ax in [ax1, ax2]:
-    ax.set_ylim(10, 40)
+    ax.set_ylim(0, 40)
     ax.set_xlim(-20, 20)
     ax.legend(loc="lower right", fontsize=9)
 
@@ -262,7 +264,7 @@ ax1.set_ylabel(PLOT_LABELS["angle_elevation"])
 ax2.set_xlabel(PLOT_LABELS["angle_azimuth"])
 ax2.set_ylabel(PLOT_LABELS["angle_elevation"])
 ax3.set_ylabel(PLOT_LABELS["speed_tangential"])
-ax4.set_ylabel("Tension [kN]")
+ax4.set_ylabel(r"$\overline{F}_{t,g}$ [--]")
 ax5.set_ylabel(PLOT_LABELS["angle_roll"])
 ax6.set_ylabel(PLOT_LABELS["angle_of_attack"])
 ax6.set_xlabel(PLOT_LABELS["phase"])
@@ -282,8 +284,8 @@ plt.show()
 def compute_energy_metrics(results, label=""):
     s_qs = results["qs"]["s"]
     s_dyn = results["dyn"]["s"]
-    mask_qs = s_qs > 0
-    mask_dyn = s_dyn > 0
+    mask_qs = (s_qs > 0) & (s_qs < 360)
+    mask_dyn = (s_dyn > 0) & (s_dyn < 360)
     vtau_qs = results["qs"]["vtau"][mask_qs]
     vtau_dyn = results["dyn"]["vtau"][mask_dyn]
     tension_qs = results["qs"]["tension"][mask_qs]
@@ -297,7 +299,7 @@ def compute_energy_metrics(results, label=""):
     sum_energy_dyn = np.sum(tension_dyn * vr_dyn * np.diff(t_dyn, prepend=t_dyn[0]))
     sum_pow_qs = sum_energy_qs / (t_qs[-1] - t_qs[0])
     sum_pow_dyn = sum_energy_dyn / (t_dyn[-1] - t_dyn[0])
-    power_diff = (sum_pow_dyn - sum_pow_qs) / sum_pow_dyn * 100
+    power_diff = (sum_pow_qs - sum_pow_dyn) / sum_pow_dyn * 100
 
     print(f"\n--- {label} ---")
     print(f"Power QS: {sum_pow_qs:.2f}, Power Dyn: {sum_pow_dyn:.2f}")
@@ -312,6 +314,48 @@ def compute_energy_metrics(results, label=""):
     time_lags = lags * (t_common[1] - t_common[0])
     best_lag = time_lags[np.argmax(corr)]
     print(f"Estimated time lag: {best_lag:.3f} s")
+
+    # Mean and Max tension differences (%)
+    mean_t_qs = np.mean(tension_qs)
+    mean_t_dyn = np.mean(tension_dyn)
+    delta_ft_mean = (mean_t_qs - mean_t_dyn) / mean_t_dyn * 100
+
+    max_t_qs = np.max(tension_qs)
+    max_t_dyn = np.max(tension_dyn)
+    delta_ft_max = (max_t_qs - max_t_dyn) / max_t_dyn * 100
+
+    # Max tangential speed difference (%)
+    max_vtau_qs = np.max(vtau_qs)
+    max_vtau_dyn = np.max(vtau_dyn)
+    delta_vtau_max = (max_vtau_qs - max_vtau_dyn) / max_vtau_dyn * 100
+
+    # --- TENSION MIN DIFFERENCE ---
+    min_t_qs = np.min(tension_qs)
+    min_t_dyn = np.min(tension_dyn)
+    delta_ft_min = (min_t_qs - min_t_dyn) / min_t_dyn * 100
+
+    # --- VTAU MIN DIFFERENCE ---
+    min_vtau_qs = np.min(vtau_qs)
+    min_vtau_dyn = np.min(vtau_dyn)
+    delta_vtau_min = (min_vtau_qs - min_vtau_dyn) / min_vtau_dyn * 100
+
+    # --- PHASE LAG AT MAX vtau ---
+    s_dyn_vtau_max = s_dyn[np.argmax(vtau_dyn)]
+    s_qs_vtau_max = s_qs[np.argmax(vtau_qs)]
+    s_lag_max = s_qs_vtau_max - s_dyn_vtau_max
+
+    # --- PHASE LAG AT MIN vtau ---
+    s_dyn_vtau_min = s_dyn[np.argmin(vtau_dyn)]
+    s_qs_vtau_min = s_qs[np.argmin(vtau_qs)]
+    s_lag_min = s_qs_vtau_min - s_dyn_vtau_min
+
+    print(f"ΔF_t,mean: {delta_ft_mean:.2f}%")
+    print(f"ΔF_t,max: {delta_ft_max:.2f}%")
+    print(f"ΔF_t,min: {delta_ft_min:.2f}%")
+    print(f"Δv_tau,max: {delta_vtau_max:.2f}%")
+    print(f"Δv_tau,min: {delta_vtau_min:.2f}%")
+    print(f"ΔΦ_v_tau,max: {s_lag_max:.2f} deg")
+    print(f"ΔΦ_v_tau,min: {s_lag_min:.2f} deg")
 
 
 compute_energy_metrics(results_100kw, "100kW")

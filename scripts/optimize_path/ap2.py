@@ -61,14 +61,14 @@ for i in range(N):
         "parameters": {
             "omega": -1.0,
             "r0": 400.0,
-            "d0": 150.0,
+            "d0": 170.0,
             "vr": 3.6,
             "beta0": 25 / 180 * np.pi,  # Convert degrees to radians
             "kappa": 1,
             "kbeta": 0,
         },
-        "start_path_angle": -np.pi / 2,
-        "end_path_angle": 2 * np.pi + np.pi / 2,
+        "start_time": 0,
+        "end_time": 10,
         "n_points": 100,
         "optimization_parameters": {"d0", "vr"},
     }
@@ -98,30 +98,7 @@ for i in range(N):
         # phase.set_optimal_speed_radial()
 
         # if quasi_steady:
-        phase.optimize_pattern(start_state=start_state)
-        pattern_config = phase.pattern_config
-        print("Optimized pattern configuration:")
-        print(pattern_config)
-        start_state = phase.states[0]
-        # phase.substitute_parametrized_kinematics()
-        kite = Kite(
-            mass_wing=mass_wing,
-            area_wing=area_wing,
-            aero_input=aero_input,
-            mass_kcu=0,
-            steering_control="roll",
-        )
-        kite_model = SystemModel(
-            dof=dof, quasi_steady=quasi_steady, kite=kite, tether=tether
-        )
-        kite_model.wind.speed_wind_ref = wind_speed
-        kite_model.input_depower = 0
-        phase = PhaseParameterized(
-            kite_model, quasi_steady=quasi_steady, pattern_config=pattern_config
-        )
-        phase.run_simulation(start_state=start_state)
-        # TODO: One should not run the simulation twice, but rather use the optimized pattern, but somehow there is a problem using the optimized pattern directly
-        # phase.run_simulation(start_state=start_state, s_array=s_array)
+        phase.run_simulation_opti(start_state=start_state)
         # Extract variables
         s = phase.return_variable("s")
         s_dot = phase.return_variable("s_dot")
@@ -132,12 +109,8 @@ for i in range(N):
         else:
             phases_dyn.append(copy.deepcopy(phase))
 
-        print(s_dot[0])
-        start_state["s_dot"] = s_dot[0]
-        start_state["s"] = s[0]
-        start_state["tension_tether_ground"] = phase.return_variable(
-            "tension_tether_ground"
-        )[0]
+        start_state = phase.states[0]
+        pattern_config = phase.pattern_config
 
 
 # fig, slider = phase.interactive_plot()
