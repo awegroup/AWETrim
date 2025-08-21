@@ -168,12 +168,20 @@ class Wing:
         # print("angle_pitch_aerodynamic:",self.angle_pitch_aerodynamic)
 
         if self._angle_of_attack is None:
-            angle_of_attack = (
-                self.angle_pitch_aerodynamic
-                + self.angle_pitch_depower
-                - self.angle_pitch
+            T_CK = transformation_C_from_K(
+                self.angle_pitch, self.angle_roll, self.angle_yaw_aerodynamic
             )
-            self._angle_of_attack = angle_of_attack
+            T_CA = transformation_C_from_K(
+                self.angle_pitch_aerodynamic, 0, self.angle_yaw_aerodynamic
+            )
+
+            T_AK = T_CA.T @ T_CK
+
+            x = T_AK @ ca.vertcat(1, 0, 0)
+
+            self._angle_of_attack = (
+                self.angle_pitch_aerodynamic + self.angle_pitch_depower
+            )
 
         return self._angle_of_attack
 
@@ -207,20 +215,24 @@ class Wing:
     @property
     def angle_pitch_aerodynamic(self):
         # print(self.velocity_apparent_wind)
+        T_K_from_C = transformation_C_from_K(self.angle_pitch, self.angle_roll, 0).T
+        velocity_apparent_wind_K = T_K_from_C @ self.velocity_apparent_wind_wing
+
         return ca.atan2(
-            self.velocity_apparent_wind_wing[2],
+            velocity_apparent_wind_K[2],
             ca.sqrt(
-                self.velocity_apparent_wind_wing[0] ** 2
-                + self.velocity_apparent_wind_wing[1] ** 2
+                velocity_apparent_wind_K[0] ** 2
+                + velocity_apparent_wind_K[1] ** 2
                 + 1e-6
             ),
         )
 
     @property
     def angle_yaw_aerodynamic(self):
+        T_K_from_C = transformation_C_from_K(self.angle_pitch, self.angle_roll, 0).T
+        velocity_apparent_wind_K = T_K_from_C @ self.velocity_apparent_wind_wing
         return -ca.atan(
-            self.velocity_apparent_wind_wing[1]
-            / (self.velocity_apparent_wind_wing[0] + 1e-6)
+            velocity_apparent_wind_K[1] / (velocity_apparent_wind_K[0] + 1e-6)
         )
 
     @property
@@ -237,7 +249,8 @@ class Wing:
         L = 0.5 * self.rho * V_a_sq * self.area_wing * CL
         S = 0.5 * self.rho * V_a_sq * self.area_wing * CS
 
-        R = transformation_C_from_A(
+        R = transformation_C_from_K(self.angle_pitch, self.angle_roll, 0)
+        R = R @ transformation_C_from_A(
             self.angle_pitch_aerodynamic,
             self.angle_yaw_aerodynamic,
             0,
@@ -571,7 +584,7 @@ class Kite(Wing):
             self.g * ca.sin(self.angle_elevation)
             - (self.speed_tangential**2) / self.distance_radial
         )
-        return ca.arctan(numerator / (denominator + 1e-6))
+        return -ca.arctan(numerator / (denominator + 1e-6))
 
     @property
     def roll_kcu(self):

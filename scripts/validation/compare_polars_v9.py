@@ -4,12 +4,12 @@ import json
 import pandas as pd
 
 
-CL_mean_powered = 0.94
-CD_mean_powered = 0.18
+CL_mean_powered = 0.83
+CD_mean_powered = 0.16
 CL_mean_powered_steer = 0.78
 CD_mean_powered_steer = 0.17
-CL_mean_depowered = 0.35
-CD_mean_depowered = 0.08
+CL_mean_depowered = 0.32
+CD_mean_depowered = 0.05
 
 
 # --- Load experimental data ---

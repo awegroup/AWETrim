@@ -2,10 +2,10 @@ import numpy as np
 
 DEFAULT_BOUNDS = {
     "tension_tether_ground": [0, 1e12],
-    "input_steering": [-10, 10],
+    "input_steering": [-1.2, 1.2],
     "s_dot": [0.01, 20],
     "s_ddot": [-100, 100],
-    "speed_tangential": [-5, 400],
+    "speed_tangential": [0, 400],
     "angle_roll": [-np.pi / 2, np.pi / 2],
     "timeder_angle_course": [-np.pi, np.pi],
     "angle_pitch": [-np.pi / 4, np.pi / 4],
@@ -101,4 +101,12 @@ DEFAULT_OPTI_LIMITS = {
     "ky": (0.5, 1),  # Range for ky: 0 to 100
     "kz": (0.5, 1),  # Range for kz: 0 to 100
     "vr": (0.5, 8),  # Range for vr: 0 to 100
+    "az_amp0": (
+        np.radians(10),
+        np.radians(50),
+    ),  # Range for azimuth amplitude: 10 to 30 degrees
+    "beta_amp0": (
+        np.radians(10),
+        np.radians(30),
+    ),  # Range for beta amplitude: 5 to 20 degrees
 }

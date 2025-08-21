@@ -57,25 +57,23 @@ phases_dyn = []
 for i in range(N):
 
     pattern_config = {
-        "pattern_type": "figure_eight",
+        "pattern_type": "lissajous_angles",
         "parameters": {
             "omega": -1.0,
             "r0": 200.0,
-            "ry": 70,
-            "rz": 60,
-            "ky": 0.5,
-            "kz": 0.5,
-            "vr": 1,
+            "az_amp0": np.radians(40),
+            "beta_amp0": np.radians(30),
+            "vr": 2,
             "beta0": 0.35,
             "kappa": 0,
         },
-        "start_path_angle": -np.pi / 2,
-        "end_path_angle": 2 * np.pi + np.pi / 2,
-        "n_points": 100,
+        "start_time": 0,
+        "end_time": 30,
+        "n_points": 300,
         "optimization_parameters": {
             # Add any optimization-related parameters here if needed as list of names
-            "ry",
-            "rz",
+            "beta_amp0",
+            "az_amp0",
             # "ky",
             # "kz",
             # "kappa",
@@ -93,7 +91,7 @@ for i in range(N):
             area_wing=area_wing,
             aero_input=aero_input,
             mass_kcu=0,
-            steering_control="roll",
+            steering_control="asymmetric",
         )
         kite_model = SystemModel(
             dof=dof, quasi_steady=quasi_steady, kite=kite, tether=tether
@@ -109,7 +107,7 @@ for i in range(N):
         # phase.set_optimal_speed_radial()
 
         # if quasi_steady:
-        phase.optimize_pattern(start_state=start_state)
+        phase.run_simulation_opti(start_state=start_state)
         pattern_config = phase.pattern_config
         print("Optimized pattern configuration:")
         print(pattern_config)
@@ -120,7 +118,7 @@ for i in range(N):
             area_wing=area_wing,
             aero_input=aero_input,
             mass_kcu=0,
-            steering_control="roll",
+            steering_control="asymmetric",
         )
         kite_model = SystemModel(
             dof=dof, quasi_steady=quasi_steady, kite=kite, tether=tether

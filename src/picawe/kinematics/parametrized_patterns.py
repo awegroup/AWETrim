@@ -32,6 +32,45 @@ class ParametrizedPatterns(ABC):
     def elevation(self, t, s):
         return ca.atan2(self.z(t, s), ca.sqrt(self.x(t, s) ** 2 + self.y(t, s) ** 2))
 
+    def curvature(self, t_array, s_array):
+
+        # --- Get scalar fields as expressions of s (t is fixed here) ---
+        # If your methods are r(s,t), phi(s), beta(s), call accordingly.
+        # The user code showed self.r(t) and gradient(..., s), so we mimic that.
+        t = ca.MX.sym("t")
+        s = ca.MX.sym("s")
+        r = self.r(t)  # expression that depends on s
+        phi = self.azimuth(t, s)  # expression that depends on s
+        beta = self.elevation(t, s)  # expression that depends on s
+
+        # --- Cartesian curve r_vec(s) ---
+        x = r * ca.cos(beta) * ca.cos(phi)
+        y = r * ca.cos(beta) * ca.sin(phi)
+        z = r * ca.sin(beta)
+        r_vec = ca.vertcat(x, y, z)  # 3x1
+
+        # --- First and second derivatives wrt s ---
+        print(r_vec)
+        r_s = ca.jacobian(r_vec, s)  # 3x1
+        r_ss = ca.jacobian(r_s, s)  # 3x1
+
+        # --- Curvature and radius ---
+        # (use a tiny epsilon to avoid division by zero in degenerate cases)
+        eps = 1e-12
+        cross_rs_rss = ca.cross(r_s, r_ss)  # 3x1
+        num = ca.norm_2(cross_rs_rss)  # ||r_s x r_ss||
+        den = ca.power(ca.norm_2(r_s), 3) + eps  # ||r_s||^3
+        kappa = num / den
+        rho = 1.0 / (kappa + eps)
+
+        kappa_fun = ca.Function("kappa_fun", [t, s], [kappa])
+        kappa = kappa_fun(t_array, s_array)
+
+        return kappa
+
+    def radius_curvature(self, t, s):
+        return 1.0 / (self.curvature(t, s) + 1e-12)
+
 
 class Helix(ParametrizedPatterns):
 
@@ -218,9 +257,7 @@ class FigureEight(ParametrizedPatterns):
 
 class ParametrizedPatternsAngles(ParametrizedPatterns):
     def __init__(self, **kwargs):
-        self.optimization_vars = (
-            {}
-        )  # Dictionary to store symbolic optimization variables
+        self.optimization_vars = {}  # Dictionary to store symbolic MX variables
         for key, value in kwargs.items():
             setattr(self, key, value)
             if isinstance(value, ca.MX):  # If value is symbolic, store it separately

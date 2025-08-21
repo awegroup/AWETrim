@@ -345,7 +345,10 @@ class ReelinPhase(TimeSeries):
             )
 
             x = ca.vertcat(
-                self.kite_model.state_vector[0:3], self.kite_model.state_vector[4]
+                self.kite_model.state_vector[0],
+                self.kite_model.state_vector[1],
+                self.kite_model.state_vector[2],
+                self.kite_model.state_vector[4],
             )
             ode = ca.vertcat(self.kite_model._ode[0:3], self.kite_model._ode[4])
             # p = ca.vertcat(self.timeder_angle_course, self.input_depower, self.speed_radial)
@@ -363,6 +366,11 @@ class ReelinPhase(TimeSeries):
                 )
 
             alg = self.kite_model.algebraic
+
+            print("x:", x)
+            print("p:", p)
+            print("z:", z)
+
             dae = {"x": x, "p": p, "z": z, "p": p, "ode": ode, "alg": alg}
             # Create the integrator
             opts = {
