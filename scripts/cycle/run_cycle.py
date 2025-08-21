@@ -33,16 +33,16 @@ PATTERN_CONFIG = {
         "rz": 94,
         "ky": 0.7,
         "kz": 0.7,
-        "vr": 1.5,
+        "vr": 2.5,
         "beta0": 0.6775,
         "kappa": 0,
     },
     "control": {
         "input_depower": 0.0,
     },
-    "start_path_angle": -np.pi / 4,
-    "end_path_angle": np.pi / 4 + 2 * np.pi + np.pi / 8,
-    "n_points": 400,
+    "start_time": 0,
+    "end_time": 36,
+    "n_points": 200,
     "quasi_steady": True,
 }
 
@@ -53,7 +53,7 @@ CYCLE_SETTINGS = {
         "control": {
             "max_elevation": np.radians(100),
             "min_elevation": np.radians(25),
-            "reeling_speed": -3,
+            "reeling_speed": -7,
             "min_tether_force": SIMULATION_CONFIG["mass_wing"] * 9.81,
             "length_tether_ro": PATTERN_CONFIG["parameters"]["r0"],
             "ri_elevation": np.radians(40),  # Initial elevation for reeling in

@@ -28,7 +28,7 @@ def W_from_AZR(phi, beta, r):
 # -----------------------------------------------
 omega = -1
 r0 = 200
-vr = 0
+vr = 1
 beta_p = np.radians(30)
 
 # Parameter ranges
@@ -54,7 +54,16 @@ for i, (ry, rz, ky, kz) in enumerate(
         label=f"ry={ry}, rz={rz}, ky={ky}, kz={kz}",
         color=colors[i % len(colors)],
     )
-    # plt.show()
+    radius_curvature = figure.radius_curvature(t, s)
+    plt.figure()
+    plt.plot(
+        np.degrees(s),
+        radius_curvature,
+        label=f"ry={ry}, rz={rz}, ky={ky}, kz={kz}",
+        color=colors[i % len(colors)],
+    )
+
+    plt.show()
 
 
 ax.set_xlabel("Azimuth [deg]")

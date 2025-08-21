@@ -66,9 +66,6 @@ base_start_state = State(
     s_ddot=0,
     length_tether=199.6,
     input_steering=0,
-    angle_roll=0,
-    angle_pitch=0,
-    angle_yaw=0,
     tension_tether_ground=1e8,
 )
 
@@ -95,9 +92,30 @@ def run_sim(
 ):
     result = {}
     start_state = base_start_state
-    for j, quasi_steady in enumerate([True, False]):
-        label = f"{label_prefix} {'QS' if quasi_steady else 'Dyn'}"
-        linestyle = "--" if quasi_steady else "-"
+    simulation_types = ["quasi_steady", "dynamic", "inertia_free", "no_mass"]
+    for sim_type in simulation_types:
+        if sim_type == "quasi_steady":
+            quasi_steady = True
+            inertia_free = False
+        elif sim_type == "dynamic":
+            quasi_steady = False
+            inertia_free = False
+        elif sim_type == "inertia_free":
+            quasi_steady = True
+            inertia_free = True
+        elif sim_type == "no_mass":
+            quasi_steady = True
+            inertia_free = True
+        else:
+            continue
+        label = f"{label_prefix} {sim_type.replace('_', ' ').title()}"
+        print(f"Running simulation for {sim_type} with label: {label}")
+        linestyle = {
+            "quasi_steady": "--",
+            "dynamic": "-",
+            "inertia_free": ":",
+            "no_mass": "-.",
+        }[sim_type]
         color = colors[color_base]
         tether = RigidLumpedTether(
             diameter=tether_diameter,
@@ -108,10 +126,16 @@ def run_sim(
             aero_input=aero_input,
             steering_control="asymmetric",
         )
+        if inertia_free:
+            kite.override_centripetal = True
+            kite.override_coriolis = True
+
         model = SystemModel(dof=3, quasi_steady=quasi_steady, kite=kite, tether=tether)
         model.wind.speed_wind_ref = wind_speed
         model.input_depower = 0
-
+        if sim_type == "no_mass":
+            model.mass_wing = 0
+            start_state["input_steering"] = 0
         phase = PhaseParameterized(
             model, quasi_steady=quasi_steady, pattern_config=pattern_config
         )
@@ -123,7 +147,7 @@ def run_sim(
             start_state["s"] = phase.return_variable("s")[0]
 
         s = np.degrees(phase.return_variable("s")) - 450
-        result["qs" if quasi_steady else "dyn"] = {
+        result[sim_type] = {
             "s": s,
             "vtau": phase.return_variable("speed_tangential"),
             "tension": phase.return_variable("tension_tether_ground") / 1000,
@@ -139,11 +163,11 @@ def run_sim(
             "t": phase.return_variable("t"),
             "phase": phase,
         }
-        ax = ax2 if quasi_steady else ax1
+        ax = ax2 if sim_type == "quasi_steady" else ax1
         scatter = ax.scatter(
-            result["qs" if quasi_steady else "dyn"]["az"],
-            result["qs" if quasi_steady else "dyn"]["el"],
-            c=result["qs" if quasi_steady else "dyn"]["vtau"],
+            result[sim_type]["az"],
+            result[sim_type]["el"],
+            c=result[sim_type]["vtau"],
             cmap=custom_cmap,
             s=10,
             vmin=20,
@@ -152,52 +176,51 @@ def run_sim(
 
         ax3.plot(
             s,
-            result["qs" if quasi_steady else "dyn"]["vtau"],
+            result[sim_type]["vtau"],
             linestyle=linestyle,
             color=color,
             label=label,
         )
         ax4.plot(
             s,
-            result["qs" if quasi_steady else "dyn"]["tension"]
-            / np.mean(result["qs" if quasi_steady else "dyn"]["tension"]),
+            result[sim_type]["tension"] / np.mean(result[sim_type]["tension"]),
             linestyle=linestyle,
             color=color,
         )
         ax5.plot(
             s,
-            result["qs" if quasi_steady else "dyn"]["input_steering"],
+            result[sim_type]["input_steering"],
             linestyle=linestyle,
             color=color,
         )
         ax6.plot(
             s,
-            result["qs" if quasi_steady else "dyn"]["aoa"],
+            result[sim_type]["aoa"],
             linestyle=linestyle,
             color=color,
         )
     # Calculate locations of maximum and minimum speed
-    for i, quasi_steady in enumerate([True, False]):
-        s = result["qs" if quasi_steady else "dyn"]["s"]
+    for sim_type in ["quasi_steady", "dynamic"]:
+        s = result[sim_type]["s"]
         mask = (s > 0) & (s < 180)
-        vtau = result["qs" if quasi_steady else "dyn"]["vtau"][mask]
+        vtau = result[sim_type]["vtau"][mask]
         max_speed_idx = np.argmax(vtau)
         min_speed_idx = np.argmin(vtau)
         # Plot into ax a point at the maximum and minimum speed
-        ax = ax2 if quasi_steady else ax1
+        ax = ax2 if sim_type == "quasi_steady" else ax1
         ax.plot(
-            result["qs" if quasi_steady else "dyn"]["az"][mask][max_speed_idx],
-            result["qs" if quasi_steady else "dyn"]["el"][mask][max_speed_idx],
+            result[sim_type]["az"][mask][max_speed_idx],
+            result[sim_type]["el"][mask][max_speed_idx],
             marker,
             color=colors[6],
-            label=f"{label_prefix} Max Speed",
+            label=f"{label_prefix} {sim_type.title()} Max Speed",
         )
         ax.plot(
-            result["qs" if quasi_steady else "dyn"]["az"][mask][min_speed_idx],
-            result["qs" if quasi_steady else "dyn"]["el"][mask][min_speed_idx],
+            result[sim_type]["az"][mask][min_speed_idx],
+            result[sim_type]["el"][mask][min_speed_idx],
             marker,
             color=colors[5],
-            label=f"{label_prefix} Min Speed",
+            label=f"{label_prefix} {sim_type.title()} Min Speed",
         )
 
     return result, scatter
@@ -269,19 +292,19 @@ plt.show()
 
 # ---------- Energy, power and phase comparison ----------
 def compute_energy_metrics(results, label=""):
-    s_qs = results["qs"]["s"]
-    s_dyn = results["dyn"]["s"]
+    s_qs = results["quasi_steady"]["s"]
+    s_dyn = results["dynamic"]["s"]
     print("Maximum s: ", max(s_qs), max(s_dyn))
     mask_qs = (s_qs > 0) & (s_qs < 360)
     mask_dyn = (s_dyn > 0) & (s_dyn < 360)
-    vtau_qs = results["qs"]["vtau"][mask_qs]
-    vtau_dyn = results["dyn"]["vtau"][mask_dyn]
-    tension_qs = results["qs"]["tension"][mask_qs]
-    tension_dyn = results["dyn"]["tension"][mask_dyn]
-    vr_qs = results["qs"]["vr"][mask_qs]
-    vr_dyn = results["dyn"]["vr"][mask_dyn]
-    t_qs = results["qs"]["t"][mask_qs]
-    t_dyn = results["dyn"]["t"][mask_dyn]
+    vtau_qs = results["quasi_steady"]["vtau"][mask_qs]
+    vtau_dyn = results["dynamic"]["vtau"][mask_dyn]
+    tension_qs = results["quasi_steady"]["tension"][mask_qs]
+    tension_dyn = results["dynamic"]["tension"][mask_dyn]
+    vr_qs = results["quasi_steady"]["vr"][mask_qs]
+    vr_dyn = results["dynamic"]["vr"][mask_dyn]
+    t_qs = results["quasi_steady"]["t"][mask_qs]
+    t_dyn = results["dynamic"]["t"][mask_dyn]
 
     sum_energy_qs = np.sum(tension_qs * vr_qs * np.diff(t_qs, prepend=t_qs[0]))
     sum_energy_dyn = np.sum(tension_dyn * vr_dyn * np.diff(t_dyn, prepend=t_dyn[0]))

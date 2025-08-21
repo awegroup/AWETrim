@@ -275,13 +275,16 @@ class PhaseParameterized(TimeSeries):
                     opti.subject_to(opti_variables["s"][i + 1] == sol_s["xf"][0])
                     opti.subject_to(opti_variables["s_dot"][i + 1] == sol_s["xf"][1])
 
-            energy += (
+            # Only accumulate energy when s is between 0 and 2π
+            s_val = opti_variables["s"][i]
+            energy += ca.if_else(
+                ca.logic_and(s_val >= 0, s_val <= 2 * np.pi),
                 opti_variables["tension_tether_ground"][i]
-                * time_step
-                * call_vr_func(vr_func, opti_variables["vr"])
+                * call_vr_func(vr_func, opti_variables["vr"]),
+                0,
             )
 
-        power = energy / (time_array[-1] - time_array[0])
+        power = energy / 10000
         opti.solver(
             "ipopt",
             {
@@ -321,6 +324,7 @@ class PhaseParameterized(TimeSeries):
                         opti.subject_to(opti_var[:] <= ub)
 
         opti.minimize(-power)
+        solution = opti.solve()
         try:
             solution = opti.solve()
             # Print optimized values for variables in the pattern
@@ -360,14 +364,7 @@ class PhaseParameterized(TimeSeries):
         # self.set_optimal_speed_radial()
         # self.set_optimal_angle_pitch_tether()
 
-        if self.pattern_config["start_path_angle"] is not None:
-            s_array = np.linspace(
-                self.pattern_config["start_path_angle"],
-                self.pattern_config["end_path_angle"],
-                self.pattern_config["n_points"],
-            )
-            time_array = None
-        elif self.pattern_config["start_time"] is not None:
+        if self.pattern_config["start_time"] is not None:
             time_array = np.linspace(
                 self.pattern_config["start_time"],
                 self.pattern_config["end_time"],
@@ -415,8 +412,6 @@ class PhaseParameterized(TimeSeries):
             "tension_tether_ground": opti.variable(N),
         }
         if self.quasi_steady:
-            opti_variables["s_ddot"] = ca.MX.zeros(N)  # Quasi-steady, no acceleration
-        else:
             opti_variables["s_ddot"] = opti.variable(N)
 
         # Add optimization parameters
@@ -602,6 +597,7 @@ class PhaseParameterized(TimeSeries):
                     else:
                         print(f"Applying constraints for {var_name}")
                         lb, ub = DEFAULT_OPTI_LIMITS[var_name]
+                        print(lb, ub)
                         opti.subject_to(lb <= opti_var[:])
                         opti.subject_to(opti_var[:] <= ub)
 
@@ -610,14 +606,14 @@ class PhaseParameterized(TimeSeries):
         # opti.subject_to(angle_elevation <= DEFAULT_OPTI_LIMITS["angle_elevation"][1])
 
         ### APPLY INITIAL VALUES FROM RESULTS ###
-        opti.subject_to(time[0] == self.return_variable("t")[0])
+        opti.subject_to(opti_variables["s"][0] == self.return_variable("s")[0])
         if not self.quasi_steady:
             opti.subject_to(
                 opti_variables["s_dot"][0] == self.return_variable("s_dot")[0]
             )
-        opti.set_initial(opti_variables["t"], self.return_variable("t"))
+        # opti.set_initial(opti_variables["t"], self.return_variable("t"))
 
-        # opti.set_initial(opti_variables["s"], self.return_variable("s"))
+        opti.set_initial(opti_variables["s"], self.return_variable("s"))
         opti.set_initial(opti_variables["s_dot"], self.return_variable("s_dot"))
         opti.set_initial(
             opti_variables["input_steering"], self.return_variable("input_steering")

@@ -174,6 +174,7 @@ for df in cycle_dfs[2:10]:
             (df.kcu_actual_depower > 42) & (df.tether_reelout_speed < 0)
         ].tether_reelout_speed
     )
+    deployed_tether_length = df.tether_length.max() - df.tether_length.min()
     # except Exception as e:
     #     print(f"Error processing cycle: {e}")
     #     # Skip this cycle if it fails
@@ -239,6 +240,7 @@ for df in cycle_dfs[2:10]:
             "total_time_RO": np.sum(dt_ro),
             "total_time_RI": np.sum(dt_ri),
             "n_peaks_RO": n_peaks,
+            "deployed_tether_length": deployed_tether_length,
         }
     )
     valid_cycle_dfs.append(df)
@@ -267,16 +269,14 @@ def simulate_cycles_from_stats(
         ry = r0 * np.sin(az_max)
         rz = r0 * np.sin(rel_elevation) * 2 / 0.8
         vr = row["avg_reeling_speed_RO_mps"]
-
+        lt = row["deployed_tether_length"]
         pattern_config = {
-            "pattern_type": "figure_eight",
+            "pattern_type": "lissajous_angles",
             "parameters": {
                 "omega": -1.0,
                 "r0": r0,
-                "ry": ry,
-                "rz": rz,
-                "ky": 0.7,
-                "kz": 0.7,
+                "az_amp0": az_max,
+                "beta_amp0": rel_elevation * 2,
                 "vr": vr,
                 "beta0": avg_elevation,
                 "kappa": 1,
@@ -284,8 +284,8 @@ def simulate_cycles_from_stats(
             "control": {
                 "input_depower": 0.0,
             },
-            "start_path_angle": -np.pi / 2,
-            "end_path_angle": np.pi / 2 + np.pi * (row["n_peaks_RO"] - 2) + np.pi / 4,
+            "start_time": 0,
+            "end_time": lt / vr,
             "n_points": 300,
             "quasi_steady": True,
         }

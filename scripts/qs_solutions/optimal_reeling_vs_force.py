@@ -207,7 +207,9 @@ plt.show()
 
 
 unknown_vars = ["length_tether", "input_steering", "speed_tangential"]
-solve_func, inputs_name, _ = kite_model.setup_qs_solver(unknown_vars)
+kite_model.setup_qs_solver(unknown_vars)
+solve_func = kite_model._qs_solver
+inputs_name = kite_model._qs_inputs
 current_state = {
     "distance_radial": 200,
     "angle_elevation": 0,
@@ -265,8 +267,8 @@ for vwi, speed_wind in enumerate(wind_speeds):
     ft = np.zeros((len(angles_azimuth), len(angles_elevation), len(angles_course)))
 
     for i, phi in enumerate(angles_azimuth):
-        speed_tangential_i = 30
-        tension_tether_i = 1000
+        speed_tangential_i = 50
+        tension_tether_i = 10000
         for j, angle_elevation in enumerate(angles_elevation):
             for k, angle_course in enumerate(angles_course):
                 opti = ca.Opti()
@@ -345,31 +347,31 @@ reelin_speed = 4
 frac_power_ri = 0.75
 reel_out_length = 200.0
 
-force_data, wind_speeds = compute_optimal_reel_speeds_and_forces(
-    aero_coeffs, reelin_speed, frac_power_ri, reel_out_length
-)
-plt.plot(
-    force_data["v_r_sol"],
-    force_data["ft_sol"],
-    label="Numerical with Reel-in (4 m/s)",
-    color=colors[0],
-    linestyle="--",
-)
+# force_data, wind_speeds = compute_optimal_reel_speeds_and_forces(
+#     aero_coeffs, reelin_speed, frac_power_ri, reel_out_length
+# )
+# plt.plot(
+#     force_data["v_r_sol"],
+#     force_data["ft_sol"],
+#     label="Numerical with Reel-in (4 m/s)",
+#     color=colors[0],
+#     linestyle="--",
+# )
 
-reelin_speed = 8
-frac_power_ri = 0.75
-reel_out_length = 200.0
+# reelin_speed = 8
+# frac_power_ri = 0.75
+# reel_out_length = 200.0
 
-force_data, wind_speeds = compute_optimal_reel_speeds_and_forces(
-    aero_coeffs, reelin_speed, frac_power_ri, reel_out_length
-)
-plt.plot(
-    force_data["v_r_sol"],
-    force_data["ft_sol"],
-    label="Numerical with Reel-in (8 m/s)",
-    color=colors[0],
-    linestyle="-.",
-)
+# force_data, wind_speeds = compute_optimal_reel_speeds_and_forces(
+#     aero_coeffs, reelin_speed, frac_power_ri, reel_out_length
+# )
+# plt.plot(
+#     force_data["v_r_sol"],
+#     force_data["ft_sol"],
+#     label="Numerical with Reel-in (8 m/s)",
+#     color=colors[0],
+#     linestyle="-.",
+# )
 
 
 plt.ylabel("Tension Tether (N)")

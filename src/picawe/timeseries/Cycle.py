@@ -5,6 +5,7 @@ from picawe.system.kite import Kite
 from picawe.system.tether import RigidLumpedTether
 from picawe import SystemModel, State
 from picawe.environment.Wind import Wind
+import numpy as np
 
 
 class Cycle:
@@ -53,6 +54,7 @@ class Cycle:
     def run_cycle(self, cycle_settings):
         pattern_config = cycle_settings["reelout"]
         model_ro = self.create_model()
+        model_ro.input_depower = 0
         print(cycle_settings["reelout"])
         phase_ro = PhaseParameterized(
             model_ro,
@@ -61,7 +63,16 @@ class Cycle:
         )
         print("Running reelout...")
         t0 = time.time()
-        phase_ro.run_simulation()
+        base_start_state = State(
+            t=0,
+            s=-np.pi / 4,
+            s_dot=2,
+            s_ddot=0,
+            input_steering=0,
+            tension_tether_ground=1e8,
+        )
+
+        phase_ro.run_simulation(start_state=base_start_state)
         print("Reelout time:", time.time() - t0, "seconds")
 
         model_ri = self.create_model(
