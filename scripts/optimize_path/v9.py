@@ -57,29 +57,30 @@ phases_dyn = []
 for i in range(N):
 
     pattern_config = {
-        "pattern_type": "lissajous_angles",
+        "pattern_type": "cst_lissajous",
         "parameters": {
-            "omega": -1.0,
-            "r0": 200.0,
+            "omega": 1.0,
+            "r0": 220.0,
             "az_amp0": np.radians(40),
-            "beta_amp0": np.radians(30),
-            "vr": 2,
-            "beta0": 0.35,
+            "beta_amp0": np.radians(10),
+            "width_phi": 0.5,
+            "width_beta": 0.5,
+            "left_first": True,
+            "normalize_bumps": False,
+            "repeat_phi": True,
+            "repeat_beta": True,
+            "beta_coeffs": [-0.65035231, 1.0, 1.0, 1.0, -1.0],
+            "az_coeffs": [0, 0, 0, 0, 0],
+            # "ky": 1,
+            # "kz": 1,
+            "vr": 1,
+            "beta0": 0.55,
             "kappa": 0,
         },
         "start_time": 0,
-        "end_time": 30,
-        "n_points": 300,
-        "optimization_parameters": {
-            # Add any optimization-related parameters here if needed as list of names
-            "beta_amp0",
-            "az_amp0",
-            # "ky",
-            # "kz",
-            # "kappa",
-            # "beta",
-            # "vr",
-        },
+        "end_time": 35,
+        "n_points": 100,
+        "optimization_parameters": ["beta_coeffs", "az_amp0", "beta_amp0"],
     }
 
     for quasi_steady in [True, False]:  # Loop over both dynamic and quasi-steady cases
