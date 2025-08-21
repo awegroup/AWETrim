@@ -85,7 +85,7 @@ DEFAULT_PATTERN_CONFIG = {
 # defaults.py (This is your file containing the limits)
 DEFAULT_OPTI_LIMITS = {
     "tension_tether_ground": (0, 1e9),  # Range for tension_tether_ground: 0 to 1e9
-    "input_steering": [-2, 2],  # Range for input_steering: -pi/2 to pi/2
+    "input_steering": (-1.5, 1.5),  # Range for input_steering: -pi/2 to pi/2
     "s_dot": (-10, 30),  # Range for s_dot: 0 to 10
     "s_ddot": (-100, 100),  # Range for s_ddot: -100 to 100
     "s": (0, 300),  # Range for s: 0 to 10
@@ -102,11 +102,13 @@ DEFAULT_OPTI_LIMITS = {
     "kz": (0.5, 1),  # Range for kz: 0 to 100
     "vr": (0.5, 8),  # Range for vr: 0 to 100
     "az_amp0": (
-        np.radians(10),
+        np.radians(20),
         np.radians(50),
     ),  # Range for azimuth amplitude: 10 to 30 degrees
     "beta_amp0": (
         np.radians(10),
         np.radians(30),
     ),  # Range for beta amplitude: 5 to 20 degrees
+    "beta_coeffs": (-1, 1),  # Range for beta coefficients: -1 to 1
+    "az_coeffs": (-1, 1),  # Range for azimuth coefficients: -1 to 1
 }

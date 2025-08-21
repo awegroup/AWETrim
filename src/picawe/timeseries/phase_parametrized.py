@@ -134,7 +134,17 @@ class PhaseParameterized(TimeSeries):
 
         # Create optimization variables for parameters to optimize
         for var in self.pattern_config["optimization_parameters"]:
-            self.optimization_vars[var] = opti.variable()  # No bounds if not specified
+
+            val = np.atleast_1d(
+                self.pattern_config["parameters"][var]
+            )  # guarantees array, even for scalar
+
+            if len(val) > 1:
+                self.optimization_vars[var] = opti.variable(len(val))
+            else:
+                self.optimization_vars[var] = (
+                    opti.variable()
+                )  # No bounds if not specified
 
         opti_variables = {
             "s": opti.variable(N + 1),
@@ -194,6 +204,7 @@ class PhaseParameterized(TimeSeries):
             intg = ca.integrator("intg", "cvodes", ode, 0, 1)
 
         self.kite_model.establish_residual()
+        flat = [ca.vertcat(*pattern_inputs)]
         if self.quasi_steady:
             residual = ca.Function(
                 "residual",
@@ -204,7 +215,7 @@ class PhaseParameterized(TimeSeries):
                     self.kite_model.input_steering,
                     self.kite_model.tension_tether_ground,
                 ]
-                + pattern_inputs,
+                + flat,
                 [self.kite_model.residual],
             )
         else:
@@ -218,10 +229,9 @@ class PhaseParameterized(TimeSeries):
                     self.kite_model.input_steering,
                     self.kite_model.tension_tether_ground,
                 ]
-                + pattern_inputs,
+                + flat,
                 [self.kite_model.residual],
             )
-        print(pattern_inputs)
 
         # # Set the time values
         time_array = np.arange(N + 1) * time_step + t0
@@ -234,10 +244,23 @@ class PhaseParameterized(TimeSeries):
                 return func(vr)
             return vr
 
+        P_scale = opti.parameter()
+        # set from your initial trajectory (rough but effective):
+        T0 = self.return_variable("tension_tether_ground")
+        vr0 = (
+            self.pattern_config["parameters"]["vr"]
+            if np.isscalar(self.pattern_config["parameters"]["vr"])
+            else float(self.pattern_config["parameters"]["vr"][0])
+        )
+        P0 = np.mean(T0) * vr0  # crude scale for T*vr
+        opti.set_value(P_scale, max(abs(P0), 1.0))
         total_time = opti.parameter()
         opti.set_value(total_time, self.pattern_config["end_time"])
-        energy = 0  # Initialize power
+        energy = 0
+        t_eff = 0
         for i in range(N + 1):
+            opt_par_values = [opti_variables[var] for var in self.optimization_vars]
+            flat = [ca.vertcat(*opt_par_values)]
             if self.quasi_steady:
                 residual_inputs = [
                     time_array[i],
@@ -245,7 +268,7 @@ class PhaseParameterized(TimeSeries):
                     opti_variables["s_dot"][i],
                     opti_variables["input_steering"][i],
                     opti_variables["tension_tether_ground"][i],
-                ] + [opti_variables[var] for var in self.optimization_vars]
+                ] + flat
             else:
                 # For dynamic case, include s_ddot
                 residual_inputs = [
@@ -255,11 +278,11 @@ class PhaseParameterized(TimeSeries):
                     opti_variables["s_ddot"][i],
                     opti_variables["input_steering"][i],
                     opti_variables["tension_tether_ground"][i],
-                ] + [opti_variables[var] for var in self.optimization_vars]
+                ] + flat
             res = residual(*residual_inputs)
-            opti.subject_to(res[0] == 0)
-            opti.subject_to(res[1] == 0)
-            opti.subject_to(res[2] == 0)
+            opti.subject_to(res[0] / 100 == 0)
+            opti.subject_to(res[1] / 100 == 0)
+            opti.subject_to(res[2] / 1000 == 0)
             if i < N:
                 if self.quasi_steady:
                     sol_s = intg(
@@ -275,16 +298,26 @@ class PhaseParameterized(TimeSeries):
                     opti.subject_to(opti_variables["s"][i + 1] == sol_s["xf"][0])
                     opti.subject_to(opti_variables["s_dot"][i + 1] == sol_s["xf"][1])
 
-            # Only accumulate energy when s is between 0 and 2π
-            s_val = opti_variables["s"][i]
-            energy += ca.if_else(
-                ca.logic_and(s_val >= 0, s_val <= 2 * np.pi),
-                opti_variables["tension_tether_ground"][i]
-                * call_vr_func(vr_func, opti_variables["vr"]),
-                0,
-            )
+            # Only accumulate power when s is between 0 and 2π
+            if i > 0:
+                T_i, T_im1 = (
+                    opti_variables["tension_tether_ground"][i],
+                    opti_variables["tension_tether_ground"][i - 1],
+                )
+                vr_i = call_vr_func(
+                    vr_func, opti_variables["vr"]
+                )  # avg(i,i-1) if vr varies per node
+                w_i = smooth_gate_0_2pi(opti_variables["s"][i], eps=1e-2)
+                w_im1 = smooth_gate_0_2pi(opti_variables["s"][i - 1], eps=1e-2)
+                w_avg = 0.5 * (w_i + w_im1)
 
-        power = energy / 10000
+                # Trapezoid * time_step
+                energy += w_avg * 0.5 * (T_i + T_im1) * vr_i * time_step
+                t_eff += w_avg * time_step
+
+        # Average power only over s∈[0,2π]
+        power = energy / (t_eff + 1e-12)
+        opti.minimize(-power / P_scale)  # or scale if you like: -power/P_scale
         opti.solver(
             "ipopt",
             {
@@ -305,6 +338,7 @@ class PhaseParameterized(TimeSeries):
             print(
                 f"Setting initial value for {var}: {self.pattern_config['parameters'][var]}"
             )
+            print(self.optimization_vars[var])
             opti.set_initial(
                 self.optimization_vars[var], self.pattern_config["parameters"][var]
             )
@@ -324,18 +358,21 @@ class PhaseParameterized(TimeSeries):
                         opti.subject_to(opti_var[:] <= ub)
 
         opti.minimize(-power)
-        solution = opti.solve()
         try:
             solution = opti.solve()
             # Print optimized values for variables in the pattern
             print("\n Optimized Pattern Variables:")
             for var_name, var in self.optimization_vars.items():
-                print(f"  {var_name}: {opti.debug.value(var):.6f}")
+                print(f"  {var_name}: {opti.debug.value(var)}")
                 optimized_config = self.pattern_config.copy()
                 optimized_config["parameters"].update({var_name: opti.debug.value(var)})
                 self.pattern_config = optimized_config
                 self.substitute_parametrized_kinematics()
         except Exception as e:
+            # Print debug optimization information
+            print("Debug optimization information:")
+            for var_name, var in self.optimization_vars.items():
+                print(f"  {var_name}: {opti.debug.value(var)}")
             print("Optimization failed:", e)
 
         print("Optimization status:", solution)
@@ -729,6 +766,16 @@ class PhaseParameterized(TimeSeries):
             except:
                 print("\n Power Value: (No value available)")
 
+    def _flatten_for_function_call(vals):
+        flat = []
+        for v in vals:
+            if isinstance(v, ca.MX) and v.numel() > 1:
+                # ensure column, then split into scalars
+                flat += list(ca.vertsplit(ca.reshape(v, (-1, 1))))
+            else:
+                flat.append(v)
+        return flat
+
     def substitute_parametrized_kinematics(self, optimize=False):
 
         pattern = create_pattern_from_dict(self.pattern_config, optimize=optimize)
@@ -941,3 +988,16 @@ class PhaseParameterized(TimeSeries):
     # #     )
     # #     print(self.kite_model.speed_radial)
     # #     # print(f"Optimal speed radial set according to the target  CL: {self.target_lift_coefficient} CD: {self.target_drag_coefficient} at aoa: {np.degrees(self.target_angle_of_attack)}")
+
+
+def smooth_gate_0_2pi(s, eps=1e-2):
+    # periodic s_mod in [0, 2π)
+    s_mod = s - 2 * np.pi * ca.floor(s / (2 * np.pi))
+
+    def ramp(u):
+        u_clip = ca.fmin(ca.fmax(u / eps, 0), 1)
+        return 0.5 * (1 - ca.cos(ca.pi * u_clip))
+
+    w_lo = ramp(s_mod)  # 0→1 over [0, eps]
+    w_hi = ramp(2 * np.pi - s_mod)  # 1→0 over [2π-eps, 2π]
+    return ca.fmin(w_lo, w_hi)  # ~1 inside, smooth at edges
