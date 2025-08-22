@@ -35,7 +35,7 @@ wind.speed_wind_ref = speed_wind_at_100
 
 start_state = State(
     t=0,
-    s=0,
+    s=np.pi / 2,
     s_dot=2,
     s_ddot=0,
     length_tether=199.6,
@@ -84,13 +84,13 @@ for i in range(N):
             # "ky": 1,
             # "kz": 1,
             "vr": 1.5,
-            "beta0": 0.4,
+            "beta0": 0.3,
             "kappa": 0,
         },
         "start_time": 0,
         "end_time": 40,
-        "n_points": 400,
-        "optimization_parameters": ["beta_coeffs"],
+        "n_points": 200,
+        "optimization_parameters": ["az_amp0", "beta_amp0", "beta_coeffs"],
     }
 
     for quasi_steady in [True, False]:  # Loop over both dynamic and quasi-steady cases

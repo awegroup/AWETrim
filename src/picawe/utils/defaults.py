@@ -3,7 +3,7 @@ import numpy as np
 DEFAULT_BOUNDS = {
     "tension_tether_ground": [0, 1e12],
     "input_steering": [-2, 2],
-    "s_dot": [0.01, 20],
+    "s_dot": [-10, 30],
     "s_ddot": [-100, 100],
     "speed_tangential": [0, 400],
     "angle_roll": [-np.pi / 2, np.pi / 2],
@@ -85,7 +85,7 @@ DEFAULT_PATTERN_CONFIG = {
 # defaults.py (This is your file containing the limits)
 DEFAULT_OPTI_LIMITS = {
     "tension_tether_ground": (0, 1e9),  # Range for tension_tether_ground: 0 to 1e9
-    "input_steering": (-1, 1),  # Range for input_steering: -pi/2 to pi/2
+    "input_steering": (-2, 2),  # Range for input_steering: -pi/2 to pi/2
     "s_dot": (-10, 30),  # Range for s_dot: 0 to 10
     "s_ddot": (-100, 100),  # Range for s_ddot: -100 to 100
     "s": (0, 300),  # Range for s: 0 to 10
@@ -106,7 +106,7 @@ DEFAULT_OPTI_LIMITS = {
         np.radians(50),
     ),  # Range for azimuth amplitude: 10 to 30 degrees
     "beta_amp0": (
-        np.radians(10),
+        np.radians(5),
         np.radians(30),
     ),  # Range for beta amplitude: 5 to 20 degrees
     "beta_coeffs": (-1, 1),  # Range for beta coefficients: -1 to 1

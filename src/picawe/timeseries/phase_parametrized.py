@@ -294,7 +294,7 @@ class PhaseParameterized(TimeSeries):
             W = ca.diag(
                 ca.vertcat(0.01, 0.01, 0.001)
             )  # tune so |W r| ~ 1 near feasible
-            # opti.subject_to(W @ res == 0)
+            opti.subject_to(W @ res == 0)
 
             # opti.subject_to(res[0] / 100 == 0)
             # opti.subject_to(res[1] / 100 == 0)
@@ -340,11 +340,12 @@ class PhaseParameterized(TimeSeries):
                 "ipopt": {
                     # "max_iter": 100,
                     "bound_relax_factor": 0,
-                    "tol": 1e-8,  # Main tolerance
+                    "tol": 1e-4,  # Main tolerance
                     # "acceptable_iter": 3,  # Accept if solution is good for 3 iter
-                    "acceptable_tol": 1e-6,  # Acceptable early termination
-                    "constr_viol_tol": 1e-6,  # Constraint violation tolerance
-                    "dual_inf_tol": 1e-6,  # Dual infeasibility
+                    "acceptable_tol": 1e-4,  # Acceptable early termination
+                    "constr_viol_tol": 1e-1,  # Constraint violation tolerance
+                    "dual_inf_tol": 1e-1,  # Dual infeasibility
+                    # "honor_original_bounds": "yes",
                     # "hessian_approximation": "limited-memory",
                     # "mu_strategy": "adaptive",
                     # "linear_solver": "mumps",
@@ -387,9 +388,9 @@ class PhaseParameterized(TimeSeries):
                         lb, ub = DEFAULT_OPTI_LIMITS[var_name]
                         opti.subject_to(lb <= opti_var[:])
                         opti.subject_to(opti_var[:] <= ub)
-
+        solution = opti.solve()
         try:
-            solution = opti.solve()
+
             # Print optimized values for variables in the pattern
             print("\n Optimized Pattern Variables:")
             for var_name, var in self.optimization_vars.items():
@@ -405,6 +406,8 @@ class PhaseParameterized(TimeSeries):
                 print(f"  {var_name}: {opti.debug.value(var)}")
             print("Optimization failed:", e)
 
+        plt.plot(solution.value(opti_variables["input_steering"]))
+        plt.show()
         print("Optimization status:", solution)
         s_vals = solution.value(opti_variables["s"])  # shape: (N+1,)
         s_dot_vals = solution.value(opti_variables["s_dot"])  # shape: (N+1,)
@@ -659,6 +662,7 @@ def smooth_gate_0_2pi(s, eps=1e-2):
         u_clip = ca.fmin(ca.fmax(u / eps, 0), 1)
         return 0.5 * (1 - ca.cos(ca.pi * u_clip))
 
+    s_mod = s_mod - ca.pi / 2
     w_lo = ramp(s_mod)  # 0→1 over [0, eps]
     w_hi = ramp(2 * np.pi - s_mod)  # 1→0 over [2π-eps, 2π]
     return ca.fmin(w_lo, w_hi)  # ~1 inside, smooth at edges
