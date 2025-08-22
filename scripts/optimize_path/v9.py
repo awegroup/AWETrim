@@ -8,6 +8,7 @@ from picawe.kinematics.Kinematics import ParametrizedKinematics, KiteKinematics
 from picawe import SystemModel, State
 from picawe.utils.color_palette import set_plot_style_no_latex, get_color_list
 from picawe.timeseries.phase_parametrized import PhaseParameterized
+from picawe.environment import Wind
 import json
 import copy
 
@@ -18,14 +19,23 @@ file_path = "./data/LEI-V9-KITE/v9_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
+speed_wind_at_100 = 12  # m/s
+
+wind = Wind(
+    wind_model="uniform",
+    z0=0.1,
+)
+speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
+wind.speed_friction = speed_friction
+wind.speed_wind_ref = speed_wind_at_100
 
 # -----------------------------------------------
 # Define the parametrized path
 # -----------------------------------------------
-wind_speed = 12  # m/s
+
 start_state = State(
     t=0,
-    s=np.pi / 2,
+    s=0,
     s_dot=2,
     s_ddot=0,
     length_tether=199.6,
@@ -69,18 +79,18 @@ for i in range(N):
             "normalize_bumps": False,
             "repeat_phi": True,
             "repeat_beta": True,
-            "beta_coeffs": [-0.65035231, 1.0, 1.0, 1.0, -1.0],
+            "beta_coeffs": [0, 0, 0, 0, 0],
             "az_coeffs": [0, 0, 0, 0, 0],
             # "ky": 1,
             # "kz": 1,
-            "vr": 1,
-            "beta0": 0.55,
+            "vr": 1.5,
+            "beta0": 0.4,
             "kappa": 0,
         },
         "start_time": 0,
-        "end_time": 35,
-        "n_points": 100,
-        "optimization_parameters": ["beta_coeffs", "az_amp0", "beta_amp0"],
+        "end_time": 40,
+        "n_points": 400,
+        "optimization_parameters": ["beta_coeffs"],
     }
 
     for quasi_steady in [True, False]:  # Loop over both dynamic and quasi-steady cases
@@ -94,10 +104,14 @@ for i in range(N):
             mass_kcu=0,
             steering_control="asymmetric",
         )
+
         kite_model = SystemModel(
-            dof=dof, quasi_steady=quasi_steady, kite=kite, tether=tether
+            dof=dof,
+            quasi_steady=quasi_steady,
+            kite=kite,
+            tether=tether,
+            wind_model=wind,
         )
-        kite_model.wind.speed_wind_ref = 12
         kite_model.input_depower = 0
 
         # Run simulation
@@ -107,12 +121,12 @@ for i in range(N):
         )
         # phase.set_optimal_speed_radial()
 
-        # if quasi_steady:
-        phase.run_simulation_opti(start_state=start_state)
-        pattern_config = phase.pattern_config
-        print("Optimized pattern configuration:")
-        print(pattern_config)
-        start_state = phase.states[0]
+        if quasi_steady:
+            phase.run_simulation_opti(start_state=start_state)
+            pattern_config = phase.pattern_config
+            print("Optimized pattern configuration:")
+            print(pattern_config)
+            start_state = phase.states[0]
         # phase.substitute_parametrized_kinematics()
         kite = Kite(
             mass_wing=mass_wing,
@@ -122,9 +136,13 @@ for i in range(N):
             steering_control="asymmetric",
         )
         kite_model = SystemModel(
-            dof=dof, quasi_steady=quasi_steady, kite=kite, tether=tether
+            dof=dof,
+            quasi_steady=quasi_steady,
+            kite=kite,
+            tether=tether,
+            wind_model=wind,
         )
-        kite_model.wind.speed_wind_ref = 12
+
         kite_model.input_depower = 0
         phase = PhaseParameterized(
             kite_model, quasi_steady=quasi_steady, pattern_config=pattern_config
@@ -187,7 +205,7 @@ ax2.set_ylabel(PLOT_LABELS["angle_elevation"])
 ax5.set_xlabel(PLOT_LABELS["phase"])
 ax3.set_ylabel(PLOT_LABELS["speed_tangential"])
 ax4.set_ylabel(PLOT_LABELS["tension_tether_ground"])
-ax5.set_ylabel(PLOT_LABELS["angle_roll"])
+ax5.set_ylabel(PLOT_LABELS["input_steering"])
 ax6.set_ylabel(PLOT_LABELS["speed_radial"])
 
 
@@ -256,8 +274,8 @@ for i in range(N):
         ax3.plot(np.degrees(s_qs), vtau_qs, linestyle="--", color=colors[i])
         ax4.plot(np.degrees(s_dyn), tension_dyn / 1000, color=colors[i])
         ax4.plot(np.degrees(s_qs), tension_qs / 1000, linestyle="--", color=colors[i])
-        ax5.plot(np.degrees(s_dyn), np.degrees(roll_dyn), color=colors[i])
-        ax5.plot(np.degrees(s_qs), np.degrees(roll_qs), linestyle="--", color=colors[i])
+        ax5.plot(np.degrees(s_dyn), roll_dyn, color=colors[i])
+        ax5.plot(np.degrees(s_qs), roll_qs, linestyle="--", color=colors[i])
         ax6.plot(np.degrees(s_dyn), vr_dyn, color=colors[i])
         ax6.plot(np.degrees(s_qs), vr_qs, linestyle="--", color=colors[i])
 

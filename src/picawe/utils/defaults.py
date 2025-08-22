@@ -2,7 +2,7 @@ import numpy as np
 
 DEFAULT_BOUNDS = {
     "tension_tether_ground": [0, 1e12],
-    "input_steering": [-1.2, 1.2],
+    "input_steering": [-2, 2],
     "s_dot": [0.01, 20],
     "s_ddot": [-100, 100],
     "speed_tangential": [0, 400],
@@ -85,7 +85,7 @@ DEFAULT_PATTERN_CONFIG = {
 # defaults.py (This is your file containing the limits)
 DEFAULT_OPTI_LIMITS = {
     "tension_tether_ground": (0, 1e9),  # Range for tension_tether_ground: 0 to 1e9
-    "input_steering": (-1.5, 1.5),  # Range for input_steering: -pi/2 to pi/2
+    "input_steering": (-1, 1),  # Range for input_steering: -pi/2 to pi/2
     "s_dot": (-10, 30),  # Range for s_dot: 0 to 10
     "s_ddot": (-100, 100),  # Range for s_ddot: -100 to 100
     "s": (0, 300),  # Range for s: 0 to 10
@@ -93,7 +93,7 @@ DEFAULT_OPTI_LIMITS = {
     # HElix
     "kappa": (0, 0.5),  # Range for kappa: 0 to 5
     # "vr": (-10, 10),      # Range for vr: 0 to 100
-    "beta0": (0.2, 0.873),  # Range for beta: 20 ot 50 degrees
+    "beta0": (0.35, 0.873),  # Range for beta: 20 ot 50 degrees
     "d0": (40, 500),  # Range for d0: 0 to 100
     # Figure Eight
     "ry": (60, 180),  # Range for ry: 0 to 100

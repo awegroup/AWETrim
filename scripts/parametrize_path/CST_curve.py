@@ -9,9 +9,12 @@ from picawe.timeseries.phase_parametrized import PhaseParameterized
 from picawe.system.kite import Kite
 from picawe.system.tether import RigidLumpedTether
 from picawe.utils.defaults import PLOT_LABELS
+from picawe.environment.Wind import Wind
 
 # ---------- Config ----------
-wind_speed = 10
+wind_speed = 12
+speed_friction = 0.41 * wind_speed / np.log(100 / 0.1)
+
 colors = get_color_list()
 
 
@@ -23,20 +26,20 @@ pattern_config_v9 = {
     "parameters": {
         "omega": 1.0,
         "r0": 220.0,
-        "az_amp0": 0.590658504789874,
-        "beta_amp0": 0.45,
+        "az_amp0": 0.6143915622908155,
+        "beta_amp0": 0.17453292519943295,
         "width_phi": 0.5,
         "width_beta": 0.5,
         "left_first": True,
         "normalize_bumps": False,
         "repeat_phi": True,
         "repeat_beta": True,
-        "beta_coeffs": [-0.46811362, 0.12696778, -1.0, 0.99999999, -0.00782504],
+        "beta_coeffs": [0.29368539, 0.71564794, 0.67922759, -0.62327407, 0.70266623],
         "az_coeffs": [0, 0, 0, 0, 0],
         # "ky": 1,
         # "kz": 1,
         "vr": 1,
-        "beta0": 0.55,
+        "beta0": 0.39,
         "kappa": 0,
     },
     "start_time": 0,
@@ -116,9 +119,14 @@ def run_sim(
         if inertia_free:
             kite.override_centripetal = True
             kite.override_coriolis = True
-
-        model = SystemModel(dof=3, quasi_steady=quasi_steady, kite=kite, tether=tether)
-        model.wind.speed_wind_ref = wind_speed
+        wind = Wind(
+            wind_model="logarithmic",
+            z0=0.1,
+        )
+        model = SystemModel(
+            dof=3, quasi_steady=quasi_steady, kite=kite, tether=tether, wind_model=wind
+        )
+        model.wind.speed_friction = speed_friction
         model.input_depower = 0
         if sim_type == "no_mass":
             model.mass_wing = 0
