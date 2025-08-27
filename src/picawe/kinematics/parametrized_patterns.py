@@ -264,25 +264,25 @@ class ParametrizedPatternsAngles(ParametrizedPatterns):
             if isinstance(value, ca.MX):  # If value is symbolic, store it separately
                 self.optimization_vars[key] = value
 
-    def x(self, t, s):
-        return self.r(t) * ca.cos(self.azimuth(t, s)) * ca.cos(self.elevation(t, s))
+    def x(self, r, s):
+        return r * ca.cos(self.azimuth(r, s)) * ca.cos(self.elevation(r, s))
 
-    def y(self, t, s):
-        return self.r(t) * ca.sin(self.azimuth(t, s)) * ca.cos(self.elevation(t, s))
+    def y(self, r, s):
+        return r * ca.sin(self.azimuth(r, s)) * ca.cos(self.elevation(r, s))
 
-    def z(self, t, s):
-        return self.r(t) * ca.sin(self.elevation(t, s))
+    def z(self, r, s):
+        return r * ca.sin(self.elevation(r, s))
 
-    def curvature(self, t_array, s_array):
+    def curvature(self, r_array, s_array):
 
         # --- Get scalar fields as expressions of s (t is fixed here) ---
         # If your methods are r(s,t), phi(s), beta(s), call accordingly.
         # The user code showed self.r(t) and gradient(..., s), so we mimic that.
-        t = ca.MX.sym("t")
+
         s = ca.MX.sym("s")
-        r = self.r(t)  # expression that depends on s
-        phi = self.azimuth(t, s)  # expression that depends on s
-        beta = self.elevation(t, s)  # expression that depends on s
+        r = ca.MX.sym("r")  # expression that depends on s
+        phi = self.azimuth(r, s)  # expression that depends on s
+        beta = self.elevation(r, s)  # expression that depends on s
 
         # --- Cartesian curve r_vec(s) ---
         x = r * ca.cos(beta) * ca.cos(phi)
@@ -304,13 +304,13 @@ class ParametrizedPatternsAngles(ParametrizedPatterns):
         kappa = num / den
         rho = 1.0 / (kappa + eps)
 
-        kappa_fun = ca.Function("kappa_fun", [t, s], [kappa], {"allow_free": True})
-        kappa = kappa_fun(t_array, s_array)
+        kappa_fun = ca.Function("kappa_fun", [r, s], [kappa], {"allow_free": True})
+        kappa = kappa_fun(r_array, s_array)
 
         return kappa
 
-    def radius_curvature(self, t, s):
-        return 1.0 / (self.curvature(t, s) + 1e-12)
+    def radius_curvature(self, r, s):
+        return 1.0 / (self.curvature(r, s) + 1e-12)
 
 
 class FigureEightAngles(ParametrizedPatternsAngles):
@@ -394,7 +394,6 @@ def create_pattern_from_dict(
             "r0",
             "az_amp0",
             "beta_amp0",
-            "vr",
             "beta0",
             "beta_coeffs",
             "az_coeffs",
@@ -444,7 +443,6 @@ class CST_Lissajous(ParametrizedPatternsAngles):
         r0,
         az_amp0,
         beta_amp0,
-        vr,
         beta0,
         beta_coeffs,
         az_coeffs,
@@ -462,7 +460,6 @@ class CST_Lissajous(ParametrizedPatternsAngles):
             r0=r0,
             az_amp0=az_amp0,
             beta_amp0=beta_amp0,
-            vr=vr,
             beta0=beta0,
             kappa=kappa,
             kbeta=kbeta,
@@ -488,20 +485,14 @@ class CST_Lissajous(ParametrizedPatternsAngles):
         self.normalize_bumps = bool(normalize_bumps)
         self.sgn = -1.0 if left_first else +1.0
 
-    # --- same radial/amps as before ---
-    def r(self, t):
-        return self.r0 + self.vr * t
+    def beta_center(self, r):
+        return self.beta0 * (self.r0 / (self.r0 + (r - self.r0) * self.kbeta))
 
-    def beta_center(self, t):
-        return self.beta0 * (self.r0 / (self.r0 + (self.r(t) - self.r0) * self.kbeta))
+    def az_amp(self, r):
+        return self.az_amp0 * (self.r0 / (self.r0 + (r - self.r0) * self.kappa))
 
-    def az_amp(self, t):
-        return self.az_amp0 * (self.r0 / (self.r0 + (self.r(t) - self.r0) * self.kappa))
-
-    def beta_amp(self, t):
-        return self.beta_amp0 * (
-            self.r0 / (self.r0 + (self.r(t) - self.r0) * self.kappa)
-        )
+    def beta_amp(self, r):
+        return self.beta_amp0 * (self.r0 / (self.r0 + (r - self.r0) * self.kappa))
 
     @staticmethod
     def _mod1(x):
@@ -528,16 +519,16 @@ class CST_Lissajous(ParametrizedPatternsAngles):
     def _u(self, s):  # unit-phase for shaping
         return self._mod1(self.omega * s / (2.0 * ca.pi))
 
-    def azimuth(self, t, s):
-        a_phi = self.az_amp(t)
+    def azimuth(self, r, s):
+        a_phi = self.az_amp(r)
         phi_class = self.sgn * a_phi * ca.sin(self.omega * s)
         u = self._u(s)
         N_phi = self._build_shape_repeat(u, self.K_phi, self.width_phi, self.az_coeffs)
         return phi_class * N_phi  # c_phi = 0
 
-    def elevation(self, t, s):
-        c_beta = self.beta_center(t)
-        b_beta = self.beta_amp(t)
+    def elevation(self, r, s):
+        c_beta = self.beta_center(r)
+        b_beta = self.beta_amp(r)
         beta_class = c_beta + b_beta * ca.sin(2.0 * self.omega * s)
         u = self._u(s)
         N_beta = self._build_shape_repeat(

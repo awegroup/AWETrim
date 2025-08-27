@@ -169,38 +169,38 @@ class ParametrizedKinematics:
         self.pattern = pattern
 
         self.s = phase.s
-        self.t = phase.t
+        self.r = phase.kite_model.distance_radial
+        self.vr = phase.kite_model.speed_radial
         self.s_dot = phase.s_dot
         self.s_ddot = phase.s_ddot
 
     @property
     def beta(self):
-        return self.pattern.elevation(self.t, self.s)
+        return self.pattern.elevation(self.r, self.s)
 
     @property
     def phi(self):
-        return self.pattern.azimuth(self.t, self.s)
-
-    @property
-    def r(self):
-        return self.pattern.r(self.t)
+        return self.pattern.azimuth(self.r, self.s)
 
     @property
     def dtheta_ds(self):
         return (
-            ca.gradient(self.phi, self.s) + ca.gradient(self.phi, self.t) / self.s_dot
+            ca.gradient(self.phi, self.s)
+            + ca.gradient(self.phi, self.r) * self.vr / self.s_dot
         )
 
     @property
     def dbeta_ds(self):
         return (
-            ca.gradient(self.beta, self.s) + ca.gradient(self.beta, self.t) / self.s_dot
+            ca.gradient(self.beta, self.s)
+            + ca.gradient(self.beta, self.r) * self.vr / self.s_dot
         )
 
     @property
     def dr_ds(self):
-        return self.pattern.vr / self.s_dot
+        return self.vr / self.s_dot
 
+    # TODO: This is not correct, important for the dynamic case with vr_dot not equal to zero
     @property
     def dr_ds2(self):
         return ca.gradient(self.dr_ds, self.s)
@@ -214,10 +214,6 @@ class ParametrizedKinematics:
         )
 
     @property
-    def vr(self):
-        return self.pattern.vr
-
-    @property
     def vk(self):
         return ca.norm_2(self.dR_ds) * self.s_dot
 
@@ -225,6 +221,7 @@ class ParametrizedKinematics:
     def vtau(self):
         return ca.sqrt(self.vk**2 - self.vr**2)
 
+    # TODO: This is not correct, important for the dynamic case with vr_dot not equal to zero
     @property
     def dot_vr(self):
         return self.dr_ds2 * self.s_dot**2 + self.s_ddot * self.dr_ds
@@ -239,14 +236,14 @@ class ParametrizedKinematics:
     def dbeta_ds2(self):
         return (
             ca.gradient(self.dbeta_ds, self.s)
-            + ca.gradient(self.dbeta_ds, self.t) / self.s_dot
+            + ca.gradient(self.dbeta_ds, self.r) * self.vr / self.s_dot
         )
 
     @property
     def dtheta_ds2(self):
         return (
             ca.gradient(self.dtheta_ds, self.s)
-            + ca.gradient(self.dtheta_ds, self.t) / self.s_dot
+            + ca.gradient(self.dtheta_ds, self.r) * self.vr / self.s_dot
         )
 
     @property
@@ -258,8 +255,9 @@ class ParametrizedKinematics:
 
     @property
     def dot_chi(self):
-        return ca.gradient(self.chi, self.s) * self.s_dot + ca.gradient(
-            self.chi, self.t
+        return (
+            ca.gradient(self.chi, self.s) * self.s_dot
+            + ca.gradient(self.chi, self.r) * self.vr
         )
 
     @property

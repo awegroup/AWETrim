@@ -10,6 +10,7 @@ from matplotlib import cm
 import numpy as np
 from typing import Collection
 
+
 class TimeSeries:
     """
 
@@ -19,18 +20,17 @@ class TimeSeries:
 
     """
 
-
-    def __init__(self,
-                 kite_model: SystemModel,
-                 ):
+    def __init__(
+        self,
+        kite_model: SystemModel,
+    ):
 
         # System configuration.
         self.kite_model = kite_model
 
         # Time series states.
         self.states = []
-    
-    
+
     # @property
     # def converged(self):
     #     return np.all(np.array([s.converged for s in self.states])) if len(self.states) > 0 else False
@@ -67,9 +67,9 @@ class TimeSeries:
     #     times = np.array([s.time for s in self.states])
     #     integrated_tension = np.trapz(tensions, times)
     #     return integrated_tension / self.duration
-    
+
     def return_variable(self, variable: str):
-        
+
         var = []
         for state in self.states:
             if variable in state.keys() and state[variable] is not None:
@@ -83,8 +83,12 @@ class TimeSeries:
         return np.array(var)
 
     def plot_trace_on_plane(
-            self, plot_markers=True, plot_kwargs=None, ax=None,
-            gradient_color: tuple = None, plane=('x', 'z')
+        self,
+        plot_markers=True,
+        plot_kwargs=None,
+        ax=None,
+        gradient_color: tuple = None,
+        plane=("x", "z"),
     ):
         """Plot of the downwind versus vertical position of the kite.
 
@@ -99,11 +103,11 @@ class TimeSeries:
         if plot_kwargs is None:
             plot_kwargs = {}
 
-        norm = plot_kwargs.get('norm', None)
-        linewidth = plot_kwargs.get('linewidth', 2)
-        figsize = plot_kwargs.get('figsize', (None, None))
-        cbar = plot_kwargs.get('cbar', True)
-        legend = plot_kwargs.get('legend', False)
+        norm = plot_kwargs.get("norm", None)
+        linewidth = plot_kwargs.get("linewidth", 2)
+        figsize = plot_kwargs.get("figsize", (None, None))
+        cbar = plot_kwargs.get("cbar", True)
+        legend = plot_kwargs.get("legend", False)
 
         if ax is None:
             fig, ax = plt.subplots(figsize=figsize)
@@ -112,14 +116,16 @@ class TimeSeries:
 
         x = self.return_variable(plane[0])
         y = self.return_variable(plane[1])
-        speed = self.return_variable('speed_tangential')
+        speed = self.return_variable("speed_tangential")
 
         if gradient_color is None:
             # ax.scatter(x_traj, z_traj, **plot_kwargs)  # Scatter plots the dots at each time step.
             ax.plot(x, y)
         else:
 
-            vals = np.array([s.__getattribute__(gradient_color[0]) for s in self.states])
+            vals = np.array(
+                [s.__getattribute__(gradient_color[0]) for s in self.states]
+            )
 
             if norm is None:
                 norm = Normalize(vmin=np.nanmin(vals), vmax=np.nanmax(vals))
@@ -137,7 +143,12 @@ class TimeSeries:
             m.set_array(np.linspace(norm.vmin, norm.vmax, 30))
 
             if cbar:
-                cb = fig.colorbar(m, aspect=15, label=PLOT_LABELS.get(gradient_color[0], gradient_color[0]), ax=ax)
+                cb = fig.colorbar(
+                    m,
+                    aspect=15,
+                    label=PLOT_LABELS.get(gradient_color[0], gradient_color[0]),
+                    ax=ax,
+                )
             # cb.set_ticks(np.linspace(norm.vmin, norm.vmax, 8))
 
         # if plot_markers:
@@ -175,14 +186,23 @@ class TimeSeries:
         #     plt.xlim([0., None])
         # plt.ylim([0., None])
         ax.grid(True)
-        ax.set_aspect('equal')
+        ax.set_aspect("equal")
 
         if legend:
             ax.legend(loc=legend if type(legend) is str else None)
 
         return fig, ax
 
-    def trajectory_plot3d(self, fig=None, ax=None, animate=False, animate_kwargs=None, plot_markers=None, plot_kwargs=None, gradient_color=None):
+    def trajectory_plot3d(
+        self,
+        fig=None,
+        ax=None,
+        animate=False,
+        animate_kwargs=None,
+        plot_markers=None,
+        plot_kwargs=None,
+        gradient_color=None,
+    ):
         """Animation of the 3D trajectory of the kite.
 
         Args:
@@ -199,7 +219,7 @@ class TimeSeries:
 
         if ax is None:
             fig = plt.figure()
-            ax = plt.axes(projection='3d')
+            ax = plt.axes(projection="3d")
         else:
             fig = ax.figure
 
@@ -210,19 +230,19 @@ class TimeSeries:
         if animate_kwargs is None:
             animate_kwargs = {}
 
-        label = plot_kwargs.get('label', None)
-        marker_label = plot_kwargs.get('marker_label', None)
-        marker_color = plot_kwargs.get('marker_color', None)
-        norm = plot_kwargs.get('norm', None)
-        plot_ground_station = plot_kwargs.get('ground_station', True)
-        color = plot_kwargs.get('color', None)
-        legend = plot_kwargs.get('legend', False)
+        label = plot_kwargs.get("label", None)
+        marker_label = plot_kwargs.get("marker_label", None)
+        marker_color = plot_kwargs.get("marker_color", None)
+        norm = plot_kwargs.get("norm", None)
+        plot_ground_station = plot_kwargs.get("ground_station", True)
+        color = plot_kwargs.get("color", None)
+        legend = plot_kwargs.get("legend", False)
 
-        t = self.return_variable('t')
-        x = self.return_variable('x')
-        y = self.return_variable('y')
-        z = self.return_variable('z')
-        speed = self.return_variable('speed_tangential')
+        t = self.return_variable("t")
+        x = self.return_variable("x")
+        y = self.return_variable("y")
+        z = self.return_variable("z")
+        speed = self.return_variable("speed_tangential")
 
         t = t[~np.isnan(t)]
         x = x[~np.isnan(x)]
@@ -233,12 +253,18 @@ class TimeSeries:
         t = t.round(6)  # required to get rid of numeric error
 
         if gradient_color is not None:
-            vals = np.array([s.__getattribute__(gradient_color[0]) for s in self.states])
+            vals = np.array(
+                [s.__getattribute__(gradient_color[0]) for s in self.states]
+            )
 
-            if 'angle' in gradient_color[0]:
+            if "angle" in gradient_color[0]:
                 vals = np.degrees(vals)
 
-            norm = Normalize(vmin=np.nanmin(vals), vmax=np.nanmax(vals)) if norm is None else norm
+            norm = (
+                Normalize(vmin=np.nanmin(vals), vmax=np.nanmax(vals))
+                if norm is None
+                else norm
+            )
             cmap = plt.get_cmap(gradient_color[1])
 
             # Matplotlib has no feature to plot colormap over line..
@@ -247,15 +273,23 @@ class TimeSeries:
             fc = cmap(norm((vals[:-1] + vals[1:]) / 2))
             for i, segment in enumerate(zip(points[:-1], points[1:])):
                 start, end = segment
-                if np.linalg.norm(np.array(end) - np.array(start)) < 10:  # Don't plot big discontinuities. TODO remove?
+                if (
+                    np.linalg.norm(np.array(end) - np.array(start)) < 10
+                ):  # Don't plot big discontinuities. TODO remove?
                     ax.plot(*np.array(segment).T, c=fc[i])
 
             # Create colorbar
             m = cm.ScalarMappable(cmap=cmap, norm=norm)
             m.set_array(vals)
 
-            if plot_kwargs.get('colorbar', True):
-                fig.colorbar(m, shrink=0.5, aspect=10, label=PLOT_LABELS.get(gradient_color[0], gradient_color[0]), ax=ax)
+            if plot_kwargs.get("colorbar", True):
+                fig.colorbar(
+                    m,
+                    shrink=0.5,
+                    aspect=10,
+                    label=PLOT_LABELS.get(gradient_color[0], gradient_color[0]),
+                    ax=ax,
+                )
 
         else:
             ax.plot(x, y, z, label=label, color=color)
@@ -266,21 +300,24 @@ class TimeSeries:
                 x[np.isin(t, plot_markers)],
                 y[np.isin(t, plot_markers)],
                 z[np.isin(t, plot_markers)],
-                's', markerfacecolor='None', label=marker_label, color=marker_color
+                "s",
+                markerfacecolor="None",
+                label=marker_label,
+                color=marker_color,
             )
 
         if legend:
             ax.legend()
 
         if plot_ground_station:
-            ax.plot(0, 0, 0, marker='o', color='tab:brown')  # plot ground station
+            ax.plot(0, 0, 0, marker="o", color="tab:brown")  # plot ground station
 
-        if plot_kwargs.get('labels', True):
-            ax.set_xlabel('x [m]')
-            ax.set_ylabel('y [m]')
-            ax.set_zlabel('z [m]')
+        if plot_kwargs.get("labels", True):
+            ax.set_xlabel("x [m]")
+            ax.set_ylabel("y [m]")
+            ax.set_zlabel("z [m]")
 
-        if not plot_kwargs.get('ticks', True):
+        if not plot_kwargs.get("ticks", True):
             ax.set_xticklabels([])
             ax.set_yticklabels([])
             ax.set_zticklabels([])
@@ -288,29 +325,47 @@ class TimeSeries:
         plt.grid(True)
 
         x_min, x_max = ax.get_xlim()
-        ax.set_ylim(-0.5*(x_max-x_min), 0.5*(x_max-x_min))  # set y lim as the same of x, but centered
-        ax.set_zlim(ax.get_zlim()[0], max(ax.get_zlim()[1], 100))  # z lim minimum height 100 m seems reasonable
-        ax.set_aspect('equal')  # Set equal aspect ratio of ax, else the path looks distorted
+        ax.set_ylim(
+            -0.5 * (x_max - x_min), 0.5 * (x_max - x_min)
+        )  # set y lim as the same of x, but centered
+        ax.set_zlim(
+            ax.get_zlim()[0], max(ax.get_zlim()[1], 100)
+        )  # z lim minimum height 100 m seems reasonable
+        ax.set_aspect(
+            "equal"
+        )  # Set equal aspect ratio of ax, else the path looks distorted
 
         if animate:
             # Rotate the axes and update plot.
             def init():
-                ax.view_init(animate_kwargs.get('elevation_angle', 30), 0)
-                return [fig]
-            def animate(i):
-                ax.view_init(animate_kwargs.get('elevation_angle', 30), i)
+                ax.view_init(animate_kwargs.get("elevation_angle", 30), 0)
                 return [fig]
 
-            anim = animation.FuncAnimation(fig, animate, init_func=init,
-                                  frames=720, interval=2, blit=True)
+            def animate(i):
+                ax.view_init(animate_kwargs.get("elevation_angle", 30), i)
+                return [fig]
+
+            anim = animation.FuncAnimation(
+                fig, animate, init_func=init, frames=720, interval=2, blit=True
+            )
             writervideo = animation.FFMpegWriter(fps=30)
-            anim.save('trajectory_plot.mp4', writer=writervideo)
+            anim.save("trajectory_plot.mp4", writer=writervideo)
 
         ax.view_init(30, 50)
 
         return fig, ax
 
-    def plot_traces(self, y_params: Collection, x_param: str = 't', y_labels: dict=None, y_scaling=None, plot_markers=None, fig_num=None, axes=None, plot_kwargs: dict = None):
+    def plot_traces(
+        self,
+        y_params: Collection,
+        x_param: str = "t",
+        y_labels: dict = None,
+        y_scaling=None,
+        plot_markers=None,
+        fig_num=None,
+        axes=None,
+        plot_kwargs: dict = None,
+    ):
         """Plot the time trace of a parameter from multiple sources.
 
         Args:
@@ -329,18 +384,18 @@ class TimeSeries:
         if plot_kwargs is None:
             plot_kwargs = {}
 
-        unwrap = plot_kwargs.get('unwrap', True)
-        remove_x_labels = plot_kwargs.get('remove_x_labels', False)
-        label = plot_kwargs.get('label', None)
-        linestyle = plot_kwargs.get('linestyle', None)
-        marker_label = plot_kwargs.get('marker_label', None)
-        marker_color = plot_kwargs.get('marker_color', None)
-        legend = plot_kwargs.get('legend', False)
-        color = plot_kwargs.get('color', None)
-        x_label = plot_kwargs.get('x_label', PLOT_LABELS.get(x_param, x_param))
+        unwrap = plot_kwargs.get("unwrap", True)
+        remove_x_labels = plot_kwargs.get("remove_x_labels", False)
+        label = plot_kwargs.get("label", None)
+        linestyle = plot_kwargs.get("linestyle", None)
+        marker_label = plot_kwargs.get("marker_label", None)
+        marker_color = plot_kwargs.get("marker_color", None)
+        legend = plot_kwargs.get("legend", False)
+        color = plot_kwargs.get("color", None)
+        x_label = plot_kwargs.get("x_label", PLOT_LABELS.get(x_param, x_param))
 
-        ncols = plot_kwargs.get('ncols', 1)
-        nrows = int(np.ceil(len(y_params)/ncols))
+        ncols = plot_kwargs.get("ncols", 1)
+        nrows = int(np.ceil(len(y_params) / ncols))
 
         if y_labels is None:
             y_labels = {}
@@ -349,7 +404,7 @@ class TimeSeries:
         if fig_num:
             axes = plt.figure(fig_num).get_axes()
         if axes is None:
-            fig, axes = plt.subplots(nrows, ncols, sharex='all', num=fig_num)
+            fig, axes = plt.subplots(nrows, ncols, sharex="all", num=fig_num)
             if len(y_params) == 1:
                 axes = [axes]
         else:
@@ -365,12 +420,14 @@ class TimeSeries:
                 y = self.return_variable(p)
             except AttributeError:
                 print(p)
-                print(f'Cannot plot the trace of attribute {p} as it does not exist. Valid attributes are: '
-                      f'{self.states[0].list_traceable_attributes()}')
+                print(
+                    f"Cannot plot the trace of attribute {p} as it does not exist. Valid attributes are: "
+                    f"{self.states[0].list_traceable_attributes()}"
+                )
                 continue
 
             # Plot angles in degrees and if required, unwrap to avoid large discontinuities
-            if 'angle' in p or 'rate' in p or p == 's':
+            if "angle" in p or "rate" in p or p == "s":
                 if unwrap:
                     y = np.unwrap(y)
                 y = np.degrees(y)
@@ -380,19 +437,26 @@ class TimeSeries:
             # Plot the markers if given
             if plot_markers:
                 marker_vals = y[np.isin(x, plot_markers)]
-                ax.plot(plot_markers, marker_vals, 's', markerfacecolor='None', label=marker_label, color=marker_color)
+                ax.plot(
+                    plot_markers,
+                    marker_vals,
+                    "s",
+                    markerfacecolor="None",
+                    label=marker_label,
+                    color=marker_color,
+                )
 
             # Label axes and set ticks
             try:
                 y_lbl = y_labels[p] if p in y_labels.keys() else PLOT_LABELS[p]
             except KeyError:
-                print(f'Label not specified for {p} and not in defaults.')
+                print(f"Label not specified for {p} and not in defaults.")
                 y_lbl = p
 
             ax.set_ylabel(y_lbl)
             ax.ticklabel_format(useOffset=False)  # disable scientific notation offset
             # ax.set_xticks(np.arange(np.round(x[0]), x[-1], 5))  # x-tick every 5 seconds
-            ax.grid(True, which='both')
+            ax.grid(True, which="both")
 
         if legend:
             # If legend is given as a string, that'll be the location
@@ -410,11 +474,18 @@ class TimeSeries:
         return fig, axes
 
     def interactive_plot(
-            self,
-            parameters: list=None, plot_vectors: dict=None, vector_directions: list = None,
-            vector_scaling: dict=None, animate=False, y_labels=None, gradient_color: tuple = None):
+        self,
+        parameters: list = None,
+        plot_vectors: dict = None,
+        vector_directions: list = None,
+        vector_scaling: dict = None,
+        animate=False,
+        y_labels=None,
+        gradient_color: tuple = None,
+    ):
         """Interactive plot. To make the slider work, you must keep a reference to the figure and slider in the
-        __main__ thread. I.e. you must call this method like: fig, slider = timeseries.interactive_plot()"""
+        __main__ thread. I.e. you must call this method like: fig, slider = timeseries.interactive_plot()
+        """
 
         if parameters is None:
             parameters = PLOT_PARAMETERS
@@ -430,23 +501,25 @@ class TimeSeries:
             vector_scaling = {v: 0.05 for v in plot_vectors}
 
         if len(parameters) < 4:
-            raise ValueError(f'Interactive plot needs at least 4 parameters to plot')
+            raise ValueError(f"Interactive plot needs at least 4 parameters to plot")
 
         try:
-            t = self.return_variable('t')
+            t = self.return_variable("t")
             dt = t[1] - t[0]
             fps = 1 / dt
-            print(f'Frame rate determined to be {fps} Hz.')  # 24 fps is standard for movies
+            print(
+                f"Frame rate determined to be {fps} Hz."
+            )  # 24 fps is standard for movies
         except Exception as e:
-            print('Could not determine frame rate to animate, using default value.')
+            print("Could not determine frame rate to animate, using default value.")
             fps = 24
 
         # Grid is such that the 3d plot spans half of the timeplots, 2d plot the other half and the slider as well.
         halfway_point = int(np.ceil(len(parameters) / 2))
         grid = (
-                [['3d', p] for p in parameters[:halfway_point]] +
-                [['2d', p] for p in parameters[halfway_point:-1]] +
-                [['slider', parameters[-1]]]
+            [["3d", p] for p in parameters[:halfway_point]]
+            + [["2d", p] for p in parameters[halfway_point:-1]]
+            + [["slider", parameters[-1]]]
         )
 
         # Create figs + axes
@@ -454,8 +527,8 @@ class TimeSeries:
             grid,
             # figsize=(screen_width/100, screen_height/100),  # 100 dpi
             figsize=(15, 7),
-            per_subplot_kw={'3d': {'projection': '3d'}},
-            gridspec_kw={'width_ratios': [1, 2],'wspace': 0.3, 'hspace': 0.2}
+            per_subplot_kw={"3d": {"projection": "3d"}},
+            gridspec_kw={"width_ratios": [1, 2], "wspace": 0.3, "hspace": 0.2},
         )
 
         # Fig size + ax size
@@ -463,20 +536,22 @@ class TimeSeries:
         # axs['3d'].set_box_aspect((np.ptp(xs), np.ptp(ys), np.ptp(zs)))
 
         # Plot 3d plot, 2d plot, and time plots in the right axes.
-        param_axs = [ax for k, ax in axs.items() if k not in ['3d', '2d', 'slider']]
-        self.plot_trace_on_plane(ax=axs['2d'], gradient_color=gradient_color, plot_kwargs={'legend': True})
-        self.trajectory_plot3d(ax=axs['3d'], gradient_color=gradient_color)
+        param_axs = [ax for k, ax in axs.items() if k not in ["3d", "2d", "slider"]]
+        self.plot_trace_on_plane(
+            ax=axs["2d"], gradient_color=gradient_color, plot_kwargs={"legend": True}
+        )
+        self.trajectory_plot3d(ax=axs["3d"], gradient_color=gradient_color)
         self.plot_traces(
             y_params=parameters,
             axes=param_axs,
             y_labels=y_labels,
-            plot_kwargs={'unwrap': True, 'remove_x_labels': True}
+            plot_kwargs={"unwrap": True, "remove_x_labels": True},
         )
 
-        x = self.return_variable('x')
-        y = self.return_variable('y')
-        z = self.return_variable('z')
-        t = self.return_variable('t')
+        x = self.return_variable("x")
+        y = self.return_variable("y")
+        z = self.return_variable("z")
+        t = self.return_variable("t")
         extract_state = {}
         for p in parameters:
             extract_state[p] = self.return_variable(p)
@@ -484,11 +559,21 @@ class TimeSeries:
         state = self.states[0]
         markers = {}
         for p in parameters:
-            value = extract_state[p][0] if 'angle' not in p else np.degrees(extract_state[p][0])
-            markers[p] = axs[p].plot(state["t"], value, color='tab:red', linewidth=2, marker='o')[0]
+            value = (
+                extract_state[p][0]
+                if "angle" not in p
+                else np.degrees(extract_state[p][0])
+            )
+            markers[p] = axs[p].plot(
+                state["t"], value, color="tab:red", linewidth=2, marker="o"
+            )[0]
 
-        markers['3d'] = axs['3d'].plot([x[0]],[y[0]],[z[0]], color='tab:red', marker='o', linewidth=1)[0]
-        markers['2d'] = axs['2d'].plot(x[0], z[0], color='tab:red', marker='o', linewidth=1)[0]
+        markers["3d"] = axs["3d"].plot(
+            [x[0]], [y[0]], [z[0]], color="tab:red", marker="o", linewidth=1
+        )[0]
+        markers["2d"] = axs["2d"].plot(
+            x[0], z[0], color="tab:red", marker="o", linewidth=1
+        )[0]
 
         # Plot vectors
         vectors = {}
@@ -497,8 +582,8 @@ class TimeSeries:
         self.__cached_time = [round(s["t"], 3) for s in self.states]
 
         time_slider = Slider(
-            ax=axs['slider'],
-            label='Time [s]',
+            ax=axs["slider"],
+            label="Time [s]",
             # valmin = self.states[0]["t"],
             # valmax=self.states[-1]["t"],
             valstep=self.__cached_time,
@@ -513,23 +598,36 @@ class TimeSeries:
 
             # Update markers
             for p in parameters:
-                val = extract_state[p][index] if 'angle' not in p else np.degrees(extract_state[p][index])
+                val = (
+                    extract_state[p][index]
+                    if "angle" not in p
+                    else np.degrees(extract_state[p][index])
+                )
                 markers[p].set_data([time], [val])
 
-            markers['3d'].set_data_3d([x[index]], [y[index]], [z[index]])
-            markers['2d'].set_data([x[index]], [z[index]])
+            markers["3d"].set_data_3d([x[index]], [y[index]], [z[index]])
+            markers["2d"].set_data([x[index]], [z[index]])
 
             # For each vector, plot components required directions
             for v, c in plot_vectors.items():
                 for i, d in enumerate(vector_directions):
                     # Vector component in Cartesian coordinates:
-                    vec = np.matmul(state.transformation_C_from_W.T, getattr(state, v) * d * vector_scaling[v])
+                    vec = np.matmul(
+                        state.transformation_C_from_W.T,
+                        getattr(state, v) * d * vector_scaling[v],
+                    )
                     vec_length = np.linalg.norm(vec)
                     try:
                         vectors[v + str(i)].remove()
                     except KeyError:
                         pass
-                    vectors[v + str(i)] = axs['3d'].quiver(*state.position_W, *vec, length=vec_length, color=c, arrow_length_ratio=0.2)
+                    vectors[v + str(i)] = axs["3d"].quiver(
+                        *state.position_W,
+                        *vec,
+                        length=vec_length,
+                        color=c,
+                        arrow_length_ratio=0.2,
+                    )
 
             fig.canvas.draw_idle()
 
@@ -538,16 +636,22 @@ class TimeSeries:
         if animate:
             # Rotate the axes and update plot.
             def init():
-                axs['3d'].view_init(30, -40)
+                axs["3d"].view_init(30, -40)
                 return [fig]
 
             def animate(i):
-                axs['3d'].view_init(30, -40 + i/5)
+                axs["3d"].view_init(30, -40 + i / 5)
                 time_slider.set_val(self.__cached_time[i])
                 return [fig]
 
-            anim = animation.FuncAnimation(fig, animate, init_func=init,
-                                           frames=len(self.__cached_time), interval=1, blit=True)
+            anim = animation.FuncAnimation(
+                fig,
+                animate,
+                init_func=init,
+                frames=len(self.__cached_time),
+                interval=1,
+                blit=True,
+            )
 
             writergif = animation.PillowWriter(fps=fps)
             anim.save("interactive_plot.gif", writer=writergif)

@@ -69,21 +69,24 @@ class PhaseParameterized(TimeSeries):
         new_state = self.kite_model.solve_quasi_steady(state_obj, unknown_vars)
 
         if self.quasi_steady:
-            x0 = [new_state.s]
+            x0 = [new_state.s, new_state.distance_radial]
             z0 = ca.vertcat(
                 new_state.tension_tether_ground,
                 new_state.input_steering,
                 new_state.s_dot,
+                new_state.speed_radial,
             )
         else:
             x0 = [
                 new_state.s,
                 new_state.s_dot,
+                new_state.distance_radial,
             ]
             z0 = ca.vertcat(
                 new_state.tension_tether_ground,
                 new_state.input_steering,
                 new_state.s_ddot,
+                new_state.distance_radial,
             )
         self.states.append(new_state.to_dict())
         t = self.pattern_config["start_time"]
@@ -103,6 +106,8 @@ class PhaseParameterized(TimeSeries):
                     input_steering=float(z0[1]),
                     tension_tether_ground=float(z0[0]),
                     s_dot=float(z0[2]),
+                    distance_radial=float(x0[1]),
+                    speed_radial=float(z0[3]),
                 )
             else:
                 new_state = State(
@@ -112,6 +117,8 @@ class PhaseParameterized(TimeSeries):
                     input_steering=float(z0[1]),
                     tension_tether_ground=float(z0[0]),
                     s_ddot=float(z0[2]),
+                    distance_radial=float(x0[2]),
+                    speed_radial=float(z0[3]),
                 )
             t += time_step
             self.states.append(new_state.to_dict())
@@ -484,17 +491,15 @@ class PhaseParameterized(TimeSeries):
         kinematics = ParametrizedKinematics(pattern, self)
 
         self.kite_model.s = kinematics.s
-        self.kite_model.t = kinematics.t
         self.kite_model.s_dot = kinematics.s_dot
         self.kite_model.s_ddot = kinematics.s_ddot
 
-        self.kite_model.distance_radial = kinematics.r
         self.kite_model.angle_course = kinematics.chi
         self.kite_model.angle_elevation = kinematics.beta
         # Optimal analytical solution for speed_radial should be part of the pattern class
         # self.kite_model.speed_radial = self.kite_model.speed_radial
         # print(self.kite_model.speed_radial)
-        self.kite_model.speed_radial = kinematics.vr
+        # self.kite_model.speed_radial = kinematics.vr
         self.kite_model.speed_tangential = kinematics.vtau
         self.kite_model.timeder_angle_course = kinematics.dot_chi
         if not self.quasi_steady:
@@ -529,53 +534,64 @@ class PhaseParameterized(TimeSeries):
     def integrator(self, time_step, inputs=None):
         self.kite_model.establish_residual()
         if self.quasi_steady:
-            x = ca.vertcat(
-                self.kite_model.s,
-            )
+            x = ca.vertcat(self.kite_model.s, self.kite_model.distance_radial)
             if self.kite_model.is_tether_rigid:
                 z = ca.vertcat(
                     self.kite_model.tension_tether_ground,
                     self.kite_model.input_steering,
                     self.kite_model.s_dot,
+                    self.kite_model.speed_radial,
                 )
             else:
                 z = ca.vertcat(
                     self.kite_model.length_tether,
                     self.kite_model.input_steering,
                     self.kite_model.s_dot,
+                    self.kite_model.speed_radial,
                 )
 
             ode = ca.vertcat(
                 self.kite_model.s_dot,
+                self.kite_model.speed_radial,
             )
-            alg = self.kite_model.residual
+            alg = ca.vertcat(
+                self.kite_model.residual,
+                self.kite_model.tension_tether_ground
+                - 8000 * self.kite_model.speed_radial**2,
+            )
         else:
             x = ca.vertcat(
                 self.kite_model.s,
                 self.kite_model.s_dot,
+                self.kite_model.distance_radial,
             )
             if self.kite_model.is_tether_rigid:
                 z = ca.vertcat(
                     self.kite_model.tension_tether_ground,
                     self.kite_model.input_steering,
                     self.kite_model.s_ddot,
+                    self.kite_model.speed_radial,
                 )
             else:
                 z = ca.vertcat(
                     self.kite_model.length_tether,
                     self.kite_model.input_steering,
                     self.kite_model.s_ddot,
+                    self.kite_model.speed_radial,
                 )
 
             ode = ca.vertcat(
                 self.kite_model.s_dot,
                 self.kite_model.s_ddot,
+                self.kite_model.speed_radial,
             )
-            alg = self.kite_model.residual
+            alg = ca.vertcat(
+                self.kite_model.residual,
+                self.kite_model.tension_tether_ground
+                - 8000 * self.kite_model.speed_radial**2,
+            )
 
-        p = ca.vertcat(self.kite_model.t)
-
-        dae = {"x": x, "z": z, "p": p, "ode": ode, "alg": alg}
+        dae = {"x": x, "z": z, "ode": ode, "alg": alg}
         # Create the integrator
         opts = {
             "abstol": 1e-6,

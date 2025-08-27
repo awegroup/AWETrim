@@ -1,6 +1,11 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from picawe.kinematics.parametrized_patterns import Helix, Lissajous, FigureEight
+from picawe.kinematics.parametrized_patterns import (
+    Helix,
+    Lissajous,
+    FigureEight,
+    CST_Lissajous,
+)
 from picawe.utils.color_palette import (
     get_color_list,
     set_plot_style,
@@ -26,67 +31,40 @@ def W_from_AZR(phi, beta, r):
 # -----------------------------------------------
 # Define the parametrized path
 # -----------------------------------------------
-omega = -1
+omega = 1
 r0 = 200
 vr = 1
 beta_p = np.radians(30)
 
-# Parameter ranges
-ry_vals = [100]
-rz_vals = [40, 80, 120]
-ky_vals = [0, 0.5, 1]
-kz_vals = [0, 0.5, 1]
-
-s = np.linspace(0, 2 * np.pi, 200)
-t = np.linspace(0, 1, 200)
+s = np.linspace(0, 26 * np.pi, 2000)
+r = np.linspace(200, 300, 2000)
 
 fig, ax = plt.subplots(figsize=(10, 6))
 
-for i, (ry, rz, ky, kz) in enumerate(
-    itertools.product(ry_vals, rz_vals, ky_vals, kz_vals)
-):
-    figure = FigureEight(omega, r0, ry, rz, vr, beta_p, ky, kz)
-    beta = figure.elevation(t, s)
-    azimuth = figure.azimuth(t, s)
-    ax.plot(
-        np.degrees(azimuth),
-        np.degrees(beta),
-        label=f"ry={ry}, rz={rz}, ky={ky}, kz={kz}",
-        color=colors[i % len(colors)],
-    )
-    radius_curvature = figure.radius_curvature(t, s)
-    plt.figure()
-    plt.plot(
-        np.degrees(s),
-        radius_curvature,
-        label=f"ry={ry}, rz={rz}, ky={ky}, kz={kz}",
-        color=colors[i % len(colors)],
-    )
 
-    plt.show()
+figure = CST_Lissajous(
+    omega=omega,
+    r0=r0,
+    vr=vr,
+    beta0=beta_p,
+    az_amp0=np.radians(40),
+    beta_amp0=np.radians(20),
+    beta_coeffs=[0, 0, 0],
+    az_coeffs=[0, 0, 0],
+    kappa=0,
+    kbeta=0,
+)
+beta = figure.elevation(r, s)
+azimuth = figure.azimuth(r, s)
+ax.plot(
+    np.degrees(azimuth),
+    np.degrees(beta),
+)
+radius_curvature = figure.radius_curvature(r, s)
+plt.figure()
+plt.plot(
+    np.degrees(s),
+    radius_curvature,
+)
 
-
-ax.set_xlabel("Azimuth [deg]")
-ax.set_ylabel("Elevation [deg]")
-# ax.legend()
-plt.tight_layout()
-# plt.savefig(save_folder + "figure8_param_combinations.pdf")
-plt.show()
-
-fig, ax = plt.subplots(figsize=(10, 6))
-for i, (ry, rz, ky, kz) in enumerate(
-    itertools.product(ry_vals, rz_vals, ky_vals, kz_vals)
-):
-    figure = FigureEight(omega, r0, ry, rz, vr, beta_p, ky, kz)
-    y = figure.y(t, s)
-    z = figure.z(t, s)
-    ax.plot(
-        y, z, label=f"ry={ry}, rz={rz}, ky={ky}, kz={kz}", color=colors[i % len(colors)]
-    )
-ax.set_xlabel("y [m]")
-ax.set_ylabel("z [m]")
-# ax.legend()
-
-plt.tight_layout()
-# plt.savefig(save_folder + "figure8_param_combinations_yz.pdf")
 plt.show()

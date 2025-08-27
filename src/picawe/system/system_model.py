@@ -216,11 +216,14 @@ class SystemModel(KiteKinematics):
             self.setup_qs_solver(unknown_vars)
 
         p = [state_dict[name] for name in self._qs_inputs]
+        print("Input names:", self._qs_inputs)
         lbx, ubx, lbg, ubg = self.get_boundaries(state_dict, unknown_vars)
 
         x0 = [safe_value(state_dict.get(var, 1.0)) for var in unknown_vars]
         # Solve the quasi-steady state equations
 
+        print("Initial guess:", x0)
+        print("Inputs (p):", p)
         sol = self._qs_solver(x0=x0, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
         if np.linalg.norm(sol["g"]) > 1:

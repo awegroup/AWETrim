@@ -12,14 +12,14 @@ from picawe.utils.defaults import PLOT_LABELS
 from picawe.environment.Wind import Wind
 
 # ---------- Config ----------
-speed_wind_at_100 = 12
+speed_wind_at_100 = 10
 wind = Wind(
-    wind_model="uniform",
+    wind_model="logarithmic",
     z0=0.1,
 )
 speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
-# wind.speed_friction = speed_friction
-wind.speed_wind_ref = speed_wind_at_100
+wind.speed_friction = speed_friction
+# wind.speed_wind_ref = speed_wind_at_100
 
 colors = get_color_list()
 
@@ -31,7 +31,7 @@ pattern_config_v9 = {
     "pattern_type": "cst_lissajous",
     "parameters": {
         "omega": 1.0,
-        "r0": 220.0,
+        "r0": 200.0,
         "az_amp0": 0.872664625892307,
         "beta_amp0": 0.1306,
         "width_phi": 0.5,
@@ -42,8 +42,7 @@ pattern_config_v9 = {
         "repeat_beta": True,
         "beta_coeffs": [0, 0, 0, 0, 0],
         "az_coeffs": [0, 0, 0, 0, 0],
-        "kbeta": 1,
-        "vr": 1.5,
+        "kbeta": 0,
         "beta0": 0.3878,
         "kappa": 0,
     },
@@ -62,6 +61,8 @@ base_start_state = State(
     length_tether=199.6,
     input_steering=0,
     tension_tether_ground=1e8,
+    distance_radial=200,
+    speed_radial=speed_wind_at_100 / 5,
 )
 
 # ---------- Plot layout ----------
@@ -181,7 +182,7 @@ def run_sim(
         )
         ax4.plot(
             s,
-            result[sim_type]["tension"] / np.mean(result[sim_type]["tension"]),
+            result[sim_type]["tension"],
             linestyle=linestyle,
             color=color,
         )
@@ -193,10 +194,11 @@ def run_sim(
         )
         ax6.plot(
             s,
-            result[sim_type]["aoa"],
+            result[sim_type]["vr"],
             linestyle=linestyle,
             color=color,
         )
+        # plt.show()
     # Calculate locations of maximum and minimum speed
     for sim_type in ["quasi_steady", "dynamic"]:
         s = result[sim_type]["s"]
