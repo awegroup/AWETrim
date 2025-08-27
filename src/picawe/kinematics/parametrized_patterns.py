@@ -493,13 +493,15 @@ class CST_Lissajous(ParametrizedPatternsAngles):
         return self.r0 + self.vr * t
 
     def beta_center(self, t):
-        return self.beta0 * (1 + self.kbeta * (self.r0 / self.r(t) - 1))
+        return self.beta0 * (self.r0 / (self.r0 + (self.r(t) - self.r0) * self.kbeta))
 
     def az_amp(self, t):
-        return self.az_amp0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+        return self.az_amp0 * (self.r0 / (self.r0 + (self.r(t) - self.r0) * self.kappa))
 
     def beta_amp(self, t):
-        return self.beta_amp0 * (1 + self.kappa * (self.r(t) / self.r0 - 1))
+        return self.beta_amp0 * (
+            self.r0 / (self.r0 + (self.r(t) - self.r0) * self.kappa)
+        )
 
     @staticmethod
     def _mod1(x):

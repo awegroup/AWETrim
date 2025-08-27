@@ -225,6 +225,17 @@ class PhaseParameterized(TimeSeries):
                 + flat,
                 [self.kite_model.residual],
             )
+            tether_tension_eq = ca.Function(
+                "tether_tension_eq",
+                [
+                    self.kite_model.t,
+                    self.kite_model.s,
+                    self.kite_model.s_dot,
+                    self.kite_model.input_steering,
+                ]
+                + flat,
+                [self.kite_model.tension_tether_equation],
+            )
         else:
             residual = ca.Function(
                 "residual",
@@ -272,14 +283,24 @@ class PhaseParameterized(TimeSeries):
         for i in range(N + 1):
             opt_par_values = [opti_variables[var] for var in self.optimization_vars]
             flat = [ca.vertcat(*opt_par_values)]
+
             if self.quasi_steady:
+                tether_inputs = [
+                    time_array[i],
+                    opti_variables["s"][i],
+                    opti_variables["s_dot"][i],
+                    opti_variables["input_steering"][i],
+                ] + flat
+                tether_tension = tether_tension_eq(*tether_inputs)
+                opti_variables["tension_tether_ground"][i] = tether_tension
                 residual_inputs = [
                     time_array[i],
                     opti_variables["s"][i],
                     opti_variables["s_dot"][i],
                     opti_variables["input_steering"][i],
-                    opti_variables["tension_tether_ground"][i],
+                    tether_tension,
                 ] + flat
+
             else:
                 # For dynamic case, include s_ddot
                 residual_inputs = [
@@ -291,14 +312,17 @@ class PhaseParameterized(TimeSeries):
                     opti_variables["tension_tether_ground"][i],
                 ] + flat
             res = residual(*residual_inputs)
+
             W = ca.diag(
                 ca.vertcat(0.01, 0.01, 0.001)
             )  # tune so |W r| ~ 1 near feasible
-            opti.subject_to(W @ res == 0)
+            # opti.subject_to(W @ res == 0)
+            opti.subject_to(res[0] == 0)
+            opti.subject_to(res[1] == 0)
+            # opti.subject_to(
+            #     opti_variables["tension_tether_ground"][i] == tether_tension
+            # )
 
-            # opti.subject_to(res[0] / 100 == 0)
-            # opti.subject_to(res[1] / 100 == 0)
-            # opti.subject_to(res[2] / 1000 == 0)
             if i < N:
                 if self.quasi_steady:
                     sol_s = intg(
@@ -319,16 +343,27 @@ class PhaseParameterized(TimeSeries):
                     opti.subject_to(opti_variables["s_dot"][i + 1] == sol_s["xf"][1])
 
             # Only accumulate power when s is between 0 and 2π
-        T = opti_variables["tension_tether_ground"]  # (N+1,)
-        w = smooth_gate_0_2pi(opti_variables["s"], 1e-2)  # (N+1,)
+        w = smooth_gate_interval(
+            opti_variables["s"], start_state.s, start_state.s + 2 * np.pi
+        )
         vr = call_vr_func(vr_func, opti_variables["vr"])  # scalar or (N+1,)
 
-        T_seg = 0.5 * (T[1:] + T[:-1])
-        w_seg = 0.5 * (w[1:] + w[:-1])
+        # T_seg = 0.5 * (
+        #     opti_variables["tension_tether_ground"][1:]
+        #     + opti_variables["tension_tether_ground"][:-1]
+        # )
+        # w_seg = 0.5 * (w[1:] + w[:-1])
 
-        energy = time_step * ca.dot(w_seg, T_seg * vr)
-        t_eff = time_step * ca.sum1(w_seg)
+        energy = time_step * ca.dot(w, opti_variables["tension_tether_ground"] * vr)
+        t_eff = time_step * ca.sum1(w)
+        power = ca.dot(w, opti_variables["tension_tether_ground"] * vr)
+        # Take the mean
         power = energy / (t_eff + 1e-12)
+
+        # # Check gradient with respect to optimization variables
+        # for var in self.optimization_vars:
+        #     grad = ca.gradient(power, opti_variables[var])
+        # print(f"Gradient for {var}: {grad}")
 
         opti.minimize(-power / P_scale)  # drop duplicate min with -power/P_scale
 
@@ -343,10 +378,10 @@ class PhaseParameterized(TimeSeries):
                     "tol": 1e-4,  # Main tolerance
                     # "acceptable_iter": 3,  # Accept if solution is good for 3 iter
                     "acceptable_tol": 1e-4,  # Acceptable early termination
-                    "constr_viol_tol": 1e-1,  # Constraint violation tolerance
-                    "dual_inf_tol": 1e-1,  # Dual infeasibility
+                    "constr_viol_tol": 1e-4,  # Constraint violation tolerance
+                    "dual_inf_tol": 1e-4,  # Dual infeasibility
                     # "honor_original_bounds": "yes",
-                    # "hessian_approximation": "limited-memory",
+                    "hessian_approximation": "limited-memory",
                     # "mu_strategy": "adaptive",
                     # "linear_solver": "mumps",
                 }
@@ -388,9 +423,9 @@ class PhaseParameterized(TimeSeries):
                         lb, ub = DEFAULT_OPTI_LIMITS[var_name]
                         opti.subject_to(lb <= opti_var[:])
                         opti.subject_to(opti_var[:] <= ub)
-        solution = opti.solve()
-        try:
 
+        try:
+            solution = opti.solve()
             # Print optimized values for variables in the pattern
             print("\n Optimized Pattern Variables:")
             for var_name, var in self.optimization_vars.items():
@@ -399,6 +434,8 @@ class PhaseParameterized(TimeSeries):
                 optimized_config["parameters"].update({var_name: opti.debug.value(var)})
                 self.pattern_config = optimized_config
                 self.substitute_parametrized_kinematics()
+
+            print(solution.value(power))
         except Exception as e:
             # Print debug optimization information
             print("Debug optimization information:")
@@ -406,8 +443,8 @@ class PhaseParameterized(TimeSeries):
                 print(f"  {var_name}: {opti.debug.value(var)}")
             print("Optimization failed:", e)
 
-        plt.plot(solution.value(opti_variables["input_steering"]))
-        plt.show()
+        # plt.plot(solution.value(opti_variables["input_steering"]))
+        # plt.show()
         print("Optimization status:", solution)
         s_vals = solution.value(opti_variables["s"])  # shape: (N+1,)
         s_dot_vals = solution.value(opti_variables["s_dot"])  # shape: (N+1,)
@@ -654,15 +691,39 @@ class PhaseParameterized(TimeSeries):
     # #     # print(f"Optimal speed radial set according to the target  CL: {self.target_lift_coefficient} CD: {self.target_drag_coefficient} at aoa: {np.degrees(self.target_angle_of_attack)}")
 
 
-def smooth_gate_0_2pi(s, eps=1e-2):
-    # periodic s_mod in [0, 2π)
-    s_mod = s - 2 * np.pi * ca.floor(s / (2 * np.pi))
+def smooth_gate_interval(s, s0, sf, eps=1e-2):
+    """
+    Smooth gate active only on [s0, sf], 0 outside.
+    eps controls the ramp width at both ends.
+    Works with MX/SX.
+    """
+    # guard: sf must be > s0
+    # (you can add an assert or handle wrap if you need periodic behavior)
 
     def ramp(u):
+        # 0 for u<=0, 1 for u>=eps, smooth in between
         u_clip = ca.fmin(ca.fmax(u / eps, 0), 1)
         return 0.5 * (1 - ca.cos(ca.pi * u_clip))
 
-    s_mod = s_mod - ca.pi / 2
-    w_lo = ramp(s_mod)  # 0→1 over [0, eps]
-    w_hi = ramp(2 * np.pi - s_mod)  # 1→0 over [2π-eps, 2π]
-    return ca.fmin(w_lo, w_hi)  # ~1 inside, smooth at edges
+    w_lo = ramp(s - s0)  # rises near s0
+    w_hi = ramp(sf - s)  # falls near sf
+    return w_lo * w_hi
+
+
+# # Plotting code
+# import matplotlib.pyplot as plt
+
+# s_vals = np.linspace(-2 * np.pi, 6 * np.pi, 500)
+# # Evaluate using CasADi function
+# s_sym = ca.MX.sym("s")
+# gate_func = ca.Function(
+#     "gate", [s_sym], [smooth_gate_interval(s_sym, np.pi / 2, 2 * np.pi)]
+# )
+# w_vals = np.array([float(gate_func(s)) for s in s_vals])
+
+# plt.plot(s_vals, w_vals)
+# plt.xlabel("s")
+# plt.ylabel("smooth_gate_interval(s, 0, 2π)")
+# plt.title("Smooth Gate from 0 to 2π")
+# plt.grid(True)
+# plt.show()
