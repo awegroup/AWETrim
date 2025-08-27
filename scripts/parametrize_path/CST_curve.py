@@ -12,8 +12,14 @@ from picawe.utils.defaults import PLOT_LABELS
 from picawe.environment.Wind import Wind
 
 # ---------- Config ----------
-wind_speed = 12
-speed_friction = 0.41 * wind_speed / np.log(100 / 0.1)
+speed_wind_at_100 = 12
+wind = Wind(
+    wind_model="uniform",
+    z0=0.1,
+)
+speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
+# wind.speed_friction = speed_friction
+wind.speed_wind_ref = speed_wind_at_100
 
 colors = get_color_list()
 
@@ -26,25 +32,24 @@ pattern_config_v9 = {
     "parameters": {
         "omega": 1.0,
         "r0": 220.0,
-        "az_amp0": 0.6143915622908155,
-        "beta_amp0": 0.17453292519943295,
+        "az_amp0": 0.872664625892307,
+        "beta_amp0": 0.1306,
         "width_phi": 0.5,
         "width_beta": 0.5,
         "left_first": True,
         "normalize_bumps": False,
         "repeat_phi": True,
         "repeat_beta": True,
-        "beta_coeffs": [0.29368539, 0.71564794, 0.67922759, -0.62327407, 0.70266623],
+        "beta_coeffs": [0, 0, 0, 0, 0],
         "az_coeffs": [0, 0, 0, 0, 0],
-        # "ky": 1,
-        # "kz": 1,
-        "vr": 1,
-        "beta0": 0.39,
+        "kbeta": 1,
+        "vr": 1.5,
+        "beta0": 0.3878,
         "kappa": 0,
     },
     "start_time": 0,
-    "end_time": 60,
-    "n_points": 600,
+    "end_time": 80,
+    "n_points": 400,
     "optimization_parameters": [],
 }
 
@@ -119,14 +124,11 @@ def run_sim(
         if inertia_free:
             kite.override_centripetal = True
             kite.override_coriolis = True
-        wind = Wind(
-            wind_model="logarithmic",
-            z0=0.1,
-        )
+
         model = SystemModel(
             dof=3, quasi_steady=quasi_steady, kite=kite, tether=tether, wind_model=wind
         )
-        model.wind.speed_friction = speed_friction
+
         model.input_depower = 0
         if sim_type == "no_mass":
             model.mass_wing = 0
@@ -141,7 +143,7 @@ def run_sim(
             start_state["s_dot"] = phase.return_variable("s_dot")[0]
             start_state["s"] = phase.return_variable("s")[0]
 
-        s = np.degrees(phase.return_variable("s")) - 450
+        s = np.degrees(phase.return_variable("s"))
         result[sim_type] = {
             "s": s,
             "vtau": phase.return_variable("speed_tangential"),
@@ -157,6 +159,7 @@ def run_sim(
             "vr": phase.return_variable("speed_radial"),
             "t": phase.return_variable("t"),
             "phase": phase,
+            "power_mechanical": phase.return_variable("mechanical_power"),
         }
         ax = ax2 if sim_type == "quasi_steady" else ax1
         scatter = ax.scatter(
@@ -222,7 +225,7 @@ def run_sim(
 
 
 results_v9, scatter_v9 = run_sim(
-    aero_input_v9, pattern_config_v9, "V9", 94, 47, 0.014, 2, marker="^"
+    aero_input_v9, pattern_config_v9, "V9", 90, 47, 0.01, 2, marker="^"
 )
 
 # ---------- Final plot formatting ----------
@@ -287,8 +290,8 @@ def compute_energy_metrics(results, label=""):
     s_qs = results["quasi_steady"]["s"]
     s_dyn = results["dynamic"]["s"]
     print("Maximum s: ", max(s_qs), max(s_dyn))
-    mask_qs = (s_qs > 0) & (s_qs < 360)
-    mask_dyn = (s_dyn > 0) & (s_dyn < 360)
+    mask_qs = (s_qs > s_qs[0]) & (s_qs < s_qs[0] + 360)
+    mask_dyn = (s_dyn > s_dyn[0]) & (s_dyn < s_dyn[0] + 360)
     vtau_qs = results["quasi_steady"]["vtau"][mask_qs]
     vtau_dyn = results["dynamic"]["vtau"][mask_dyn]
     tension_qs = results["quasi_steady"]["tension"][mask_qs]
@@ -304,8 +307,14 @@ def compute_energy_metrics(results, label=""):
     sum_pow_dyn = sum_energy_dyn / (t_dyn[-1] - t_dyn[0])
     power_diff = (sum_pow_qs - sum_pow_dyn) / sum_pow_dyn * 100
 
+    pow_qs = results["quasi_steady"]["power_mechanical"][mask_qs]
+    pow_dyn = results["dynamic"]["power_mechanical"][mask_dyn]
+
     print(f"\n--- {label} ---")
-    print(f"Power QS: {sum_pow_qs:.2f}, Power Dyn: {sum_pow_dyn:.2f}")
+    print(f"Power QS: {sum_pow_qs:.2f}, Power Dyn: {sum_pow_dyn:.2f}.")
+    print(
+        f"Mean power QS: {np.mean(pow_qs):.2f}, Mean power Dyn: {np.mean(pow_dyn):.2f}"
+    )
     print(f"Δ Power: {power_diff:.2f}%")
 
     # Cross-correlation
@@ -361,4 +370,9 @@ def compute_energy_metrics(results, label=""):
     print(f"ΔΦ_v_tau,min: {s_lag_min:.2f} deg")
 
 
+plt.figure()
+plt.plot(results_v9["quasi_steady"]["y"], results_v9["quasi_steady"]["z"])
+plt.figure()
+plt.plot(results_v9["quasi_steady"]["x"], results_v9["quasi_steady"]["z"])
+plt.show()
 compute_energy_metrics(results_v9, "V9")

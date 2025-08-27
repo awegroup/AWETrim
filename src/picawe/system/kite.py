@@ -424,6 +424,18 @@ class Kite(Wing):
         return self.force_aerodynamic + self.force_gravity + self.force_tether_at_kite
 
     @property
+    def tension_tether_equation(self):
+        # TODO: Write explicit equation for tether force
+        lhs = (self.mass_wing + self.mass_kcu) * self.acceleration
+        return (
+            -lhs[2]
+            + self.force_aerodynamic[2]
+            + self.force_gravity[2]
+            + self.drag_tether_at_kite[2]
+            + self.force_gravity_tether_at_kite[2]
+        )
+
+    @property
     def acceleration_external(self):
         acc = self.force_external / (self.mass_wing + self.mass_kcu)
         vtau = self.speed_tangential

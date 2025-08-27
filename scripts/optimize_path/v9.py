@@ -13,8 +13,6 @@ import json
 import copy
 
 
-# Show the structure of the figure
-plt.show()
 file_path = "./data/LEI-V9-KITE/v9_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
@@ -22,12 +20,14 @@ with open(file_path, "r") as file:
 speed_wind_at_100 = 12  # m/s
 
 wind = Wind(
-    wind_model="uniform",
+    wind_model="logarithmic",
     z0=0.1,
 )
 speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
 wind.speed_friction = speed_friction
-wind.speed_wind_ref = speed_wind_at_100
+# wind.speed_wind_ref = speed_wind_at_100
+
+print("Friction speed:", wind.speed_friction)
 
 # -----------------------------------------------
 # Define the parametrized path
@@ -71,8 +71,8 @@ for i in range(N):
         "parameters": {
             "omega": 1.0,
             "r0": 220.0,
-            "az_amp0": np.radians(40),
-            "beta_amp0": np.radians(10),
+            "az_amp0": 0.82,
+            "beta_amp0": 0.25,
             "width_phi": 0.5,
             "width_beta": 0.5,
             "left_first": True,
@@ -81,18 +81,26 @@ for i in range(N):
             "repeat_beta": True,
             "beta_coeffs": [0, 0, 0, 0, 0],
             "az_coeffs": [0, 0, 0, 0, 0],
-            # "ky": 1,
-            # "kz": 1,
-            "vr": 1.5,
-            "beta0": 0.3,
+            "kbeta": 0,
+            "vr": 3,
+            "beta0": 0.45,
             "kappa": 0,
         },
         "start_time": 0,
-        "end_time": 40,
-        "n_points": 200,
-        "optimization_parameters": ["az_amp0", "beta_amp0", "beta_coeffs"],
+        "end_time": 60,
+        "n_points": 600,
+        "optimization_parameters": [
+            # "vr",
+            "az_amp0",
+            "beta_amp0",
+            "beta0",
+            "beta_coeffs",
+            # "kappa",
+        ],
     }
 
+    # TODO: PLOT PATTERN BEFORE SIMULATING IT
+    # TODO: Investigate why beta0 does not go towards where it should
     for quasi_steady in [True, False]:  # Loop over both dynamic and quasi-steady cases
 
         # aero_input["params"]["angle_pitch_depower_0"] = thetat
@@ -127,7 +135,7 @@ for i in range(N):
             print("Optimized pattern configuration:")
             print(pattern_config)
             start_state = phase.states[0]
-        # phase.substitute_parametrized_kinematics()
+
         kite = Kite(
             mass_wing=mass_wing,
             area_wing=area_wing,
@@ -226,9 +234,9 @@ for i in range(N):
     phase_qs = phases_qs[i]
     phase_dyn = phases_dyn[i]
     s_qs = phase_qs.return_variable("s")
-    mask_qs = (s_qs > np.pi / 2) & (s_qs < 5 * np.pi / 2)
+    mask_qs = (s_qs > s_qs[0]) & (s_qs < 2 * np.pi + s_qs[0])
     s_dyn = phase_dyn.return_variable("s")
-    mask_dyn = (s_qs > np.pi / 2) & (s_qs < 5 * np.pi / 2)
+    mask_dyn = (s_dyn > s_dyn[0]) & (s_dyn < 2 * np.pi + s_dyn[0])
     vtau_qs = phase_qs.return_variable("speed_tangential")[mask_qs]
     vtau_dyn = phase_dyn.return_variable("speed_tangential")[mask_dyn]
     vr_qs = phase_qs.return_variable("speed_radial")[mask_qs]
