@@ -179,3 +179,5 @@ if __name__ == "__main__":
         slider.on_changed(update)
 
     plt.show()
+
+# --- End of file ---
