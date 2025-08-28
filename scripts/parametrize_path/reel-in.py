@@ -12,7 +12,7 @@ from picawe.utils.defaults import PLOT_LABELS
 from picawe.environment.Wind import Wind
 
 # ---------- Config ----------
-speed_wind_at_100 = 12
+speed_wind_at_100 = 8
 wind = Wind(
     wind_model="uniform",
     z0=0.1,
@@ -130,10 +130,13 @@ def run_sim(
         phase = ReelinPhase(
             model, quasi_steady=quasi_steady, pattern_config=pattern_config
         )
+
         phase.run_simulation(start_state=start_state)
 
         if quasi_steady:
             start_state = phase.states[0]
+            start_state["input_depower"] = base_start_state.input_depower
+            start_state["timeder_speed_radial"] = base_start_state.timeder_speed_radial
             start_state["s_dot"] = phase.return_variable("s_dot")[0]
             start_state["s"] = phase.return_variable("s")[0]
 
@@ -191,7 +194,7 @@ def run_sim(
             linestyle=linestyle,
             color=color,
         )
-        plt.show()
+        # plt.show()
     # Calculate locations of maximum and minimum speed
     for sim_type in ["quasi_steady", "dynamic"]:
         s = result[sim_type]["s"]
@@ -254,12 +257,12 @@ ax2.text(
 
 
 for ax in [ax1, ax2]:
-    ax.set_ylim(0, 50)
-    ax.set_xlim(-50, 50)
+    # ax.set_ylim(0, 50)
+    # ax.set_xlim(-50, 50)
     ax.legend(loc="lower right", fontsize=9)
 
-for ax in [ax3, ax4, ax5, ax6]:
-    ax.set_xlim(0, 360)
+# for ax in [ax3, ax4, ax5, ax6]:
+#     ax.set_xlim(0, 360)
 
 ax1.set_ylabel(PLOT_LABELS["angle_elevation"])
 ax2.set_xlabel(PLOT_LABELS["angle_azimuth"])
