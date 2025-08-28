@@ -17,9 +17,12 @@ class SystemModel(KiteKinematics):
         self,
         dof=3,
         quasi_steady=False,
+        neglect_radial_acceleration=True,
         wind_model=None,
         tether=None,
         kite=None,
+        acceleration_winch=2,
+        depower_rate=0.5,
     ):
         """
         Initialize the kite system with its parameters.
@@ -30,6 +33,8 @@ class SystemModel(KiteKinematics):
         self.define_kite_model(kite)
         self.define_tether_model(tether)
 
+        self.acceleration_winch = acceleration_winch
+        self.depower_rate = depower_rate
         # self.steering_control = self.steering_control
 
         if self.steering_control not in ["asymmetric", "roll"]:
@@ -52,7 +57,8 @@ class SystemModel(KiteKinematics):
             self.acceleration_angle_yaw = 0
             self.timeder_length_tether = self.speed_radial
             self.timeder_speed_tangential = 0
-            self.timeder_speed_radial = 0
+            if neglect_radial_acceleration:
+                self.timeder_speed_radial = 0
         else:
             self.timeder_length_tether = ca.MX.sym("timeder_length_tether")
 
@@ -80,6 +86,10 @@ class SystemModel(KiteKinematics):
             "tension_tether_ground",
             "lift_coefficient",
             "drag_coefficient",
+            "angle_course",
+            "timeder_angle_course",
+            "angle_elevation",
+            "angle_azimuth",
         ]
         self._derived_functions = None
         self_ode = None
@@ -475,6 +485,7 @@ class State:
     length_tether: float = None
     tension_tether_ground: float = None
     timeder_speed_tangential: Optional[float] = None
+    timeder_speed_radial: Optional[float] = None
     # Optional inputs
     angle_roll: Optional[float] = None
     angle_pitch: Optional[float] = None

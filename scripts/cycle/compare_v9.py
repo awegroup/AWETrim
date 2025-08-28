@@ -163,7 +163,8 @@ for df in cycle_dfs[2:10]:
         df[df.kcu_actual_depower < 42]
     )
     min_tether_length_RO = df.tether_length.min()
-
+    print("Min tether length RO:", min_tether_length_RO)
+    print("Max tether length RO:", df.tether_length.max())
     avg_reel_speed_ro = np.mean(
         df[
             (df.kcu_actual_depower < 42) & (df.tether_reelout_speed > 0.7)

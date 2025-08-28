@@ -356,6 +356,9 @@ class FigureEightAngles(ParametrizedPatternsAngles):
         ) + self.beta(t)
 
 
+from picawe.kinematics.reelin_parametrization import ReelInBezier
+
+
 def create_pattern_from_dict(
     config: dict, optimize: bool = False
 ) -> ParametrizedPatterns:
@@ -398,6 +401,10 @@ def create_pattern_from_dict(
             "beta_coeffs",
             "az_coeffs",
         ],
+        "reel_in": [
+            "r0",
+            "r1",
+        ],
     }
 
     if pattern_type not in required_params:
@@ -431,6 +438,7 @@ def create_pattern_from_dict(
         "figure_eight": FigureEight,
         "figure_eight_angles": FigureEightAngles,
         "cst_lissajous": CST_Lissajous,
+        "reel_in": ReelInBezier,
     }
 
     return pattern_classes[pattern_type](**final_params)
