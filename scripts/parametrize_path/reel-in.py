@@ -5,21 +5,21 @@ from scipy.interpolate import interp1d
 from picawe.kinematics.parametrized_patterns import Helix
 from picawe import SystemModel, State
 from picawe.utils.color_palette import set_plot_style, get_color_list, custom_cmap
-from picawe.timeseries.phase_parametrized import PhaseParameterized
+from picawe.timeseries.reelin_phase import ReelinPhase
 from picawe.system.kite import Kite
 from picawe.system.tether import RigidLumpedTether
 from picawe.utils.defaults import PLOT_LABELS
 from picawe.environment.Wind import Wind
 
 # ---------- Config ----------
-speed_wind_at_100 = 8
+speed_wind_at_100 = 12
 wind = Wind(
-    wind_model="logarithmic",
+    wind_model="uniform",
     z0=0.1,
 )
 speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
-wind.speed_friction = speed_friction
-# wind.speed_wind_ref = speed_wind_at_100
+# wind.speed_friction = speed_friction
+wind.speed_wind_ref = speed_wind_at_100
 
 colors = get_color_list()
 
@@ -28,42 +28,30 @@ with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
     aero_input_v9 = json.load(file)
 
 pattern_config_v9 = {
-    "pattern_type": "cst_lissajous",
+    "pattern_type": "reel_in",
     "parameters": {
-        "omega": 1.0,
-        "r0": 200.0,
-        "az_amp0": 0.872664625892307,
-        "beta_amp0": 0.2,
-        "width_phi": 0.5,
-        "width_beta": 0.5,
-        "left_first": True,
-        "normalize_bumps": False,
-        "repeat_phi": True,
-        "repeat_beta": True,
-        "beta_coeffs": [0, 0, 0, 0, 0],
-        "az_coeffs": [0, 0, 0, 0, 0],
-        "kbeta": 0,
-        "beta0": 0.3878,
-        "kappa": 0,
+        "r0": 300.0,
+        "r1": 230.0,
     },
     "start_time": 0,
-    "end_time": 80,
-    "n_points": 400,
-    "k_vr": 8000,
+    "end_time": 30,
+    "n_points": 600,
     "optimization_parameters": [],
 }
 
 # ---------- Starting state ----------
 base_start_state = State(
     t=0,
-    s=np.pi / 2,
+    s=0.01,
     s_dot=2,
     s_ddot=0,
     length_tether=199.6,
     input_steering=0,
     tension_tether_ground=1e8,
-    distance_radial=200,
-    speed_radial=speed_wind_at_100 / 5,
+    distance_radial=300,
+    speed_radial=2,
+    timeder_speed_radial=0,
+    input_depower=0,
 )
 
 # ---------- Plot layout ----------
@@ -128,14 +116,18 @@ def run_sim(
             kite.override_coriolis = True
 
         model = SystemModel(
-            dof=3, quasi_steady=quasi_steady, kite=kite, tether=tether, wind_model=wind
+            dof=3,
+            quasi_steady=quasi_steady,
+            kite=kite,
+            tether=tether,
+            wind_model=wind,
+            neglect_radial_acceleration=False,
         )
 
-        model.input_depower = 0
         if sim_type == "no_mass":
             model.mass_wing = 0
             start_state["input_steering"] = 0
-        phase = PhaseParameterized(
+        phase = ReelinPhase(
             model, quasi_steady=quasi_steady, pattern_config=pattern_config
         )
         phase.run_simulation(start_state=start_state)
@@ -145,7 +137,7 @@ def run_sim(
             start_state["s_dot"] = phase.return_variable("s_dot")[0]
             start_state["s"] = phase.return_variable("s")[0]
 
-        s = np.degrees(phase.return_variable("s"))
+        s = phase.return_variable("s")
         result[sim_type] = {
             "s": s,
             "vtau": phase.return_variable("speed_tangential"),
@@ -175,31 +167,31 @@ def run_sim(
         )
 
         ax3.plot(
-            s,
+            result[sim_type]["t"],
             result[sim_type]["vtau"],
             linestyle=linestyle,
             color=color,
             label=label,
         )
         ax4.plot(
-            s,
+            result[sim_type]["t"],
             result[sim_type]["tension"],
             linestyle=linestyle,
             color=color,
         )
         ax5.plot(
-            s,
+            result[sim_type]["t"],
             result[sim_type]["input_steering"],
             linestyle=linestyle,
             color=color,
         )
         ax6.plot(
-            s,
+            result[sim_type]["t"],
             result[sim_type]["vr"],
             linestyle=linestyle,
             color=color,
         )
-        # plt.show()
+        plt.show()
     # Calculate locations of maximum and minimum speed
     for sim_type in ["quasi_steady", "dynamic"]:
         s = result[sim_type]["s"]

@@ -46,6 +46,7 @@ class PhaseParameterized(TimeSeries):
 
     def run_simulation(self, start_state, allow_failure=True, return_states=False):
 
+        print("Starting state:", start_state)
         self.substitute_parametrized_kinematics()
         self.states = []
         self.kite_model.reset_solver()
@@ -67,7 +68,7 @@ class PhaseParameterized(TimeSeries):
         time_step = self.pattern_config["end_time"] / self.pattern_config["n_points"]
         intg = self.integrator(time_step=time_step, inputs=None)
         new_state = self.kite_model.solve_quasi_steady(state_obj, unknown_vars)
-
+        print("New state:", new_state)
         if self.quasi_steady:
             x0 = [new_state.s, new_state.distance_radial]
             z0 = ca.vertcat(
@@ -86,17 +87,23 @@ class PhaseParameterized(TimeSeries):
                 new_state.tension_tether_ground,
                 new_state.input_steering,
                 new_state.s_ddot,
-                new_state.distance_radial,
+                new_state.speed_radial,
             )
         self.states.append(new_state.to_dict())
         t = self.pattern_config["start_time"]
         for i in range(N):
             # print(f"Time: {t}, State: {x0}, Inputs: {z0}")
-            sol = intg(
-                x0=x0,
-                p=t,
-                z0=z0,
-            )
+            try:
+                sol = intg(
+                    x0=x0,
+                    p=t,
+                    z0=z0,
+                )
+            except Exception as e:
+                print(f"Error occurred: {e}")
+                if not allow_failure:
+                    raise
+                break
             x0 = sol["xf"]
             z0 = sol["zf"]
             if self.quasi_steady:
@@ -533,6 +540,7 @@ class PhaseParameterized(TimeSeries):
 
     def integrator(self, time_step, inputs=None):
         self.kite_model.establish_residual()
+        k_vr = self.pattern_config.get("k_vr", 7000)
         if self.quasi_steady:
             x = ca.vertcat(self.kite_model.s, self.kite_model.distance_radial)
             if self.kite_model.is_tether_rigid:
@@ -557,7 +565,7 @@ class PhaseParameterized(TimeSeries):
             alg = ca.vertcat(
                 self.kite_model.residual,
                 self.kite_model.tension_tether_ground
-                - 8000 * self.kite_model.speed_radial**2,
+                - k_vr * self.kite_model.speed_radial**2,
             )
         else:
             x = ca.vertcat(
@@ -588,7 +596,7 @@ class PhaseParameterized(TimeSeries):
             alg = ca.vertcat(
                 self.kite_model.residual,
                 self.kite_model.tension_tether_ground
-                - 8000 * self.kite_model.speed_radial**2,
+                - k_vr * self.kite_model.speed_radial**2,
             )
 
         dae = {"x": x, "z": z, "ode": ode, "alg": alg}

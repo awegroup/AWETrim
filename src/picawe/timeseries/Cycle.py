@@ -1,6 +1,6 @@
 import time
 from picawe.timeseries.phase_parametrized import PhaseParameterized
-from picawe.timeseries.reelin_phase import ReelinPhase
+from picawe.timeseries.reelin_phase_old import ReelinPhase
 from picawe.system.kite import Kite
 from picawe.system.tether import RigidLumpedTether
 from picawe import SystemModel, State

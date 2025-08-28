@@ -1,3 +1,4 @@
+from matplotlib import pyplot as plt
 from picawe.timeseries.timeseries import TimeSeries
 from picawe.kinematics.parametrized_patterns import create_pattern_from_dict
 from picawe import SystemModel
@@ -10,11 +11,18 @@ from picawe.system.tether import RigidLinkTether
 from picawe import State
 from picawe.system.kite import Kite
 
+import logging
+
+
+logger = logging.getLogger(__name__)
+
 
 class ReelinPhase(TimeSeries):
     def __init__(
         self,
         kite_model: SystemModel,
+        quasi_steady: bool = False,
+        pattern_config: dict = DEFAULT_PATTERN_CONFIG,
     ):
         """
         Args:
@@ -24,437 +32,753 @@ class ReelinPhase(TimeSeries):
         super().__init__(
             kite_model=kite_model,
         )
+        self.pattern_config = pattern_config
+        self.quasi_steady = quasi_steady
 
         self.kite_model = kite_model
+        self.target_drag_coefficient = None
+        self.target_lift_coefficient = None
+        self.s = ca.MX.sym("s")
+        self.t = ca.MX.sym("t")
+        self.s_dot = ca.MX.sym("s_dot")
+        self.s_ddot = ca.MX.sym("s_ddot")
+        # self.find_optimal_angle_pitch_tether()
 
-    def run_simulation(self, start_state, settings):
-        """
-        Simulate reeling-in cycle: RORI -> REEL-IN -> RIRO
-        """
+    def run_simulation(self, start_state, allow_failure=True, return_states=False):
 
-        # --- Configuration ---
-        reeling_acceleration = 1  # [m/s²]
-        time_step = settings["time_step"]
-        max_depower = 1.0
-        min_depower = 0.0
-        depower_rate = 0.3  # depower change per second
-        rori_course_rate = -0.1  # [rad/s]
-
-        # --- Initialise integrator and state ---
-        intg = self.integrator(time_step)
-        start_state = self.kite_model.solve_quasi_steady(start_state)
-
-        # --- State variables ---
-        if self.kite_model.quasi_steady:
-            x0 = [
-                start_state.distance_radial,
-                start_state.angle_elevation,
-                start_state.angle_azimuth,
-                start_state.angle_course,
-            ]
-            p = [
-                start_state.input_steering,
-                start_state.input_depower,
-                start_state.speed_radial,
-            ]
-            z0 = [
-                start_state.speed_tangential,
-                start_state.timeder_angle_course,
-                start_state.tension_tether_ground,
-            ]
-        else:
-            x0 = [
-                start_state.distance_radial,
-                start_state.angle_elevation,
-                start_state.angle_azimuth,
-                start_state.speed_tangential,
-                start_state.angle_course,
-            ]
-            p = [
-                start_state.input_steering,
-                start_state.input_depower,
-                start_state.speed_radial,
-            ]
-            z0 = [
-                0,
-                start_state.timeder_angle_course,
-                start_state.tension_tether_ground,
-            ]
-
-        t = start_state.t
+        print("Starting state:", start_state)
+        self.substitute_parametrized_kinematics()
         self.states = []
-        phase = "rori"
-        settings["control"]["rori_escape_course"] = start_state.angle_course
+        self.kite_model.reset_solver()
 
-        for i in range(10000):
-            try:
-                sol = intg(x0=x0, z0=z0, p=p)
-            except Exception as e:
-                print(f"Integration error at iteration {i}: {e}")
-                break
-
-            xf, zf = sol["xf"], sol["zf"]
-            x0, z0 = xf, zf
-            t += time_step
-
-            full_state = self.assemble_full_state(xf, zf, p, t)
-            self.states.append(full_state)
-
-            if phase == "rori":
-
-                phase = self.control_rori(full_state, p, settings, rori_course_rate)
-                if phase == "reel-in":
-                    print("Transition to reel-in phase.")
-                    p[2] -= time_step * reeling_acceleration
-                    # if self.kite_model.quasi_steady:
-                    #     z0[0] = 100
-                    #     z0[2] = 1e6
-                    #     x0[3] = 0
-            elif phase == "reel-in":
-                # print("Reel-in phase control.")
-                phase = self.control_reel_in(
-                    full_state,
-                    p,
-                    settings,
-                    time_step,
-                    reeling_acceleration,
-                    depower_rate,
-                    max_depower,
-                    min_depower,
-                )
-                if phase == "riro":
-                    if self.kite_model.quasi_steady:
-                        x0[3] = np.pi
-                        z0[0] = 40
-                    else:
-                        x0[4] = np.pi
-                        x0[3] += 15
-            elif phase == "riro":
-                # raise NotImplementedError("RIRO phase control not implemented yet.")
-                finished = self.control_riro(
-                    full_state,
-                    p,
-                    settings,
-                    start_state,
-                    time_step,
-                    reeling_acceleration,
-                    depower_rate,
-                    min_depower,
-                )
-                # z0[1] = -0.
-                if finished:
-                    break
-
-    # ---------- CONTROL FUNCTIONS ----------
-
-    def control_rori(self, full_state, p, settings, dt):
-        course_target = settings["control"]["rori_escape_course"]
-        self.steering_controller(full_state, p, desired_course=course_target, dt=dt)
-
-        # Transition once course is close to zero
-        course_error = self.wrap_to_pi(course_target - full_state["angle_course"])
-
-        if abs(full_state["angle_elevation"]) > settings["control"]["ri_elevation"]:
-            print("Transition to reel-in: angle_course zeroed.")
-            return "reel-in"
-        return "rori"
-
-    def control_reel_in(
-        self,
-        full_state,
-        p,
-        settings,
-        time_step,
-        reeling_acceleration,
-        depower_rate,
-        max_depower,
-        min_depower,
-        is_tension_low=False,
-        is_distance_reached=False,
-    ):
-        course_target = self.compute_course_target(
-            full_state["angle_azimuth"],
-            full_state["angle_elevation"],
-            np.radians(-90),
-            np.radians(80),
-        )
-        course_target = np.radians(0)  # For testing purposes
-        self.steering_controller(
-            full_state, p, desired_course=course_target, dt=time_step
-        )
-
-        if full_state["angle_elevation"] > settings["control"]["max_elevation"]:
-            print("Transition: angle_elevation max reached.")
-            # p[0] = -0.35
-            return "riro"
-
-        if full_state["tension_tether_ground"] < self.min_safe_tension():
-            if p[1] > min_depower:
-                print("Tension too low. Reducing depower.")
-                p[1] = max(min_depower, p[1] - depower_rate * time_step)
-                is_tension_low = True
-            else:
-                print("Tension too low. Forcing transition.")
-                # p[0] = -0.35
-                return "riro"
-
-        if not is_tension_low:
-            p[1] = min(max_depower, p[1] + depower_rate * time_step)
-
-        if full_state["speed_tangential"] < 0:
-            print("Tangential speed negative. Forcing transition.")
-            # p[0] = -0.35
-            return "riro"
-
-        stop_threshold = settings["control"]["length_tether_ro"] + (
-            (settings["control"]["reeling_speed"]) ** 2
-        ) / (2 * reeling_acceleration)
-
-        if full_state["distance_radial"] < stop_threshold:
-
-            is_distance_reached = True
-
-        if (
-            full_state["speed_radial"] > settings["control"]["reeling_speed"]
-            and not is_distance_reached
-        ):
-            p[2] -= time_step * reeling_acceleration
-
-        if is_distance_reached:
-            p[1] = min(max_depower, p[1] - depower_rate * time_step)
-            p[2] += time_step * reeling_acceleration
-            if full_state["speed_radial"] > -3:
-                print("Transition: Distance threshold reached.")
-                # p[0] = -0.35
-                return "riro"
-            # print("Transition: Distance threshold reached.")
-            # p[0] = -0.35
-            # return "riro"
-
-        # if abs(full_state["angle_azimuth"]) > np.radians(60):
-        #     print("Transition: Azimuth close to target.")
-        #     # p[0] = -0.35
-        #     return "riro"
-
-        return "reel-in"
-
-    def control_riro(
-        self,
-        full_state,
-        p,
-        settings,
-        start_state,
-        time_step,
-        reeling_acceleration,
-        depower_rate,
-        min_depower,
-    ):
-        p[1] = max(min_depower, p[1] - depower_rate * time_step)
-
-        # if full_state["angle_elevation"] > settings["control"]["riro_elevation"]:
-        # Stage 2: apply spherical targeting only once properly aligned
-        course_target = self.compute_course_target(
-            full_state["angle_azimuth"],
-            full_state["angle_elevation"],
-            settings["control"]["riro_azimuth"],
-            settings["control"]["riro_elevation"],
-        )
-
-        # course_error = psi_target - full_state["angle_course"] - 2 * np.pi
-        # print(course_error)
-        # p[0] = np.clip(course_error * steering_gain, -max_steering, max_steering)
-        # p[0] = -0.8
-        # if full_state["angle_course"] < (-np.pi / 2):
-        # p[2] = min(
-        #     start_state.speed_radial, p[2] + time_step * reeling_acceleration
-        # )
-        # else:
-        # p[0] = max(-max_steering, p[0] - 0.1 * time_step)
-
-        if full_state["speed_radial"] < start_state.speed_radial:
-            p[2] += time_step * reeling_acceleration
-        elif full_state["distance_radial"] < settings["control"]["length_tether_ro"]:
-            p[2] = 0
-        # print(np.degrees(full_state["angle_course"]), np.degrees(course_target))
-        self.steering_controller(
-            full_state,
-            p,
-            desired_course=course_target,
-            dt=time_step,
-        )
-        if full_state["angle_elevation"] < settings["control"]["riro_elevation"]:
-
-            print("Finished reeling-in phase.")
-            return True
-        return False
-
-    # ---------- HELPER FUNCTIONS ----------
-
-    def assemble_full_state(self, xf, zf, p, t):
-        if self.kite_model.quasi_steady:
-            return {
-                "distance_radial": float(xf[0]),
-                "angle_elevation": float(xf[1]),
-                "angle_azimuth": float(xf[2]),
-                "angle_course": float(xf[3]),
-                "speed_tangential": float(zf[0]),
-                "input_steering": float(p[0]),
-                "tension_tether_ground": float(zf[2]),
-                "t": t,
-                "timeder_angle_course": float(zf[1]),
-                "speed_radial": float(p[2]),
-                "length_tether": float(xf[0]),
-                "input_depower": float(p[1]),
-            }
+        if self.quasi_steady:
+            unknown_vars = ["length_tether", "input_steering", "s_dot"]
         else:
-            return {
-                "distance_radial": float(xf[0]),
-                "angle_elevation": float(xf[1]),
-                "angle_azimuth": float(xf[2]),
-                "speed_tangential": float(xf[3]),
-                "angle_course": float(xf[4]),
-                "input_steering": float(p[0]),
-                "tension_tether_ground": float(zf[2]),
-                "t": t,
-                "timeder_angle_course": float(zf[1]),
-                "speed_radial": float(p[2]),
-                "length_tether": float(zf[2]),
-                "input_depower": float(p[1]),
-                "timeder_speed_tangential": float(zf[0]),
+            unknown_vars = ["length_tether", "input_steering", "s_ddot"]
+
+        if self.kite_model.is_tether_rigid:
+            unknown_vars[0] = "tension_tether_ground"
+        # Initialize state
+        if isinstance(start_state, dict):
+            state_obj = State(**start_state)
+        else:
+            state_obj = start_state
+
+        N = self.pattern_config["n_points"]
+        time_step = self.pattern_config["end_time"] / self.pattern_config["n_points"]
+        intg = self.integrator(time_step=time_step, inputs=None)
+        new_state = self.kite_model.solve_quasi_steady(state_obj, unknown_vars)
+        print("New state:", new_state)
+        if self.quasi_steady:
+            x0 = [new_state.s, new_state.distance_radial, new_state.speed_radial]
+            z0 = ca.vertcat(
+                new_state.tension_tether_ground,
+                new_state.input_steering,
+                new_state.s_dot,
+            )
+        else:
+            x0 = [
+                new_state.s,
+                new_state.s_dot,
+                new_state.distance_radial,
+                new_state.speed_radial,
+            ]
+            z0 = ca.vertcat(
+                new_state.tension_tether_ground,
+                new_state.input_steering,
+                new_state.s_ddot,
+            )
+        self.states.append(new_state.to_dict())
+        t = self.pattern_config["start_time"]
+        input_depower = start_state.input_depower
+        p = [start_state.timeder_speed_radial, input_depower]
+        max_depower = self.pattern_config["parameters"].get("max_depower", 1)
+        for i in range(N):
+            print(f"Time: {t}, State: {x0}, Inputs: {z0}, Parameters: {p}")
+            try:
+                sol = intg(
+                    x0=x0,
+                    p=p,
+                    z0=z0,
+                )
+            except Exception as e:
+                print(f"Error occurred: {e}")
+                if not allow_failure:
+                    raise
+                break
+            xf = sol["xf"]
+            zf = sol["zf"]
+            if self.quasi_steady:
+                new_state = State(
+                    t=t,
+                    s=xf[0],
+                    input_steering=float(zf[1]),
+                    tension_tether_ground=float(zf[0]),
+                    s_dot=float(zf[2]),
+                    distance_radial=float(xf[1]),
+                    speed_radial=float(xf[2]),
+                    input_depower=input_depower,
+                )
+            else:
+                new_state = State(
+                    t=t,
+                    s=xf[0],
+                    s_dot=float(xf[1]),
+                    input_steering=float(zf[1]),
+                    tension_tether_ground=float(zf[0]),
+                    s_ddot=float(zf[2]),
+                    distance_radial=float(xf[2]),
+                    speed_radial=float(xf[3]),
+                    input_depower=input_depower,
+                )
+
+            if new_state.speed_radial > self.pattern_config["parameters"].get(
+                "min_vr", -6
+            ) and (new_state.distance_radial > self.pattern_config["parameters"]["r1"]):
+                ddot_vr = -self.kite_model.acceleration_winch
+            elif (
+                new_state.distance_radial < self.pattern_config["parameters"]["r1"]
+            ) and (new_state.speed_radial < 1):
+                ddot_vr = self.kite_model.acceleration_winch
+            else:
+                ddot_vr = 0
+
+            if (input_depower < max_depower) and (ddot_vr < 0):
+                input_depower += self.kite_model.depower_rate * time_step
+            elif (ddot_vr > 0) and (input_depower > 0):
+                input_depower -= self.kite_model.depower_rate * time_step
+
+            if new_state.tension_tether_ground < self.kite_model.mass_wing * 9.81 * 1.5:
+                input_depower -= self.kite_model.depower_rate * time_step
+
+            p = [ddot_vr, input_depower]
+
+            t += time_step
+            x0 = xf
+            z0 = zf
+            self.states.append(new_state.to_dict())
+
+    def run_simulation_opti(self, start_state):
+
+        self.states = []
+        self.kite_model.reset_solver()
+
+        N = self.pattern_config["n_points"]
+        time_step = self.pattern_config["end_time"] / N
+        t0 = 0
+
+        self.run_simulation(start_state, return_states=True)
+        pattern_inputs, pattern = self.substitute_parametrized_kinematics(True)
+        opti = ca.Opti()
+        # pattern_inputs = self.substitute_parametrized_kinematics(True)
+
+        self.optimization_vars = {}  # Store optimization variables
+
+        # Create optimization variables for parameters to optimize
+        for var in self.pattern_config["optimization_parameters"]:
+
+            val = np.atleast_1d(
+                self.pattern_config["parameters"][var]
+            )  # guarantees array, even for scalar
+
+            if len(val) > 1:
+                self.optimization_vars[var] = opti.variable(len(val))
+            else:
+                self.optimization_vars[var] = (
+                    opti.variable()
+                )  # No bounds if not specified
+            print(var, self.optimization_vars[var])
+
+            # If the optimization variable is a vector, set as a list of variables
+            opt_var = self.optimization_vars[var]
+            setattr(pattern, var, opt_var)
+            print(getattr(pattern, var))
+
+        opti_variables = {
+            "s": opti.variable(N + 1),
+            "s_dot": opti.variable(N + 1),
+            "input_steering": opti.variable(N + 1),
+            "tension_tether_ground": opti.variable(N + 1),
+        }
+
+        # Add optimization parameters
+        for var in self.optimization_vars:
+            opti_variables[var] = self.optimization_vars[var]
+
+        opti.set_initial(opti_variables["s"], self.return_variable("s"))
+        opti.set_initial(opti_variables["s_dot"], self.return_variable("s_dot"))
+        opti.set_initial(
+            opti_variables["input_steering"], self.return_variable("input_steering")
+        )
+        opti.set_initial(
+            opti_variables["tension_tether_ground"],
+            self.return_variable("tension_tether_ground"),
+        )
+
+        opti.subject_to(opti_variables["s"][0] == self.return_variable("s")[0])
+        if not self.quasi_steady:
+            opti.subject_to(
+                opti_variables["s_dot"][0] == self.return_variable("s_dot")[0]
+            )
+        # opti.subject_to(
+        #     opti_variables["input_steering"][0]
+        #     == self.return_variable("input_steering")[0]
+        # )
+        # opti.subject_to(
+        #     opti_variables["tension_tether_ground"][0]
+        #     == self.return_variable("tension_tether_ground")[0]
+        # )
+        T = ca.MX.sym("T")
+
+        if self.quasi_steady:
+            f_ode = self.kite_model.s_dot
+            x_ode = self.kite_model.s
+
+            ode = {
+                "x": x_ode,
+                "ode": T * f_ode,
+                "p": ca.vertcat(self.kite_model.s_dot, T),
             }
+            intg = ca.integrator("intg", "cvodes", ode, 0, 1)
+        else:
+            opti_variables["s_ddot"] = opti.variable(N + 1)
+            f_ode = ca.vertcat(self.kite_model.s_dot, self.kite_model.s_ddot)
+            x_ode = ca.vertcat(self.kite_model.s, self.kite_model.s_dot)
 
-    def min_safe_tension(self):
-        return 1.5 * (self.kite_model.mass_wing + self.kite_model.mass_kcu) * 9.81
+            ode = {
+                "x": x_ode,
+                "ode": T * f_ode,
+                "p": ca.vertcat(self.kite_model.s_ddot, T),
+            }
+            intg = ca.integrator("intg", "cvodes", ode, 0, 1)
 
-    def wrap_to_pi(self, angle):
-        return (angle + np.pi) % (2 * np.pi) - np.pi
+        self.kite_model.establish_residual()
+        flat = [ca.vertcat(*pattern_inputs)]
+        if self.quasi_steady:
+            residual = ca.Function(
+                "residual",
+                [
+                    self.kite_model.t,
+                    self.kite_model.s,
+                    self.kite_model.s_dot,
+                    self.kite_model.input_steering,
+                    self.kite_model.tension_tether_ground,
+                ]
+                + flat,
+                [self.kite_model.residual],
+            )
+            tether_tension_eq = ca.Function(
+                "tether_tension_eq",
+                [
+                    self.kite_model.t,
+                    self.kite_model.s,
+                    self.kite_model.s_dot,
+                    self.kite_model.input_steering,
+                ]
+                + flat,
+                [self.kite_model.tension_tether_equation],
+            )
+        else:
+            residual = ca.Function(
+                "residual",
+                [
+                    self.kite_model.t,
+                    self.kite_model.s,
+                    self.kite_model.s_dot,
+                    self.kite_model.s_ddot,
+                    self.kite_model.input_steering,
+                    self.kite_model.tension_tether_ground,
+                ]
+                + flat,
+                [self.kite_model.residual],
+            )
+
+        # # Set the time values
+        time_array = np.arange(N + 1) * time_step + t0
+        height = pattern.z(time_array, opti_variables["s"])
+        opti.subject_to(height >= 50)
+        # radius_curvature = pattern.radius_curvature(time_array, opti_variables["s"])
+        # opti.subject_to(radius_curvature >= 25)
+        vr_func = self.kite_model.extract_function("speed_radial")
+        if "vr" not in opti_variables.keys():
+            opti_variables["vr"] = self.pattern_config["parameters"]["vr"]
+
+        def call_vr_func(func, vr):
+            if func.n_in() == 1:
+                return func(vr)
+            return vr
+
+        P_scale = opti.parameter()
+        # set from your initial trajectory (rough but effective):
+        T0 = self.return_variable("tension_tether_ground")
+        vr0 = (
+            self.pattern_config["parameters"]["vr"]
+            if np.isscalar(self.pattern_config["parameters"]["vr"])
+            else float(self.pattern_config["parameters"]["vr"][0])
+        )
+        P0 = np.mean(T0) * vr0  # crude scale for T*vr
+        opti.set_value(P_scale, max(abs(P0), 1.0))
+        total_time = opti.parameter()
+        opti.set_value(total_time, self.pattern_config["end_time"])
+        energy = 0
+        t_eff = 0
+        for i in range(N + 1):
+            opt_par_values = [opti_variables[var] for var in self.optimization_vars]
+            flat = [ca.vertcat(*opt_par_values)]
+
+            if self.quasi_steady:
+                tether_inputs = [
+                    time_array[i],
+                    opti_variables["s"][i],
+                    opti_variables["s_dot"][i],
+                    opti_variables["input_steering"][i],
+                ] + flat
+                tether_tension = tether_tension_eq(*tether_inputs)
+                opti_variables["tension_tether_ground"][i] = tether_tension
+                residual_inputs = [
+                    time_array[i],
+                    opti_variables["s"][i],
+                    opti_variables["s_dot"][i],
+                    opti_variables["input_steering"][i],
+                    tether_tension,
+                ] + flat
+
+            else:
+                # For dynamic case, include s_ddot
+                residual_inputs = [
+                    time_array[i],
+                    opti_variables["s"][i],
+                    opti_variables["s_dot"][i],
+                    opti_variables["s_ddot"][i],
+                    opti_variables["input_steering"][i],
+                    opti_variables["tension_tether_ground"][i],
+                ] + flat
+            res = residual(*residual_inputs)
+
+            W = ca.diag(
+                ca.vertcat(0.01, 0.01, 0.001)
+            )  # tune so |W r| ~ 1 near feasible
+            # opti.subject_to(W @ res == 0)
+            opti.subject_to(res[0] == 0)
+            opti.subject_to(res[1] == 0)
+            # opti.subject_to(
+            #     opti_variables["tension_tether_ground"][i] == tether_tension
+            # )
+
+            if i < N:
+                if self.quasi_steady:
+                    sol_s = intg(
+                        x0=opti_variables["s"][i],
+                        p=ca.vertcat(opti_variables["s_dot"][i], total_time / N),
+                    )
+                    opti.subject_to(
+                        opti_variables["s"][i + 1]
+                        == opti_variables["s"][i]
+                        + opti_variables["s_dot"][i] * time_step
+                    )
+                else:
+                    x0 = ca.vertcat(opti_variables["s"][i], opti_variables["s_dot"][i])
+                    sol_s = intg(
+                        x0=x0, p=ca.vertcat(opti_variables["s_ddot"][i], total_time / N)
+                    )
+                    opti.subject_to(opti_variables["s"][i + 1] == sol_s["xf"][0])
+                    opti.subject_to(opti_variables["s_dot"][i + 1] == sol_s["xf"][1])
+
+            # Only accumulate power when s is between 0 and 2π
+        w = smooth_gate_interval(
+            opti_variables["s"], start_state.s, start_state.s + 2 * np.pi
+        )
+        vr = call_vr_func(vr_func, opti_variables["vr"])  # scalar or (N+1,)
+
+        # T_seg = 0.5 * (
+        #     opti_variables["tension_tether_ground"][1:]
+        #     + opti_variables["tension_tether_ground"][:-1]
+        # )
+        # w_seg = 0.5 * (w[1:] + w[:-1])
+
+        energy = time_step * ca.dot(w, opti_variables["tension_tether_ground"] * vr)
+        t_eff = time_step * ca.sum1(w)
+        power = ca.dot(w, opti_variables["tension_tether_ground"] * vr)
+        # Take the mean
+        power = energy / (t_eff + 1e-12)
+
+        # # Check gradient with respect to optimization variables
+        # for var in self.optimization_vars:
+        #     grad = ca.gradient(power, opti_variables[var])
+        # print(f"Gradient for {var}: {grad}")
+
+        opti.minimize(-power / P_scale)  # drop duplicate min with -power/P_scale
+
+        # Average power only over s∈[0,2π]
+        # power = energy / (t_eff + 1e-12)
+        opti.solver(
+            "ipopt",
+            {
+                "ipopt": {
+                    # "max_iter": 100,
+                    "bound_relax_factor": 0,
+                    "tol": 1e-4,  # Main tolerance
+                    # "acceptable_iter": 3,  # Accept if solution is good for 3 iter
+                    "acceptable_tol": 1e-4,  # Acceptable early termination
+                    "constr_viol_tol": 1e-4,  # Constraint violation tolerance
+                    "dual_inf_tol": 1e-4,  # Dual infeasibility
+                    # "honor_original_bounds": "yes",
+                    "hessian_approximation": "limited-memory",
+                    # "mu_strategy": "adaptive",
+                    # "linear_solver": "mumps",
+                }
+                # "ipopt": {
+                #     "hessian_approximation": "limited-memory",
+                #     "mu_strategy": "adaptive",
+                #     "bound_relax_factor": 0.0,  # you need this
+                #     "honor_original_bounds": "yes",  # don’t let IPOPT drift outside
+                #     "bound_frac": 1e-8,  # how far from bounds to stay (fractional)
+                #     "bound_push": 1e-12,  # absolute push off the bounds
+                #     "constr_viol_tol": 1e-6,
+                #     "tol": 1e-6,
+                #     "dual_inf_tol": 1e-6,
+                #     "linear_solver": "mumps",
+                # }
+            },
+        )
+
+        # Set initial conditions for optimization parameters
+        for var in self.optimization_vars:
+            print(
+                f"Setting initial value for {var}: {self.pattern_config['parameters'][var]}"
+            )
+            print(self.optimization_vars[var])
+            opti.set_initial(
+                self.optimization_vars[var], self.pattern_config["parameters"][var]
+            )
+        ### APPLY CONSTRAINTS DYNAMICALLY FROM DEFAULT_OPTI_LIMITS ###
+        for var_name, opti_var in opti_variables.items():
+            if isinstance(opti_var, ca.MX):
+                if var_name in DEFAULT_OPTI_LIMITS:
+                    if var_name in self.optimization_vars:
+                        print(f"Applying constraints for {var_name}")
+                        lb, ub = DEFAULT_OPTI_LIMITS[var_name]
+                        opti.subject_to(lb <= opti_var)
+                        opti.subject_to(opti_var <= ub)
+                    else:
+                        print(f"Applying constraints for {var_name}")
+                        lb, ub = DEFAULT_OPTI_LIMITS[var_name]
+                        opti.subject_to(lb <= opti_var[:])
+                        opti.subject_to(opti_var[:] <= ub)
+
+        try:
+            solution = opti.solve()
+            # Print optimized values for variables in the pattern
+            print("\n Optimized Pattern Variables:")
+            for var_name, var in self.optimization_vars.items():
+                print(f"  {var_name}: {solution.value(var)}")
+                optimized_config = self.pattern_config.copy()
+                optimized_config["parameters"].update({var_name: opti.debug.value(var)})
+                self.pattern_config = optimized_config
+                self.substitute_parametrized_kinematics()
+
+            print(solution.value(power))
+        except Exception as e:
+            # Print debug optimization information
+            print("Debug optimization information:")
+            for var_name, var in self.optimization_vars.items():
+                print(f"  {var_name}: {opti.debug.value(var)}")
+            print("Optimization failed:", e)
+
+        # plt.plot(solution.value(opti_variables["input_steering"]))
+        # plt.show()
+        print("Optimization status:", solution)
+        s_vals = solution.value(opti_variables["s"])  # shape: (N+1,)
+        s_dot_vals = solution.value(opti_variables["s_dot"])  # shape: (N+1,)
+        tension_vals = solution.value(
+            opti_variables["tension_tether_ground"]
+        )  # shape: (N+1,)
+        input_steering_vals = solution.value(
+            opti_variables["input_steering"]
+        )  # shape: (N+1,)
+        self.states = []
+        for i in range(N + 1):
+
+            new_state = State(
+                t=float(time_array[i]),
+                s=float(s_vals[i]),
+                input_steering=float(input_steering_vals[i]),
+                tension_tether_ground=float(tension_vals[i]),
+                s_dot=float(s_dot_vals[i]),
+            )
+
+            self.states.append(new_state.to_dict())
+
+    def _flatten_for_function_call(vals):
+        flat = []
+        for v in vals:
+            if isinstance(v, ca.MX) and v.numel() > 1:
+                # ensure column, then split into scalars
+                flat += list(ca.vertsplit(ca.reshape(v, (-1, 1))))
+            else:
+                flat.append(v)
+        return flat
+
+    def substitute_parametrized_kinematics(self, optimize=False):
+
+        pattern = create_pattern_from_dict(self.pattern_config, optimize=optimize)
+
+        kinematics = ParametrizedKinematics(pattern, self)
+
+        self.kite_model.s = kinematics.s
+        self.kite_model.s_dot = kinematics.s_dot
+        self.kite_model.s_ddot = kinematics.s_ddot
+
+        self.kite_model.angle_course = kinematics.chi
+        self.kite_model.angle_elevation = kinematics.beta
+        # Optimal analytical solution for speed_radial should be part of the pattern class
+        # self.kite_model.speed_radial = self.kite_model.speed_radial
+        # print(self.kite_model.speed_radial)
+        # self.kite_model.speed_radial = kinematics.vr
+        self.kite_model.speed_tangential = kinematics.vtau
+        self.kite_model.timeder_angle_course = kinematics.dot_chi
+        if not self.quasi_steady:
+            self.kite_model.timeder_speed_radial = kinematics.dot_vr
+            self.kite_model.timeder_speed_tangential = kinematics.dot_vtau
+
+        self.kite_model.angle_azimuth = kinematics.phi
+        self.kite_model.angle_elevation = kinematics.beta
+
+        if optimize:
+            return list(kinematics.pattern.optimization_vars.values()), pattern
+
+    @property
+    def target_lift_coefficient(self):
+        return self._target_lift_coefficient
+
+    @target_lift_coefficient.setter
+    def target_lift_coefficient(self, value):
+        self._target_lift_coefficient = value
+
+    @property
+    def target_drag_coefficient(self):
+        return self._target_drag_coefficient
+
+    @target_drag_coefficient.setter
+    def target_drag_coefficient(self, value):
+        self._target_drag_coefficient = value
 
     def integrator(self, time_step, inputs=None):
-        self.kite_model.timeder_speed_radial = 0
-        if self.kite_model.ode is None:
-            self.kite_model.establish_ode_function()
-        if self.kite_model.algebraic is None:
-            self.kite_model.establish_algebraic()
-
-        if self.kite_model.quasi_steady:
-
-            p = ca.vertcat(
-                self.kite_model.input_steering,
-                self.kite_model.input_depower,
-                self.kite_model.speed_radial,
-            )
-
+        self.kite_model.establish_residual()
+        if self.quasi_steady:
             x = ca.vertcat(
-                self.kite_model.state_vector[0],
-                self.kite_model.state_vector[1],
-                self.kite_model.state_vector[2],
-                self.kite_model.state_vector[4],
-            )
-            ode = ca.vertcat(self.kite_model._ode[0:3], self.kite_model._ode[4])
-            # p = ca.vertcat(self.timeder_angle_course, self.input_depower, self.speed_radial)
-            if self.kite_model.is_tether_rigid:
-                z = ca.vertcat(
-                    self.kite_model.speed_tangential,
-                    self.kite_model.timeder_angle_course,
-                    self.kite_model.tension_tether_ground,
-                )
-            else:
-                z = ca.vertcat(
-                    self.kite_model.speed_tangential,
-                    self.kite_model.timeder_angle_course,
-                    self.kite_model.length_tether,
-                )
-
-            alg = self.kite_model.algebraic
-
-            print("x:", x)
-            print("p:", p)
-            print("z:", z)
-
-            dae = {"x": x, "p": p, "z": z, "p": p, "ode": ode, "alg": alg}
-            # Create the integrator
-            opts = {
-                "abstol": 1e-6,
-                "reltol": 1e-6,
-                "max_num_steps": 20000,
-                "max_step_size": 0.01,  # Or even 1e-3 if very stiff
-            }
-
-            # intg = ca.integrator("intg", "idas", dae, opts)
-            intg = ca.integrator("intg", "idas", dae, 0, time_step, opts)
-            return intg
-
-        else:
-            p = ca.vertcat(
-                self.kite_model.input_steering,
-                self.kite_model.input_depower,
+                self.kite_model.s,
+                self.kite_model.distance_radial,
                 self.kite_model.speed_radial,
             )
-
-            x = ca.vertcat(self.kite_model.state_vector[0:5])
-            ode = ca.vertcat(self.kite_model._ode[0:5])
-            # p = ca.vertcat(self.timeder_angle_course, self.input_depower, self.speed_radial)
             if self.kite_model.is_tether_rigid:
                 z = ca.vertcat(
-                    self.kite_model.timeder_speed_tangential,
-                    self.kite_model.timeder_angle_course,
                     self.kite_model.tension_tether_ground,
+                    self.kite_model.input_steering,
+                    self.kite_model.s_dot,
                 )
             else:
                 z = ca.vertcat(
-                    self.kite_model.timeder_speed_tangential,
-                    self.kite_model.timeder_angle_course,
                     self.kite_model.length_tether,
+                    self.kite_model.input_steering,
+                    self.kite_model.s_dot,
                 )
 
-            alg = self.kite_model.algebraic
-            dae = {"x": x, "p": p, "z": z, "p": p, "ode": ode, "alg": alg}
-            # Create the integrator
-            opts = {
-                "abstol": 1e-6,
-                "reltol": 1e-6,
-                "max_num_steps": 20000,
-                "max_step_size": 0.01,  # Or even 1e-3 if very stiff
-            }
+            ode = ca.vertcat(
+                self.kite_model.s_dot,
+                self.kite_model.speed_radial,
+                self.kite_model.timeder_speed_radial,
+            )
+            alg = ca.vertcat(
+                self.kite_model.residual,
+            )
+        else:
+            x = ca.vertcat(
+                self.kite_model.s,
+                self.kite_model.s_dot,
+                self.kite_model.distance_radial,
+                self.kite_model.speed_radial,
+            )
+            if self.kite_model.is_tether_rigid:
+                z = ca.vertcat(
+                    self.kite_model.tension_tether_ground,
+                    self.kite_model.input_steering,
+                    self.kite_model.s_ddot,
+                )
+            else:
+                z = ca.vertcat(
+                    self.kite_model.length_tether,
+                    self.kite_model.input_steering,
+                    self.kite_model.s_ddot,
+                )
 
-            # intg = ca.integrator("intg", "idas", dae, opts)
-            intg = ca.integrator("intg", "idas", dae, 0, time_step, opts)
-            return intg
+            ode = ca.vertcat(
+                self.kite_model.s_dot,
+                self.kite_model.s_ddot,
+                self.kite_model.speed_radial,
+                self.kite_model.timeder_speed_radial,
+            )
+            alg = ca.vertcat(
+                self.kite_model.residual, self.kite_model.tension_tether_ground
+            )
 
-    def compute_course_target(self, azimuth, elevation, az_target, el_target):
-        delta_chi = self.wrap_to_pi(az_target - azimuth)
+        p = ca.vertcat(
+            self.kite_model.timeder_speed_radial, self.kite_model.input_depower
+        )
+        dae = {"x": x, "z": z, "p": p, "ode": ode, "alg": alg}
+        print("x:", x)
+        print("z:", z)
+        print("p:", p)
+        # print("ode:", ode)
+        # print("alg:", alg)
+        # Create the integrator
+        opts = {
+            "abstol": 1e-6,
+            "reltol": 1e-6,
+            # "max_num_steps": 20000,
+            # "max_step_size": 0.01,  # Or even 1e-3 if very stiff
+        }
 
-        y = np.sin(delta_chi) * np.cos(el_target)
-        x = np.cos(elevation) * np.sin(el_target) - np.sin(elevation) * np.cos(
-            el_target
-        ) * np.cos(delta_chi)
+        # intg = ca.integrator("intg", "idas", dae, opts)
+        intg = ca.integrator("intg", "idas", dae, 0, time_step, opts)
+        return intg
 
-        psi_target = np.arctan2(y, x)
-        return self.wrap_to_pi(psi_target)
+    # def find_optimal_angle_pitch_tether(self):
+    #     copy_kite = copy.deepcopy(self.kite_model)
+    #     copy_kite.angle_elevation = 0
+    #     copy_kite.angle_azimuth = 0
+    #     copy_kite.angle_course = np.pi/2
+    #     copy_kite.timeder_speed_tangential = 0
+    #     copy_kite.distance_radial = 200
+    #     copy_kite.wind.wind_model = 'uniform'
+    #     copy_kite.wind.speed_wind_ref = 10
+    #     copy_kite.speed_radial = 0
+    #     copy_kite.timeder_angle_course = 0
+    #     # copy_kite.angle_roll = 0
+    #     copy_kite.timeder_speed_radial = 0
+    #     copy_kite.delta_pitch_depower = 0
+    #     copy_kite.input_depower = 0
+    #     copy_kite.tether = RigidLinkTether()
+    #     copy_kite.angle_pitch_tether = ca.MX.sym("angle_pitch_tether")
+    #     copy_kite.speed_tangential = ca.MX.sym("speed_tangential")
+    #     # copy_kite.aero_input["dependencies"]["u_s"] = {}
+    #     # copy_kite.input_steering = 0
+    #     # copy_kite.speed_radial = ca.MX.sym("speed_radial")
+    #     print(copy_kite.lift_coefficient)
+    #     cl_func = copy_kite.extract_function("lift_coefficient")
+    #     cd_func = copy_kite.extract_function("drag_coefficient")
+    #     aoa_func = copy_kite.extract_function("angle_of_attack")
 
-    def steering_controller(self, full_state, p, desired_course, dt, kp=1.0, ki=0.2):
-        # if not hasattr(self, "_int_err_steering"):
-        self._int_err_steering = 0.0
+    #     copy_kite.establish_residual()
 
-        error = self.wrap_to_pi(desired_course - full_state["angle_course"])
-        # print(f"Course error: {np.degrees(error)} degrees")
-        # Compute control action (before updating integral)
-        proportional = kp * error
-        integral_candidate = self._int_err_steering + error * dt
-        control_effort = proportional + ki * integral_candidate
+    #     residual = ca.Function("residual", [copy_kite.speed_tangential, copy_kite.input_steering, copy_kite.length_tether, copy_kite.angle_pitch_tether], [copy_kite.residual], ["vtau", "steering", "length_tether", "angle_pitch"], ["residual"])
+    #     print(residual)
 
-        # Limit steering range
-        max_steering = 0.15
-        clipped_steering = np.clip(control_effort, -max_steering, max_steering)
+    #     opti = ca.Opti()
+    #     vtau = opti.variable()
+    #     steering = opti.variable()
+    #     lt = opti.variable()
+    #     angle_pitch = opti.variable()
+    #     opti.subject_to(vtau >= 0)
+    #     opti.subject_to(vtau <= 300)
+    #     opti.subject_to(steering >= -np.pi/2)
+    #     opti.subject_to(steering <= np.pi/2)
+    #     opti.subject_to(lt <= copy_kite.distance_radial)
+    #     opti.subject_to(angle_pitch >= np.radians(-5))
+    #     opti.subject_to(angle_pitch <= np.radians(15))
+    #     opti.subject_to(residual(vtau = vtau, steering = steering, length_tether = lt, angle_pitch = angle_pitch)["residual"] == 0)
 
-        # Only accumulate integral if not saturated (anti-windup)
-        if control_effort == clipped_steering:
-            self._int_err_steering = integral_candidate
+    #     opti.set_initial(vtau, 100)
+    #     opti.set_initial(steering, 0)
+    #     opti.set_initial(lt, copy_kite.distance_radial)
+    #     opti.set_initial(angle_pitch, 0)
 
-        # Use corrected command
-        p[0] = -clipped_steering  # flip sign if needed (system specific)
+    #     opti.minimize(-lt)
+    #     solver_opts = {"ipopt.print_level": 0, "print_time": 0}
+    #     opti.solver("ipopt", solver_opts)
+    #     try:
+    #         sol = opti.solve()
+    #         vtau = sol.value(vtau)
+    #         angle_pitch = sol.value(angle_pitch)
+    #         steering = sol.value(steering)
+    #     except:
+    #         print("Solver failed")
+    #         print(opti.debug.value(vtau))
+    #         print(opti.debug.value(steering))
+    #         print(opti.debug.value(lt))
+    #         print(opti.debug.value(angle_pitch))
+    #     print(cl_func)
+    #     if "u_s" in copy_kite.aero_input.get("dependencies", {}):
+    #         self.target_lift_coefficient = cl_func(speed_tangential=vtau, angle_pitch_tether=angle_pitch, input_steering=steering)["lift_coefficient"]
+    #         self.target_drag_coefficient = cd_func(speed_tangential=vtau, angle_pitch_tether=angle_pitch, input_steering=steering)["drag_coefficient"]
+    #     else:
+    #         self.target_lift_coefficient = cl_func(speed_tangential=vtau, angle_pitch_tether=angle_pitch)["lift_coefficient"]
+    #         self.target_drag_coefficient = cd_func(speed_tangential=vtau, angle_pitch_tether=angle_pitch)["drag_coefficient"]
+    #     self.target_angle_of_attack = aoa_func(speed_tangential=vtau, angle_pitch_tether=angle_pitch)["angle_of_attack"]
+    #     self.optimal_angle_pitch_tether = float(angle_pitch)
+    #     print(self.target_lift_coefficient, self.target_drag_coefficient, self.target_angle_of_attack*180/np.pi)
+
+    # # def set_optimal_angle_pitch_tether(self):
+    # #     print(f"Angle respect to the tether set to: {np.degrees(self.optimal_angle_pitch_tether)}")
+    # #     self.kite_model.angle_pitch_tether = self.optimal_angle_pitch_tether
+
+    # # def set_optimal_speed_radial(self):
+    # #     # if self.target_drag_coefficient is None or self.target_lift_coefficient is None or self.target_angle_of_attack is None:
+
+    # #     print(f"Optimal speed radial set according to the target  CL: {self.target_lift_coefficient} CD: {self.target_drag_coefficient} at aoa: {np.degrees(self.target_angle_of_attack)}")
+
+    # #     CR_target = ca.sqrt(self.target_lift_coefficient**2 + self.target_drag_coefficient**2)
+
+    # #     # self.kinematics.vr = ca.sqrt(
+    # #     #     self.kite_model.tension_tether_ground / (
+    # #     #         2 * 1.225 * self.kite_model.area_wing * CR_target *
+    # #     #         (1 + (self.target_lift_coefficient / self.target_drag_coefficient)**2)
+    # #     #     )
+    # #     # )
+    # #     # Calculate the optimal speed_radial
+    # #     self.kite_model.speed_radial = ca.sqrt(
+    # #         self.kite_model.tension_tether_ground / (
+    # #             2 * 1.225 * self.kite_model.area_wing * CR_target *
+    # #             (1 + (self.target_lift_coefficient / self.target_drag_coefficient)**2)
+    # #         )
+    # #     )
+    # #     print(self.kite_model.speed_radial)
+    # #     # print(f"Optimal speed radial set according to the target  CL: {self.target_lift_coefficient} CD: {self.target_drag_coefficient} at aoa: {np.degrees(self.target_angle_of_attack)}")
 
 
-def wrap_to_pi(angle):
-    """Wrap angle to [-pi, pi]"""
-    return (angle + np.pi) % (2 * np.pi) - np.pi
+def smooth_gate_interval(s, s0, sf, eps=1e-2):
+    """
+    Smooth gate active only on [s0, sf], 0 outside.
+    eps controls the ramp width at both ends.
+    Works with MX/SX.
+    """
+    # guard: sf must be > s0
+    # (you can add an assert or handle wrap if you need periodic behavior)
+
+    def ramp(u):
+        # 0 for u<=0, 1 for u>=eps, smooth in between
+        u_clip = ca.fmin(ca.fmax(u / eps, 0), 1)
+        return 0.5 * (1 - ca.cos(ca.pi * u_clip))
+
+    w_lo = ramp(s - s0)  # rises near s0
+    w_hi = ramp(sf - s)  # falls near sf
+    return w_lo * w_hi
+
+
+# # Plotting code
+# import matplotlib.pyplot as plt
+
+# s_vals = np.linspace(-2 * np.pi, 6 * np.pi, 500)
+# # Evaluate using CasADi function
+# s_sym = ca.MX.sym("s")
+# gate_func = ca.Function(
+#     "gate", [s_sym], [smooth_gate_interval(s_sym, np.pi / 2, 2 * np.pi)]
+# )
+# w_vals = np.array([float(gate_func(s)) for s in s_vals])
+
+# plt.plot(s_vals, w_vals)
+# plt.xlabel("s")
+# plt.ylabel("smooth_gate_interval(s, 0, 2π)")
+# plt.title("Smooth Gate from 0 to 2π")
+# plt.grid(True)
+# plt.show()
