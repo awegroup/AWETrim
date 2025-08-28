@@ -90,8 +90,8 @@ class ReelinPhase(TimeSeries):
             )
         self.states.append(new_state.to_dict())
         t = self.pattern_config["start_time"]
-        input_depower = start_state.input_depower
-        p = [start_state.timeder_speed_radial, input_depower]
+        input_depower = state_obj.input_depower
+        p = [state_obj.timeder_speed_radial, input_depower]
         max_depower = self.pattern_config["parameters"].get("max_depower", 1)
         for i in range(N):
             print(f"Time: {t}, State: {x0}, Inputs: {z0}, Parameters: {p}")
@@ -538,7 +538,7 @@ class ReelinPhase(TimeSeries):
         self.kite_model.speed_tangential = kinematics.vtau
         self.kite_model.timeder_angle_course = kinematics.dot_chi
         if not self.quasi_steady:
-            self.kite_model.timeder_speed_radial = kinematics.dot_vr
+            # self.kite_model.timeder_speed_radial = kinematics.dot_vr
             self.kite_model.timeder_speed_tangential = kinematics.dot_vtau
 
         self.kite_model.angle_azimuth = kinematics.phi
@@ -618,9 +618,7 @@ class ReelinPhase(TimeSeries):
                 self.kite_model.speed_radial,
                 self.kite_model.timeder_speed_radial,
             )
-            alg = ca.vertcat(
-                self.kite_model.residual, self.kite_model.tension_tether_ground
-            )
+            alg = ca.vertcat(self.kite_model.residual)
 
         p = ca.vertcat(
             self.kite_model.timeder_speed_radial, self.kite_model.input_depower
