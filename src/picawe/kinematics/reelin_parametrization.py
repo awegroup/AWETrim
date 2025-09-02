@@ -75,10 +75,10 @@ class ReelInBezier(ParametrizedPatternsAngles):
         beta0=np.pi / 6,
         beta5=np.pi / 6,
         # interior controls (radians)
-        phi2=np.deg2rad(120.0),
-        phi3=np.deg2rad(-100.0),
-        beta2=np.deg2rad(90.0),
-        beta3=np.deg2rad(90.0),
+        phi2=np.deg2rad(128.0),
+        phi3=np.deg2rad(116.0),
+        beta2=np.deg2rad(40.0),
+        beta3=np.deg2rad(100.0),
         # desired unit tangents at u=0,1 in Cartesian
         vhat0=(0.0, 0.0, 0.0),
         vhat1=(0.0, 0.0, 0.0),
@@ -326,15 +326,15 @@ if __name__ == "__main__":
     s_bet2 = Slider(
         plt.axes([col2_x, yy[1], w, h], facecolor=axcolor),
         "β2 (°)",
-        -90,
-        90,
+        -180,
+        180,
         valinit=init["beta2"],
     )
     s_bet3 = Slider(
         plt.axes([col2_x, yy[2], w, h], facecolor=axcolor),
         "β3 (°)",
-        -90,
-        90,
+        -180,
+        180,
         valinit=init["beta3"],
     )
     s_bet5 = Slider(

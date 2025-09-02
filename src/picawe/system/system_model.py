@@ -22,7 +22,7 @@ class SystemModel(KiteKinematics):
         tether=None,
         kite=None,
         acceleration_winch=2,
-        depower_rate=0.5,
+        depower_rate=0.2,
     ):
         """
         Initialize the kite system with its parameters.

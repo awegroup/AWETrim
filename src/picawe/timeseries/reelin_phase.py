@@ -522,7 +522,7 @@ class ReelinPhase(TimeSeries):
     def substitute_parametrized_kinematics(self, optimize=False):
 
         pattern = create_pattern_from_dict(self.pattern_config, optimize=optimize)
-
+        print(pattern.r0, pattern.r1)
         kinematics = ParametrizedKinematics(pattern, self)
 
         self.kite_model.s = kinematics.s

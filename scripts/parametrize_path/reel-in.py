@@ -10,9 +10,10 @@ from picawe.system.kite import Kite
 from picawe.system.tether import RigidLumpedTether
 from picawe.utils.defaults import PLOT_LABELS
 from picawe.environment.Wind import Wind
+from mpl_toolkits.mplot3d import Axes3D
 
 # ---------- Config ----------
-speed_wind_at_100 = 8
+speed_wind_at_100 = 10
 wind = Wind(
     wind_model="uniform",
     z0=0.1,
@@ -30,12 +31,12 @@ with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
 pattern_config_v9 = {
     "pattern_type": "reel_in",
     "parameters": {
-        "r0": 300.0,
+        "r0": 330.0,
         "r1": 230.0,
     },
     "start_time": 0,
     "end_time": 30,
-    "n_points": 600,
+    "n_points": 300,
     "optimization_parameters": [],
 }
 
@@ -48,7 +49,7 @@ base_start_state = State(
     length_tether=199.6,
     input_steering=0,
     tension_tether_ground=1e8,
-    distance_radial=300,
+    distance_radial=330,
     speed_radial=2,
     timeder_speed_radial=0,
     input_depower=0,
@@ -157,6 +158,8 @@ def run_sim(
             "t": phase.return_variable("t"),
             "phase": phase,
             "power_mechanical": phase.return_variable("mechanical_power"),
+            "input_depower": phase.return_variable("input_depower"),
+            "course_rate": phase.return_variable("timeder_angle_course"),
         }
         ax = ax2 if sim_type == "quasi_steady" else ax1
         scatter = ax.scatter(
@@ -187,6 +190,11 @@ def run_sim(
             result[sim_type]["input_steering"],
             linestyle=linestyle,
             color=color,
+        )
+        ax5.plot(
+            result[sim_type]["t"],
+            result[sim_type]["input_depower"],
+            linestyle=linestyle,
         )
         ax6.plot(
             result[sim_type]["t"],
@@ -368,9 +376,20 @@ def compute_energy_metrics(results, label=""):
     print(f"ΔΦ_v_tau,min: {s_lag_min:.2f} deg")
 
 
+fig_3d = plt.figure()
+ax_3d = fig_3d.add_subplot(111, projection="3d")
+ax_3d.plot(
+    results_v9["quasi_steady"]["x"],
+    results_v9["quasi_steady"]["y"],
+    results_v9["quasi_steady"]["z"],
+    label="Quasi-Steady Trajectory",
+)
+ax_3d.set_xlabel("X")
+ax_3d.set_ylabel("Y")
+ax_3d.set_zlabel("Z")
+ax_3d.legend()
+
 plt.figure()
-plt.plot(results_v9["quasi_steady"]["y"], results_v9["quasi_steady"]["z"])
-plt.figure()
-plt.plot(results_v9["quasi_steady"]["x"], results_v9["quasi_steady"]["z"])
+plt.plot(results_v9["quasi_steady"]["t"], results_v9["quasi_steady"]["course_rate"])
 plt.show()
 compute_energy_metrics(results_v9, "V9")

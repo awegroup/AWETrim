@@ -12,7 +12,7 @@ from picawe.utils.defaults import PLOT_LABELS
 from picawe.environment.Wind import Wind
 
 # ---------- Config ----------
-speed_wind_at_100 = 8
+speed_wind_at_100 = 12
 wind = Wind(
     wind_model="logarithmic",
     z0=0.1,
@@ -32,8 +32,8 @@ pattern_config_v9 = {
     "parameters": {
         "omega": 1.0,
         "r0": 200.0,
-        "az_amp0": 0.872664625892307,
-        "beta_amp0": 0.2,
+        "az_amp0": 0.8,
+        "beta_amp0": 0.25,
         "width_phi": 0.5,
         "width_beta": 0.5,
         "left_first": True,
@@ -43,13 +43,13 @@ pattern_config_v9 = {
         "beta_coeffs": [0, 0, 0, 0, 0],
         "az_coeffs": [0, 0, 0, 0, 0],
         "kbeta": 0,
-        "beta0": 0.3878,
+        "beta0": 0.45,
         "kappa": 0,
+        "k_vr": 2050,
     },
     "start_time": 0,
-    "end_time": 80,
-    "n_points": 400,
-    "k_vr": 8000,
+    "end_time": 60,
+    "n_points": 600,
     "optimization_parameters": [],
 }
 
@@ -285,7 +285,7 @@ plt.tight_layout()
 plt.savefig(
     "./results/figures/translational_paper/comparison_v3_v9.pdf", bbox_inches="tight"
 )
-plt.show()
+# plt.show()
 
 
 # ---------- Energy, power and phase comparison ----------
@@ -373,9 +373,5 @@ def compute_energy_metrics(results, label=""):
     print(f"ΔΦ_v_tau,min: {s_lag_min:.2f} deg")
 
 
-plt.figure()
-plt.plot(results_v9["quasi_steady"]["y"], results_v9["quasi_steady"]["z"])
-plt.figure()
-plt.plot(results_v9["quasi_steady"]["x"], results_v9["quasi_steady"]["z"])
-plt.show()
 compute_energy_metrics(results_v9, "V9")
+plt.show()

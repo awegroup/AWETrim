@@ -44,6 +44,8 @@ start_state = State(
     angle_pitch=0,
     angle_yaw=0,
     tension_tether_ground=1e8,
+    speed_radial=2,
+    distance_radial=200,
 )
 time = np.arange(0, 50, 0.1)
 s_array = np.linspace(5 * np.pi / 2, 9 * np.pi / 2, 200)
@@ -70,8 +72,8 @@ for i in range(N):
         "pattern_type": "cst_lissajous",
         "parameters": {
             "omega": 1.0,
-            "r0": 220.0,
-            "az_amp0": 0.82,
+            "r0": 200.0,
+            "az_amp0": 0.8,
             "beta_amp0": 0.25,
             "width_phi": 0.5,
             "width_beta": 0.5,
@@ -82,20 +84,22 @@ for i in range(N):
             "beta_coeffs": [0, 0, 0, 0, 0],
             "az_coeffs": [0, 0, 0, 0, 0],
             "kbeta": 0,
-            "vr": 3,
             "beta0": 0.45,
             "kappa": 0,
+            "k_vr": 2240,
         },
         "start_time": 0,
         "end_time": 60,
         "n_points": 600,
+        # "k_vr": 9000,
         "optimization_parameters": [
             # "vr",
-            "az_amp0",
-            "beta_amp0",
-            "beta0",
-            "beta_coeffs",
+            # "az_amp0",
+            # "beta_amp0",
+            # # "beta0",
+            # "beta_coeffs",
             # "kappa",
+            "k_vr",
         ],
     }
 

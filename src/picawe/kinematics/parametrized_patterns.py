@@ -462,6 +462,7 @@ class CST_Lissajous(ParametrizedPatternsAngles):
         normalize_bumps=False,
         repeat_phi=False,
         repeat_beta=False,
+        k_vr=6300,
     ):  # <- only flags
         super().__init__(
             omega=omega,
