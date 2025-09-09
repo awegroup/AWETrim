@@ -38,7 +38,7 @@ def read_dict_from_group(group):
 
 
 def read_ekf_results(year, month, day, kite_model, addition="", path_to_main=""):
-    path = "data/LEI-V9-KITE/flight_logs/"
+    path = "data/LEI-V3-KITE/flight_logs/"
     date = str(year) + "-" + str(month) + "-" + str(day)
     file_name = str(kite_model) + "_" + date
     hdf5_path = path_to_main + path + file_name + addition + ".h5"

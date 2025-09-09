@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 results, flight_data, config_data = read_ekf_results(
-    "2023", "11", "27", "v9", addition=""
+    "2023", "11", "27", "v3", addition=""
 )
 
 # Extract wind speed columns and heights

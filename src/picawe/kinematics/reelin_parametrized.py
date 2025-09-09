@@ -1,7 +1,11 @@
 import casadi as ca
+import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
+matplotlib.use('TkAgg')
 import numpy as np
+import tkinter as tk
+from mpl_toolkits.mplot3d import Axes3D
 
 # --- B-spline setup ---
 p = 3
