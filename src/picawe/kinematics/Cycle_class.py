@@ -44,7 +44,7 @@ U = [0.0, 0.0, 0.0, 0.0, 1/4, 2/4, 3/4, 1.0, 1.0, 1.0, 1.0]
 
 # ----------------- Cycle Class -----------------
 class Cycle:
-    def __init__(self, full_df, cycle_df, cycle_idx=0):
+    def __init__(self, full_df, cycle_df, cycle_idx=1):
         self.full_df = full_df.copy()
         self.cycle_df = cycle_df.copy()
         self.cycle_idx = cycle_idx
@@ -53,7 +53,7 @@ class Cycle:
         self.x, self.y, self.z, self.time = self.get_cycle_cartesian(cycle_idx)
 
     @staticmethod
-    def from_files(file_path_full, file_path_cycle, cycle_idx=0):
+    def from_files(file_path_full, file_path_cycle, cycle_idx=1):
         full_data = pd.read_csv(file_path_full, header=0, sep=r"\s+")
         cycle_data = pd.read_csv(file_path_cycle, header=0)
         return Cycle(full_data, cycle_data, cycle_idx)
@@ -92,45 +92,52 @@ class Cycle:
         start_idx, end_idx = self.useful_cycles_idx[cycle_idx], self.useful_cycles_idx[cycle_idx+1]
         az_cyc, el_cyc, r_cyc = self.az[start_idx:end_idx], self.el[start_idx:end_idx], self.r[start_idx:end_idx]
         phase_cyc = self.phase[start_idx:end_idx]
-
         start_RI = end_RI = None
         i_start, i_end = None, None
 
         def is_RI(tag):
-            return tag in ["pp-ri", "pp-rori", "pp-riro"]
+            if tag in ["pp-ri", "pp-rori", "pp-riro"]:
+                return True
+            return False
 
         def is_RO(tag):
-            return tag == "pp-ro"
+            if tag == "pp-ro":
+                return True
+            return False
 
         for i in range(1, len(phase_cyc)):
-            prev_phase, curr_phase = str(phase_cyc[i-1]).lower(), str(phase_cyc[i]).lower()
+            prev_phase, curr_phase = (phase_cyc[i-1]).lower(), (phase_cyc[i]).lower()
 
             if is_RO(prev_phase) and is_RI(curr_phase) and start_RI is None:
                 i_start, start_RI = i, (az_cyc[i], el_cyc[i], r_cyc[i])
 
-            if is_RI(prev_phase) and is_RO(curr_phase) and end_RI is None:
-                i_end, end_RI = i, (az_cyc[i], el_cyc[i], r_cyc[i])
+            i_end, end_RI = len(phase_cyc)-1, (az_cyc[-1], el_cyc[-1], r_cyc[-1])
 
         if i_start is None or i_end is None:
             raise ValueError("RI phase not found in this cycle")
 
         # gradients in spherical coords
         az_grad, el_grad, r_grad = np.gradient(az_cyc), np.gradient(el_cyc), np.gradient(r_cyc)
-        v0 = (az_grad[i_start], el_grad[i_start], r_grad[i_start])
-        vf = (az_grad[i_end], el_grad[i_end], r_grad[i_end])
 
+        v0 = np.array([az_grad[i_start],
+              el_grad[i_start],
+              r_grad[i_start]])
+        vf = np.array([az_grad[i_end],
+              el_grad[i_end],
+              r_grad[i_end]])
+        
         # Return clean tuple for spline fitting
-        return start_RI, v0, end_RI, vf, (az_cyc[i_start:i_end+1], el_cyc[i_start:i_end+1], r_cyc[i_start:i_end+1])
+        return start_RI, v0, end_RI, vf, az_cyc[i_start:i_end+1], el_cyc[i_start:i_end+1], r_cyc[i_start:i_end+1], i_start, i_end
 
 
-    def fit_RI_spline(self, T=1.0, n_samples=100):
+    def fit_RI_spline(self, T=1.0):
         """Fit B-spline in spherical coords only over RI."""
-        start_RI, v0, end_RI, vf, (az_cyc, el_cyc, r_cyc, i_start, i_end) = self.find_start_end_RI(self.cycle_idx)
+        start_RI, v0, end_RI, vf, az_cyc, el_cyc, r_cyc, i_start, i_end = self.find_start_end_RI(self.cycle_idx)
+        # print(start_RI, end_RI)
         if not (i_start and i_end):
             raise ValueError("RI phase not found in cycle")
 
-        az_RI, el_RI, r_RI = az_cyc[i_start:i_end], el_cyc[i_start:i_end], r_cyc[i_start:i_end]
-        S_sph = np.vstack([az_RI, el_RI, r_RI]).T
+        S_sph = np.vstack([az_cyc, el_cyc, r_cyc]).T
 
         s_vals = np.linspace(0, T, len(S_sph))
         u_vals = s_vals / T
@@ -139,8 +146,22 @@ class Cycle:
         C_unknown, _, _, _ = np.linalg.lstsq(N[:, 2:5], S_sph, rcond=None)
         self.c2, self.c3, self.c4 = C_unknown.T
 
-        S_fitted_sph = N @ np.column_stack((S_sph[0], S_sph[0], S_sph[0]))  # placeholder
+        # Build full control point array (7x3)
+        C = np.zeros((n_ctrl, 3))
+
+        C[0] = S_sph[0]        # fix first ctrl pt
+        C[1] = C[0] + (1/3) * v0     # maybe also fix second? depends on BC
+
+        C[2:5] = C_unknown     # fitted unknowns
+        
+        C[6] = S_sph[-1]       # fix last
+        C[5] = C[6]  + (1/3) * vf     # fix near end
+        # Evaluate fitted B-spline curve in spherical coords
+        S_fitted_sph = N @ C   # (n_samples × n_ctrl) @ (n_ctrl × 3) = (n_samples × 3)
+
+        # Convert to cartesian
         S_fitted_cart = np.array([self.sph2cart_cycle(*sph) for sph in S_fitted_sph])
+
         return start_RI, end_RI, S_fitted_sph, S_fitted_cart
 
     def plot_RI_fit(self, start_RI, end_RI, S_fitted_cart):
@@ -160,7 +181,7 @@ if __name__ == "__main__":
     file_path_full = "/home/theophile/src/Simulation_Results/trial_Uri_valid/ProtoLogger_csv/2025-09-10_11-31-10_ProtoLogger.csv"
     file_path_cycle = "/home/theophile/src/Simulation_Results/trial_Uri_valid/cycles/cycle_data_sheet_lines.csv"
 
-    cycle = Cycle.from_files(file_path_full, file_path_cycle, cycle_idx=0)
+    cycle = Cycle.from_files(file_path_full, file_path_cycle, cycle_idx=1)
 
-    start_RI, end_RI, S_fitted_sph, S_fitted_cart = cycle.fit_RI_spline(T=10.0, n_samples=200)
+    start_RI, end_RI, S_fitted_sph, S_fitted_cart = cycle.fit_RI_spline(T=10.0)
     cycle.plot_RI_fit(start_RI, end_RI, S_fitted_cart)
