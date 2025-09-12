@@ -85,7 +85,7 @@ DEFAULT_PATTERN_CONFIG = {
 # defaults.py (This is your file containing the limits)
 DEFAULT_OPTI_LIMITS = {
     "tension_tether_ground": (1e-2, 1e9),  # Range for tension_tether_ground: 0 to 1e9
-    "input_steering": (-1.5, 1.5),  # Range for input_steering: -pi/2 to pi/2
+    "input_steering": (-1.2, 1.2),  # Range for input_steering: -pi/2 to pi/2
     "s_dot": (0.01, 40),  # Range for s_dot: 0 to 30
     "s_ddot": (-100, 100),  # Range for s_ddot: -100 to 100
     "s": (0, 300),  # Range for s: 0 to 10
