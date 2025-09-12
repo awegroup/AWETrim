@@ -14,12 +14,12 @@ from picawe.environment.Wind import Wind
 # ---------- Config ----------
 speed_wind_at_100 = 12
 wind = Wind(
-    wind_model="logarithmic",
-    z0=0.1,
+    wind_model="uniform",
+    z0=0.25,
 )
 speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
-wind.speed_friction = speed_friction
-# wind.speed_wind_ref = speed_wind_at_100
+# wind.speed_friction = speed_friction
+wind.speed_wind_ref = speed_wind_at_100
 
 colors = get_color_list()
 
@@ -32,7 +32,7 @@ pattern_config_v9 = {
     "parameters": {
         "omega": 1.0,
         "r0": 200.0,
-        "az_amp0": 0.8,
+        "az_amp0": 0.8726646355685089,
         "beta_amp0": 0.25,
         "width_phi": 0.5,
         "width_beta": 0.5,
@@ -43,12 +43,14 @@ pattern_config_v9 = {
         "beta_coeffs": [0, 0, 0, 0, 0],
         "az_coeffs": [0, 0, 0, 0, 0],
         "kbeta": 0,
-        "beta0": 0.45,
+        "beta0": 0.5,
         "kappa": 0,
-        "k_vr": 2050,
+        "k_vr": 2716,
     },
     "start_time": 0,
-    "end_time": 60,
+    "end_time": 35,
+    "start_angle": np.pi / 2,
+    "end_angle": 2 * np.pi + np.pi / 2,
     "n_points": 600,
     "optimization_parameters": [],
 }
@@ -62,7 +64,7 @@ base_start_state = State(
     length_tether=199.6,
     input_steering=0,
     tension_tether_ground=1e8,
-    distance_radial=200,
+    distance_radial=230,
     speed_radial=speed_wind_at_100 / 5,
 )
 
@@ -138,7 +140,7 @@ def run_sim(
         phase = PhaseParameterized(
             model, quasi_steady=quasi_steady, pattern_config=pattern_config
         )
-        phase.run_simulation(start_state=start_state)
+        phase.run_simulation_phase(start_state=start_state)
 
         if quasi_steady:
             start_state = phase.states[0]

@@ -21,7 +21,7 @@ speed_wind_at_100 = 12  # m/s
 
 wind = Wind(
     wind_model="logarithmic",
-    z0=0.1,
+    z0=0.0002,  # roughness length
 )
 speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
 wind.speed_friction = speed_friction
@@ -36,7 +36,7 @@ print("Friction speed:", wind.speed_friction)
 start_state = State(
     t=0,
     s=np.pi / 2,
-    s_dot=2,
+    s_dot=0.8,
     s_ddot=0,
     length_tether=199.6,
     input_steering=0,
@@ -45,7 +45,7 @@ start_state = State(
     angle_yaw=0,
     tension_tether_ground=1e8,
     speed_radial=2,
-    distance_radial=200,
+    distance_radial=230,
 )
 time = np.arange(0, 50, 0.1)
 s_array = np.linspace(5 * np.pi / 2, 9 * np.pi / 2, 200)
@@ -73,7 +73,7 @@ for i in range(N):
         "parameters": {
             "omega": 1.0,
             "r0": 200.0,
-            "az_amp0": 0.8,
+            "az_amp0": 0.8726646355685089,
             "beta_amp0": 0.25,
             "width_phi": 0.5,
             "width_beta": 0.5,
@@ -81,25 +81,26 @@ for i in range(N):
             "normalize_bumps": False,
             "repeat_phi": True,
             "repeat_beta": True,
-            "beta_coeffs": [0, 0, 0, 0, 0],
+            "beta_coeffs": np.array([0, 0, 0, 0, 0]),
             "az_coeffs": [0, 0, 0, 0, 0],
             "kbeta": 0,
-            "beta0": 0.45,
+            "beta0": 0.5,
             "kappa": 0,
-            "k_vr": 2240,
+            "k_vr": 2716,
         },
         "start_time": 0,
         "end_time": 60,
+        "start_angle": np.pi / 2,
+        "end_angle": 2 * np.pi + np.pi / 2,
         "n_points": 600,
         # "k_vr": 9000,
         "optimization_parameters": [
-            # "vr",
             # "az_amp0",
             # "beta_amp0",
-            # # "beta0",
-            # "beta_coeffs",
+            # "beta0",
+            "beta_coeffs",
             # "kappa",
-            "k_vr",
+            # "k_vr",
         ],
     }
 
@@ -134,39 +135,44 @@ for i in range(N):
         # phase.set_optimal_speed_radial()
 
         if quasi_steady:
-            phase.run_simulation_opti(start_state=start_state)
+            phase.run_simulation_opti_phase(start_state=start_state)
             pattern_config = phase.pattern_config
             print("Optimized pattern configuration:")
             print(pattern_config)
-            start_state = phase.states[0]
+            # start_state = phase.states[0]
 
-        kite = Kite(
-            mass_wing=mass_wing,
-            area_wing=area_wing,
-            aero_input=aero_input,
-            mass_kcu=0,
-            steering_control="asymmetric",
-        )
-        kite_model = SystemModel(
-            dof=dof,
-            quasi_steady=quasi_steady,
-            kite=kite,
-            tether=tether,
-            wind_model=wind,
-        )
+        # kite = Kite(
+        #     mass_wing=mass_wing,
+        #     area_wing=area_wing,
+        #     aero_input=aero_input,
+        #     mass_kcu=0,
+        #     steering_control="asymmetric",
+        # )
+        # kite_model = SystemModel(
+        #     dof=dof,
+        #     quasi_steady=quasi_steady,
+        #     kite=kite,
+        #     tether=tether,
+        #     wind_model=wind,
+        # )
+        # kite_model.input_depower = 0
+        # phase.kite_model = kite_model
 
-        kite_model.input_depower = 0
-        phase = PhaseParameterized(
-            kite_model, quasi_steady=quasi_steady, pattern_config=pattern_config
-        )
-        phase.run_simulation(start_state=start_state)
+        # phase = PhaseParameterized(
+        #     kite_model, quasi_steady=quasi_steady, pattern_config=pattern_config
+        # )
+        phase.run_simulation_phase(start_state=start_state)
+        start_state = phase.states[0]
+
+        # start_state = phase.states[0]
+
         # TODO: One should not run the simulation twice, but rather use the optimized pattern, but somehow there is a problem using the optimized pattern directly
         # phase.run_simulation(start_state=start_state, s_array=s_array)
         # Extract variables
         s = phase.return_variable("s")
         s_dot = phase.return_variable("s_dot")
-        aoa = phase.return_variable("angle_of_attack")
-        print("Mean aoa:", np.mean(aoa) * 180 / np.pi)
+        # aoa = phase.return_variable("angle_of_attack")
+        # print("Mean aoa:", np.mean(aoa) * 180 / np.pi)
         if quasi_steady:
             phases_qs.append(copy.deepcopy(phase))
         else:
@@ -237,26 +243,28 @@ for i in range(N):
 
     phase_qs = phases_qs[i]
     phase_dyn = phases_dyn[i]
-    s_qs = phase_qs.return_variable("s")
-    mask_qs = (s_qs > s_qs[0]) & (s_qs < 2 * np.pi + s_qs[0])
     s_dyn = phase_dyn.return_variable("s")
-    mask_dyn = (s_dyn > s_dyn[0]) & (s_dyn < 2 * np.pi + s_dyn[0])
-    vtau_qs = phase_qs.return_variable("speed_tangential")[mask_qs]
-    vtau_dyn = phase_dyn.return_variable("speed_tangential")[mask_dyn]
-    vr_qs = phase_qs.return_variable("speed_radial")[mask_qs]
-    vr_dyn = phase_dyn.return_variable("speed_radial")[mask_dyn]
-    power_qs = phase_qs.return_variable("mechanical_power")[mask_qs]
-    power_dyn = phase_dyn.return_variable("mechanical_power")[mask_dyn]
-    tension_qs = phase_qs.return_variable("tension_tether_ground")[mask_qs]
-    tension_dyn = phase_dyn.return_variable("tension_tether_ground")[mask_dyn]
-    roll_qs = phase_qs.return_variable("input_steering")[mask_qs]
-    roll_dyn = phase_dyn.return_variable("input_steering")[mask_dyn]
-    azimuth_qs = phase_qs.return_variable("angle_azimuth")[mask_qs]
-    azimuth_dyn = phase_dyn.return_variable("angle_azimuth")[mask_dyn]
-    elevation_qs = phase_qs.return_variable("angle_elevation")[mask_qs]
-    elevation_dyn = phase_dyn.return_variable("angle_elevation")[mask_dyn]
-    aoa_qs = phase_qs.return_variable("angle_of_attack")[mask_qs]
-    aoa_dyn = phase_dyn.return_variable("angle_of_attack")[mask_dyn]
+    s_qs = phase_qs.return_variable("s")
+    t_qs = phase_qs.return_variable("t")
+    t_dyn = phase_dyn.return_variable("t")
+    vtau_qs = phase_qs.return_variable("speed_tangential")
+    vtau_dyn = phase_dyn.return_variable("speed_tangential")
+    vr_qs = phase_qs.return_variable("speed_radial")
+    vr_dyn = phase_dyn.return_variable("speed_radial")
+    power_qs = phase_qs.return_variable("mechanical_power")
+    power_dyn = phase_dyn.return_variable("mechanical_power")
+    tension_qs = phase_qs.return_variable("tension_tether_ground")
+    tension_dyn = phase_dyn.return_variable("tension_tether_ground")
+    roll_qs = phase_qs.return_variable("input_steering")
+    roll_dyn = phase_dyn.return_variable("input_steering")
+    azimuth_qs = phase_qs.return_variable("angle_azimuth")
+    azimuth_dyn = phase_dyn.return_variable("angle_azimuth")
+    elevation_qs = phase_qs.return_variable("angle_elevation")
+    elevation_dyn = phase_dyn.return_variable("angle_elevation")
+    course_rate_qs = phase_qs.return_variable("timeder_angle_course")
+    course_rate_dyn = phase_dyn.return_variable("timeder_angle_course")
+    aoa_qs = phase_qs.return_variable("angle_of_attack")
+    aoa_dyn = phase_dyn.return_variable("angle_of_attack")
     idx_vmax_qs = np.argmax(vtau_qs)
     print(idx_vmax_qs)
     idx_vmax_dyn = np.argmax(vtau_dyn)
@@ -279,8 +287,8 @@ for i in range(N):
     print(f"Max roll difference: {diff_max_roll:.2f} degrees")
     print(f"Max speed phase difference: {diff_s_vmax:.2f} degrees")
     print(f"Min speed phase difference: {diff_s_vmin:.2f} degrees")
-    s_dyn = s_dyn[mask_dyn]
-    s_qs = s_qs[mask_qs]
+    s_dyn = s_dyn
+    s_qs = s_qs
     if i < len(colors):
         ax3.plot(np.degrees(s_dyn), vtau_dyn, color=colors[i])
         ax3.plot(np.degrees(s_qs), vtau_qs, linestyle="--", color=colors[i])
@@ -291,21 +299,26 @@ for i in range(N):
         ax6.plot(np.degrees(s_dyn), vr_dyn, color=colors[i])
         ax6.plot(np.degrees(s_qs), vr_qs, linestyle="--", color=colors[i])
 
-    mean_pow_qs.append(np.mean(tension_qs * vr_qs))
-    mean_pow_dyn.append(np.mean(tension_dyn * vr_dyn))
+    energy_qs = np.sum(power_qs * np.diff(t_qs, prepend=0.1))
+    energy_dyn = np.sum(power_dyn * np.diff(t_dyn, prepend=0.1))
+    print("Total energy qs", np.sum(energy_qs))
+    print("Total energy dyn", np.sum(energy_dyn))
+    power_qs = energy_qs / (t_qs[-1] - t_qs[0])  # average power
+    power_dyn = energy_dyn / (t_dyn[-1] - t_dyn[0])  # average power
+    print("mean power qs", power_qs)
+    print("mean power dyn", power_dyn)
+
     print("mean tension qs", np.mean(tension_qs))
     print("mean tension dyn", np.mean(tension_dyn))
-    print("mean power qs", np.mean(power_qs))
-    print("mean power dyn", np.mean(power_dyn))
     min_pow_qs.append(np.min(tension_qs * vr_qs))
     min_pow_dyn.append(np.min(tension_dyn * vr_dyn))
     max_pow_qs.append(np.max(tension_qs * vr_qs))
     max_pow_dyn.append(np.max(tension_dyn * vr_dyn))
 
-    lift_qs = phase_qs.return_variable("lift_coefficient")[mask_qs]
-    lift_dyn = phase_dyn.return_variable("lift_coefficient")[mask_dyn]
-    drag_qs = phase_qs.return_variable("drag_coefficient")[mask_qs]
-    drag_dyn = phase_dyn.return_variable("drag_coefficient")[mask_dyn]
+    lift_qs = phase_qs.return_variable("lift_coefficient")
+    lift_dyn = phase_dyn.return_variable("lift_coefficient")
+    drag_qs = phase_qs.return_variable("drag_coefficient")
+    drag_dyn = phase_dyn.return_variable("drag_coefficient")
     mean_lift_qs.append(np.mean(lift_qs))
     mean_lift_dyn.append(np.mean(lift_dyn))
     mean_drag_qs.append(np.mean(drag_qs))
@@ -362,14 +375,12 @@ scatter = ax2.scatter(
 plt.savefig(save_folder + "parametrized_circle_results.pdf", bbox_inches="tight")
 # plt.show()
 
-mean_LD_dyn = np.array(mean_lift_dyn) / np.array(mean_drag_dyn)
-mean_LD_qs = np.array(mean_lift_qs) / np.array(mean_drag_qs)
+
 plt.figure()
-plt.plot(mean_LD_dyn, mean_pow_dyn, label="Dynamic", color=colors[0])
-plt.plot(mean_LD_qs, mean_pow_qs, label="Quasi-steady", color=colors[1])
-plt.fill_between(mean_LD_dyn, min_pow_dyn, max_pow_dyn, alpha=0.2, color=colors[0])
-plt.fill_between(mean_LD_qs, min_pow_qs, max_pow_qs, alpha=0.2, color=colors[1])
-plt.xlabel("L/D")
-plt.ylabel("Mean tension [kN]")
+plt.plot(s_qs, course_rate_qs, label="Quasi-steady")
+plt.plot(s_dyn, course_rate_dyn, label="Dynamic")
+plt.xlabel("Phase [rad]")
+plt.ylabel("Course rate [rad/s]")
 plt.legend()
+plt.grid()
 plt.show()
