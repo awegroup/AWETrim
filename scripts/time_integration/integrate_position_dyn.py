@@ -124,7 +124,8 @@ def main():
     integrator = model.integrator(cfg["time_step"])
     control_inputs = {**cfg["control_inputs"]}
     p_input = list(control_inputs.values())
-
+    print(model.force_gravity)
+    print(model.force_aerodynamic)
     # Integrate over time
     time_range = np.arange(0, cfg["duration"], cfg["time_step"])
     states: List[Dict[str, float]] = []
@@ -165,7 +166,7 @@ def main():
                 #         control_inputs["input_depower"] -= 0.1*cfg["time_step"]
                 #         print(f"Depowering: {control_inputs['input_depower']:.2f}")
                 p_input = list(control_inputs.values())
-                # control_inputs["input_steering"] = 0.1
+                # control_inputs["input_steering"] = 0.01
 
                 states.append({**state_now, **control_inputs, "aoa": float(aoa)})
                 if state_now["distance_radial"] < 100:

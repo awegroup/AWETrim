@@ -166,7 +166,7 @@ def plot_results(results, wind_speeds, vr_opt, ft_opt):
         [-0.2, 1.4, 10], [440, 2260, 2890], linestyle="--", label="Current curve KP"
     )
 
-    plt.plot(vr_opt, 2770 * vr_opt**2 / 9.81)
+    plt.plot(vr_opt, 2350 * vr_opt**2 / 9.81)
 
     plt.xlabel("Reeling speed [m/s]")
     plt.ylabel("Tether force [N]")

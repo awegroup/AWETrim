@@ -12,16 +12,28 @@ from picawe.environment import Wind
 import json
 import copy
 
+T0 = 3000  # N
+
+b = 2500  # N/(m/s)^2
+eps = 1e-6  # to avoid sqrt(0)
+vr = np.linspace(0, 10, 1000)
+T_model = T0 + b * vr**2
+beta = 1e-4  # steepness of the softplus transition
+T_max = 25000
+# T = min(T_model, T_max) via softplus
+softplus = (1 / beta) * np.log(1 + np.exp(beta * (T_model - T_max)))
+plt.plot(vr, T_model - softplus, label="Softplus approximation")
+plt.show()
 
 file_path = "./data/LEI-V9-KITE/v9_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
-speed_wind_at_100 = 12  # m/s
+speed_wind_at_100 = 8  # m/s
 
 wind = Wind(
-    wind_model="logarithmic",
-    z0=0.0002,  # roughness length
+    wind_model="logarithmic",  # logarithmic
+    z0=0.1,  # roughness length
 )
 speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
 wind.speed_friction = speed_friction
@@ -64,6 +76,8 @@ N = 1
 tether = RigidLumpedTether(diameter=0.01)
 mass_wing = 90
 area_wing = 47
+tension_min = 3000
+tension_max = 25000
 phases_qs = []
 phases_dyn = []
 for i in range(N):
@@ -73,8 +87,8 @@ for i in range(N):
         "parameters": {
             "omega": 1.0,
             "r0": 200.0,
-            "az_amp0": 0.8726646355685089,
-            "beta_amp0": 0.25,
+            "az_amp0": 0.6,
+            "beta_amp0": 0.2,
             "width_phi": 0.5,
             "width_beta": 0.5,
             "left_first": True,
@@ -95,12 +109,12 @@ for i in range(N):
         "n_points": 600,
         # "k_vr": 9000,
         "optimization_parameters": [
-            # "az_amp0",
-            # "beta_amp0",
-            # "beta0",
+            "az_amp0",
+            "beta_amp0",
+            "beta0",
             "beta_coeffs",
             # "kappa",
-            # "k_vr",
+            "k_vr",
         ],
     }
 
@@ -130,7 +144,11 @@ for i in range(N):
         # Run simulation
 
         phase = PhaseParameterized(
-            kite_model, quasi_steady=quasi_steady, pattern_config=pattern_config
+            kite_model,
+            quasi_steady=quasi_steady,
+            pattern_config=pattern_config,
+            tension_min=tension_min,
+            tension_max=tension_max,
         )
         # phase.set_optimal_speed_radial()
 

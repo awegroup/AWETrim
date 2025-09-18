@@ -39,14 +39,6 @@ class SystemModel(KiteKinematics):
 
         if self.steering_control not in ["asymmetric", "roll"]:
             raise ValueError("Invalid steering_control. Choose 'asymmetric' or 'roll'.")
-        if dof == 3:
-
-            self.timeder_angle_pitch = 0
-            self.timeder_angle_roll = 0
-            self.timeder_angle_yaw = 0
-            self.acceleration_angle_pitch = 0
-            self.acceleration_angle_roll = 0
-            self.acceleration_angle_yaw = 0
 
         if quasi_steady:
             self.timeder_angle_roll = 0
@@ -62,7 +54,6 @@ class SystemModel(KiteKinematics):
         else:
             self.timeder_length_tether = ca.MX.sym("timeder_length_tether")
 
-        self.dof = dof
         self.quasi_steady = quasi_steady
         self._qs_solver = None
         self._qs_vars = None
@@ -92,7 +83,6 @@ class SystemModel(KiteKinematics):
             "angle_azimuth",
         ]
         self._derived_functions = None
-        self_ode = None
 
     def define_kite_model(self, kite):
         if kite is None:
@@ -149,29 +139,13 @@ class SystemModel(KiteKinematics):
         dot_vr = self.acceleration_total[2]
         dot_lt = self.timeder_length_tether
         ode = ca.vertcat(dot_r, dot_beta, dot_theta, dot_vt, dot_chi, dot_vr, dot_lt)
-        if self.dof == 6 and not self.quasi_steady:
-            ode_add = ca.vertcat(
-                self.timeder_angle_roll,
-                self.timeder_angle_pitch,
-                self.timeder_angle_yaw,
-                self.acceleration_angle_roll,
-                self.acceleration_angle_pitch,
-                self.acceleration_angle_yaw,
-            )
-            ode = ca.vertcat(ode, ode_add)
         self._ode = ode
 
     def algebraic_function(self):
-        if self.dof == 6:
-            return self.rb_residual
-        else:
-            return self.force_residual
+        return self.force_residual
 
     def establish_residual(self):
-        if self.dof == 6:
-            self.residual = self.rb_residual
-        elif self.dof == 3:
-            self.residual = self.force_residual
+        self.residual = self.force_residual
 
     def setup_qs_solver(
         self,
@@ -237,13 +211,6 @@ class SystemModel(KiteKinematics):
         sol = self._qs_solver(x0=x0, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
 
         if np.linalg.norm(sol["g"]) > 1:
-            # logger.warning("Initial guess: %s", x0)
-            # logger.warning("lbx: %s", lbx)
-            # logger.warning("ubx: %s", ubx)
-            # logger.warning("unknown_vars: %s", unknown_vars)
-            # logger.warning("Quasi-steady solver did not converge. Residual norm: %.4f", np.linalg.norm(sol["g"]))
-            # logger.warning("Solver output: %s", sol)
-            # raise RuntimeError("Quasi-steady solver did not converge.")
             logger.warning(
                 "Quasi-steady solver did not converge. Residual norm: %.4f",
                 np.linalg.norm(sol["g"]),
@@ -340,23 +307,6 @@ class SystemModel(KiteKinematics):
             self.establish_ode_function()
         if self.algebraic is None:
             self.establish_algebraic()
-
-        if self.dof == 6 and not self.quasi_steady:
-            x_add = ca.vertcat(
-                self.angle_roll,
-                self.angle_pitch,
-                self.angle_yaw,
-                self.timeder_angle_roll,
-                self.timeder_angle_pitch,
-                self.timeder_angle_yaw,
-            )
-            x = ca.vertcat(x, x_add)
-            z = ca.vertcat(
-                z,
-                self.acceleration_angle_roll,
-                self.acceleration_angle_pitch,
-                self.acceleration_angle_yaw,
-            )
 
         if self.quasi_steady:
 

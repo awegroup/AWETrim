@@ -14,12 +14,12 @@ from picawe.environment.Wind import Wind
 # ---------- Config ----------
 speed_wind_at_100 = 12
 wind = Wind(
-    wind_model="uniform",
-    z0=0.25,
+    wind_model="logarithmic",
+    z0=0.1,
 )
 speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
-# wind.speed_friction = speed_friction
-wind.speed_wind_ref = speed_wind_at_100
+wind.speed_friction = speed_friction
+# wind.speed_wind_ref = speed_wind_at_100
 
 colors = get_color_list()
 
@@ -32,18 +32,20 @@ pattern_config_v9 = {
     "parameters": {
         "omega": 1.0,
         "r0": 200.0,
-        "az_amp0": 0.8726646355685089,
-        "beta_amp0": 0.25,
+        "az_amp0": 0.34906584042834454,
+        "beta_amp0": 0.08726645309582315,
         "width_phi": 0.5,
         "width_beta": 0.5,
         "left_first": True,
         "normalize_bumps": False,
         "repeat_phi": True,
         "repeat_beta": True,
-        "beta_coeffs": [0, 0, 0, 0, 0],
+        "beta_coeffs": np.array(
+            [0.04185004, -0.81050693, 0.01381474, -0.65846845, 0.11087447]
+        ),
         "az_coeffs": [0, 0, 0, 0, 0],
         "kbeta": 0,
-        "beta0": 0.5,
+        "beta0": 0.4878886429684,
         "kappa": 0,
         "k_vr": 2716,
     },

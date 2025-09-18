@@ -101,9 +101,15 @@ class RigidLumpedTether(Tether):
 
     @property
     def force_gravity_tether_at_kite(self):
-        weight = transformation_C_from_W(
-            self.angle_azimuth, self.angle_elevation, self.angle_course
-        ) @ ca.vertcat(0, 0, -self.mass_tether * self.g)
+        weight = (
+            -self.mass_tether
+            * self.g
+            * ca.vertcat(
+                ca.cos(self.angle_elevation) * ca.cos(self.angle_course),
+                ca.cos(self.angle_elevation) * ca.sin(self.angle_course),
+                ca.sin(self.angle_elevation),
+            )
+        )
         return ca.vertcat(weight[0] / 2, weight[1] / 2, weight[2])
 
 
