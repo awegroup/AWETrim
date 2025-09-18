@@ -95,7 +95,7 @@ for aero_file, label in zip(aero_files, aero_labels):
     with open(aero_file, "r") as file:
         aero_input = json.load(file)
 
-    tether = RigidLumpedTether(diameter=0.012)
+    tether = RigidLumpedTether(diameter=0.001)
     wind_model = Wind(
         wind_model="logarithmic",
         z0=0.01,  # Roughness length
@@ -129,13 +129,14 @@ for aero_file, label in zip(aero_files, aero_labels):
         "print_time": False,
     }
 
-    qs_guess = [1e5, 0, 60]
+    qs_guess = [1e6, 0, 100]
     kite_model.setup_qs_solver(unknown_vars, solver_options=solver_options)
 
     cl_func = kite_model.extract_function("lift_coefficient")
     cd_func = kite_model.extract_function("drag_coefficient")
     aoa_func = kite_model.extract_function("angle_of_attack")
     tension_func = kite_model.extract_function("tension_tether_ground")
+    speed_apparent_wind_func = kite_model.extract_function("speed_apparent_wind")
 
     count = 0
 
@@ -210,11 +211,21 @@ for aero_file, label in zip(aero_files, aero_labels):
             state_combined["tension_tether_ground"] = float(
                 tension_func(*[state_combined[name] for name in tension_func.name_in()])
             )
+            state_combined["speed_apparent_wind"] = float(
+                speed_apparent_wind_func(
+                    *[
+                        state_combined[name]
+                        for name in speed_apparent_wind_func.name_in()
+                    ]
+                )
+            )
             state_combined["time"] = row.time
             state_combined["original_index"] = i  # Include the original index
 
             solutions.append(state_combined)
         else:
+            # print("Angle of attack not found, index:", i)
+            # print(state_combined["angle_of_attack"] * 180 / np.pi)
             qs_guess[0] = 1e10
             qs_guess[2] = 50
             print("Quasi steady solution not found, index:", i)
@@ -730,6 +741,25 @@ def plot_main_results_comparison(
     import matplotlib.pyplot as plt
     from picawe.utils.color_palette import get_color_list
 
+    plt.figure()
+    label = "Variable"
+    plt.plot(
+        all_solutions[label]["speed_apparent_wind"]
+        * all_solutions[label]["input_steering"],
+        all_solutions[label]["timeder_angle_course"],
+        ".",
+    )
+    for cols in flight_data.columns:
+        if "apparent" in cols:
+            print(cols)
+    plt.plot(
+        flight_data["kite_apparent_windspeed"]
+        * -flight_data["kcu_actual_steering"]
+        / max(flight_data["kcu_actual_steering"]),
+        flight_data["course_rate"],
+        ".",
+    )
+    plt.show()
     colors = get_color_list()
     # Define phase masks and colors
     phase_masks = [mask_pow, mask_dep, mask_trans]

@@ -81,6 +81,7 @@ class SystemModel(KiteKinematics):
             "timeder_angle_course",
             "angle_elevation",
             "angle_azimuth",
+            "speed_apparent_wind",
         ]
         self._derived_functions = None
 

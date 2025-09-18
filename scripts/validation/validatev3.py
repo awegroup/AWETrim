@@ -121,6 +121,7 @@ flight_data["up"] = (flight_data["up"] - flight_data["up"].min()) / (
 )
 
 course_rate = np.gradient(np.unwrap(flight_data.kite_course), flight_data.time)
+flight_data["course_rate"] = course_rate
 # Run simulation for both aerodynamic models
 aero_files = [
     "./data/LEI-V3-KITE/v3_aero_input.json",
@@ -178,6 +179,7 @@ for aero_file, label in zip(aero_files, aero_labels):
     cd_func = kite_model.extract_function("drag_coefficient")
     aoa_func = kite_model.extract_function("angle_of_attack")
     tension_func = kite_model.extract_function("tension_tether_ground")
+    speed_apparent_wind_func = kite_model.extract_function("speed_apparent_wind")
 
     kite_model.setup_qs_solver(unknown_vars, solver_options=solver_options)
 
@@ -238,6 +240,14 @@ for aero_file, label in zip(aero_files, aero_labels):
             )
             state_combined["tension_tether_ground"] = float(
                 tension_func(*[state_combined[name] for name in tension_func.name_in()])
+            )
+            state_combined["speed_apparent_wind"] = float(
+                speed_apparent_wind_func(
+                    *[
+                        state_combined[name]
+                        for name in speed_apparent_wind_func.name_in()
+                    ]
+                )
             )
             state_combined["time"] = row.time
             state_combined["original_index"] = i  # Track original index
@@ -638,6 +648,25 @@ def plot_main_results_comparison(
     phase_names = ["Reel-out", "Reel-in", "Transition"]
     phase_colors = ["#4CAF50", "#FF9800", "#2196F3"]
 
+    plt.figure()
+    label = "Variable"
+    plt.plot(
+        all_solutions[label]["speed_apparent_wind"]
+        * all_solutions[label]["input_steering"],
+        all_solutions[label]["timeder_angle_course"],
+        ".",
+    )
+    for cols in flight_data.columns:
+        if "apparent" in cols:
+            print(cols)
+    plt.plot(
+        flight_data["kite_apparent_windspeed"]
+        * -flight_data["kcu_actual_steering"]
+        / max(flight_data["kcu_actual_steering"]),
+        flight_data["course_rate"],
+        ".",
+    )
+    plt.show()
     # Figure 1: Dynamics (left panels)
     fig1 = plt.figure(figsize=(5, 6))
     gs1 = fig1.add_gridspec(3, 1, height_ratios=[1, 1, 1])

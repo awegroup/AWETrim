@@ -113,6 +113,15 @@ class Wing:
             self._angle_of_attack = (
                 self.angle_pitch_aerodynamic + self.angle_pitch_depower
             )
+        force_bridle = (
+            transformation_C_from_A(
+                self.angle_pitch_aerodynamic, self.angle_yaw_aerodynamic, 0
+            ).T
+            @ self.force_tether_at_kite
+        )
+        tow_line = project_onto_plane(force_bridle, ca.vertcat(0, 1, 0))
+        angle_bridle = ca.atan2(tow_line[0], -tow_line[2] + 1e-6)
+        self._angle_of_attack = angle_bridle + self.angle_pitch_depower
 
         return self._angle_of_attack
 
@@ -120,6 +129,11 @@ class Wing:
     def velocity_apparent_wind(self):
 
         return self.wind.velocity_wind(self) - self.velocity_kite
+
+    @property
+    def speed_apparent_wind(self):
+        va = self.velocity_apparent_wind
+        return ca.sqrt(ca.mtimes(va.T, va))
 
     @property
     def angle_pitch_aerodynamic(self):
@@ -397,3 +411,8 @@ class Kite(Wing):
             - (self.speed_tangential**2) / self.distance_radial
         )
         return ca.arctan(numerator / (denominator + 1e-6))
+
+
+def project_onto_plane(v, n):
+    n_norm2 = ca.dot(n, n) + 1e-12  # avoid div by zero
+    return v - (ca.dot(n, v) / n_norm2) * n
