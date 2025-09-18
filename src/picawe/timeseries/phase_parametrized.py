@@ -23,6 +23,9 @@ class PhaseParameterized(TimeSeries):
         kite_model: SystemModel,
         quasi_steady: bool = False,
         pattern_config: dict = DEFAULT_PATTERN_CONFIG,
+        sharpness_beta: float = 1e-4,
+        tension_min: float = 0.0,
+        tension_max: float = 1e5,
     ):
         """
         Args:
@@ -42,21 +45,26 @@ class PhaseParameterized(TimeSeries):
         self.t = ca.MX.sym("t")
         self.s_dot = ca.MX.sym("s_dot")
         self.s_ddot = ca.MX.sym("s_ddot")
+        self.sharpness_beta = sharpness_beta
+        self.tension_min = tension_min
+        self.tension_max = tension_max
+
         # self.find_optimal_angle_pitch_tether()
 
     def run_simulation(self, start_state, allow_failure=True, return_states=False):
 
         # print("Starting state:", start_state)
-        self.substitute_parametrized_kinematics()
+        km_copy = self.substitute_parametrized_kinematics()
         self.states = []
-        self.kite_model.reset_solver()
+        km_copy.reset_solver()
+        self.km_param = km_copy
 
         if self.quasi_steady:
             unknown_vars = ["length_tether", "input_steering", "s_dot"]
         else:
             unknown_vars = ["length_tether", "input_steering", "s_ddot"]
 
-        if self.kite_model.is_tether_rigid:
+        if km_copy.is_tether_rigid:
             unknown_vars[0] = "tension_tether_ground"
         # Initialize state
         if isinstance(start_state, dict):
@@ -66,8 +74,8 @@ class PhaseParameterized(TimeSeries):
 
         N = self.pattern_config["n_points"]
         time_step = self.pattern_config["end_time"] / self.pattern_config["n_points"]
-        intg = self.integrator(time_step=time_step, inputs=None)
-        qs_solver = self.residual_solver()
+        intg = self.integrator(time_step=time_step, kite_model=km_copy)
+        qs_solver = self.residual_solver(km_copy)
 
         # print("New state:", qs_solver)
         if self.quasi_steady:
@@ -78,7 +86,7 @@ class PhaseParameterized(TimeSeries):
                 state_obj.speed_radial,
             )
             p = ca.vertcat(state_obj.s, state_obj.distance_radial)
-            lbx, ubx, lbg, ubg = self.kite_model.get_boundaries(state_obj, unknown_vars)
+            lbx, ubx, lbg, ubg = km_copy.get_boundaries(state_obj, unknown_vars)
             lbx.append(0)
             ubx.append(10)
             lbg.append(0)
@@ -94,7 +102,7 @@ class PhaseParameterized(TimeSeries):
                 state_obj.speed_radial,
             )
             p = ca.vertcat(state_obj.s, state_obj.s_dot, state_obj.distance_radial)
-            lbx, ubx, lbg, ubg = self.kite_model.get_boundaries(state_obj, unknown_vars)
+            lbx, ubx, lbg, ubg = km_copy.get_boundaries(state_obj, unknown_vars)
             lbx.append(0)
             ubx.append(10)
             lbg.append(0)
@@ -852,7 +860,8 @@ class PhaseParameterized(TimeSeries):
         # --- Objective assembly with SAME quadrature as simulation (left rule)
         energy = 0
         t_eff = 0
-        T_min = 1e-6  # keep tension positive
+        T_min = self.tension_min
+        T_max = self.tension_max
 
         for i in range(N):
             # Current parameter pack (MX)
@@ -868,12 +877,12 @@ class PhaseParameterized(TimeSeries):
                 opti_vars["distance_radial"][i],
                 *flat,
             )
-            opti.subject_to(T_i >= T_min)
 
+            T_model = T_min + kvr_eff * opti_vars["speed_radial"][i] ** 2
+            beta = self.sharpness_beta
+            softplus = (1 / beta) * ca.log(1 + ca.exp(beta * (T_model - T_max)))
             # Physics tie: v_r^2 * kvr_eff == T_i   (implicit coupling via T_i(v_r))
-            opti.subject_to(
-                opti_vars["speed_radial"][i] ** 2 * (kvr_eff + 1e-12) - T_i == 0
-            )
+            opti.subject_to(T_i == T_model - softplus)
 
             # Residual equations (unscaled)
             res_i = residual(
@@ -1000,81 +1009,76 @@ class PhaseParameterized(TimeSeries):
         else:
             return km_copy
 
-    # @property
-    # def target_lift_coefficient(self):
-    #     return self._target_lift_coefficient
-
-    # @target_lift_coefficient.setter
-    # def target_lift_coefficient(self, value):
-    #     self._target_lift_coefficient = value
-
-    # @property
-    # def target_drag_coefficient(self):
-    #     return self._target_drag_coefficient
-
-    # @target_drag_coefficient.setter
-    # def target_drag_coefficient(self, value):
-    #     self._target_drag_coefficient = value
-
-    def integrator(self, time_step, inputs=None):
-        self.kite_model.establish_residual()
+    def integrator(self, time_step, kite_model=None):
+        if kite_model is None:
+            kite_model = self.kite_model
+        kite_model.establish_residual()
         k_vr = self.pattern_config["parameters"]["k_vr"]
+        T_min = self.tension_min
+        T_max = self.tension_max
         if self.quasi_steady:
-            x = ca.vertcat(self.kite_model.s, self.kite_model.distance_radial)
-            if self.kite_model.is_tether_rigid:
+            x = ca.vertcat(self.s, kite_model.distance_radial)
+            if kite_model.is_tether_rigid:
                 z = ca.vertcat(
-                    self.kite_model.tension_tether_ground,
-                    self.kite_model.input_steering,
-                    self.kite_model.s_dot,
-                    self.kite_model.speed_radial,
+                    kite_model.tension_tether_ground,
+                    kite_model.input_steering,
+                    self.s_dot,
+                    kite_model.speed_radial,
                 )
             else:
                 z = ca.vertcat(
-                    self.kite_model.length_tether,
-                    self.kite_model.input_steering,
-                    self.kite_model.s_dot,
-                    self.kite_model.speed_radial,
+                    kite_model.length_tether,
+                    kite_model.input_steering,
+                    self.s_dot,
+                    kite_model.speed_radial,
                 )
 
             ode = ca.vertcat(
-                self.kite_model.s_dot,
-                self.kite_model.speed_radial,
+                self.s_dot,
+                kite_model.speed_radial,
+            )
+            T_model = T_min + k_vr * kite_model.speed_radial**2
+            softplus = (1 / self.sharpness_beta) * ca.log(
+                1 + ca.exp(self.sharpness_beta * (T_model - T_max))
             )
             alg = ca.vertcat(
-                self.kite_model.residual,
-                self.kite_model.tension_tether_ground
-                - k_vr * self.kite_model.speed_radial**2,
+                kite_model.residual,
+                kite_model.tension_tether_ground - T_model + softplus,
             )
+
         else:
             x = ca.vertcat(
-                self.kite_model.s,
-                self.kite_model.s_dot,
-                self.kite_model.distance_radial,
+                self.s,
+                self.s_dot,
+                kite_model.distance_radial,
             )
-            if self.kite_model.is_tether_rigid:
+            if kite_model.is_tether_rigid:
                 z = ca.vertcat(
-                    self.kite_model.tension_tether_ground,
-                    self.kite_model.input_steering,
-                    self.kite_model.s_ddot,
-                    self.kite_model.speed_radial,
+                    kite_model.tension_tether_ground,
+                    kite_model.input_steering,
+                    self.s_ddot,
+                    kite_model.speed_radial,
                 )
             else:
                 z = ca.vertcat(
-                    self.kite_model.length_tether,
-                    self.kite_model.input_steering,
-                    self.kite_model.s_ddot,
-                    self.kite_model.speed_radial,
+                    kite_model.length_tether,
+                    kite_model.input_steering,
+                    self.s_ddot,
+                    kite_model.speed_radial,
                 )
 
             ode = ca.vertcat(
-                self.kite_model.s_dot,
-                self.kite_model.s_ddot,
-                self.kite_model.speed_radial,
+                self.s_dot,
+                self.s_ddot,
+                kite_model.speed_radial,
+            )
+            T_model = T_min + k_vr * kite_model.speed_radial**2
+            softplus = (1 / self.sharpness_beta) * ca.log(
+                1 + ca.exp(self.sharpness_beta * (T_model - T_max))
             )
             alg = ca.vertcat(
-                self.kite_model.residual,
-                self.kite_model.tension_tether_ground
-                - k_vr * self.kite_model.speed_radial**2,
+                kite_model.residual,
+                kite_model.tension_tether_ground - T_model + softplus,
             )
 
         dae = {"x": x, "z": z, "ode": ode, "alg": alg}
@@ -1096,6 +1100,8 @@ class PhaseParameterized(TimeSeries):
 
         km_copy.establish_residual()
         k_vr = self.pattern_config["parameters"]["k_vr"]
+        T_min = self.tension_min
+        T_max = self.tension_max
         if self.quasi_steady:
             if km_copy.is_tether_rigid:
                 z = ca.vertcat(
@@ -1115,9 +1121,14 @@ class PhaseParameterized(TimeSeries):
                 self.s,
                 km_copy.distance_radial,
             )
+
+            T_model = T_min + k_vr * km_copy.speed_radial**2
+            softplus = (1 / self.sharpness_beta) * ca.log(
+                1 + ca.exp(self.sharpness_beta * (T_model - T_max))
+            )
             alg = ca.vertcat(
                 km_copy.residual,
-                km_copy.tension_tether_ground - k_vr * km_copy.speed_radial**2,
+                km_copy.tension_tether_ground - T_model + softplus,
             )
         else:
             if km_copy.is_tether_rigid:
@@ -1134,9 +1145,13 @@ class PhaseParameterized(TimeSeries):
                     self.s_ddot,
                     km_copy.speed_radial,
                 )
+            T_model = T_min + k_vr * km_copy.speed_radial**2
+            softplus = (1 / self.sharpness_beta) * ca.log(
+                1 + ca.exp(self.sharpness_beta * (T_model - T_max))
+            )
             alg = ca.vertcat(
                 km_copy.residual,
-                km_copy.tension_tether_ground - k_vr * km_copy.speed_radial**2,
+                km_copy.tension_tether_ground - T_model + softplus,
             )
             p = ca.vertcat(
                 self.s,
@@ -1238,28 +1253,6 @@ class PhaseParameterized(TimeSeries):
     # #     print(f"Angle respect to the tether set to: {np.degrees(self.optimal_angle_pitch_tether)}")
     # #     self.kite_model.angle_pitch_tether = self.optimal_angle_pitch_tether
 
-    # # def set_optimal_speed_radial(self):
-    # #     # if self.target_drag_coefficient is None or self.target_lift_coefficient is None or self.target_angle_of_attack is None:
-
-    # #     print(f"Optimal speed radial set according to the target  CL: {self.target_lift_coefficient} CD: {self.target_drag_coefficient} at aoa: {np.degrees(self.target_angle_of_attack)}")
-
-    # #     CR_target = ca.sqrt(self.target_lift_coefficient**2 + self.target_drag_coefficient**2)
-
-    # #     # self.kinematics.vr = ca.sqrt(
-    # #     #     self.kite_model.tension_tether_ground / (
-    # #     #         2 * 1.225 * self.kite_model.area_wing * CR_target *
-    # #     #         (1 + (self.target_lift_coefficient / self.target_drag_coefficient)**2)
-    # #     #     )
-    # #     # )
-    # #     # Calculate the optimal speed_radial
-    # #     self.kite_model.speed_radial = ca.sqrt(
-    # #         self.kite_model.tension_tether_ground / (
-    # #             2 * 1.225 * self.kite_model.area_wing * CR_target *
-    # #             (1 + (self.target_lift_coefficient / self.target_drag_coefficient)**2)
-    # #         )
-    # #     )
-    # #     print(self.kite_model.speed_radial)
-    # #     # print(f"Optimal speed radial set according to the target  CL: {self.target_lift_coefficient} CD: {self.target_drag_coefficient} at aoa: {np.degrees(self.target_angle_of_attack)}")
     def get_boundaries(self, state_obj, unknown_vars, km_copy):
         lbx, ubx, lbg, ubg = km_copy.get_boundaries(state_obj, unknown_vars)
         lbx.append(0)
@@ -1267,41 +1260,3 @@ class PhaseParameterized(TimeSeries):
         lbg.append(0)
         ubg.append(0)
         return lbx, ubx, lbg, ubg
-
-
-def smooth_gate_interval(s, s0, sf, eps=1e-1):
-    """
-    Smooth gate active only on [s0, sf], 0 outside.
-    eps controls the ramp width at both ends.
-    Works with MX/SX.
-    """
-    # guard: sf must be > s0
-    # (you can add an assert or handle wrap if you need periodic behavior)
-
-    def ramp(u):
-        # 0 for u<=0, 1 for u>=eps, smooth in between
-        u_clip = ca.fmin(ca.fmax(u / eps, 0), 1)
-        return 0.5 * (1 - ca.cos(ca.pi * u_clip))
-
-    w_lo = ramp(s - s0)  # rises near s0
-    w_hi = ramp(sf - s)  # falls near sf
-    return w_lo * w_hi
-
-
-# # Plotting code
-# import matplotlib.pyplot as plt
-
-# s_vals = np.linspace(-2 * np.pi, 6 * np.pi, 500)
-# # Evaluate using CasADi function
-# s_sym = ca.MX.sym("s")
-# gate_func = ca.Function(
-#     "gate", [s_sym], [smooth_gate_interval(s_sym, np.pi / 2, 2 * np.pi)]
-# )
-# w_vals = np.array([float(gate_func(s)) for s in s_vals])
-
-# plt.plot(s_vals, w_vals)
-# plt.xlabel("s")
-# plt.ylabel("smooth_gate_interval(s, 0, 2π)")
-# plt.title("Smooth Gate from 0 to 2π")
-# plt.grid(True)
-# plt.show()
