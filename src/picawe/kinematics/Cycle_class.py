@@ -39,9 +39,17 @@ def evaluate_bspline(C, p, U, u, return_basis=False, return_derivative=False):
 
     def N(i, k, u_val):
         if k == 0:
-            return 1.0 if (U[i] <= u_val < U[i+1]) else 0.0
+            # Special case: include right endpoint for last knot span
+            if (U[i] <= u_val < U[i+1]) or (
+                u_val == U[-1] and U[i] <= u_val <= U[i+1]
+            ):
+                return 1.0
+            else:
+                return 0.0
+
         left = 0.0
         right = 0.0
+
         if U[i+k] > U[i]:
             left = (u_val - U[i])/(U[i+k]-U[i]) * N(i, k-1, u_val)
         if U[i+k+1] > U[i+1]:
@@ -179,7 +187,7 @@ class Cycle:
     # B-spline fitting (Cartesian)
     # -------------------------------
 
-    def fit_cartesian_spline(self, p=3, n_ctrl=6, vel_penalty=15.0, eps_knot=1e-3):
+    def fit_cartesian_spline(self, p=3, n_ctrl=8, vel_penalty=0.0, eps_knot=1e-3):
         """
         Fit a B-spline to the Reel-In segment, optimizing control points
         and interior knots (via du increments), while keeping start/end
@@ -194,10 +202,10 @@ class Cycle:
         self.u_vals = dist / dist[-1]
 
         # -------------------
-        # Number of interior knots (unclamped knots)
+        # Number of interior knots (clamped knots)
         # -------------------
         number_of_knots = n_ctrl + p + 1
-        n_interior_knots = (number_of_knots - 2)
+        n_interior_knots = (number_of_knots - 2*(p+1))
 
         if n_interior_knots <= 0:
             raise ValueError("Too few control points for spline order")
@@ -206,28 +214,44 @@ class Cycle:
         # Initial guess
         # -------------------
         # LSQ ignoring velocities to get initial control points
-        U0 = np.linspace(0, 1, number_of_knots)
+        U_interior_0 = np.linspace(0.15, 0.85, n_interior_knots + 2)[1:-1]
+        U0 = np.concatenate(([0]*(p+1), U_interior_0, [1]*(p+1)))
 
-        _, Nmat = evaluate_bspline(np.zeros((n_ctrl,3)), p, U0, self.u_vals, return_basis=True)
-        C0, _, _, _ = np.linalg.lstsq(Nmat, self.S_cart, rcond=None)
+        C_inner_0 = np.zeros((n_ctrl-2, 3))
+        C0 = np.vstack([self.ri_start_point, C_inner_0, self.ri_end_point])
+        _, Nmat = evaluate_bspline(C0, p, U0, self.u_vals, return_basis=True)
 
-        # Interior knots as evenly spaced increments
-        du0 = np.ones(n_interior_knots) / (n_interior_knots + 1)
+        # mask = (self.u_vals > 0.02) & (self.u_vals < 0.98) # Avoid endpoints
 
-        # Flatten parameters: control points (interior only) + du increments
-        # Fix start/end control points
+        # C_inner_0, _, _, _ = np.linalg.lstsq(
+        #     Nmat[mask, 1:-1],      # exclude clamped basis fns at ends
+        #     self.S_cart[mask],     # exclude endpoints of trajectory
+        #     rcond=None
+        # )
+
+        rhs = self.S_cart - (Nmat[:, [0, -1]] @ np.vstack([self.ri_start_point,
+                                                   self.ri_end_point]))
+
+        C_inner_0, _, _, _ = np.linalg.lstsq(Nmat[:, 1:-1], rhs, rcond=None)
+
+
+        C0 = np.vstack([self.ri_start_point, C_inner_0, self.ri_end_point])
         C_0 = C0.ravel()
 
-        x0 = np.concatenate([C_0, du0])
+        # Interior knots as evenly spaced increments
+        du0 = np.ones(n_interior_knots) * 0.3
+
+        x0 = np.concatenate([C_0[3:-3], du0])
+        # x0 = C_0[3:-3]  # Fix knots for now
 
         # -------------------
         # Bounds
         # -------------------
-        lb_C = np.full_like(C_0, -1e4)
-        ub_C = np.full_like(C_0, 1e4)
+        lb_C = np.full_like(C_0[3:-3], -1e4)
+        ub_C = np.full_like(C_0[3:-3], 1e4)
 
         lb_du = np.full_like(du0, eps_knot)
-        ub_du = np.full_like(du0, 1.0 - eps_knot)
+        ub_du = np.full_like(du0, 1-eps_knot)
         lb = np.concatenate([lb_C, lb_du])
         ub = np.concatenate([ub_C, ub_du])
 
@@ -235,15 +259,15 @@ class Cycle:
         # Residual function
         # -------------------
         def residuals(params):
-            C = params[:C_0.size].reshape(n_ctrl,3)
-            du = params[C_0.size:]
-            
-            # Reconstruct knots
-            U_interior = np.cumsum(du)
-            U_interior = U_interior / U_interior[-1]  # Normalize to [0,1]
+            # Reconstruct control points
+            C = params[:(n_ctrl-2)*3].reshape(n_ctrl-2,3)
+            C = np.vstack([self.ri_start_point, C, self.ri_end_point])
 
-            U = np.concatenate(([0], U_interior, [1]))
-            # print("Current knot vector U:", U)
+            # # Reconstruct knot vector
+            du = params[(n_ctrl-2)*3:]
+            U_interior = np.cumsum(du)
+            U_interior = U_interior / (U_interior[-1]+0.1)  # Normalize to [0,1]
+            U = np.concatenate(([0]*(p+1), U_interior, [1]*(p+1)))
 
             # Evaluate spline and derivative matrices
             S_fit, Nmat = evaluate_bspline(C, p, U, self.u_vals, return_basis=True)
@@ -268,12 +292,13 @@ class Cycle:
         # -------------------
         # Extract optimized control points and knots
         # -------------------
-        C_opt = res.x[:C_0.size].reshape(n_ctrl,3)
-        du_opt = res.x[C_0.size:]
- 
+        C_opt = res.x[:(n_ctrl-2)*3].reshape(n_ctrl-2,3)
+        C_opt = np.vstack([self.ri_start_point, C_opt, self.ri_end_point])
+
+        du_opt = res.x[(n_ctrl-2)*3:]
         U_interior_opt = np.cumsum(du_opt)
-        U_interior_opt = U_interior_opt / U_interior_opt[-1]
-        U_opt = np.concatenate(([0], U_interior_opt, [1]))
+        U_interior_opt = U_interior_opt / (U_interior_opt[-1]+0.1)
+        U_opt = np.concatenate(([0]*(p+1), U_interior_opt, [1]*(p+1)))
 
         # Save
         self.C_cart = C_opt
