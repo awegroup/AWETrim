@@ -152,18 +152,63 @@ class Cycle:
         self.dx_cyc, self.dy_cyc, self.dz_cyc = np.gradient(self.x_cyc), np.gradient(self.y_cyc), np.gradient(self.z_cyc)
         self.num_points = len(self.x_cyc)
 
-    def compute_course_average(self, C, U, u, start):
+    def investigate_course_computations(self):
+        """Compare different course computations over the Reel-In segment in one plot."""
+
+        # -----------------------------
+        # Cartesian course from dx, dy
+        # -----------------------------
+        course_cart = np.arctan2(
+            self.dy_cyc[self.RI_start_idx:self.RI_end_idx],
+            self.dx_cyc[self.RI_start_idx:self.RI_end_idx]
+        )
+        course_cart = np.mod(course_cart, 2 * np.pi)
+
+        # -----------------------------
+        # Spherical course from az/el rates
+        # -----------------------------
+        az_dot = np.gradient(self.az_RI)
+        el_dot = np.gradient(self.el_RI)
+
+        course_sph = -np.arctan2(az_dot * np.cos(self.el_RI), el_dot) + 2*np.pi
+        course_sph = np.mod(course_sph, 2 * np.pi)
+
+        # -----------------------------
+        # Reference course (CSV)
+        # -----------------------------
+        course_ref = np.mod(self.course_RI, 2 * np.pi)
+
+        # -----------------------------
+        # Plotting all in one plot
+        # -----------------------------
+        fig, ax = plt.subplots(figsize=(10, 4))
+
+        ax.plot(course_cart, label="Cartesian course", color="C0")
+        ax.plot(course_sph, label="Spherical course", color="C1")
+        ax.plot(course_ref, label="Reference (CSV)", color="C2")
+
+        ax.set_ylabel("Course [rad]")
+        ax.set_xlabel("Sample index")
+        ax.legend()
+        ax.grid(alpha=0.3)
+        ax.set_title("Comparison of Course Computations over Reel-In Segment")
+
+        plt.show()
+
+    def compute_course_average_sph(self, C, U, u, start):
         """Compute average course over first or last k points of spline."""
-        k = 10  # Number of points to average over
+        k = 2  # Number of points to average over
 
         if not start:
             S_sph, dS_sph = evaluate_bspline(C, p=3, U=U, u=u, return_derivative=True)
-            course = np.arctan2(dS_sph[-k:,0]*np.cos(S_sph[-k:,1]), dS_sph[-k:,1])
+            course = -np.arctan2(dS_sph[-k:,0]*np.cos(S_sph[-k:,1]), dS_sph[-k:,1]) + 2*np.pi
+            course = np.mod(course, 2 * np.pi)
             self.course_avg = np.mean(course)
             return self.course_avg
         if start:
             S_sph, dS_sph = evaluate_bspline(C, p=3, U=U, u=u, return_derivative=True)
-            course = np.arctan2(dS_sph[:k,0]*np.cos(S_sph[:k,1]), dS_sph[:k,1])
+            course = -np.arctan2(dS_sph[:k,0]*np.cos(S_sph[:k,1]), dS_sph[:k,1]) + 2*np.pi
+            course = np.mod(course, 2 * np.pi)
             self.course_avg = np.mean(course)
             return self.course_avg
 
@@ -212,7 +257,7 @@ class Cycle:
     # -------------------------------
     # B-spline fitting (Spherical)
     # -------------------------------
-    def fit_spherical_spline(self, p=3, n_ctrl=8, course_penalty=0.0, eps_knot=1e-3):
+    def fit_spherical_spline(self, p=3, n_ctrl=8, course_penalty=1.0, eps_knot=1e-3):
         """
         Fit a B-spline to azimuth/elevation (spherical) over the RI segment.
         - Fits 2D control points (az, el)
@@ -296,8 +341,8 @@ class Cycle:
             res_data = np.array((S_fit_sph - self.S_sph).ravel())
 
             # Course penalty placeholder
-            average_course_spline_start = self.compute_course_average(C, U, self.u_vals, True)
-            average_course_spline_end = self.compute_course_average(C, U, self.u_vals, False)
+            average_course_spline_start = self.compute_course_average_sph(C, U, self.u_vals, True)
+            average_course_spline_end = self.compute_course_average_sph(C, U, self.u_vals, False)
             res_course = np.array([self.course_RI[0] - average_course_spline_start,
                            self.course_RI[-1] - average_course_spline_end]) * course_penalty
 
@@ -567,3 +612,5 @@ if __name__ == "__main__":
 
     cycle.plot_spline_fit_sph()
 
+    # Investigate course computations
+    # cycle.investigate_course_computations()
