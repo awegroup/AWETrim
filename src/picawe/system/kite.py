@@ -373,7 +373,7 @@ class Kite(Wing):
         Compute the residual for the kite system dynamics.
         """
         # LHS and RHS
-        lhs = (self.mass_wing + self.mass_kcu) * self.acceleration
+        lhs = (self.mass_wing) * self.acceleration
         # Residual
         # print(self.force_external)
         # print(lhs)
@@ -382,35 +382,6 @@ class Kite(Wing):
     @property
     def angle_yaw(self):
         return self.angle_yaw_aerodynamic
-
-    @property
-    def pitch_kcu(self):
-
-        numerator = self.mass_kcu * (
-            self.g * ca.cos(self.angle_elevation) * ca.cos(self.angle_course)
-            + (self.speed_tangential * self.speed_radial) / self.distance_radial
-        )
-        denominator = self.tension_kite + self.mass_kcu * (
-            self.g * ca.sin(self.angle_elevation)
-            - (self.speed_tangential**2) / self.distance_radial
-        )
-        return -ca.arctan(numerator / (denominator + 1e-6))
-
-    @property
-    def roll_kcu(self):
-        numerator = self.mass_kcu * (
-            -(self.speed_tangential**2)
-            / self.distance_radial
-            * ca.sin(self.angle_course)
-            * ca.tan(self.angle_elevation)
-            + self.speed_tangential * self.timeder_angle_course
-            - self.g * ca.cos(self.angle_elevation) * ca.sin(self.angle_course)
-        )
-        denominator = self.tension_kite + self.mass_kcu * (
-            self.g * ca.sin(self.angle_elevation)
-            - (self.speed_tangential**2) / self.distance_radial
-        )
-        return ca.arctan(numerator / (denominator + 1e-6))
 
 
 def project_onto_plane(v, n):

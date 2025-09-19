@@ -778,6 +778,7 @@ class PhaseParameterized(TimeSeries):
             "input_steering": opti.variable(N),
             "speed_radial": opti.variable(N),  # reel speed v_r
             "distance_radial": opti.variable(N),  # radius r
+            "tension_tether_ground": opti.variable(N),  # tether tension T
         }
         # expose design params too
         for var in self.optimization_vars:
@@ -794,7 +795,10 @@ class PhaseParameterized(TimeSeries):
         opti.set_initial(
             opti_vars["distance_radial"], self.return_variable("distance_radial")
         )
-
+        opti.set_initial(
+            opti_vars["tension_tether_ground"],
+            self.return_variable("tension_tether_ground"),
+        )
         # Fix initial radius
         opti.subject_to(
             opti_vars["distance_radial"][0]
@@ -826,6 +830,7 @@ class PhaseParameterized(TimeSeries):
                 km_copy.input_steering,
                 km_copy.speed_radial,
                 km_copy.distance_radial,
+                km_copy.tension_tether_ground,
             ]
             + flat,
             [km_copy.tension_tether_equation],
@@ -875,6 +880,7 @@ class PhaseParameterized(TimeSeries):
                 opti_vars["input_steering"][i],
                 opti_vars["speed_radial"][i],
                 opti_vars["distance_radial"][i],
+                opti_vars["tension_tether_ground"][i],
                 *flat,
             )
 
@@ -896,7 +902,7 @@ class PhaseParameterized(TimeSeries):
             )
             opti.subject_to(res_i[0] == 0)
             opti.subject_to(res_i[1] == 0)
-            # opti.subject_to(res_i[2] == 0)
+            opti.subject_to(res_i[2] == 0)
 
             # Left-rule dt_i = Δs_i / s_dot[i]
             if i < N - 1:

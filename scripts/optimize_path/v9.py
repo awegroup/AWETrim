@@ -29,15 +29,15 @@ file_path = "./data/LEI-V9-KITE/v9_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
-speed_wind_at_100 = 8  # m/s
+speed_wind_at_100 = 10  # m/s
 
 wind = Wind(
-    wind_model="logarithmic",  # logarithmic
+    wind_model="uniform",  # logarithmic
     z0=0.1,  # roughness length
 )
 speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
 wind.speed_friction = speed_friction
-# wind.speed_wind_ref = speed_wind_at_100
+wind.speed_wind_ref = speed_wind_at_100
 
 print("Friction speed:", wind.speed_friction)
 
@@ -87,8 +87,8 @@ for i in range(N):
         "parameters": {
             "omega": 1.0,
             "r0": 200.0,
-            "az_amp0": 0.6,
-            "beta_amp0": 0.2,
+            "az_amp0": 0.6191628957199365,
+            "beta_amp0": 0.17039404884183,
             "width_phi": 0.5,
             "width_beta": 0.5,
             "left_first": True,
@@ -98,7 +98,7 @@ for i in range(N):
             "beta_coeffs": np.array([0, 0, 0, 0, 0]),
             "az_coeffs": [0, 0, 0, 0, 0],
             "kbeta": 0,
-            "beta0": 0.5,
+            "beta0": 0.3844981096025447,
             "kappa": 0,
             "k_vr": 2716,
         },
@@ -125,10 +125,10 @@ for i in range(N):
         # aero_input["params"]["angle_pitch_depower_0"] = thetat
         # Define kite model with current parameters
         kite = Kite(
-            mass_wing=mass_wing,
+            mass_wing=60,
             area_wing=area_wing,
             aero_input=aero_input,
-            mass_kcu=0,
+            mass_kcu=30,
             steering_control="asymmetric",
         )
 

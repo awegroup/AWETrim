@@ -138,10 +138,10 @@ for aero_file, label in zip(aero_files, aero_labels):
     tether = RigidLumpedTether(diameter=0.01)
     wind_model = Wind(wind_model="logarithmic", z0=0.1)
     kite = Kite(
-        mass_wing=42,
+        mass_wing=14,
         area_wing=20,
         aero_input=aero_input,
-        mass_kcu=0,
+        mass_kcu=10,
         steering_control="asymmetric",
     )
     kite_model = SystemModel(
@@ -225,7 +225,7 @@ for aero_file, label in zip(aero_files, aero_labels):
             x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg
         )
 
-        if np.linalg.norm(sol["g"]) < 0.1:
+        if np.linalg.norm(sol["g"]) < 1:
             qs_guess = sol["x"]
             qs_state = {name: float(sol["x"][i]) for i, name in enumerate(unknown_vars)}
             state_combined = {**qs_state, **current_state}
@@ -252,9 +252,17 @@ for aero_file, label in zip(aero_files, aero_labels):
             state_combined["time"] = row.time
             state_combined["original_index"] = i  # Track original index
             solutions.append(state_combined)
+            print(
+                "angle_of_attack (deg):",
+                state_combined["angle_of_attack"] * 180 / np.pi,
+            )
+
         else:
-            qs_guess[0] = 1e5
-            qs_guess[2] = 30
+            for dict_entry in state_combined:
+                state_combined[dict_entry] = np.nan
+            solutions.append(state_combined)
+            qs_guess[0] = 1e10
+            qs_guess[2] = 100
             print("Quasi steady solution not found, index:", i)
             failed_indices.add(i)
 
@@ -263,27 +271,27 @@ for aero_file, label in zip(aero_files, aero_labels):
 
     print(f"Number of failed solutions: {len(failed_indices)}/ {len(flight_data)}")
     # Remove failed indices from flight_data and results after simulation
-    if failed_indices:
-        print(
-            f"\nRemoving {len(failed_indices)} failed rows from flight_data and results"
-        )
-        indices_to_remove = sorted(list(failed_indices))
-        valid_mask = ~flight_data.index.isin(indices_to_remove)
-        flight_data = flight_data[valid_mask].reset_index(drop=True)
-        results = results[valid_mask].reset_index(drop=True)
-        position = position[valid_mask]
-        velocity = velocity[valid_mask]
-        distance_radial = distance_radial[valid_mask]
-        speed_tangential = speed_tangential[valid_mask]
-        print(f"Updated flight_data length: {len(flight_data)}")
-        print(f"Updated results length: {len(results)}")
+    # if failed_indices:
+    #     print(
+    #         f"\nRemoving {len(failed_indices)} failed rows from flight_data and results"
+    #     )
+    #     indices_to_remove = sorted(list(failed_indices))
+    #     valid_mask = ~flight_data.index.isin(indices_to_remove)
+    #     flight_data = flight_data[valid_mask].reset_index(drop=True)
+    #     results = results[valid_mask].reset_index(drop=True)
+    #     position = position[valid_mask]
+    #     velocity = velocity[valid_mask]
+    #     distance_radial = distance_radial[valid_mask]
+    #     speed_tangential = speed_tangential[valid_mask]
+    #     print(f"Updated flight_data length: {len(flight_data)}")
+    #     print(f"Updated results length: {len(results)}")
 
     # Store solutions for this aerodynamic model
     solutions_df = pd.DataFrame(solutions)
-    solutions_df = solutions_df[solutions_df["tension_tether_ground"].notna()]
+    # solutions_df = solutions_df[solutions_df["tension_tether_ground"].notna()]
     # Remove original_index column if present
-    if "original_index" in solutions_df.columns:
-        solutions_df = solutions_df.drop(columns=["original_index"])
+    # if "original_index" in solutions_df.columns:
+    #     solutions_df = solutions_df.drop(columns=["original_index"])
     solutions_df = solutions_df.reset_index(drop=True)
     all_solutions[label] = solutions_df
 

@@ -150,14 +150,7 @@ def run_sim(
             start_state["s"] = phase.return_variable("s")[0]
 
         s = np.degrees(phase.return_variable("s"))
-        plt.figure()
-        plt.plot(
-            phase.return_variable("timeder_angle_course"),
-            phase.return_variable("speed_apparent_wind")
-            * phase.return_variable("input_steering"),
-            label=label,
-        )
-        plt.show()
+
         result[sim_type] = {
             "s": s,
             "vtau": phase.return_variable("speed_tangential"),

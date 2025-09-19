@@ -73,7 +73,8 @@ class RigidLumpedTether(Tether):
         force_tension = ca.vertcat(0, 0, -self.tension_tether_ground)
         force_drag = self.drag_tether_at_kite
         force_gravity = self.force_gravity_tether_at_kite
-        return force_tension + force_drag + force_gravity
+        force_kcu = -self.mass_kcu * self.acceleration + self.force_gravity_kcu
+        return force_tension + force_drag + force_gravity + force_kcu
 
     @property
     def tension_kite(self):

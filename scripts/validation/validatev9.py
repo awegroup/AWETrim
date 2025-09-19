@@ -32,6 +32,7 @@ flight_data = flight_data.reset_index(drop=True)
 csv_file = "./processed_data/VSM_results_alpha_sweep.csv"
 v3_polar_data = pd.read_csv(csv_file)
 
+
 # -----------------------------------------
 # Define the system
 # -----------------------------------------
@@ -54,6 +55,7 @@ speed_tangential = np.linalg.norm(velocity, axis=1)
 speed_tangential = np.linalg.norm(np.cross(position, velocity), axis=1) / np.maximum(
     distance_radial, 1e-12
 )
+
 flight_data["speed_tangential"] = speed_tangential
 
 flight_data.kite_azimuth = (
@@ -61,7 +63,7 @@ flight_data.kite_azimuth = (
 )  # -0.1            # Calculate misalignment!!! at each cycle
 
 
-window_size = 5
+window_size = 10
 flight_data["course_rate"] = np.gradient(
     np.unwrap(flight_data["kite_course"]), flight_data["time"]
 )
@@ -74,6 +76,12 @@ flight_data["up"] = flight_data["up"] / flight_data["up"].max()
 flight_data["course_rate"] = (
     flight_data["course_rate"].rolling(window=window_size, min_periods=1).mean()
 )
+# flight_data["tether_reelout_speed"] = (
+#     flight_data["tether_reelout_speed"]
+#     .rolling(window=window_size, min_periods=1)
+#     .mean()
+# )
+
 
 # Get wind heights available in the data
 wind_heights = []
@@ -95,16 +103,16 @@ for aero_file, label in zip(aero_files, aero_labels):
     with open(aero_file, "r") as file:
         aero_input = json.load(file)
 
-    tether = RigidLumpedTether(diameter=0.001)
+    tether = RigidLumpedTether(diameter=0.01)
     wind_model = Wind(
         wind_model="logarithmic",
         z0=0.01,  # Roughness length
     )
     kite = Kite(
-        mass_wing=90,
+        mass_wing=60,
         area_wing=47,
         aero_input=aero_input,
-        mass_kcu=0,
+        mass_kcu=30,
         steering_control="asymmetric",
     )
     kite_model = SystemModel(
@@ -226,6 +234,9 @@ for aero_file, label in zip(aero_files, aero_labels):
         else:
             # print("Angle of attack not found, index:", i)
             # print(state_combined["angle_of_attack"] * 180 / np.pi)
+            for state in state_combined:
+                state_combined[state] = np.nan
+            solutions.append(state_combined)
             qs_guess[0] = 1e10
             qs_guess[2] = 50
             print("Quasi steady solution not found, index:", i)
@@ -238,7 +249,7 @@ for aero_file, label in zip(aero_files, aero_labels):
 
     # Store solutions for this aerodynamic model
     solutions_df = pd.DataFrame(solutions)
-    solutions_df = solutions_df[solutions_df["tension_tether_ground"].notna()]
+    # solutions_df = solutions_df[solutions_df["tension_tether_ground"].notna()]
 
     all_solutions[label] = solutions_df
 
@@ -247,29 +258,29 @@ print(f"\nTotal failed indices across all models: {len(all_failed_indices)}")
 print(f"Failed indices: {sorted(list(all_failed_indices))[:10]}...")  # Show first 10
 
 # Remove failed indices from flight_data and results after all models are processed
-if all_failed_indices:
-    print(
-        f"\nRemoving {len(all_failed_indices)} failed rows from flight_data and results"
-    )
+# if all_failed_indices:
+#     print(
+#         f"\nRemoving {len(all_failed_indices)} failed rows from flight_data and results"
+#     )
 
-    # Convert to list and sort
-    indices_to_remove = sorted(list(all_failed_indices))
+#     # Convert to list and sort
+#     indices_to_remove = sorted(list(all_failed_indices))
 
-    # Create a mask for valid indices (those that are NOT in failed indices)
-    valid_mask = ~flight_data.index.isin(indices_to_remove)
+#     # Create a mask for valid indices (those that are NOT in failed indices)
+#     valid_mask = ~flight_data.index.isin(indices_to_remove)
 
-    # Filter flight_data and results using the mask
-    flight_data = flight_data[valid_mask].reset_index(drop=True)
-    results = results[valid_mask].reset_index(drop=True)  # Also filter results
+#     # Filter flight_data and results using the mask
+#     flight_data = flight_data[valid_mask].reset_index(drop=True)
+#     results = results[valid_mask].reset_index(drop=True)  # Also filter results
 
-    # Update related arrays using the same mask
-    position = position[valid_mask]
-    velocity = velocity[valid_mask]
-    distance_radial = distance_radial[valid_mask]
-    speed_tangential = speed_tangential[valid_mask]
+#     # Update related arrays using the same mask
+#     position = position[valid_mask]
+#     velocity = velocity[valid_mask]
+#     distance_radial = distance_radial[valid_mask]
+#     speed_tangential = speed_tangential[valid_mask]
 
-    print(f"Updated flight_data length: {len(flight_data)}")
-    print(f"Updated results length: {len(results)}")
+#     print(f"Updated flight_data length: {len(flight_data)}")
+#     print(f"Updated results length: {len(results)}")
 
 # Ensure all solution DataFrames have matching length and index as filtered data
 for label, solutions_df in all_solutions.items():
@@ -850,7 +861,7 @@ def plot_main_results_comparison(
     ]
     ax4.legend(handles=phase_patches, loc="best", frameon=True)
     ax3.legend(loc="best", frameon=True)
-    ax3.set_ylim(0, 40)
+    ax3.set_ylim(0, 50)
     ax4.set_ylim(0, 40)
     for ax in axs:
         ax.set_xlim(flight_data["time"].min(), flight_data["time"].max())

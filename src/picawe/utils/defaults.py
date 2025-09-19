@@ -2,7 +2,7 @@ import numpy as np
 
 DEFAULT_BOUNDS = {
     "tension_tether_ground": [0, 1e12],
-    "input_steering": [-1, 1],
+    "input_steering": [-1.5, 1.5],
     "s_dot": [-10, 30],
     "s_ddot": [-100, 100],
     "speed_tangential": [0, 400],
