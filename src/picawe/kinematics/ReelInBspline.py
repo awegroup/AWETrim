@@ -4,91 +4,9 @@ import matplotlib.pyplot as plt
 from scipy.optimize import least_squares
 
 # -------------------------------
-# Helper Functions
-# -------------------------------
-def convert_time_to_seconds(time_array):
-    """Convert HH:MM:SS.sss to seconds (float)."""
-    seconds_array = []
-    for time_str in time_array:
-        h, m, s = map(float, str(time_str).split(":"))
-        seconds_array.append(h * 3600 + m * 60 + s)
-    return np.array(seconds_array)
-
-def sph2cart(az, el, r):
-    x = r * np.cos(el) * np.cos(az)
-    y = r * np.cos(el) * np.sin(az)
-    z = r * np.sin(el)
-    return x, y, z
-
-def cart2sph(x, y, z):
-    r = np.sqrt(x**2 + y**2 + z**2)
-    az = np.arctan2(y, x)
-    el = np.arcsin(z / r)
-    return az, el, r
-
-def evaluate_bspline(C, p, U, u, return_basis=False, return_derivative=False):
-    """
-    Evaluate B-spline at u (scalar or array).
-    If return_basis=True, returns basis matrix Nmat.
-    If return_derivative=True, also returns derivative basis matrix dNmat.
-    """
-    u = np.atleast_1d(u)
-    n_ctrl = C.shape[0]
-    Nmat = np.zeros((len(u), n_ctrl))
-    dNmat = np.zeros((len(u), n_ctrl))
-
-    def N(i, k, u_val):
-        if k == 0:
-            # Special case: include right endpoint for last knot span
-            if (U[i] <= u_val < U[i+1]) or (
-                u_val == U[-1] and U[i] <= u_val <= U[i+1]
-            ):
-                return 1.0
-            else:
-                return 0.0
-
-        left = 0.0
-        right = 0.0
-
-        if U[i+k] > U[i]:
-            left = (u_val - U[i])/(U[i+k]-U[i]) * N(i, k-1, u_val)
-        if U[i+k+1] > U[i+1]:
-            right = (U[i+k+1]-u_val)/(U[i+k+1]-U[i+1]) * N(i+1, k-1, u_val)
-        return left + right
-
-    def dN(i, k, u_val):
-        if k == 0:
-            return 0.0
-        left = 0.0
-        right = 0.0
-        if U[i+k] > U[i]:
-            left = k/(U[i+k]-U[i]) * N(i, k-1, u_val)
-        if U[i+k+1] > U[i+1]:
-            right = k/(U[i+k+1]-U[i+1]) * N(i+1, k-1, u_val)
-        return left - right
-
-    for ui, u_val in enumerate(u):
-        for i in range(n_ctrl):
-            Nmat[ui, i] = N(i, p, u_val)
-            if return_derivative:
-                dNmat[ui, i] = dN(i, p, u_val)
-
-    S = Nmat @ C
-    dS = dNmat @ C if return_derivative else None
-
-    if return_basis and return_derivative:
-        return S, Nmat, dNmat, dS
-    elif return_basis:
-        return S, Nmat, dNmat
-    elif return_derivative:
-        return S, dS
-    else:
-        return S
-
-# -------------------------------
 # Cycle Class
 # -------------------------------
-class Cycle:
+class ReelInBspline:
     def __init__(self, file_path_full, file_path_cycle, cycle_idx=0):
         """Initialize Cycle object from CSV files and cycle index."""
         # Load CSVs
@@ -97,8 +15,8 @@ class Cycle:
         self.cycle_idx = cycle_idx
 
         # Preprocess times
-        self.full_df['time_s'] = np.round(convert_time_to_seconds(self.full_df['time_of_day'].to_numpy()), 1)
-        self.cycle_df['start_time_s'] = np.round(convert_time_to_seconds(self.cycle_df['start_time_cycle_LT'].to_numpy()), 1)
+        self.full_df['time_s'] = np.round(self.convert_time_to_seconds(self.full_df['time_of_day'].to_numpy()), 1)
+        self.cycle_df['start_time_s'] = np.round(self.convert_time_to_seconds(self.cycle_df['start_time_cycle_LT'].to_numpy()), 1)
 
         # Extract variables
         self.time_full = self.full_df['time_s'].to_numpy()
@@ -126,6 +44,89 @@ class Cycle:
         self.ri_start_course, self.ri_end_course = None, None
         self.RI_start_idx, self.RI_end_idx = None, None
 
+    @staticmethod
+    def convert_time_to_seconds(self, time_array):
+        """Convert HH:MM:SS.sss to seconds (float)."""
+        seconds_array = []
+        for time_str in time_array:
+            h, m, s = map(float, str(time_str).split(":"))
+            seconds_array.append(h * 3600 + m * 60 + s)
+        return np.array(seconds_array)
+
+    @staticmethod
+    def sph2cart(self, az, el, r):
+        x = r * np.cos(el) * np.cos(az)
+        y = r * np.cos(el) * np.sin(az)
+        z = r * np.sin(el)
+        return x, y, z
+
+    @staticmethod
+    def cart2sph(self, x, y, z):
+        r = np.sqrt(x**2 + y**2 + z**2)
+        az = np.arctan2(y, x)
+        el = np.arcsin(z / r)
+        return az, el, r
+
+    @staticmethod
+    def evaluate_bspline(self, C, p, U, u, return_basis=False, return_derivative=False):
+        """
+        Evaluate B-spline at u (scalar or array).
+        If return_basis=True, returns basis matrix Nmat.
+        If return_derivative=True, also returns derivative basis matrix dNmat.
+        """
+        u = np.atleast_1d(u)
+        n_ctrl = C.shape[0]
+        Nmat = np.zeros((len(u), n_ctrl))
+        dNmat = np.zeros((len(u), n_ctrl))
+
+        def N(i, k, u_val):
+            if k == 0:
+                # Special case: include right endpoint for last knot span
+                if (U[i] <= u_val < U[i+1]) or (
+                    u_val == U[-1] and U[i] <= u_val <= U[i+1]
+                ):
+                    return 1.0
+                else:
+                    return 0.0
+
+            left = 0.0
+            right = 0.0
+
+            if U[i+k] > U[i]:
+                left = (u_val - U[i])/(U[i+k]-U[i]) * N(i, k-1, u_val)
+            if U[i+k+1] > U[i+1]:
+                right = (U[i+k+1]-u_val)/(U[i+k+1]-U[i+1]) * N(i+1, k-1, u_val)
+            return left + right
+
+        def dN(i, k, u_val):
+            if k == 0:
+                return 0.0
+            left = 0.0
+            right = 0.0
+            if U[i+k] > U[i]:
+                left = k/(U[i+k]-U[i]) * N(i, k-1, u_val)
+            if U[i+k+1] > U[i+1]:
+                right = k/(U[i+k+1]-U[i+1]) * N(i+1, k-1, u_val)
+            return left - right
+
+        for ui, u_val in enumerate(u):
+            for i in range(n_ctrl):
+                Nmat[ui, i] = N(i, p, u_val)
+                if return_derivative:
+                    dNmat[ui, i] = dN(i, p, u_val)
+
+        S = Nmat @ C
+        dS = dNmat @ C if return_derivative else None
+
+        if return_basis and return_derivative:
+            return S, Nmat, dNmat, dS
+        elif return_basis:
+            return S, Nmat, dNmat
+        elif return_derivative:
+            return S, dS
+        else:
+            return S
+
     # -------------------------------
     # Internal methods
     # -------------------------------
@@ -148,7 +149,7 @@ class Cycle:
         self.phase_cyc = self.phase[self.cycle_start_idx:self.cycle_end_idx+1]
         self.course_cyc = self.course[self.cycle_start_idx:self.cycle_end_idx+1]
 
-        self.x_cyc, self.y_cyc, self.z_cyc = sph2cart(self.az_cyc, self.el_cyc, self.r_cyc)
+        self.x_cyc, self.y_cyc, self.z_cyc = self.sph2cart(self.az_cyc, self.el_cyc, self.r_cyc)
         self.dx_cyc, self.dy_cyc, self.dz_cyc = np.gradient(self.x_cyc), np.gradient(self.y_cyc), np.gradient(self.z_cyc)
         self.num_points = len(self.x_cyc)
 
@@ -200,13 +201,13 @@ class Cycle:
         k = 2  # Number of points to average over
 
         if not start:
-            S_sph, dS_sph = evaluate_bspline(C, p=3, U=U, u=u, return_derivative=True)
+            S_sph, dS_sph = self.self.evaluate_bspline(C, p=3, U=U, u=u, return_derivative=True)
             course = -np.arctan2(dS_sph[-k:,0]*np.cos(S_sph[-k:,1]), dS_sph[-k:,1]) + 2*np.pi
             course = np.mod(course, 2 * np.pi)
             self.course_avg = np.mean(course)
             return self.course_avg
         if start:
-            S_sph, dS_sph = evaluate_bspline(C, p=3, U=U, u=u, return_derivative=True)
+            S_sph, dS_sph = self.self.evaluate_bspline(C, p=3, U=U, u=u, return_derivative=True)
             course = -np.arctan2(dS_sph[:k,0]*np.cos(S_sph[:k,1]), dS_sph[:k,1]) + 2*np.pi
             course = np.mod(course, 2 * np.pi)
             self.course_avg = np.mean(course)
@@ -295,7 +296,7 @@ class Cycle:
 
         C_inner_0 = np.zeros((n_ctrl-2, 2))
         C0 = np.vstack([ri_start_sph, C_inner_0, ri_end_sph])
-        _, Nmat_sph, _ = evaluate_bspline(C0, p, U0, self.u_vals, return_basis=True)
+        _, Nmat_sph, _ = self.self.evaluate_bspline(C0, p, U0, self.u_vals, return_basis=True)
 
         rhs = self.S_sph - (Nmat_sph[:, [0, -1]] @ np.vstack([ri_start_sph, ri_end_sph]))
         C_inner_0, _, _, _ = np.linalg.lstsq(Nmat_sph[:, 1:-1], rhs, rcond=None)
@@ -335,7 +336,7 @@ class Cycle:
             U = np.concatenate(([0]*(p+1), U_interior, [1]*(p+1)))
 
             # Evaluate spline
-            S_fit_sph, Nmat, _ = evaluate_bspline(C, p, U, self.u_vals, return_basis=True)
+            S_fit_sph, Nmat, _ = self.self.evaluate_bspline(C, p, U, self.u_vals, return_basis=True)
 
             # Data residual
             res_data = np.array((S_fit_sph - self.S_sph).ravel())
@@ -407,7 +408,7 @@ class Cycle:
 
         C_inner_0 = np.zeros((n_ctrl-2, 3))
         C0 = np.vstack([self.ri_start_point, C_inner_0, self.ri_end_point])
-        _, Nmat, _ = evaluate_bspline(C0, p, U0, self.u_vals, return_basis=True)
+        _, Nmat, _ = self.evaluate_bspline(C0, p, U0, self.u_vals, return_basis=True)
 
         # mask = (self.u_vals > 0.02) & (self.u_vals < 0.98) # Avoid endpoints
 
@@ -458,9 +459,9 @@ class Cycle:
             U = np.concatenate(([0]*(p+1), U_interior, [1]*(p+1)))
 
             # Evaluate spline and derivative matrices
-            S_fit_cart, Nmat, _ = evaluate_bspline(C, p, U, self.u_vals, return_basis=True)
-            _, _, dNmat0, _ = evaluate_bspline(C, p, U, np.array([0.0]), return_basis=True, return_derivative=True)
-            _, _, dNmat1, _ = evaluate_bspline(C, p, U, np.array([1.0]), return_basis=True, return_derivative=True)
+            S_fit_cart, Nmat, _ = self.evaluate_bspline(C, p, U, self.u_vals, return_basis=True)
+            _, _, dNmat0, _ = self.evaluate_bspline(C, p, U, np.array([0.0]), return_basis=True, return_derivative=True)
+            _, _, dNmat1, _ = self.evaluate_bspline(C, p, U, np.array([1.0]), return_basis=True, return_derivative=True)
 
             # Data residual
             res_data = (S_fit_cart - self.S_cart).ravel()
@@ -499,15 +500,15 @@ class Cycle:
     # Spline evaluation
     # -------------------------------
     def eval_cartesian_spline(self, u):
-        result = evaluate_bspline(self.C_cart, self.p, self.U_cart, u)
+        result = self.evaluate_bspline(self.C_cart, self.p, self.U_cart, u)
         return result
 
     def eval_spherical_spline(self, u):
         xyz = self.eval_cartesian_spline(u)
         if xyz.ndim == 1:
-            return cart2sph(*xyz)
+            return self.cart2sph(*xyz)
         else:
-            return np.array([cart2sph(*pt) for pt in xyz])
+            return np.array([self.cart2sph(*pt) for pt in xyz])
 
     # -------------------------------
     # Plotting
@@ -541,7 +542,7 @@ class Cycle:
 
         # Evaluate spherical spline
         S_fit_sph = np.vstack([
-            evaluate_bspline(self.C_sph, self.p, self.U_sph, u) for u in self.u_vals
+            self.evaluate_bspline(self.C_sph, self.p, self.U_sph, u) for u in self.u_vals
         ])
 
         # Create subplots (single fig only!)
@@ -598,7 +599,7 @@ if __name__ == "__main__":
     cycle_df = "/home/theophile/src/Simulation_Results/trial_Uri_valid/cycles/cycle_data_sheet_lines.csv"
 
     # Create a Cycle object for the first cycle (cycle_idx=0)
-    cycle = Cycle(full_df, cycle_df, cycle_idx=1)
+    cycle = ReelInBspline(full_df, cycle_df, cycle_idx=1)
 
     # Compute Reel-In boundaries
     ri_start, ri_end, ri_v0, ri_vf, az_RI, el_RI, r_RI, ri_start_idx, ri_end_idx = cycle.get_RI_RO_boundaries()
