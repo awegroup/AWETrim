@@ -3,7 +3,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import json
 import itertools
-from picawe.kinematics.parametrized_patterns import Helix
+from picawe.kinematics.Old_code5 import Helix
 from picawe import SystemModel, State
 from picawe.utils.color_palette import set_plot_style, get_color_list
 from picawe.timeseries.phase_parametrized import PhaseParameterized

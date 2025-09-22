@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import json
-from picawe.kinematics.parametrized_patterns import Helix
+from picawe.kinematics.Old_code5 import Helix
 from picawe import SystemModel, State
 from picawe.utils.color_palette import (
     set_plot_style,
@@ -15,7 +15,7 @@ from picawe.system.tether import (
     RigidLumpedTether,
     RigidLinkTether,
 )
-from picawe.kinematics.parametrized_patterns import create_pattern_from_dict
+from picawe.kinematics.Old_code5 import create_pattern_from_dict
 from picawe import SystemModel
 from picawe.kinematics.Kinematics import ParametrizedKinematics
 from picawe.utils.defaults import PLOT_LABELS

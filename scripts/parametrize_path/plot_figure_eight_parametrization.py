@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from picawe.kinematics.parametrized_patterns import Helix, Lissajous, FigureEight
+from picawe.kinematics.Old_code5 import Helix, Lissajous, FigureEight
 from picawe.utils.color_palette import (
     get_color_list,
     set_plot_style,

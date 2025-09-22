@@ -1,7 +1,7 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-from picawe.kinematics.parametrized_patterns import Helix, Lissajous, FigureEight
+from picawe.kinematics.Old_code5 import Helix, Lissajous, FigureEight
 from picawe.system.kite import Kite
 from picawe.system.tether import RigidLinkTether, RigidLumpedTether
 from picawe.kinematics.Kinematics import ParametrizedKinematics, KiteKinematics
