@@ -604,11 +604,11 @@ if __name__ == "__main__":
     ri_start, ri_end, ri_v0, ri_vf, az_RI, el_RI, r_RI, ri_start_idx, ri_end_idx = cycle.get_RI_RO_boundaries()
 
     # Fit a B-spline to the full cycle (or later to RI only)
-    # C_cart, u_vals, U = cycle.fit_cartesian_spline()
+    C_cart, u_vals, U = cycle.fit_cartesian_spline()
     C_sph, u_vals_sph, U_sph = cycle.fit_spherical_spline()
 
     # Plot trajectory and spline
-    # cycle.plot_spline_fit_cart()
+    cycle.plot_spline_fit_cart()
 
     cycle.plot_spline_fit_sph()
 
