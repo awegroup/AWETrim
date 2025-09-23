@@ -28,22 +28,26 @@ class ReelInBspline_plotting(ribfit, ribbuild):
     def __init__(self, file_path_full, file_path_cycle, cyc_idx, p, n_ctrl, c_penalty=1, v_penalty=0, eps_knot=0.001):
         super().__init__(file_path_full, file_path_cycle, cyc_idx, p, n_ctrl, c_penalty, v_penalty, eps_knot)
 
+    # -------------------------------
+    # Plot Cartesian spline fit
+    # -------------------------------
     def plot_spline_fit_cart(self):
         if self.C_cart is None or self.U_cart is None:
             raise ValueError("Run fit_spline(mode='cartesian') before plotting.")
 
         builder = ribbuild()
+        builder.n_ctrl = self.n_ctrl
+        builder.p = self.p
+        builder.dim = 3
+        builder.C = self.C_cart
+        builder.U = self.U_cart
+        builder.u_vals = self.u_vals
 
-        # Build symbolic spline + derivative
-        C_sym = ca.MX.sym("C", self.C_cart.shape[0], self.C_cart.shape[1])
-        u_sym = ca.MX.sym("u")
-        S_sym, dS_sym, _ = builder.build_bspline(C_sym, self.p, self.U_cart, u_sym, return_derivative=True)
+        # Symbolic spline
+        spline_func = builder.build_bspline_symbolic()
 
-        # Function returns BOTH spline and derivative
-        spline_func = ca.Function("spline_func_cart", [C_sym, u_sym], [S_sym, dS_sym], ["C", "u"], ["S", "dS"])
-
-        # Evaluate spline (ignore derivative for plotting)
-        S_fit_cart, _ = builder.eval_spline(spline_func, self.C_cart, self.u_vals)
+        # Evaluate numerically
+        S_fit_cart, _ = builder.eval_spline(spline_func, builder.C)
 
         # 3D plot
         fig = plt.figure()
@@ -53,7 +57,6 @@ class ReelInBspline_plotting(ribfit, ribbuild):
 
         # Control points
         ax.scatter(self.C_cart[:,0], self.C_cart[:,1], self.C_cart[:,2], color="black", s=30, label="Control points")
-        # ri start/end
         ax.scatter(*self.ri_p0_cart, color="green", s=30, label="ri start")
         ax.scatter(*self.ri_pf_cart, color="red", s=30, label="ri end")
 
@@ -61,6 +64,9 @@ class ReelInBspline_plotting(ribfit, ribbuild):
         ax.legend(); ax.set_box_aspect([1,1,1])
         plt.show()
 
+    # -------------------------------
+    # Plot Spherical spline fit
+    # -------------------------------
     def plot_spline_fit_sph(self):
         if self.C_sph is None or self.U_sph is None:
             raise ValueError("Run fit_spline(mode='spherical') before plotting.")
@@ -68,17 +74,18 @@ class ReelInBspline_plotting(ribfit, ribbuild):
             raise ValueError("Run get_ri_ro_boundaries() before plotting.")
 
         builder = ribbuild()
+        builder.n_ctrl = self.n_ctrl
+        builder.p = self.p
+        builder.dim = 2
+        builder.C = self.C_sph
+        builder.U = self.U_sph
+        builder.u_vals = self.u_vals
 
-        # Build symbolic spline + derivative
-        C_sym = ca.MX.sym("C", self.C_sph.shape[0], self.C_sph.shape[1])
-        u_sym = ca.MX.sym("u")
-        S_sym, dS_sym, _ = builder.build_bspline(C_sym, self.p, self.U_sph, u_sym, return_derivative=True)
+        # Symbolic spline
+        spline_func = builder.build_bspline_symbolic()
 
-        # Function returns BOTH spline and derivative
-        spline_func = ca.Function("spline_func_sph", [C_sym, u_sym], [S_sym, dS_sym], ["C", "u"], ["S", "dS"])
-
-        # Evaluate spline (ignore derivative for plotting)
-        S_fit_sph, _ = builder.eval_spline(spline_func, self.C_sph, self.u_vals)
+        # Evaluate numerically
+        S_fit_sph, _ = builder.eval_spline(spline_func, builder.C)
 
         # Plot azimuth and elevation
         fig, (ax_az, ax_el) = plt.subplots(1, 2, figsize=(10,4), sharex=True)
@@ -102,3 +109,4 @@ class ReelInBspline_plotting(ribfit, ribbuild):
         ax_el.set_xlabel("u"); ax_el.set_ylabel("Elevation [rad]"); ax_el.grid(True, alpha=0.3); ax_el.legend()
         fig.tight_layout()
         plt.show()
+

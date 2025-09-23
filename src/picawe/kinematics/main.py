@@ -1,11 +1,4 @@
-from picawe.kinematics.ReelInBspline_build import ReelInBspline_build as ribbuild
-from picawe.kinematics.ReelInBspline_data_processing import ReelInBspline_data_processing as ribdata
-from picawe.kinematics.ReelInBspline_fitting import ReelInBspline_fitting as ribfit
 from picawe.kinematics.ReelInBspline_plotting import ReelInBspline_plotting as ribplot
-import numpy as np
-import pandas as pd
-import matplotlib.pyplot as plt
-from scipy.optimize import least_squares
 
 # -------------------------------
 # Main script
@@ -18,7 +11,7 @@ if __name__ == "__main__":
 
     cyc_idx = 0       # index of the cycle you want to process
     p = 3             # spline degree
-    n_ctrl = 8        # number of control points
+    n_ctrl = 10        # number of control points
     c_penalty = 1     # course penalty (for spherical)
     v_penalty = 0     # velocity penalty (for cartesian)
     eps_knot = 0.001  # minimum knot spacing
