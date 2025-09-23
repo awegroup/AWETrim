@@ -14,7 +14,7 @@ if __name__ == "__main__":
     n_ctrl = 10        # number of control points
     c_penalty = 1     # course penalty (for spherical)
     v_penalty = 0     # velocity penalty (for cartesian)
-    eps_knot = 0.001  # minimum knot spacing
+    eps_knot = 0.01  # minimum knot spacing
 
     # Create the plotting object
     plotter = ribplot(full_path, cycle_path, cyc_idx,

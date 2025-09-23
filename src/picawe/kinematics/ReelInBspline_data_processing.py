@@ -33,11 +33,11 @@ class ReelInBspline_data_processing:
         # --- Extract full data ---
         self.time_full = self.full_df['time_s'].to_numpy()
         self.time_cycle = self.cycle_df['start_time_s'].to_numpy()
-        self.az = self.full_df['kite_azimuth'].to_numpy()
-        self.el = self.full_df['kite_elevation'].to_numpy()
-        self.r = self.full_df['kite_distance'].to_numpy()
-        self.phase = self.full_df['flight_phase'].to_numpy()
-        self.crs = self.full_df['kite_course'].to_numpy()
+        self.az = self.full_df['kite_azimuth'].to_numpy(dtype=float)
+        self.el = self.full_df['kite_elevation'].to_numpy(dtype=float)
+        self.r = self.full_df['kite_distance'].to_numpy(dtype=float)
+        self.phase = self.full_df['flight_phase'].to_numpy(dtype=str)
+        self.crs = self.full_df['kite_course'].to_numpy(dtype=float)
 
         # Cartesian coords + derivatives for full dataset
         self.x, self.y, self.z = self.sph2cart(self.az, self.el, self.r)

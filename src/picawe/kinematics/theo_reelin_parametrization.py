@@ -4,6 +4,7 @@ import casadi as ca
 import matplotlib.pyplot as plt
 from picawe.kinematics.Kinematics import ParametrizedKinematics
 from picawe.system.system_model import SystemModel
+from picawe.kinematics.ReelInBspline_parametrized import ReelInBspline
 
 
 # =========================================================
@@ -51,114 +52,6 @@ class ParametrizedPatternsAngles:
         y = r_vec * np.cos(beta) * np.sin(phi)
         z = r_vec * np.sin(beta)
         return x, y, z
-
-
-class ReelInBspline():
-
-    # something0 or somethingf means the start or end 0 for start and f for final
-    # p - point eg. p0 start point
-    # v - velocity
-    # crs - course
-    # idx - index
-    # cyc - cycle
-    # ri - reel-in
-    # ro - reel-out
-    # sph - spherical
-    # cart - cartesian
-
-    def build_bspline(self, C, p, U, u, return_derivative=False):
-        n_ctrl = C.shape[0]
-
-        def N(i, k, u_val):
-            if k == 0:
-                return ca.if_else(
-                    ca.logic_and(U[i] <= u_val, u_val <= U[i+1]),
-                    1.0,
-                    0.0
-                )
-            left = 0
-            right = 0
-            if U[i+k] > U[i]:
-                left = (u_val - U[i])/(U[i+k]-U[i]) * N(i, k-1, u_val)
-            if U[i+k+1] > U[i+1]:
-                right = (U[i+k+1]-u_val)/(U[i+k+1]-U[i+1]) * N(i+1, k-1, u_val)
-            return left + right
-
-        Nvec = [N(i, p, u) for i in range(n_ctrl)]
-        Nvec = ca.vertcat(*Nvec).T
-        S = ca.mtimes(Nvec, C)
-
-        dS = None
-        if return_derivative:
-            dS = ca.jacobian(S, u)
-
-        # Nmat = ca.jacobian(S, C)
-        # print(f"Nmat shape: {Nmat.shape}")
-
-        return S, dS, Nvec
-
-    # -------------------------------
-    # Basis matrix construction
-    # -------------------------------
-
-    def build_Nmat(self, U, p, u_vals):
-        """
-        Compute B-spline basis function matrix Nmat for all u_vals.
-        
-        Parameters
-        ----------
-        U : array-like
-            Knot vector
-        p : int
-            Degree
-        u_vals : array-like
-            Parameter values (len(u_vals) = n_points)
-        
-        Returns
-        -------
-        Nmat : np.ndarray
-            Shape (len(u_vals), n_ctrl)
-        """
-        n_ctrl = len(U) - p - 1
-        Nmat_list = []
-        for u in u_vals:
-            _, _, Nvec = self.build_bspline(np.zeros((n_ctrl,1)), p, U, u, return_derivative=False)
-            Nmat_list.append(Nvec.full())
-        Nmat = np.array(Nmat_list).squeeze()
-        return Nmat  # shape (len(u_vals), n_ctrl)
-
-
-
-    # -------------------------------
-    # Evaluation with CasADi function
-    # -------------------------------
-    def eval_spline(self, spline_func, C_val, u_val):
-        """
-        Evaluate a CasADi spline function.
-
-        Parameters
-        ----------
-        spline_func : casadi.Function
-            CasADi function representing the spline
-        C_val : numpy array
-            Control points
-        u_val : float or array-like
-            Parameter value(s) at which to evaluate the spline
-
-        Returns
-        -------
-        numpy array
-            Spline evaluated at u_val
-        """
-        # Make sure u_val is an array for vectorized evaluation
-        u_val = np.atleast_1d(u_val)
-        S_eval = np.array([spline_func(C=C_val, u=ui)["S"].full().flatten() for ui in u_val])
-        dS_eval = np.array([spline_func(C=C_val, u=ui)["dS"].full().flatten() for ui in u_val])
-
-        if S_eval.shape[0] == 1:
-            return S_eval[0], dS_eval[0]
-        return S_eval, dS_eval
-
 
 
 # =========================================================
@@ -365,22 +258,23 @@ if __name__ == "__main__":
         vhat0 = azel_to_vec(s_v0az.val, s_v0el.val)
         vhat1 = azel_to_vec(s_v1az.val, s_v1el.val)
 
-        # Build pattern
+        """ Build Bspline Pattern
+
         pat = ReelInBspline(
-            r0=r0,
-            r1=r1,
-            phi0=phi0,
-            phi2=phi2,
-            phi3=phi3,
-            phi5=phi5,
-            beta0=beta0,
-            beta2=beta2,
-            beta3=beta3,
-            beta5=beta5,
-            vhat0=vhat0,
-            vhat1=vhat1,
-            # tangent_only=True,
-        )
+                 rf=150, 
+                 crs0=(11/6)*np.pi, 
+                 crsf=np.pi/2, 
+                 phi0=0, 
+                 phif=0, 
+                 beta0=0, 
+                 betaf=0, 
+                 C_interior=None, 
+                 u_vals=None, 
+                 U=None,
+                 mode="spherical"
+                ) 
+                
+        """
 
         # r(u) profiles
         r_lin, r_quad, r_half = r_profiles(r0, r1)
