@@ -2,17 +2,6 @@ import numpy as np
 import casadi as ca
 import picawe.kinematics.ReelInBspline_fitting as ribfit
 
-fitted = ribfit.ReelInBspline_fitting(
-    file_path_full = "/home/theophile/src/Simulation_Results/trial_Uri_valid/ProtoLogger_csv/2025-09-10_11-31-10_ProtoLogger.csv",
-    file_path_cycle = "/home/theophile/src/Simulation_Results/trial_Uri_valid/cycles/cycle_data_sheet_lines.csv",
-    cyc_idx=0,
-    p=3,
-    n_ctrl=8,
-    c_penalty=1.0,
-    v_penalty=0.0,
-    eps_knot=1e-3
-)
-
 # -------------------------------
 # Spline Building
 # -------------------------------
@@ -157,6 +146,18 @@ class ReelInBspline():
     
 
 if __name__ == "__main__":
+
+    fitted = ribfit.ReelInBspline_fitting(
+    file_path_full = "/home/theophile/src/Simulation_Results/trial_Uri_valid/ProtoLogger_csv/2025-09-10_11-31-10_ProtoLogger.csv",
+    file_path_cycle = "/home/theophile/src/Simulation_Results/trial_Uri_valid/cycles/cycle_data_sheet_lines.csv",
+    cyc_idx=0,
+    p=3,
+    n_ctrl=8,
+    c_penalty=1.0,
+    v_penalty=0.0,
+    eps_knot=1e-3
+    )
+    
     mode = "spherical"  # "spherical" or "cartesian"
 
     Spline = ReelInBspline(
