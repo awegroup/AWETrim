@@ -1,6 +1,7 @@
 import numpy as np
 import casadi as ca
 import picawe.kinematics.ReelInBspline_fitting as ribfit
+from picawe.kinematics.theo_reelin_parametrization import ParametrizedPatternsAngles
 
 # -------------------------------
     # something0 or somethingf means the start or end 0 for start and f for final
@@ -18,7 +19,7 @@ import picawe.kinematics.ReelInBspline_fitting as ribfit
 # -------------------------------
 # B-spline class compatible with ParametrizedPatternsAngles
 # -------------------------------
-class ReelInBspline():
+class ReelInBspline(ParametrizedPatternsAngles):
     """
     B-spline in φ(u), β(u) (spherical) or x(u),y(u),z(u) (cartesian),
     compatible with ParametrizedPatternsAngles interface.
@@ -74,6 +75,8 @@ class ReelInBspline():
                             np.array([self.phif, self.betaf])])
 
         self.u_vals = np.linspace(0, 1, 100) if u_vals is None else u_vals
+
+        self.spline_func = self.build_bspline_symbolic()
 
     # -------------------------------
     # B-spline basis symbolic function
@@ -137,20 +140,13 @@ class ReelInBspline():
         dS_eval = np.vstack(dS_list) if dS_list else None
         return S_eval, dS_eval
 
-    # -------------------------------
-    # Interface compatible with ParametrizedPatternsAngles
-    # -------------------------------
-    def eval_angles(self, u_vec):
-        S_eval, _ = self.eval_spline()
-        # S_eval assumed Nx2: [phi, beta]
-        return S_eval[:,0], S_eval[:,1]
+    def azimuth(self, s):
+        res = self.spline_func(C=self.C, u=s, U=self.U)
+        return res["S"][0]   # φ is first column of spline output
 
-    def eval_xyz(self, u_vec, r_vec):
-        phi, beta = self.eval_angles(u_vec)
-        x = r_vec * np.cos(beta) * np.cos(phi)
-        y = r_vec * np.cos(beta) * np.sin(phi)
-        z = r_vec * np.sin(beta)
-        return x, y, z
+    def elevation(self, s):
+        res = self.spline_func(C=self.C, u=s, U=self.U)
+        return res["S"][1]   # β is second column of spline output
 
     # -------------------------------
     # Build full N matrix numerically
@@ -238,6 +234,7 @@ if __name__ == "__main__":
         
     #     if spline_func is None:
     #         spline_func = self.build_bspline_symbolic()
+import picawe.kinematics.ReelInBspline_fitting as ribfit
 
     #     S_list, dS_list = [], []
     #     for ui in self.u_vals:

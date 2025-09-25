@@ -4,8 +4,7 @@ import casadi as ca
 import matplotlib.pyplot as plt
 from picawe.kinematics.Kinematics import ParametrizedKinematics
 from picawe.system.system_model import SystemModel
-from picawe.kinematics.ReelInBspline_parametrized import ReelInBspline
-
+from picawe.kinematics.ReelInBspline_fitting import ReelInBspline_fitting as ribfit
 
 # =========================================================
 # Base class: angles-only pattern (radians) + numeric eval
@@ -36,6 +35,130 @@ class ParametrizedPatternsAngles:
         z = r_vec * np.sin(beta)
         return x, y, z
 
+# -------------------------------
+    # something0 or somethingf means the start or end 0 for start and f for final
+    # p - point eg. p0 start point
+    # v - velocity
+    # crs - course
+    # idx - index
+    # cyc - cycle
+    # ri - reel-in
+    # ro - reel-out
+    # sph - spherical
+    # cart - cartesian
+# -------------------------------
+
+# -------------------------------
+# B-spline class compatible with ParametrizedPatternsAngles
+# -------------------------------
+class ReelInBspline(ParametrizedPatternsAngles):
+    """
+    B-spline in φ(u), β(u) (spherical) or x(u),y(u),z(u) (cartesian),
+    compatible with ParametrizedPatternsAngles interface.
+    """
+
+    def __init__(self, 
+                 p=3, 
+                 n_ctrl=8, 
+                 r0=300, 
+                 rf=None, 
+                 crs0=(11/6)*np.pi, 
+                 crsf=np.pi/2, 
+                 phi0=0, 
+                 phif=0, 
+                 beta0=0, 
+                 betaf=0, 
+                 C_interior=None, 
+                 u_vals=None, 
+                 U_interior=None,
+                 mode="spherical"):
+
+        self.dim = 2 if mode == "spherical" else 3
+        self.p = p
+        self.n_ctrl = n_ctrl
+
+        self.r0 = r0
+        self.rf = rf if rf is not None else 0.0
+        self.crs0 = crs0
+        self.crsf = crsf
+        self.phi0 = phi0
+        self.phif = phif
+        self.beta0 = beta0
+        self.betaf = betaf
+
+        # knot vector
+        self.n_knots = self.n_ctrl + self.p + 1
+        self.n_interior_knots = self.n_knots - 2*(self.p+1)
+        if self.n_interior_knots < 0:
+            raise ValueError("Too few control points for spline order")
+
+        if U_interior is None:
+            self.U_interior = np.linspace(0.15, 0.85, self.n_interior_knots+2)[1:-1]
+        else:
+            self.U_interior = U_interior
+        self.U = np.concatenate(([0]*(self.p+1), self.U_interior, [1]*(self.p+1)))
+
+        # control points
+        if C_interior is None:
+            C_interior = np.ones((self.n_ctrl-2, self.dim))
+        self.C_interior = C_interior
+        self.C = np.vstack([np.array([self.phi0, self.beta0]),
+                            self.C_interior,
+                            np.array([self.phif, self.betaf])])
+
+        self.u_vals = np.linspace(0, 1, 100) if u_vals is None else u_vals
+
+        self.spline_func = self.build_bspline_symbolic()
+
+    # -------------------------------
+    # B-spline basis symbolic function
+    # -------------------------------
+    def Nvec_symbolic(self):
+        u_sym = ca.MX.sym("u")
+        U_sym = ca.MX.sym("U", self.n_ctrl + self.p + 1)
+        n_ctrl = self.n_ctrl
+        p = self.p
+
+        def N(i, k, u):
+            if k == 0:
+                return ca.if_else(ca.logic_and(U_sym[i] <= u, u <= U_sym[i+1]), 1.0, 0.0)
+            left = ca.if_else(U_sym[i+k] > U_sym[i],
+                              (u - U_sym[i]) / (U_sym[i+k]-U_sym[i]) * N(i, k-1, u),
+                              0)
+            right = ca.if_else(U_sym[i+k+1] > U_sym[i+1],
+                               (U_sym[i+k+1]-u)/(U_sym[i+k+1]-U_sym[i+1]) * N(i+1, k-1, u),
+                               0)
+            return left + right
+
+        Nvec_sym = ca.vertcat(*[N(i, p, u_sym) for i in range(n_ctrl)]).T
+        return ca.Function("N_func", [u_sym, U_sym], [Nvec_sym], ["u","U"], ["Nvec"])
+
+    # -------------------------------
+    # Build symbolic spline S(u) = N(u,U)*C
+    # -------------------------------
+    def build_bspline_symbolic(self, return_derivative=True):
+        C_sym = ca.MX.sym("C", self.n_ctrl, self.dim)
+        u_sym = ca.MX.sym("u")
+        U_sym = ca.MX.sym("U", self.n_ctrl + self.p + 1)
+
+        N_func = self.Nvec_symbolic()
+        S_sym = ca.mtimes(N_func(u_sym, U_sym), C_sym)
+        dS_sym = ca.jacobian(S_sym, u_sym) if return_derivative else None
+
+        return ca.Function("spline_func",
+                           [C_sym, u_sym, U_sym],
+                           [S_sym, dS_sym],
+                           ["C","u","U"],
+                           ["S","dS"])
+
+    def azimuth(self, s):
+        res = self.spline_func(C=self.C, u=s, U=self.U)
+        return res["S"][0]   # φ is first column of spline output
+
+    def elevation(self, s):
+        res = self.spline_func(C=self.C, u=s, U=self.U)
+        return res["S"][1]   # β is second column of spline output
+
 
 # =========================================================
 # Demo plotting
@@ -47,8 +170,6 @@ def azel_to_vec(az_deg, el_deg):
 
 
 if __name__ == "__main__":
-
-    from picawe.kinematics.ReelInBspline_fitting import ReelInBspline_fitting as ribfit
 
     fitted = ribfit(
     file_path_full = "/home/theophile/src/Simulation_Results/trial_Uri_valid/ProtoLogger_csv/2025-09-10_11-31-10_ProtoLogger.csv",
