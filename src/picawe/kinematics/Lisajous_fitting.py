@@ -30,13 +30,15 @@ class Lisajous_fitting(Lisajous_data_processing, CST_Lissajous):
             "k_vr": 2716,
         }
 
+        n_coeffs = 8  # number of Fourier coefficients for azimuth and elevation
+
         # parameters to optimize
         params_init = {
             "az_amp0": 0.34,
             "beta_amp0": 0.08,
             "beta0": 0.48,
-            "beta_coeffs": list(np.random.uniform(-1, 1, 8)),
-            "az_coeffs": list(np.random.uniform(-1, 1, 8)),
+            "beta_coeffs": list(np.random.uniform(-1, 1, n_coeffs)),
+            "az_coeffs": list(np.random.uniform(-1, 1, n_coeffs)),
         }
 
         # flatten into 1D vector for least_squares
@@ -49,8 +51,8 @@ class Lisajous_fitting(Lisajous_data_processing, CST_Lissajous):
         ])
 
         # build bounds (example: restrict amplitudes to positive)
-        lower_bounds = [0, 0, 0] + [-2]*8 + [-2]*8
-        upper_bounds = [2, 1, 1] + [ 2]*8 + [ 2]*8
+        lower_bounds = [0, 0, 0] + [-2]*n_coeffs + [-2]*n_coeffs
+        upper_bounds = [2, 1, 1] + [ 2]*n_coeffs + [ 2]*n_coeffs
 
         def unpack_params(x):
             """Convert flat x back into dict for CST_Lissajous"""
@@ -103,10 +105,13 @@ if __name__ == "__main__":
     full_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/ProtoLogger_csv/2025-09-25_11-48-58_ProtoLogger.csv"
     cycle_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/cycles/cycle_data_sheet_lines.csv"
 
-    obj = Lisajous_data_processing(file_path_cycle=cycle_path, file_path_full=full_path, cyc_idx=0)
-    obj.plot_reel_out_path2D()
-    obj.plot_reel_out_path3D()
-
     lsq_obj = Lisajous_fitting(file_path_cycle=cycle_path, file_path_full=full_path, cyc_idx=0)
     results, best_params = lsq_obj.LSQ()
     lsq_obj.plot_fitted_path(best_params)
+
+    print("Best-fit parameters:", best_params)
+    print("az_amp0:", best_params["az_amp0"])
+    print("beta_amp0:", best_params["beta_amp0"])
+    print("beta0:", best_params["beta0"])
+    print("beta_coeffs:", best_params["beta_coeffs"])
+    print("az_coeffs:", best_params["az_coeffs"])

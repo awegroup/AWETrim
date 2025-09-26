@@ -10,6 +10,7 @@ from picawe.system.kite import Kite
 from picawe.system.tether import RigidLumpedTether
 from picawe.utils.defaults import PLOT_LABELS
 from picawe.environment.Wind import Wind
+from picawe.kinematics.Lisajous_fitting import Lisajous_fitting
 
 # ---------- Config ----------
 speed_wind_at_100 = 12
@@ -27,25 +28,30 @@ colors = get_color_list()
 with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
     aero_input_v9 = json.load(file)
 
+full_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/ProtoLogger_csv/2025-09-25_11-48-58_ProtoLogger.csv"
+cycle_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/cycles/cycle_data_sheet_lines.csv"
+
+Lisajous_fitting_obj = Lisajous_fitting(file_path_cycle=cycle_path, file_path_full=full_path, cyc_idx=0)
+results, best_params = Lisajous_fitting_obj.LSQ()
+# Lisajous_fitting_obj.plot_fitted_path(best_params)
+
 pattern_config_v9 = {
     "pattern_type": "cst_lissajous",
     "parameters": {
-        "omega": 1.0, #
+        "omega": 1.0,#
         "r0": 200.0,#
-        "az_amp0": 0.34906584042834454,
-        "beta_amp0": 0.08726645309582315,
+        "az_amp0": float(best_params["az_amp0"]),
+        "beta_amp0": float(best_params["beta_amp0"]),
         "width_phi": 0.5,#
         "width_beta": 0.5, #
         "left_first": True,#
         "normalize_bumps": False,#
-        "repeat_phi": True,
-        "repeat_beta": True,
-        "beta_coeffs": np.array(
-            [0.04185004, -0.81050693, 0.01381474, -0.65846845, 0.11087447] # if repeat_beta/coeffs != true use 10 coeffs of a multiple of 2 greater than 5
-        ),
-        "az_coeffs": [0, 0, 0, 0, 0],
+        "repeat_phi": False,
+        "repeat_beta": False,#
+        "beta_coeffs":best_params["beta_coeffs"],
+        "az_coeffs": best_params["az_coeffs"],
         "kbeta": 0,#
-        "beta0": 0.4878886429684,
+        "beta0": float(best_params["beta0"]),
         "kappa": 0,#
         "k_vr": 2716,#
     },
