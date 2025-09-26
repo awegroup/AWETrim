@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
 
 
 
@@ -117,3 +118,23 @@ class ReelInBspline_data_processing:
         y = r * np.cos(el) * np.sin(az)
         z = r * np.sin(el)
         return x, y, z
+
+    def plot_path_3D(self):
+        """3D plot of the full path."""
+        fig = plt.figure()
+        ax = fig.add_subplot(111, projection='3d')
+        ax.plot(self.x_cyc, self.y_cyc, self.z_cyc, label='Cycle Path')
+        ax.plot(self.ri_p0_cart[0], self.ri_p0_cart[1], self.ri_p0_cart[2], 'go', label='Reel-In Start')
+        ax.plot(self.ri_pf_cart[0], self.ri_pf_cart[1], self.ri_pf_cart[2], 'ro', label='Reel-In End')
+        ax.set_xlabel('X (m)')
+        ax.set_ylabel('Y (m)')
+        ax.set_zlabel('Z (m)')
+        ax.legend()
+        plt.show()
+
+if __name__ == "__main__":
+    full_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/ProtoLogger_csv/2025-09-25_11-48-58_ProtoLogger.csv"
+    cycle_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/cycles/cycle_data_sheet_lines.csv"
+
+    obj = ReelInBspline_data_processing(file_path_full=full_path, file_path_cycle=cycle_path, cyc_idx=0)
+    obj.plot_path_3D()

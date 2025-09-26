@@ -52,7 +52,7 @@ pattern_config_v9 = {
     "start_time": 0,
     "end_time": 35,
     "start_angle": np.pi / 2,
-    "end_angle": 2 * np.pi + np.pi / 2,
+    "end_angle": 4 * np.pi + np.pi / 2,
     "n_points": 600,
     "optimization_parameters": [],
 }

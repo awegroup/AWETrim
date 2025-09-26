@@ -1,10 +1,10 @@
 from picawe.kinematics.parametrized_patterns import CST_Lissajous
-from picawe.kinematics.Lisajous_data_processing import Lisajous_data_processing as Ldata
+from picawe.kinematics.Lisajous_data_processing import Lisajous_data_processing
 import numpy as np
 from scipy.optimize import least_squares
 import matplotlib.pyplot as plt
 
-class Lisajous_fitting(Ldata, CST_Lissajous):
+class Lisajous_fitting(Lisajous_data_processing, CST_Lissajous):
     def __init__(self, file_path_cycle=None, file_path_full=None, cyc_idx=0):
         super().__init__(file_path_cycle=file_path_cycle, file_path_full=file_path_full, cyc_idx=cyc_idx)
 
@@ -103,7 +103,9 @@ if __name__ == "__main__":
     full_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/ProtoLogger_csv/2025-09-25_11-48-58_ProtoLogger.csv"
     cycle_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/cycles/cycle_data_sheet_lines.csv"
 
-    obj = Ldata(file_path_cycle=cycle_path, file_path_full=full_path, cyc_idx=0)
+    obj = Lisajous_data_processing(file_path_cycle=cycle_path, file_path_full=full_path, cyc_idx=0)
+    obj.plot_reel_out_path2D()
+    obj.plot_reel_out_path3D()
 
     lsq_obj = Lisajous_fitting(file_path_cycle=cycle_path, file_path_full=full_path, cyc_idx=0)
     results, best_params = lsq_obj.LSQ()
