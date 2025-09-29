@@ -1,22 +1,22 @@
 {
   "model": "coeffs",
   "params": {
-    "CD0": 0.13,
-    "CL0": 0.16934083409422257,
-    "angle_pitch_depower_0": -0.135,
-    "delta_pitch_depower": -0.2
+    "CD0": 0.128,
+    "CL0":  0.04407898,
+    "angle_pitch_depower_0": -0.088,
+    "delta_pitch_depower": -0.16
   },
   "coefficients": {
     "CL": [
       {
         "var": "alpha",
         "power": 1,
-        "coef": 5.692295973517609
+        "coef": 5.55169882
       },
       {
         "var": "alpha",
         "power": 2,
-        "coef": -10.786064463184369
+        "coef": -9.17491716
       },
       {
         "var": "u_s",
@@ -33,22 +33,22 @@
       {
         "var": "alpha",
         "power": 1,
-        "coef": -0.18136235930875094
+        "coef": -0.16993541
       },
       {
         "var": "alpha",
         "power": 2,
-        "coef": 1.7913118043970895
+        "coef": 1.5264741
       },
       {
         "var": "u_s",
         "power": 1,
-        "coef": 0.044
+        "coef": 0.027
       },
       {
         "var": "u_p",
         "power": 1,
-        "coef": 0.008
+        "coef": 0.015
       }
     ],
     "CS": [
@@ -57,6 +57,6 @@
         "power": 1,
         "coef": 0.35
       }
-    ]	
+    ]
   }
 }

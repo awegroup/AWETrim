@@ -2,88 +2,88 @@ import numpy as np
 import matplotlib.pyplot as plt
 import json
 import pandas as pd
+from picawe.utils.color_palette import set_plot_style_no_latex, get_color_list
+from picawe.utils.fitting import fit_and_evaluate_model
+
+set_plot_style_no_latex()
+colors = get_color_list()
+save_folder = "./results/figures/translational_paper/"
 
 
-CL_mean_powered = 0.83
+CL_mean_powered = 0.95
 CD_mean_powered = 0.16
-CL_mean_powered_steer = 0.78
-CD_mean_powered_steer = 0.17
-CL_mean_depowered = 0.32
-CD_mean_depowered = 0.05
+CL_mean_powered_steer = 0.63
+CD_mean_powered_steer = 0.18
+CL_mean_depowered = 0.35
+CD_mean_depowered = 0.09
 
 
 # --- Load experimental data ---
 polars_path = (
-    r"c:\Users\ocayon\Repositories\quasi-steady-awes\data\LEI-V9-KITE\polars.csv"
+    r"c:\Users\ocayon\Repositories\quasi-steady-awes\data\LEI-V9-KITE\polars_VSM.csv"
 )
 df = pd.read_csv(polars_path, comment="/")  # skip comment lines if any
 
-alpha_exp = np.radians(df["angle_of_attack_deg"])
-CL_exp = df["CL"]
-CD_exp = df["CD"]
+alpha_VSM = np.radians(df["angle_of_attack_deg"])
+CL_VSM = df["CL"]
+CD_VSM = df["CD"]
+LD_max_VSM = np.max(CL_VSM / CD_VSM)
+print(f"Max L/D VSM: {LD_max_VSM}")
 
-# --- Load first JSON model ---
-with open(
-    r"c:\Users\ocayon\Repositories\quasi-steady-awes\data\LEI-V9-KITE\v9_aero_input.json",
-    "r",
-) as f:
-    aero1 = json.load(f)
+dependencies = [
+    "np.ones(len(alpha))",
+    "alpha",
+    "alpha**2",
+]
+# Fit lift coeffcients
+fit_cl = fit_and_evaluate_model(
+    CL_VSM,
+    dependencies=dependencies,
+    alpha=alpha_VSM,
+)
+print("Fit CL VSM:")
+print(fit_cl["coeffs"])
+# Fit drag coeffcients
+fit_cd = fit_and_evaluate_model(
+    CD_VSM,
+    dependencies=dependencies,
+    alpha=alpha_VSM,
+)
+print("Fit CD VSM:")
+print(fit_cd["coeffs"])
 
-params1 = aero1["params"]
-coeffs1 = aero1["coefficients"]
+c0, c1, c2 = fit_cd["coeffs"]
 
-# --- (Optional) Load second JSON model ---
-with open(
-    r"c:\Users\ocayon\Repositories\quasi-steady-awes\data\LEI-V9-KITE\v9_VSM_aero_input.json",
-    "r",
-) as f:
-    aero2 = json.load(f)
-params2 = aero2["params"]
-coeffs2 = aero2["coefficients"]
+c0 = c0 + 0.105
+corr_factor = 1.6994209396860733
+print(f"Correction factor: {corr_factor}")
+coeffs_VSM_corrected = np.array([c0, c1, c2])
+print("Corrected VSM CD coeffs:")
+print(coeffs_VSM_corrected)
 
 # --- Define alpha range for model curves ---
-alpha_model = np.linspace(np.min(alpha_exp), np.max(alpha_exp), 200)
+alpha_model = np.linspace(-np.radians(5), np.max(alpha_VSM), 200)
 
 
-def compute_coeffs(alpha, params, coeffs, u_s=0, u_p=0):
-    CL = params.get("CL0", 0)
-    CD = params.get("CD0", 0)
-    for term in coeffs["CL"]:
-        if term["var"] == "alpha":
-            CL += term["coef"] * alpha ** term["power"]
-        elif term["var"] == "u_s":
-            CL += term["coef"] * u_s ** term["power"]
-        elif term["var"] == "u_p":
-            CL += term["coef"] * u_p ** term["power"]
-    for term in coeffs["CD"]:
-        if term["var"] == "alpha":
-            CD += term["coef"] * alpha ** term["power"]
-        elif term["var"] == "u_s":
-            CD += term["coef"] * u_s ** term["power"]
-        elif term["var"] == "u_p":
-            CD += term["coef"] * u_p ** term["power"]
-    return CL, CD
+def compute_coeffs(alpha, coeffs):
+    CL = coeffs[0] + coeffs[1] * alpha + coeffs[2] * alpha**2
+    return CL
 
 
 # --- Compute model curves ---
-CL1, CD1 = compute_coeffs(alpha_model, params1, coeffs1)
-CL2, CD2 = compute_coeffs(alpha_model, params2, coeffs2)
-CL1_depowered, CD1_depowered = compute_coeffs(
-    alpha_model, params1, coeffs1, u_p=1
-)  # up=1 (fully depowered)
-CL1_steered, CD1_steered = compute_coeffs(
-    alpha_model, params1, coeffs1, u_s=1, u_p=0
-)  # us=1 (fully steered)
+CL_VSM_fit = compute_coeffs(alpha_model, fit_cl["coeffs"])
+CD_VSM_fit = compute_coeffs(alpha_model, fit_cd["coeffs"])
+CD_VSM_fit_corrected = compute_coeffs(alpha_model, coeffs_VSM_corrected)
+
 
 # --- Plot ---
 plt.figure(figsize=(10, 5))
 
 plt.subplot(1, 2, 1)
-plt.plot(np.degrees(alpha_exp), CL_exp, "o", label="VSM CL")
-plt.plot(np.degrees(alpha_model), CL1, "-", label="Corrected Powered CL")
-plt.plot(np.degrees(alpha_model), CL2, "--", label="Fit VSM CL")
-plt.plot(np.degrees(alpha_model), CL1_depowered, "-.", label="Corrected Depowered CL")
-plt.plot(np.degrees(alpha_model), CL1_steered, ":", label="Corrected Steered CL")
+plt.plot(np.degrees(alpha_VSM), CL_VSM, "o", label="VSM CL")
+plt.plot(np.degrees(alpha_model), CL_VSM_fit, "-", label="Corrected Powered CL")
+
+
 plt.xlabel("Angle of Attack (deg)")
 plt.ylabel("CL")
 plt.title("Lift Coefficient")
@@ -91,11 +91,9 @@ plt.legend()
 plt.grid(True)
 
 plt.subplot(1, 2, 2)
-plt.plot(np.degrees(alpha_exp), CD_exp, "o", label="VSM CD")
-plt.plot(np.degrees(alpha_model), CD1, "-", label="Corrected Powered CD")
-plt.plot(np.degrees(alpha_model), CD2, "--", label="Fit VSM CD")
-plt.plot(np.degrees(alpha_model), CD1_depowered, "-.", label="Corrected Depowered CD")
-plt.plot(np.degrees(alpha_model), CD1_steered, ":", label="Corrected Steered CD")
+plt.plot(np.degrees(alpha_VSM), CD_VSM, "o", label="VSM CD")
+plt.plot(np.degrees(alpha_model), CD_VSM_fit, "-", label="Corrected Powered CD")
+plt.plot(np.degrees(alpha_model), CD_VSM_fit_corrected, "-.", label="Corrected VSM CD")
 plt.xlabel("Angle of Attack (deg)")
 plt.ylabel("CD")
 plt.title("Drag Coefficient")
@@ -106,68 +104,64 @@ plt.tight_layout()
 # plt.show()
 
 # --- Plot CL vs CD with mean markers ---
-plt.figure(figsize=(7, 6))
-plt.plot(CD_exp, CL_exp, "o", label="VSM CL vs CD")
-plt.plot(CD1, CL1, "-", label="Corrected Powered CL vs CD")
-plt.plot(CD2, CL2, "--", label="Fit VSM CL vs CD")
-plt.plot(CD1_depowered, CL1_depowered, "-.", label="Corrected Depowered CL vs CD")
-plt.plot(CD1_steered, CL1_steered, ":", label="Corrected Steered CL vs CD")
+plt.figure(figsize=(6, 4))
+plt.plot(CD_VSM, CL_VSM, "o", label="VSM", color=colors[0])
+plt.plot(CD_VSM_fit, CL_VSM_fit, "-", label="VSM_fit", color=colors[2])
+plt.plot(CD_VSM_fit_corrected, CL_VSM_fit, "--", label="Corrected VSM", color=colors[1])
 
 # Mark mean powered and depowered points
-plt.plot(CD_mean_powered, CL_mean_powered, "rs", label="Mean Powered", markersize=8)
 plt.plot(
-    CD_mean_powered_steer,
-    CL_mean_powered_steer,
-    "go",
-    label="Mean Powered Steered",
+    CD_mean_powered,
+    CL_mean_powered,
+    "s",
+    color=colors[2],
+    label="Mean Powered Exp.",
     markersize=8,
 )
+# plt.plot(
+#     CD_mean_powered_steer,
+#     CL_mean_powered_steer,
+#     "s",
+#     color=colors[5],
+#     label="Mean Powered Steered Exp.",
+#     markersize=8,
+# )
 plt.plot(
-    CD_mean_depowered, CL_mean_depowered, "bs", label="Mean Depowered", markersize=8
+    CD_mean_depowered,
+    CL_mean_depowered,
+    "s",
+    label="Mean Depowered Exp.",
+    markersize=8,
+    color=colors[3],
 )
 
-plt.xlabel("CD")
-plt.ylabel("CL")
-plt.title("CL vs CD Polar")
+plt.xlabel("$C_D$")
+plt.ylabel("$C_L$")
 plt.legend()
 plt.grid(True)
 plt.tight_layout()
+# Save the figure as pdf
+plt.savefig(save_folder + "polars_comparison.pdf", bbox_inches="tight")
 
 
 # Plot CL**3/CD**2 and CL/CD vs angle of attack
 plt.figure(figsize=(10, 5))
-magnitude = np.sqrt(CL1**2 / CD1**2 + 1) * (CL1**2 / CD1 + CD1)
+
 plt.subplot(1, 2, 1)
 plt.plot(
-    np.degrees(alpha_exp),
-    (CL_exp**3) / (CD_exp**2),
+    np.degrees(alpha_VSM),
+    (CL_VSM**3) / (CD_VSM**2),
     "o",
     label="VSM CL^3/CD^2",
 )
 plt.plot(
     np.degrees(alpha_model),
-    magnitude,
+    CL_VSM_fit**3 / CD_VSM_fit**2,
     "-",
     label="Corrected Powered CL^3/CD^2",
 )
-plt.plot(
-    np.degrees(alpha_model),
-    (CL2**3) / (CD2**2),
-    "--",
-    label="Fit VSM CL^3/CD^2",
-)
-plt.plot(
-    np.degrees(alpha_model),
-    (CL1_depowered**3) / (CD1_depowered**2),
-    "-.",
-    label="Corrected Depowered CL^3/CD^2",
-)
-plt.plot(
-    np.degrees(alpha_model),
-    (CL1_steered**3) / (CD1_steered**2),
-    ":",
-    label="Corrected Steered CL^3/CD^2",
-)
+
+
 plt.xlabel("Angle of Attack (deg)")
 plt.ylabel("CL^3 / CD^2")
 plt.title("CL^3 / CD^2 vs Angle of Attack")
@@ -175,34 +169,23 @@ plt.legend()
 plt.grid(True)
 plt.subplot(1, 2, 2)
 plt.plot(
-    np.degrees(alpha_exp),
-    CL_exp / CD_exp,
+    np.degrees(alpha_VSM),
+    CL_VSM / CD_VSM,
     "o",
     label="VSM CL/CD",
 )
 plt.plot(
     np.degrees(alpha_model),
-    CL1 / CD1,
+    CL_VSM_fit / CD_VSM_fit,
     "-",
-    label="Corrected Powered CL/CD",
+    label="Fit VSM",
 )
+
 plt.plot(
     np.degrees(alpha_model),
-    CL2 / CD2,
-    "--",
-    label="Fit VSM CL/CD",
-)
-plt.plot(
-    np.degrees(alpha_model),
-    CL1_depowered / CD1_depowered,
-    "-.",
-    label="Corrected Depowered CL/CD",
-)
-plt.plot(
-    np.degrees(alpha_model),
-    CL1_steered / CD1_steered,
-    ":",
-    label="Corrected Steered CL/CD",
+    CL_VSM_fit / CD_VSM_fit_corrected,
+    "x",
+    label="Corrected VSM",
 )
 plt.xlabel("Angle of Attack (deg)")
 plt.ylabel("CL / CD")
