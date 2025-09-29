@@ -15,6 +15,7 @@ import matplotlib.pyplot as plt
 from picawe.utils.color_palette import set_plot_style
 from picawe.utils.defaults import PLOT_LABELS
 from validation_utils import read_results, read_results_from_hdf5, read_dict_from_group
+from scipy.ndimage import gaussian_filter1d
 
 
 results, flight_data, config_data = read_results("2023", "11", "27", "v9", addition="")
@@ -103,7 +104,7 @@ for aero_file, label in zip(aero_files, aero_labels):
     with open(aero_file, "r") as file:
         aero_input = json.load(file)
 
-    tether = RigidLumpedTether(diameter=0.01)
+    tether = RigidLumpedTether(diameter=0.014)
     wind_model = Wind(
         wind_model="logarithmic",
         z0=0.01,  # Roughness length
@@ -145,6 +146,9 @@ for aero_file, label in zip(aero_files, aero_labels):
     aoa_func = kite_model.extract_function("angle_of_attack")
     tension_func = kite_model.extract_function("tension_tether_ground")
     speed_apparent_wind_func = kite_model.extract_function("speed_apparent_wind")
+    pitch_bridle_func = kite_model.extract_function("pitch_bridle")
+    pitch_aero_func = kite_model.extract_function("angle_pitch_aerodynamic")
+    roll_aero_func = kite_model.extract_function("angle_roll_aerodynamic")
 
     count = 0
 
@@ -180,6 +184,7 @@ for aero_file, label in zip(aero_files, aero_labels):
                 h_high - h_low
             )
         # Apply the log-law formula
+        # wind_speed = results["wind_speed_horizontal"][i]
         uf = (
             wind_speed
             * kite_model.wind.kappa
@@ -225,6 +230,21 @@ for aero_file, label in zip(aero_files, aero_labels):
                         state_combined[name]
                         for name in speed_apparent_wind_func.name_in()
                     ]
+                )
+            )
+            state_combined["pitch_bridle"] = float(
+                pitch_bridle_func(
+                    *[state_combined[name] for name in pitch_bridle_func.name_in()]
+                )
+            )
+            state_combined["angle_pitch_aerodynamic"] = float(
+                pitch_aero_func(
+                    *[state_combined[name] for name in pitch_aero_func.name_in()]
+                )
+            )
+            state_combined["angle_roll_aerodynamic"] = float(
+                roll_aero_func(
+                    *[state_combined[name] for name in roll_aero_func.name_in()]
                 )
             )
             state_combined["time"] = row.time
@@ -802,12 +822,25 @@ def plot_main_results_comparison(
         flight_data["ground_tether_force"] / 1000,
         color=colors[0],
     )
+    pitch_ekf = -np.degrees(results["kite_pitch"] - results["tether_pitch"])
+    roll_ekf = -np.degrees(results["kite_roll"] - results["tether_roll"])
+
+    pitch_ekf_smooth = gaussian_filter1d(pitch_ekf, sigma=3)
+    roll_ekf_smooth = gaussian_filter1d(roll_ekf, sigma=3)
+
     ax5.plot(
         flight_data["time"],
-        flight_data["kcu_actual_steering"] / max(flight_data["kcu_actual_steering"]),
+        pitch_ekf_smooth,
         color=colors[0],
+        label="Kite pitch EKF",
     )
-
+    ax5.plot(
+        flight_data["time"],
+        roll_ekf_smooth,
+        color=colors[0],
+        label="Kite roll EKF",
+        linestyle="--",
+    )
     # Plot results for aerodynamic models
     for i, (label, solutions_df) in enumerate(all_solutions.items()):
         color = colors[i + 1]
@@ -825,8 +858,17 @@ def plot_main_results_comparison(
         )
         ax5.plot(
             solutions_df["time"],
-            -solutions_df["input_steering"],
+            -np.degrees(solutions_df["pitch_bridle"])
+            + np.degrees(solutions_df["angle_pitch_aerodynamic"]),
             color=color,
+            label="Kite pitch QS",
+        )
+        ax5.plot(
+            solutions_df["time"],
+            np.degrees(solutions_df["angle_roll_aerodynamic"]),
+            color=color,
+            linestyle="--",
+            label="Aerodynamic roll QS",
         )
     axs = [ax3, ax4, ax5]
     # Add phase shading to all subplots
