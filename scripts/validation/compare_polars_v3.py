@@ -10,12 +10,12 @@ colors = get_color_list()
 save_folder = "./results/figures/translational_paper/"
 
 
-CL_mean_powered = 0.7
-CD_mean_powered = 0.14
+CL_mean_powered = 0.64
+CD_mean_powered = 0.15
 CL_mean_powered_steer = 0.63
 CD_mean_powered_steer = 0.16
-CL_mean_depowered = 0.44
-CD_mean_depowered = 0.14
+CL_mean_depowered = 0.39
+CD_mean_depowered = 0.11
 
 
 # --- Load experimental data ---
@@ -84,7 +84,7 @@ c0_wt, c1_wt, c2_wt = fit_cd_WT["coeffs"]
 
 corr_factor = LD_max_VSM / LD_max_WT
 print(f"Correction factor: {corr_factor}")
-coeffs_VSM_corrected = np.array([c0 + 0.085, c1, c2])
+coeffs_VSM_corrected = np.array([c0 + 0.1, c1, c2])
 print("Corrected VSM CD coeffs:")
 print(coeffs_VSM_corrected)
 

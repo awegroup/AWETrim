@@ -123,6 +123,9 @@ flight_data["up"] = (flight_data["up"] - flight_data["up"].min()) / (
 )
 
 course_rate = np.gradient(np.unwrap(flight_data.kite_course), flight_data.time)
+course_rate = gaussian_filter1d(course_rate, sigma=3)
+plt.plot(flight_data.time, course_rate)
+plt.show()
 flight_data["course_rate"] = course_rate
 # Run simulation for both aerodynamic models
 aero_files = [
@@ -140,10 +143,10 @@ for aero_file, label in zip(aero_files, aero_labels):
     tether = RigidLumpedTether(diameter=0.01)
     wind_model = Wind(wind_model="logarithmic", z0=0.1)
     kite = Kite(
-        mass_wing=12,
+        mass_wing=14,  # 14,
         area_wing=20,
         aero_input=aero_input,
-        mass_kcu=25,
+        mass_kcu=16,
         steering_control="asymmetric",
     )
     kite_model = SystemModel(
@@ -722,8 +725,8 @@ def plot_main_results_comparison(
     )
     # Smooth the EKF pitch and roll signals for clearer plots
 
-    pitch_ekf = -np.degrees(results["kite_pitch"] - results["tether_pitch"])
-    roll_ekf = -np.degrees(results["kite_roll"] - results["tether_roll"])
+    pitch_ekf = -np.degrees(results["kite_pitch"] - results["radial_pitch"])
+    roll_ekf = -np.degrees(results["kite_roll"] - results["radial_roll"])
 
     pitch_ekf_smooth = gaussian_filter1d(pitch_ekf, sigma=3)
     roll_ekf_smooth = gaussian_filter1d(roll_ekf, sigma=3)
