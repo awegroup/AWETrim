@@ -1,4 +1,3 @@
-from picawe.kinematics.ReelInBspline_data_processing import ReelInBspline_data_processing
 from picawe.kinematics.Lisajous_data_processing import Lisajous_data_processing
 import numpy as np
 import matplotlib.pyplot as plt

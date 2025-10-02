@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 
 
 
-class ReelInBspline_data_processing:
+class RI_data_processing:
 
     # something0 or somethingf means the start or end 0 for start and f for final
     # p - point eg. p0 start point
@@ -136,5 +136,5 @@ if __name__ == "__main__":
     full_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/ProtoLogger_csv/2025-09-25_11-48-58_ProtoLogger.csv"
     cycle_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/cycles/cycle_data_sheet_lines.csv"
 
-    obj = ReelInBspline_data_processing(file_path_full=full_path, file_path_cycle=cycle_path, cyc_idx=0)
+    obj = RI_data_processing(file_path_full=full_path, file_path_cycle=cycle_path, cyc_idx=0)
     obj.plot_path_3D()

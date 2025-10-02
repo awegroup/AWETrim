@@ -1,10 +1,10 @@
 import numpy as np
 from scipy.optimize import least_squares
-from picawe.kinematics.ReelInBspline_data_processing import ReelInBspline_data_processing as ribdata
-from picawe.kinematics.ReelInBspline_build import ReelInBspline_build as ribbuild
+from picawe.kinematics.RI_data_processing import RI_data_processing as ribdata
+from picawe.kinematics.Bspline_build import Bspline_build as ribbuild
 import casadi as ca
 
-class ReelInBspline_fitting(ribdata, ribbuild):
+class RI_fitting(ribdata, ribbuild):
     """
     B-spline fitting class using CasADi, fully leveraging the existing build class.
     """

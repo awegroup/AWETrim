@@ -4,7 +4,7 @@ import casadi as ca
 # -------------------------------
 # Spline Building
 # -------------------------------
-class ReelInBspline_build():
+class Bspline_build():
 
     # something0 or somethingf means the start or end 0 for start and f for final
     # p - point eg. p0 start point

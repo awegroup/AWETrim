@@ -1,4 +1,4 @@
-from picawe.kinematics.ReelInBspline_plotting import ReelInBspline_plotting as ribplot
+from picawe.kinematics.RI_plotting import RI_plotting as plot
 
 # -------------------------------
 # Main script
@@ -17,7 +17,7 @@ if __name__ == "__main__":
     eps_knot = 0.01  # minimum knot spacing
 
     # Create the plotting object
-    plotter = ribplot(full_path, cycle_path, cyc_idx,
+    plotter = plot(full_path, cycle_path, cyc_idx,
                                     p, n_ctrl, c_penalty, v_penalty, eps_knot)
     
     plotter.plot_spline_fit_cart()

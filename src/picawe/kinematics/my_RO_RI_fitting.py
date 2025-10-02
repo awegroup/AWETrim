@@ -1,10 +1,10 @@
-from picawe.kinematics.ReelInBspline_build import ReelInBspline_build
+from picawe.kinematics.Bspline_build import Bspline_build
 from picawe.kinematics.my_RO_RI_data_processing import RO_RI_data_processing
 import numpy as np
 from scipy.optimize import least_squares
 import matplotlib.pyplot as plt
 
-class RO_RI_fitting(RO_RI_data_processing, ReelInBspline_build):
+class RO_RI_fitting(RO_RI_data_processing, Bspline_build):
     def __init__(self, file_path_full=None, file_path_cycle=None, cyc_idx=0, p=3, n_ctrl=6,
                  c_penalty=0.0, v_penalty=0.0, eps_knot=1e-3):
         super().__init__(file_path_full, file_path_cycle, cyc_idx)
@@ -82,7 +82,7 @@ class RO_RI_fitting(RO_RI_data_processing, ReelInBspline_build):
         lb = np.concatenate([lb_C, lb_du])
         ub = np.concatenate([ub_C, ub_du])
 
-        builder = ReelInBspline_build()
+        builder = Bspline_build()
         builder.n_ctrl = self.n_ctrl
         builder.p = self.p
         builder.dim = self.dim
@@ -156,7 +156,7 @@ class RO_RI_fitting(RO_RI_data_processing, ReelInBspline_build):
     def plot_fitted_path(self, mode="cartesian"):
         # Evaluate numerically
 
-        builder = ReelInBspline_build()
+        builder = Bspline_build()
         builder.n_ctrl = self.n_ctrl
         builder.p = self.p
         builder.u_vals = self.u_vals

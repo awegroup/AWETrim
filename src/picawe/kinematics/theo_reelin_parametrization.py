@@ -4,7 +4,8 @@ import casadi as ca
 import matplotlib.pyplot as plt
 from picawe.kinematics.Kinematics import ParametrizedKinematics
 from picawe.system.system_model import SystemModel
-from picawe.kinematics.ReelInBspline_fitting import ReelInBspline_fitting as ribfit
+from picawe.kinematics.RI_fitting import RI_fitting as ribfit
+from picawe .kinematics.Bspline_build import Bspline_build
 
 # =========================================================
 # Base class: angles-only pattern (radians) + numeric eval
@@ -68,7 +69,7 @@ class ParametrizedPatternsAngles:
 # -------------------------------
 # B-spline class compatible with ParametrizedPatternsAngles
 # -------------------------------
-class ReelInBspline_v2(ParametrizedPatternsAngles):
+class Bspline(ParametrizedPatternsAngles, Bspline_build):
     """
     B-spline in φ(u), β(u) (spherical) or x(u),y(u),z(u) (cartesian),
     compatible with ParametrizedPatternsAngles interface.
@@ -87,10 +88,9 @@ class ReelInBspline_v2(ParametrizedPatternsAngles):
                  betaf=0, 
                  C_interior=None, 
                  u_vals=None, 
-                 U_interior=None,
-                 mode="spherical"):
+                 U_interior=None):
 
-        self.dim = 2 if mode == "spherical" else 3
+        self.dim = 2
         self.p = p
         self.n_ctrl = n_ctrl
 
@@ -126,47 +126,6 @@ class ReelInBspline_v2(ParametrizedPatternsAngles):
         self.u_vals = np.linspace(0, 1, 100) if u_vals is None else u_vals
 
         self.spline_func = self.build_bspline_symbolic()
-
-    # -------------------------------
-    # B-spline basis symbolic function
-    # -------------------------------
-    def Nvec_symbolic(self):
-        u_sym = ca.MX.sym("u")
-        U_sym = ca.MX.sym("U", self.n_ctrl + self.p + 1)
-        n_ctrl = self.n_ctrl
-        p = self.p
-
-        def N(i, k, u):
-            if k == 0:
-                return ca.if_else(ca.logic_and(U_sym[i] <= u, u <= U_sym[i+1]), 1.0, 0.0)
-            left = ca.if_else(U_sym[i+k] > U_sym[i],
-                              (u - U_sym[i]) / (U_sym[i+k]-U_sym[i]) * N(i, k-1, u),
-                              0)
-            right = ca.if_else(U_sym[i+k+1] > U_sym[i+1],
-                               (U_sym[i+k+1]-u)/(U_sym[i+k+1]-U_sym[i+1]) * N(i+1, k-1, u),
-                               0)
-            return left + right
-
-        Nvec_sym = ca.vertcat(*[N(i, p, u_sym) for i in range(n_ctrl)]).T
-        return ca.Function("N_func", [u_sym, U_sym], [Nvec_sym], ["u","U"], ["Nvec"])
-
-    # -------------------------------
-    # Build symbolic spline S(u) = N(u,U)*C
-    # -------------------------------
-    def build_bspline_symbolic(self, return_derivative=True):
-        C_sym = ca.MX.sym("C", self.n_ctrl, self.dim)
-        u_sym = ca.MX.sym("u")
-        U_sym = ca.MX.sym("U", self.n_ctrl + self.p + 1)
-
-        N_func = self.Nvec_symbolic()
-        S_sym = ca.mtimes(N_func(u_sym, U_sym), C_sym)
-        dS_sym = ca.jacobian(S_sym, u_sym) if return_derivative else None
-
-        return ca.Function("spline_func",
-                           [C_sym, u_sym, U_sym],
-                           [S_sym, dS_sym],
-                           ["C","u","U"],
-                           ["S","dS"])
 
     def azimuth(self, r, s):
         res = self.spline_func(C=self.C, u=s, U=self.U)
@@ -220,9 +179,7 @@ if __name__ == "__main__":
     # U_interior = None
     # u_vals = None
 
-    mode = "spherical"  # "spherical" or "cartesian"
-
-    pat = ReelInBspline_v2(
+    pat = Bspline(
         p=fitted.p,
         n_ctrl=fitted.n_ctrl,
         r0=300.0,
@@ -233,9 +190,9 @@ if __name__ == "__main__":
         phif=fitted.ri_pf_sph[0],
         beta0=fitted.ri_p0_sph[1],
         betaf=fitted.ri_pf_sph[1],
-        C_interior=fitted.C_sph[1:-1] if mode=="spherical" else fitted.C_cart[1:-1],
+        C_interior=fitted.C_sph[1:-1],
         u_vals=u,
-        U_interior=fitted.U_sph[fitted.p+1:-(fitted.p+1)] if mode=="spherical" else fitted.U_cart
+        U_interior=fitted.U_sph[fitted.p+1:-(fitted.p+1)]
     )
 
     # Create kinematics object

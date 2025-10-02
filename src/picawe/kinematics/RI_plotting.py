@@ -1,13 +1,13 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from picawe.kinematics.ReelInBspline_fitting import ReelInBspline_fitting as ribfit
-from picawe.kinematics.ReelInBspline_build import ReelInBspline_build as ribbuild
+from picawe.kinematics.RI_fitting import RI_fitting as ribfit
+from picawe.kinematics.Bspline_build import Bspline_build as build
 import casadi as ca
 
 # -------------------------------
 # Plotting
 # -------------------------------
-class ReelInBspline_plotting(ribfit, ribbuild):
+class RI_plotting(ribfit, build):
 
     # something0 or somethingf means the start or end 0 for start and f for final
     # p - point eg. p0 start point
@@ -35,7 +35,7 @@ class ReelInBspline_plotting(ribfit, ribbuild):
         if self.C_cart is None or self.U_cart is None:
             raise ValueError("Run fit_spline(mode='cartesian') before plotting.")
 
-        builder = ribbuild()
+        builder = build()
         builder.n_ctrl = self.n_ctrl
         builder.p = self.p
         builder.dim = 3
@@ -73,7 +73,7 @@ class ReelInBspline_plotting(ribfit, ribbuild):
         if self.az_ri is None or self.el_ri is None:
             raise ValueError("Run get_ri_ro_boundaries() before plotting.")
 
-        builder = ribbuild()
+        builder = build()
         builder.n_ctrl = self.n_ctrl
         builder.p = self.p
         builder.dim = 2

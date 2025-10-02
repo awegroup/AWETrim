@@ -1,4 +1,4 @@
-from picawe.kinematics.ReelInBspline_data_processing import ReelInBspline_data_processing as ribdata
+from picawe.kinematics.RI_data_processing import RI_data_processing as ribdata
 import numpy as np
 import matplotlib.pyplot as plt
 
