@@ -5,7 +5,7 @@ from picawe import SystemModel
 from picawe.kinematics.Kinematics_with_new_spline_based_code import ParametrizedKinematics
 import casadi as ca
 import numpy as np
-from picawe.utils.defaults import DEFAULT_PATTERN_CONFIG, DEFAULT_OPTI_LIMITS
+from picawe.utils.defaults_and_spline import DEFAULT_SPLINE_PATTERN_CONFIG, DEFAULT_OPTI_LIMITS
 import copy
 from picawe.system.tether import RigidLinkTether
 from picawe import State
@@ -22,7 +22,7 @@ class ReelinPhase(TimeSeries):
         self,
         kite_model: SystemModel,
         quasi_steady: bool = False,
-        pattern_config: dict = DEFAULT_PATTERN_CONFIG,
+        pattern_config: dict = DEFAULT_SPLINE_PATTERN_CONFIG,
     ):
         """
         Args:
