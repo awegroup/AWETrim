@@ -223,6 +223,11 @@ class Kite(Wing):
             center_aerodynamic_wing  # Center of aerodynamic pressure
         )
         self.center_gravity_wing = center_gravity_wing  # Center of gravity
+
+        # Add these missing symbolic variables
+        self.pitch_kcu = ca.MX.sym("pitch_kcu")
+        self.roll_kcu = ca.MX.sym("roll_kcu")
+
         self._override_gravity = False
         self._override_centripetal = False
         self._override_coriolis = False

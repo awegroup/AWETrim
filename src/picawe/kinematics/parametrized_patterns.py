@@ -640,7 +640,7 @@ class Bspline(ParametrizedPatternsAngles):
 
         N_func = self.Nvec_symbolic()
         S_sym = ca.mtimes(N_func(u_sym, U_sym), C_sym)
-        dS_sym = ca.jacobian(S_sym, u_sym) if return_derivative else None
+        dS_sym = ca.jacobian(S_sym, u_sym).T if return_derivative else None
 
         return ca.Function("spline_func",
                            [C_sym, u_sym, U_sym],

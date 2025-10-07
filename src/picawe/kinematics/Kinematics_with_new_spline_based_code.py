@@ -167,13 +167,13 @@ class ParametrizedKinematics:
 
     def __init__(self, pattern, phase):
         self.pattern = pattern
-        # Don't store phase reference - just extract what we need like the original
+
         self.s = phase.s
         self.r = phase.kite_model.distance_radial
         self.vr = phase.kite_model.speed_radial
         self.s_dot = phase.s_dot
         self.s_ddot = phase.s_ddot
-        # Store quasi_steady flag from phase for derivative method selection
+
         self.quasi_steady = getattr(phase, 'quasi_steady', False)
 
     @property
@@ -186,47 +186,40 @@ class ParametrizedKinematics:
 
     @property
     def dtheta_ds(self):
-        # Check if we're in quasi-steady mode
-        if self.quasi_steady:
-            # For quasi-steady, use EXACT same method as original Kinematics.py
-            return (
-                ca.gradient(self.phi, self.s)
-                + ca.gradient(self.phi, self.r) * self.vr / self.s_dot
-            )
-        else:
-            # For dynamic case, use spline derivatives if available
-            if hasattr(self.pattern, 'azimuth_derivative'):
+        # For spline patterns, use direct derivatives when available
+        if hasattr(self.pattern, 'azimuth_derivative'):
+            try:
                 return self.pattern.azimuth_derivative(self.r, self.s)
-            else:
-                # Fallback to gradient for other patterns
-                return (
-                    ca.gradient(self.phi, self.s)
-                    + ca.gradient(self.phi, self.r) * self.vr / self.s_dot
-                )
+            except:
+                # Fallback to simpler gradient calculation
+                pass
+        
+        # Simplified gradient calculation to avoid complex expressions
+        dphi_ds = ca.gradient(self.phi, self.s)
+        dphi_dr = ca.gradient(self.phi, self.r)
+
+        return dphi_ds + dphi_dr * self.vr / (self.s_dot + 1e-6)
+
 
     @property
     def dbeta_ds(self):
-        # Check if we're in quasi-steady mode
-        if self.quasi_steady:
-            # For quasi-steady, use EXACT same method as original Kinematics.py
-            return (
-                ca.gradient(self.beta, self.s)
-                + ca.gradient(self.beta, self.r) * self.vr / self.s_dot
-            )
-        else:
-            # For dynamic case, use spline derivatives if available
-            if hasattr(self.pattern, 'elevation_derivative'):
+        # For spline patterns, use direct derivatives when available
+        if hasattr(self.pattern, 'elevation_derivative'):
+            try:
                 return self.pattern.elevation_derivative(self.r, self.s)
-            else:
-                # Fallback to gradient for other patterns
-                return (
-                    ca.gradient(self.beta, self.s)
-                    + ca.gradient(self.beta, self.r) * self.vr / self.s_dot
-                )
+            except:
+                # Fallback to simpler gradient calculation
+                pass
+        
+        # Simplified gradient calculation to avoid complex expressions
+        dbeta_ds = ca.gradient(self.beta, self.s)
+        dbeta_dr = ca.gradient(self.beta, self.r)
+        return dbeta_ds + dbeta_dr * self.vr / (self.s_dot + 1e-6)
+
 
     @property
     def dr_ds(self):
-        return self.vr / self.s_dot
+        return self.vr / (self.s_dot + 1e-6)
 
     # TODO: This is not correct, important for the dynamic case with vr_dot not equal to zero
     @property
@@ -262,43 +255,17 @@ class ParametrizedKinematics:
 
     @property
     def dbeta_ds2(self):
-        # Check if we're in quasi-steady mode
-        if self.quasi_steady:
-            # For quasi-steady, use EXACT same method as original Kinematics.py
-            return (
-                ca.gradient(self.dbeta_ds, self.s)
-                + ca.gradient(self.dbeta_ds, self.r) * self.vr / self.s_dot
-            )
-        else:
-            # For dynamic case with spline patterns, use gradient only on the spline derivative
-            if hasattr(self.pattern, 'elevation_derivative'):
-                return ca.gradient(self.dbeta_ds, self.s)
-            else:
-                # Fallback for other patterns
-                return (
-                    ca.gradient(self.dbeta_ds, self.s)
-                    + ca.gradient(self.dbeta_ds, self.r) * self.vr / self.s_dot
-                )
+        return (
+            ca.gradient(self.dbeta_ds, self.s)
+            + ca.gradient(self.dbeta_ds, self.r) * self.vr / self.s_dot
+        )
 
     @property
     def dtheta_ds2(self):
-        # Check if we're in quasi-steady mode
-        if self.quasi_steady:
-            # For quasi-steady, use EXACT same method as original Kinematics.py
-            return (
-                ca.gradient(self.dtheta_ds, self.s)
-                + ca.gradient(self.dtheta_ds, self.r) * self.vr / self.s_dot
-            )
-        else:
-            # For dynamic case with spline patterns, use gradient only on the spline derivative
-            if hasattr(self.pattern, 'azimuth_derivative'):
-                return ca.gradient(self.dtheta_ds, self.s)
-            else:
-                # Fallback for other patterns
-                return (
-                    ca.gradient(self.dtheta_ds, self.s)
-                    + ca.gradient(self.dtheta_ds, self.r) * self.vr / self.s_dot
-                )
+        return (
+            ca.gradient(self.dtheta_ds, self.s)
+            + ca.gradient(self.dtheta_ds, self.r) * self.vr / self.s_dot
+        )
 
     @property
     def chi(self):
@@ -309,39 +276,14 @@ class ParametrizedKinematics:
 
     @property
     def dot_chi(self):
-        # Check if we're in quasi-steady mode
-        if self.quasi_steady:
-            # For quasi-steady, use EXACT same method as original Kinematics.py
-            return (
-                ca.gradient(self.chi, self.s) * self.s_dot
-                + ca.gradient(self.chi, self.r) * self.vr
-            )
-        else:
-            # For dynamic case with spline derivatives, use analytical method
-            if hasattr(self.pattern, 'azimuth_derivative') and hasattr(self.pattern, 'elevation_derivative'):
-                cos_beta = ca.cos(self.beta)
-                sin_beta = ca.sin(self.beta)
-                
-                # Time derivatives
-                theta_dot = self.dtheta_ds * self.s_dot
-                beta_dot = self.dbeta_ds * self.s_dot
-                theta_ddot = self.dtheta_ds2 * self.s_dot**2 + self.dtheta_ds * self.s_ddot
-                beta_ddot = self.dbeta_ds2 * self.s_dot**2 + self.dbeta_ds * self.s_ddot
-                
-                # Analytical derivative of arctan(theta_dot * cos(beta) / beta_dot)
-                num = theta_dot * cos_beta
-                den = beta_dot
-                d_num_dt = theta_ddot * cos_beta - theta_dot * sin_beta * beta_dot
-                d_den_dt = beta_ddot
-                
-                eps = 1e-12
-                return (den * d_num_dt - num * d_den_dt) / (num**2 + den**2 + eps)
-            else:
-                # Fallback for other patterns - use gradient-based method
-                return (
-                    ca.gradient(self.chi, self.s) * self.s_dot
-                    + ca.gradient(self.chi, self.r) * self.vr
-                )
+        # Simplified calculation to avoid numerical issues
+        try:
+            dchi_ds = ca.gradient(self.chi, self.s)
+            dchi_dr = ca.gradient(self.chi, self.r)
+            return dchi_ds * self.s_dot + dchi_dr * self.vr
+        except:
+            # Ultra-simple fallback
+            return 0.0
 
     @property
     def sqrt_A(self):

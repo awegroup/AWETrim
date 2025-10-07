@@ -85,7 +85,7 @@ class RI_plotting(ribfit, build):
         spline_func = builder.build_bspline_symbolic()
 
         # Evaluate numerically
-        S_fit_sph, _ = builder.eval_spline(spline_func, builder.C)
+        S_fit_sph, dS_fit_sph = builder.eval_spline(spline_func, builder.C)
 
         # Plot azimuth and elevation
         fig, (ax_az, ax_el) = plt.subplots(1, 2, figsize=(10,4), sharex=True)
@@ -93,6 +93,12 @@ class RI_plotting(ribfit, build):
         ax_az.plot(self.u_vals, S_fit_sph[:,0], "--", label="Azimuth (spline)", color="C1")
         ax_el.plot(self.u_vals, self.el_ri, label="Elevation (data)", color="C0")
         ax_el.plot(self.u_vals, S_fit_sph[:,1], "--", label="Elevation (spline)", color="C1")
+
+        # Derivative plots
+        ax_az.plot(self.u_vals, dS_fit_sph[:,0], ":", label="dAz/du (spline)", color="C2")
+        ax_el.plot(self.u_vals, dS_fit_sph[:,1], ":", label="dEl/du (spline)", color="C2")
+        ax_az.axhline(0, color="gray", alpha=0.3, linestyle="--")
+        ax_el.axhline(0, color="gray", alpha=0.3, linestyle="--")
 
         # Control points
         u_cp = np.linspace(self.u_vals[0], self.u_vals[-1], len(self.C_sph))

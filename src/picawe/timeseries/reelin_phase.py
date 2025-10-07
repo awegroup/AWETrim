@@ -45,8 +45,23 @@ class ReelinPhase(TimeSeries):
         # self.find_optimal_angle_pitch_tether()
 
     def run_simulation(self, start_state, allow_failure=True, return_states=False):
-
-        # print("Starting state:", start_state)
+    
+        # Validate input state
+        if isinstance(start_state, dict):
+            state_obj = State(**start_state)
+        else:
+            state_obj = start_state
+        
+        # Check for NaN/inf values in initial state
+        state_dict = state_obj.to_dict()
+        for key, value in state_dict.items():
+            if isinstance(value, (float, int)) and (np.isnan(value) or np.isinf(value)):
+                print(f"ERROR: Invalid initial value {value} for {key}")
+                if not allow_failure:
+                    raise ValueError(f"Invalid initial state: {key}={value}")
+                return
+        # print("Initial state dictionary created successfully! \n")
+        
         self.substitute_parametrized_kinematics()
         self.states = []
         self.kite_model.reset_solver()
@@ -58,17 +73,38 @@ class ReelinPhase(TimeSeries):
 
         if self.kite_model.is_tether_rigid:
             unknown_vars[0] = "tension_tether_ground"
-        # Initialize state
-        if isinstance(start_state, dict):
-            state_obj = State(**start_state)
-        else:
-            state_obj = start_state
 
         N = self.pattern_config["n_points"]
         time_step = self.pattern_config["end_time"] / self.pattern_config["n_points"]
         intg = self.integrator(time_step=time_step, inputs=None)
-        new_state = self.kite_model.solve_quasi_steady(state_obj, unknown_vars)
+        
+        try:
+            new_state = self.kite_model.solve_quasi_steady(state_obj, unknown_vars)
+            
+            # Check if solve_quasi_steady returned None or invalid state
+            if new_state is None:
+                print("ERROR: solve_quasi_steady returned None")
+                if not allow_failure:
+                    raise RuntimeError("Initial quasi-steady solve failed")
+                return
+            
+            # Validate the new state
+            new_state_dict = new_state.to_dict()
+            for key, value in new_state_dict.items():
+                if isinstance(value, (float, int)) and (np.isnan(value) or np.isinf(value)):
+                    print(f"ERROR: solve_quasi_steady produced invalid value {value} for {key}")
+                    if not allow_failure:
+                        raise ValueError(f"Invalid solved state: {key}={value}")
+                    return
+                
+        except Exception as e:
+            print(f"ERROR in solve_quasi_steady: {e}")
+            if not allow_failure:
+                raise
+            return
+        
         print("New state:", new_state)
+        
         if self.quasi_steady:
             x0 = [new_state.s, new_state.distance_radial, new_state.speed_radial]
             z0 = ca.vertcat(
@@ -158,356 +194,356 @@ class ReelinPhase(TimeSeries):
             z0 = zf
             self.states.append(new_state.to_dict())
 
-    def run_simulation_opti(self, start_state):
+    # def run_simulation_opti(self, start_state):
 
-        self.states = []
-        self.kite_model.reset_solver()
+    #     self.states = []
+    #     self.kite_model.reset_solver()
 
-        N = self.pattern_config["n_points"]
-        time_step = self.pattern_config["end_time"] / N
-        t0 = 0
+    #     N = self.pattern_config["n_points"]
+    #     time_step = self.pattern_config["end_time"] / N
+    #     t0 = 0
 
-        self.run_simulation(start_state, return_states=True)
-        pattern_inputs, pattern = self.substitute_parametrized_kinematics(True)
-        opti = ca.Opti()
-        # pattern_inputs = self.substitute_parametrized_kinematics(True)
+    #     self.run_simulation(start_state, return_states=True)
+    #     pattern_inputs, pattern = self.substitute_parametrized_kinematics(True)
+    #     opti = ca.Opti()
+    #     # pattern_inputs = self.substitute_parametrized_kinematics(True)
 
-        self.optimization_vars = {}  # Store optimization variables
+    #     self.optimization_vars = {}  # Store optimization variables
 
-        # Create optimization variables for parameters to optimize
-        for var in self.pattern_config["optimization_parameters"]:
+    #     # Create optimization variables for parameters to optimize
+    #     for var in self.pattern_config["optimization_parameters"]:
 
-            val = np.atleast_1d(
-                self.pattern_config["parameters"][var]
-            )  # guarantees array, even for scalar
+    #         val = np.atleast_1d(
+    #             self.pattern_config["parameters"][var]
+    #         )  # guarantees array, even for scalar
 
-            if len(val) > 1:
-                self.optimization_vars[var] = opti.variable(len(val))
-            else:
-                self.optimization_vars[var] = (
-                    opti.variable()
-                )  # No bounds if not specified
-            print(var, self.optimization_vars[var])
+    #         if len(val) > 1:
+    #             self.optimization_vars[var] = opti.variable(len(val))
+    #         else:
+    #             self.optimization_vars[var] = (
+    #                 opti.variable()
+    #             )  # No bounds if not specified
+    #         print(var, self.optimization_vars[var])
 
-            # If the optimization variable is a vector, set as a list of variables
-            opt_var = self.optimization_vars[var]
-            setattr(pattern, var, opt_var)
-            print(getattr(pattern, var))
+    #         # If the optimization variable is a vector, set as a list of variables
+    #         opt_var = self.optimization_vars[var]
+    #         setattr(pattern, var, opt_var)
+    #         print(getattr(pattern, var))
 
-        opti_variables = {
-            "s": opti.variable(N + 1),
-            "s_dot": opti.variable(N + 1),
-            "input_steering": opti.variable(N + 1),
-            "tension_tether_ground": opti.variable(N + 1),
-        }
+    #     opti_variables = {
+    #         "s": opti.variable(N + 1),
+    #         "s_dot": opti.variable(N + 1),
+    #         "input_steering": opti.variable(N + 1),
+    #         "tension_tether_ground": opti.variable(N + 1),
+    #     }
 
-        # Add optimization parameters
-        for var in self.optimization_vars:
-            opti_variables[var] = self.optimization_vars[var]
+    #     # Add optimization parameters
+    #     for var in self.optimization_vars:
+    #         opti_variables[var] = self.optimization_vars[var]
 
-        opti.set_initial(opti_variables["s"], self.return_variable("s"))
-        opti.set_initial(opti_variables["s_dot"], self.return_variable("s_dot"))
-        opti.set_initial(
-            opti_variables["input_steering"], self.return_variable("input_steering")
-        )
-        opti.set_initial(
-            opti_variables["tension_tether_ground"],
-            self.return_variable("tension_tether_ground"),
-        )
+    #     opti.set_initial(opti_variables["s"], self.return_variable("s"))
+    #     opti.set_initial(opti_variables["s_dot"], self.return_variable("s_dot"))
+    #     opti.set_initial(
+    #         opti_variables["input_steering"], self.return_variable("input_steering")
+    #     )
+    #     opti.set_initial(
+    #         opti_variables["tension_tether_ground"],
+    #         self.return_variable("tension_tether_ground"),
+    #     )
 
-        opti.subject_to(opti_variables["s"][0] == self.return_variable("s")[0])
-        if not self.quasi_steady:
-            opti.subject_to(
-                opti_variables["s_dot"][0] == self.return_variable("s_dot")[0]
-            )
-        # opti.subject_to(
-        #     opti_variables["input_steering"][0]
-        #     == self.return_variable("input_steering")[0]
-        # )
-        # opti.subject_to(
-        #     opti_variables["tension_tether_ground"][0]
-        #     == self.return_variable("tension_tether_ground")[0]
-        # )
-        T = ca.MX.sym("T")
+    #     opti.subject_to(opti_variables["s"][0] == self.return_variable("s")[0])
+    #     if not self.quasi_steady:
+    #         opti.subject_to(
+    #             opti_variables["s_dot"][0] == self.return_variable("s_dot")[0]
+    #         )
+    #     # opti.subject_to(
+    #     #     opti_variables["input_steering"][0]
+    #     #     == self.return_variable("input_steering")[0]
+    #     # )
+    #     # opti.subject_to(
+    #     #     opti_variables["tension_tether_ground"][0]
+    #     #     == self.return_variable("tension_tether_ground")[0]
+    #     # )
+    #     T = ca.MX.sym("T")
 
-        if self.quasi_steady:
-            f_ode = self.kite_model.s_dot
-            x_ode = self.kite_model.s
+    #     if self.quasi_steady:
+    #         f_ode = self.kite_model.s_dot
+    #         x_ode = self.kite_model.s
 
-            ode = {
-                "x": x_ode,
-                "ode": T * f_ode,
-                "p": ca.vertcat(self.kite_model.s_dot, T),
-            }
-            intg = ca.integrator("intg", "cvodes", ode, 0, 1)
-        else:
-            opti_variables["s_ddot"] = opti.variable(N + 1)
-            f_ode = ca.vertcat(self.kite_model.s_dot, self.kite_model.s_ddot)
-            x_ode = ca.vertcat(self.kite_model.s, self.kite_model.s_dot)
+    #         ode = {
+    #             "x": x_ode,
+    #             "ode": T * f_ode,
+    #             "p": ca.vertcat(self.kite_model.s_dot, T),
+    #         }
+    #         intg = ca.integrator("intg", "cvodes", ode, 0, 1)
+    #     else:
+    #         opti_variables["s_ddot"] = opti.variable(N + 1)
+    #         f_ode = ca.vertcat(self.kite_model.s_dot, self.kite_model.s_ddot)
+    #         x_ode = ca.vertcat(self.kite_model.s, self.kite_model.s_dot)
 
-            ode = {
-                "x": x_ode,
-                "ode": T * f_ode,
-                "p": ca.vertcat(self.kite_model.s_ddot, T),
-            }
-            intg = ca.integrator("intg", "cvodes", ode, 0, 1)
+    #         ode = {
+    #             "x": x_ode,
+    #             "ode": T * f_ode,
+    #             "p": ca.vertcat(self.kite_model.s_ddot, T),
+    #         }
+    #         intg = ca.integrator("intg", "cvodes", ode, 0, 1)
 
-        self.kite_model.establish_residual()
-        flat = [ca.vertcat(*pattern_inputs)]
-        if self.quasi_steady:
-            residual = ca.Function(
-                "residual",
-                [
-                    self.kite_model.t,
-                    self.kite_model.s,
-                    self.kite_model.s_dot,
-                    self.kite_model.input_steering,
-                    self.kite_model.tension_tether_ground,
-                ]
-                + flat,
-                [self.kite_model.residual],
-            )
-            tether_tension_eq = ca.Function(
-                "tether_tension_eq",
-                [
-                    self.kite_model.t,
-                    self.kite_model.s,
-                    self.kite_model.s_dot,
-                    self.kite_model.input_steering,
-                ]
-                + flat,
-                [self.kite_model.tension_tether_equation],
-            )
-        else:
-            residual = ca.Function(
-                "residual",
-                [
-                    self.kite_model.t,
-                    self.kite_model.s,
-                    self.kite_model.s_dot,
-                    self.kite_model.s_ddot,
-                    self.kite_model.input_steering,
-                    self.kite_model.tension_tether_ground,
-                ]
-                + flat,
-                [self.kite_model.residual],
-            )
+    #     self.kite_model.establish_residual()
+    #     flat = [ca.vertcat(*pattern_inputs)]
+    #     if self.quasi_steady:
+    #         residual = ca.Function(
+    #             "residual",
+    #             [
+    #                 self.kite_model.t,
+    #                 self.kite_model.s,
+    #                 self.kite_model.s_dot,
+    #                 self.kite_model.input_steering,
+    #                 self.kite_model.tension_tether_ground,
+    #             ]
+    #             + flat,
+    #             [self.kite_model.residual],
+    #         )
+    #         tether_tension_eq = ca.Function(
+    #             "tether_tension_eq",
+    #             [
+    #                 self.kite_model.t,
+    #                 self.kite_model.s,
+    #                 self.kite_model.s_dot,
+    #                 self.kite_model.input_steering,
+    #             ]
+    #             + flat,
+    #             [self.kite_model.tension_tether_equation],
+    #         )
+    #     else:
+    #         residual = ca.Function(
+    #             "residual",
+    #             [
+    #                 self.kite_model.t,
+    #                 self.kite_model.s,
+    #                 self.kite_model.s_dot,
+    #                 self.kite_model.s_ddot,
+    #                 self.kite_model.input_steering,
+    #                 self.kite_model.tension_tether_ground,
+    #             ]
+    #             + flat,
+    #             [self.kite_model.residual],
+    #         )
 
-        # # Set the time values
-        time_array = np.arange(N + 1) * time_step + t0
-        height = pattern.z(time_array, opti_variables["s"])
-        opti.subject_to(height >= 50)
-        # radius_curvature = pattern.radius_curvature(time_array, opti_variables["s"])
-        # opti.subject_to(radius_curvature >= 25)
-        vr_func = self.kite_model.extract_function("speed_radial")
-        if "vr" not in opti_variables.keys():
-            opti_variables["vr"] = self.pattern_config["parameters"]["vr"]
+    #     # # Set the time values
+    #     time_array = np.arange(N + 1) * time_step + t0
+    #     height = pattern.z(time_array, opti_variables["s"])
+    #     opti.subject_to(height >= 50)
+    #     # radius_curvature = pattern.radius_curvature(time_array, opti_variables["s"])
+    #     # opti.subject_to(radius_curvature >= 25)
+    #     vr_func = self.kite_model.extract_function("speed_radial")
+    #     if "vr" not in opti_variables.keys():
+    #         opti_variables["vr"] = self.pattern_config["parameters"]["vr"]
 
-        def call_vr_func(func, vr):
-            if func.n_in() == 1:
-                return func(vr)
-            return vr
+    #     def call_vr_func(func, vr):
+    #         if func.n_in() == 1:
+    #             return func(vr)
+    #         return vr
 
-        P_scale = opti.parameter()
-        # set from your initial trajectory (rough but effective):
-        T0 = self.return_variable("tension_tether_ground")
-        vr0 = (
-            self.pattern_config["parameters"]["vr"]
-            if np.isscalar(self.pattern_config["parameters"]["vr"])
-            else float(self.pattern_config["parameters"]["vr"][0])
-        )
-        P0 = np.mean(T0) * vr0  # crude scale for T*vr
-        opti.set_value(P_scale, max(abs(P0), 1.0))
-        total_time = opti.parameter()
-        opti.set_value(total_time, self.pattern_config["end_time"])
-        energy = 0
-        t_eff = 0
-        for i in range(N + 1):
-            opt_par_values = [opti_variables[var] for var in self.optimization_vars]
-            flat = [ca.vertcat(*opt_par_values)]
+    #     P_scale = opti.parameter()
+    #     # set from your initial trajectory (rough but effective):
+    #     T0 = self.return_variable("tension_tether_ground")
+    #     vr0 = (
+    #         self.pattern_config["parameters"]["vr"]
+    #         if np.isscalar(self.pattern_config["parameters"]["vr"])
+    #         else float(self.pattern_config["parameters"]["vr"][0])
+    #     )
+    #     P0 = np.mean(T0) * vr0  # crude scale for T*vr
+    #     opti.set_value(P_scale, max(abs(P0), 1.0))
+    #     total_time = opti.parameter()
+    #     opti.set_value(total_time, self.pattern_config["end_time"])
+    #     energy = 0
+    #     t_eff = 0
+    #     for i in range(N + 1):
+    #         opt_par_values = [opti_variables[var] for var in self.optimization_vars]
+    #         flat = [ca.vertcat(*opt_par_values)]
 
-            if self.quasi_steady:
-                tether_inputs = [
-                    time_array[i],
-                    opti_variables["s"][i],
-                    opti_variables["s_dot"][i],
-                    opti_variables["input_steering"][i],
-                ] + flat
-                tether_tension = tether_tension_eq(*tether_inputs)
-                opti_variables["tension_tether_ground"][i] = tether_tension
-                residual_inputs = [
-                    time_array[i],
-                    opti_variables["s"][i],
-                    opti_variables["s_dot"][i],
-                    opti_variables["input_steering"][i],
-                    tether_tension,
-                ] + flat
+    #         if self.quasi_steady:
+    #             tether_inputs = [
+    #                 time_array[i],
+    #                 opti_variables["s"][i],
+    #                 opti_variables["s_dot"][i],
+    #                 opti_variables["input_steering"][i],
+    #             ] + flat
+    #             tether_tension = tether_tension_eq(*tether_inputs)
+    #             opti_variables["tension_tether_ground"][i] = tether_tension
+    #             residual_inputs = [
+    #                 time_array[i],
+    #                 opti_variables["s"][i],
+    #                 opti_variables["s_dot"][i],
+    #                 opti_variables["input_steering"][i],
+    #                 tether_tension,
+    #             ] + flat
 
-            else:
-                # For dynamic case, include s_ddot
-                residual_inputs = [
-                    time_array[i],
-                    opti_variables["s"][i],
-                    opti_variables["s_dot"][i],
-                    opti_variables["s_ddot"][i],
-                    opti_variables["input_steering"][i],
-                    opti_variables["tension_tether_ground"][i],
-                ] + flat
-            res = residual(*residual_inputs)
+    #         else:
+    #             # For dynamic case, include s_ddot
+    #             residual_inputs = [
+    #                 time_array[i],
+    #                 opti_variables["s"][i],
+    #                 opti_variables["s_dot"][i],
+    #                 opti_variables["s_ddot"][i],
+    #                 opti_variables["input_steering"][i],
+    #                 opti_variables["tension_tether_ground"][i],
+    #             ] + flat
+    #         res = residual(*residual_inputs)
 
-            W = ca.diag(
-                ca.vertcat(0.01, 0.01, 0.001)
-            )  # tune so |W r| ~ 1 near feasible
-            # opti.subject_to(W @ res == 0)
-            opti.subject_to(res[0] == 0)
-            opti.subject_to(res[1] == 0)
-            # opti.subject_to(
-            #     opti_variables["tension_tether_ground"][i] == tether_tension
-            # )
+    #         W = ca.diag(
+    #             ca.vertcat(0.01, 0.01, 0.001)
+    #         )  # tune so |W r| ~ 1 near feasible
+    #         # opti.subject_to(W @ res == 0)
+    #         opti.subject_to(res[0] == 0)
+    #         opti.subject_to(res[1] == 0)
+    #         # opti.subject_to(
+    #         #     opti_variables["tension_tether_ground"][i] == tether_tension
+    #         # )
 
-            if i < N:
-                if self.quasi_steady:
-                    sol_s = intg(
-                        x0=opti_variables["s"][i],
-                        p=ca.vertcat(opti_variables["s_dot"][i], total_time / N),
-                    )
-                    opti.subject_to(
-                        opti_variables["s"][i + 1]
-                        == opti_variables["s"][i]
-                        + opti_variables["s_dot"][i] * time_step
-                    )
-                else:
-                    x0 = ca.vertcat(opti_variables["s"][i], opti_variables["s_dot"][i])
-                    sol_s = intg(
-                        x0=x0, p=ca.vertcat(opti_variables["s_ddot"][i], total_time / N)
-                    )
-                    opti.subject_to(opti_variables["s"][i + 1] == sol_s["xf"][0])
-                    opti.subject_to(opti_variables["s_dot"][i + 1] == sol_s["xf"][1])
+    #         if i < N:
+    #             if self.quasi_steady:
+    #                 sol_s = intg(
+    #                     x0=opti_variables["s"][i],
+    #                     p=ca.vertcat(opti_variables["s_dot"][i], total_time / N),
+    #                 )
+    #                 opti.subject_to(
+    #                     opti_variables["s"][i + 1]
+    #                     == opti_variables["s"][i]
+    #                     + opti_variables["s_dot"][i] * time_step
+    #                 )
+    #             else:
+    #                 x0 = ca.vertcat(opti_variables["s"][i], opti_variables["s_dot"][i])
+    #                 sol_s = intg(
+    #                     x0=x0, p=ca.vertcat(opti_variables["s_ddot"][i], total_time / N)
+    #                 )
+    #                 opti.subject_to(opti_variables["s"][i + 1] == sol_s["xf"][0])
+    #                 opti.subject_to(opti_variables["s_dot"][i + 1] == sol_s["xf"][1])
 
-            # Only accumulate power when s is between 0 and 2π
-        w = smooth_gate_interval(
-            opti_variables["s"], start_state.s, start_state.s + 2 * np.pi
-        )
-        vr = call_vr_func(vr_func, opti_variables["vr"])  # scalar or (N+1,)
+    #         # Only accumulate power when s is between 0 and 2π
+    #     w = smooth_gate_interval(
+    #         opti_variables["s"], start_state.s, start_state.s + 2 * np.pi
+    #     )
+    #     vr = call_vr_func(vr_func, opti_variables["vr"])  # scalar or (N+1,)
 
-        # T_seg = 0.5 * (
-        #     opti_variables["tension_tether_ground"][1:]
-        #     + opti_variables["tension_tether_ground"][:-1]
-        # )
-        # w_seg = 0.5 * (w[1:] + w[:-1])
+    #     # T_seg = 0.5 * (
+    #     #     opti_variables["tension_tether_ground"][1:]
+    #     #     + opti_variables["tension_tether_ground"][:-1]
+    #     # )
+    #     # w_seg = 0.5 * (w[1:] + w[:-1])
 
-        energy = time_step * ca.dot(w, opti_variables["tension_tether_ground"] * vr)
-        t_eff = time_step * ca.sum1(w)
-        power = ca.dot(w, opti_variables["tension_tether_ground"] * vr)
-        # Take the mean
-        power = energy / (t_eff + 1e-12)
+    #     energy = time_step * ca.dot(w, opti_variables["tension_tether_ground"] * vr)
+    #     t_eff = time_step * ca.sum1(w)
+    #     power = ca.dot(w, opti_variables["tension_tether_ground"] * vr)
+    #     # Take the mean
+    #     power = energy / (t_eff + 1e-12)
 
-        # # Check gradient with respect to optimization variables
-        # for var in self.optimization_vars:
-        #     grad = ca.gradient(power, opti_variables[var])
-        # print(f"Gradient for {var}: {grad}")
+    #     # # Check gradient with respect to optimization variables
+    #     # for var in self.optimization_vars:
+    #     #     grad = ca.gradient(power, opti_variables[var])
+    #     # print(f"Gradient for {var}: {grad}")
 
-        opti.minimize(-power / P_scale)  # drop duplicate min with -power/P_scale
+    #     opti.minimize(-power / P_scale)  # drop duplicate min with -power/P_scale
 
-        # Average power only over s∈[0,2π]
-        # power = energy / (t_eff + 1e-12)
-        opti.solver(
-            "ipopt",
-            {
-                "ipopt": {
-                    # "max_iter": 100,
-                    "bound_relax_factor": 0,
-                    "tol": 1e-4,  # Main tolerance
-                    # "acceptable_iter": 3,  # Accept if solution is good for 3 iter
-                    "acceptable_tol": 1e-4,  # Acceptable early termination
-                    "constr_viol_tol": 1e-4,  # Constraint violation tolerance
-                    "dual_inf_tol": 1e-4,  # Dual infeasibility
-                    # "honor_original_bounds": "yes",
-                    "hessian_approximation": "limited-memory",
-                    # "mu_strategy": "adaptive",
-                    # "linear_solver": "mumps",
-                }
-                # "ipopt": {
-                #     "hessian_approximation": "limited-memory",
-                #     "mu_strategy": "adaptive",
-                #     "bound_relax_factor": 0.0,  # you need this
-                #     "honor_original_bounds": "yes",  # don’t let IPOPT drift outside
-                #     "bound_frac": 1e-8,  # how far from bounds to stay (fractional)
-                #     "bound_push": 1e-12,  # absolute push off the bounds
-                #     "constr_viol_tol": 1e-6,
-                #     "tol": 1e-6,
-                #     "dual_inf_tol": 1e-6,
-                #     "linear_solver": "mumps",
-                # }
-            },
-        )
+    #     # Average power only over s∈[0,2π]
+    #     # power = energy / (t_eff + 1e-12)
+    #     opti.solver(
+    #         "ipopt",
+    #         {
+    #             "ipopt": {
+    #                 # "max_iter": 100,
+    #                 "bound_relax_factor": 0,
+    #                 "tol": 1e-4,  # Main tolerance
+    #                 # "acceptable_iter": 3,  # Accept if solution is good for 3 iter
+    #                 "acceptable_tol": 1e-4,  # Acceptable early termination
+    #                 "constr_viol_tol": 1e-4,  # Constraint violation tolerance
+    #                 "dual_inf_tol": 1e-4,  # Dual infeasibility
+    #                 # "honor_original_bounds": "yes",
+    #                 "hessian_approximation": "limited-memory",
+    #                 # "mu_strategy": "adaptive",
+    #                 # "linear_solver": "mumps",
+    #             }
+    #             # "ipopt": {
+    #             #     "hessian_approximation": "limited-memory",
+    #             #     "mu_strategy": "adaptive",
+    #             #     "bound_relax_factor": 0.0,  # you need this
+    #             #     "honor_original_bounds": "yes",  # don’t let IPOPT drift outside
+    #             #     "bound_frac": 1e-8,  # how far from bounds to stay (fractional)
+    #             #     "bound_push": 1e-12,  # absolute push off the bounds
+    #             #     "constr_viol_tol": 1e-6,
+    #             #     "tol": 1e-6,
+    #             #     "dual_inf_tol": 1e-6,
+    #             #     "linear_solver": "mumps",
+    #             # }
+    #         },
+    #     )
 
-        # Set initial conditions for optimization parameters
-        for var in self.optimization_vars:
-            print(
-                f"Setting initial value for {var}: {self.pattern_config['parameters'][var]}"
-            )
-            print(self.optimization_vars[var])
-            opti.set_initial(
-                self.optimization_vars[var], self.pattern_config["parameters"][var]
-            )
-        ### APPLY CONSTRAINTS DYNAMICALLY FROM DEFAULT_OPTI_LIMITS ###
-        for var_name, opti_var in opti_variables.items():
-            if isinstance(opti_var, ca.MX):
-                if var_name in DEFAULT_OPTI_LIMITS:
-                    if var_name in self.optimization_vars:
-                        print(f"Applying constraints for {var_name}")
-                        lb, ub = DEFAULT_OPTI_LIMITS[var_name]
-                        opti.subject_to(lb <= opti_var)
-                        opti.subject_to(opti_var <= ub)
-                    else:
-                        print(f"Applying constraints for {var_name}")
-                        lb, ub = DEFAULT_OPTI_LIMITS[var_name]
-                        opti.subject_to(lb <= opti_var[:])
-                        opti.subject_to(opti_var[:] <= ub)
+    #     # Set initial conditions for optimization parameters
+    #     for var in self.optimization_vars:
+    #         print(
+    #             f"Setting initial value for {var}: {self.pattern_config['parameters'][var]}"
+    #         )
+    #         print(self.optimization_vars[var])
+    #         opti.set_initial(
+    #             self.optimization_vars[var], self.pattern_config["parameters"][var]
+    #         )
+    #     ### APPLY CONSTRAINTS DYNAMICALLY FROM DEFAULT_OPTI_LIMITS ###
+    #     for var_name, opti_var in opti_variables.items():
+    #         if isinstance(opti_var, ca.MX):
+    #             if var_name in DEFAULT_OPTI_LIMITS:
+    #                 if var_name in self.optimization_vars:
+    #                     print(f"Applying constraints for {var_name}")
+    #                     lb, ub = DEFAULT_OPTI_LIMITS[var_name]
+    #                     opti.subject_to(lb <= opti_var)
+    #                     opti.subject_to(opti_var <= ub)
+    #                 else:
+    #                     print(f"Applying constraints for {var_name}")
+    #                     lb, ub = DEFAULT_OPTI_LIMITS[var_name]
+    #                     opti.subject_to(lb <= opti_var[:])
+    #                     opti.subject_to(opti_var[:] <= ub)
 
-        try:
-            solution = opti.solve()
-            # Print optimized values for variables in the pattern
-            print("\n Optimized Pattern Variables:")
-            for var_name, var in self.optimization_vars.items():
-                print(f"  {var_name}: {solution.value(var)}")
-                optimized_config = self.pattern_config.copy()
-                optimized_config["parameters"].update({var_name: opti.debug.value(var)})
-                self.pattern_config = optimized_config
-                self.substitute_parametrized_kinematics()
+    #     try:
+    #         solution = opti.solve()
+    #         # Print optimized values for variables in the pattern
+    #         print("\n Optimized Pattern Variables:")
+    #         for var_name, var in self.optimization_vars.items():
+    #             print(f"  {var_name}: {solution.value(var)}")
+    #             optimized_config = self.pattern_config.copy()
+    #             optimized_config["parameters"].update({var_name: opti.debug.value(var)})
+    #             self.pattern_config = optimized_config
+    #             self.substitute_parametrized_kinematics()
 
-            print(solution.value(power))
-        except Exception as e:
-            # Print debug optimization information
-            print("Debug optimization information:")
-            for var_name, var in self.optimization_vars.items():
-                print(f"  {var_name}: {opti.debug.value(var)}")
-            print("Optimization failed:", e)
+    #         print(solution.value(power))
+    #     except Exception as e:
+    #         # Print debug optimization information
+    #         print("Debug optimization information:")
+    #         for var_name, var in self.optimization_vars.items():
+    #             print(f"  {var_name}: {opti.debug.value(var)}")
+    #         print("Optimization failed:", e)
 
-        # plt.plot(solution.value(opti_variables["input_steering"]))
-        # plt.show()
-        print("Optimization status:", solution)
-        s_vals = solution.value(opti_variables["s"])  # shape: (N+1,)
-        s_dot_vals = solution.value(opti_variables["s_dot"])  # shape: (N+1,)
-        tension_vals = solution.value(
-            opti_variables["tension_tether_ground"]
-        )  # shape: (N+1,)
-        input_steering_vals = solution.value(
-            opti_variables["input_steering"]
-        )  # shape: (N+1,)
-        self.states = []
-        for i in range(N + 1):
+    #     # plt.plot(solution.value(opti_variables["input_steering"]))
+    #     # plt.show()
+    #     print("Optimization status:", solution)
+    #     s_vals = solution.value(opti_variables["s"])  # shape: (N+1,)
+    #     s_dot_vals = solution.value(opti_variables["s_dot"])  # shape: (N+1,)
+    #     tension_vals = solution.value(
+    #         opti_variables["tension_tether_ground"]
+    #     )  # shape: (N+1,)
+    #     input_steering_vals = solution.value(
+    #         opti_variables["input_steering"]
+    #     )  # shape: (N+1,)
+    #     self.states = []
+    #     for i in range(N + 1):
 
-            new_state = State(
-                t=float(time_array[i]),
-                s=float(s_vals[i]),
-                input_steering=float(input_steering_vals[i]),
-                tension_tether_ground=float(tension_vals[i]),
-                s_dot=float(s_dot_vals[i]),
-            )
+    #         new_state = State(
+    #             t=float(time_array[i]),
+    #             s=float(s_vals[i]),
+    #             input_steering=float(input_steering_vals[i]),
+    #             tension_tether_ground=float(tension_vals[i]),
+    #             s_dot=float(s_dot_vals[i]),
+    #         )
 
-            self.states.append(new_state.to_dict())
+    #         self.states.append(new_state.to_dict())
 
     def _flatten_for_function_call(vals):
         flat = []
@@ -522,7 +558,7 @@ class ReelinPhase(TimeSeries):
     def substitute_parametrized_kinematics(self, optimize=False):
 
         pattern = create_pattern_from_dict(self.pattern_config, optimize=optimize)
-        print(pattern.r0, pattern.r1)
+        # print(pattern.r0, pattern.r1)
         kinematics = ParametrizedKinematics(pattern, self)
 
         self.kite_model.s = kinematics.s
@@ -536,7 +572,11 @@ class ReelinPhase(TimeSeries):
         # print(self.kite_model.speed_radial)
         # self.kite_model.speed_radial = kinematics.vr
         self.kite_model.speed_tangential = kinematics.vtau
+
+        print("chi_dot from kinematics:", kinematics.dot_chi)
         self.kite_model.timeder_angle_course = kinematics.dot_chi
+        print("chi_dot from model:", self.kite_model.timeder_angle_course)
+
         if not self.quasi_steady:
             # self.kite_model.timeder_speed_radial = kinematics.dot_vr
             self.kite_model.timeder_speed_tangential = kinematics.dot_vtau
