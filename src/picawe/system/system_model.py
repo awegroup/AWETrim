@@ -447,7 +447,7 @@ class State:
 
     lift_coefficient: Optional[float] = None
     drag_coefficient: Optional[float] = None
-
+    speed_apparent_wind: Optional[float] = None
     # Parametrization
     s: Optional[float] = None
     s_dot: Optional[float] = None
