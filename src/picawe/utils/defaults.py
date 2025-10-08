@@ -82,6 +82,20 @@ DEFAULT_PATTERN_CONFIG = {
     },
 }
 
+# Default configuration for the winch subsystem
+# Values align with common bounds used elsewhere
+# and provide reasonable physical limits for simulations.
+DEFAULT_WINCH_CONFIG = {
+    "max_tether_length": 2000.0,  # m
+    "min_tether_length": 100.0,  # m
+    "max_speed": 8.0,  # m/s (reel-out positive)
+    "min_speed": -6.0,  # m/s (reel-in negative)
+    "max_acceleration": 2.0,  # m/s^2
+    "min_acceleration": -2.0,  # m/s^2
+    # Softplus sharpness for force limiting in winch model
+    "sharpness_beta": 1e-4,
+}
+
 # defaults.py (This is your file containing the limits)
 DEFAULT_OPTI_LIMITS = {
     "tension_tether_ground": (1e-2, 1e9),  # Range for tension_tether_ground: 0 to 1e9

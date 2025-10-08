@@ -236,12 +236,17 @@ class SystemModel(KiteKinematics):
     def get_boundaries(
         self,
         current_state,
-        unkown_vars=["speed_tangential", "timeder_angle_course", "length_tether"],
+        unknown_vars=[
+            "speed_tangential",
+            "timeder_angle_course",
+            "length_tether",
+            "speed_radial",
+        ],
     ):
 
         lbx = []
         ubx = []
-        for var in unkown_vars:
+        for var in unknown_vars:
             if var == "length_tether":
                 lbx.append(current_state["distance_radial"] * 0.9)
                 ubx.append(current_state["distance_radial"])
@@ -250,8 +255,8 @@ class SystemModel(KiteKinematics):
                 ubx.append(DEFAULT_BOUNDS[var][1])
 
         # Bounds for the constraints
-        lbg = [0] * self.residual.size1()  # Lower bounds (0 for residuals)
-        ubg = [0] * self.residual.size1()  # Upper bounds (0 for residuals)
+        lbg = [0] * len(unknown_vars)
+        ubg = [0] * len(unknown_vars)
 
         return lbx, ubx, lbg, ubg
 

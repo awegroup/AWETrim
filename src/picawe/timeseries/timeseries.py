@@ -479,6 +479,478 @@ class TimeSeries:
 
         return fig, axes
 
+    def plot_variables_grid(
+        self,
+        variables=None,
+        x_param: str = "s",
+        axes=None,
+        label: str = None,
+        color: str = None,
+        linestyle: str = None,
+        y_labels: dict = None,
+        y_scaling: dict = None,
+    ):
+        """Plot a set of variables against a common x on stacked axes.
+
+        Args:
+            variables: list of variable names to plot (default matches CST_curve).
+            x_param: name of x-axis variable, default 's' (phase degrees in CST script).
+            axes: optional pre-created list of axes to plot on; if None, create new.
+            label, color, linestyle: styling applied to each trace.
+            y_labels: optional mapping var->label; falls back to PLOT_LABELS.
+            y_scaling: optional mapping var->scale factor applied to y data.
+
+        Returns:
+            (fig, axes): the figure and list of axes used.
+        """
+        if variables is None:
+            variables = [
+                "speed_tangential",
+                "tension_tether_ground",
+                "input_steering",
+                "speed_radial",
+            ]
+
+        if y_scaling is None:
+            y_scaling = {}
+        if y_labels is None:
+            y_labels = {}
+
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        # Create axes if not provided
+        if axes is None:
+            fig, axes = plt.subplots(len(variables), 1, sharex=True)
+            if not isinstance(axes, (list, tuple, np.ndarray)):
+                axes = [axes]
+        else:
+            # infer figure from first axis
+            fig = axes[0].figure
+
+        # Prepare common x data (convert to degrees for phase variable)
+        x = self.return_variable(x_param)
+        if x_param == "s":
+            x = np.degrees(x)
+            # Remove offset so x starts at zero
+            if len(x) > 0:
+                x = x - x[0]
+
+        # Plot each variable
+        for ax, var in zip(axes, variables):
+            y = self.return_variable(var)
+            scale = y_scaling.get(var, 1.0) if isinstance(y_scaling, dict) else 1.0
+            ax.plot(x, y * scale, label=label, color=color, linestyle=linestyle)
+            ax.set_ylabel(y_labels.get(var, PLOT_LABELS.get(var, var)))
+
+        return fig, axes
+
+    def plot_overview_3d(
+        self,
+        label: str = None,
+        color: str = None,
+        linestyle: str = None,
+        variables=None,
+        x_param: str = "s",
+        axes: dict | None = None,
+        coord: str = "cartesian",
+    ):
+        """Plot this series on an overview with a single 3D left panel.
+
+        Left: 3D trajectory in (azimuth [deg], elevation [deg], radial distance [m]).
+        Right: stacked traces of variables vs x_param (default 's' in degrees, offset removed).
+
+        Reuse axes by passing the dict {"left_3d": ax, "right_axes": [ax3,...]}.
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        if variables is None:
+            variables = [
+                "speed_tangential",
+                "tension_tether_ground",
+                "input_steering",
+                "speed_radial",
+            ]
+
+        created = False
+        if axes is None:
+            created = True
+            fig = plt.figure(figsize=(14, 8))
+            gs = fig.add_gridspec(
+                8, 3, width_ratios=[1, 0.25, 2], height_ratios=[1] * 8
+            )
+            ax_left3d = fig.add_subplot(gs[:, 0], projection="3d")
+            ax3 = fig.add_subplot(gs[:2, 2])
+            ax4 = fig.add_subplot(gs[2:4, 2])
+            ax5 = fig.add_subplot(gs[4:6, 2])
+            ax6 = fig.add_subplot(gs[6:, 2])
+            right_axes = [ax3, ax4, ax5, ax6][: len(variables)]
+        else:
+            ax_left3d = axes.get("left_3d")
+            right_axes = axes.get("right_axes", [])
+            fig = (ax_left3d or (right_axes[0] if right_axes else None)).figure
+
+        # Left 3D: plot trajectory
+
+        phi_vals = self.return_variable("angle_azimuth")
+        beta_vals = self.return_variable("angle_elevation")
+        r_vals = self.return_variable("distance_radial")
+        x_vals = r_vals * np.cos(beta_vals) * np.cos(phi_vals)
+        y_vals = r_vals * np.cos(beta_vals) * np.sin(phi_vals)
+        z_vals = r_vals * np.sin(beta_vals)
+        x_lab = "x [m]"
+        y_lab = "y [m]"
+        z_lab = "z [m]"
+
+        ax_left3d.plot(
+            x_vals, y_vals, z_vals, label=label, color=color, linestyle=linestyle
+        )
+        if created:
+            # Ground station at origin
+            ax_left3d.scatter([0], [0], [0], marker="o", color="tab:brown")
+        ax_left3d.set_xlabel(x_lab)
+        ax_left3d.set_ylabel(y_lab)
+        ax_left3d.set_zlabel(z_lab)
+
+        # Right: traces (with tension scaled to kN)
+        y_scaling = {"tension_tether_ground": 1 / 1000.0}
+        self.plot_variables_grid(
+            variables=variables,
+            x_param=x_param,
+            axes=right_axes,
+            label=label,
+            color=color,
+            linestyle=linestyle,
+            y_scaling=y_scaling,
+        )
+
+        if created and right_axes:
+            # Set x limits from 0 to last value
+            x = self.return_variable(x_param)
+            if x_param == "s":
+                x = np.degrees(x)
+                if len(x) > 0:
+                    x = x - x[0]
+            if len(x) > 0:
+                for ax in right_axes:
+                    ax.set_xlim(0, x[-1])
+
+        return fig, {"left_3d": ax_left3d, "right_axes": right_axes}, None
+
+    def energy_metrics(
+        self,
+        other: "TimeSeries",
+        phase_window_degrees: float = 360.0,
+    ) -> dict:
+        """Compute comparative energy and timing metrics between two series.
+
+        Compares this series (self) against `other` over a single-cycle window
+        in phase (defaults to 360 degrees), starting at each series' initial
+        phase value. Returns a dictionary of metrics.
+
+        Metrics include:
+        - avg_power_self / avg_power_other (via energy over window / duration)
+        - mean_power_self / mean_power_other (mean of mechanical_power)
+        - power_diff_percent
+        - best_time_lag (s) from cross-correlation of vtau
+        - delta_ft_mean_percent, delta_ft_max_percent, delta_ft_min_percent
+        - delta_vtau_max_percent, delta_vtau_min_percent
+        - s_lag_vtau_max_deg, s_lag_vtau_min_deg
+        """
+        import numpy as np
+
+        # Helper to get masked arrays for one phase window
+        def _mask_series(ts: "TimeSeries"):
+            s_deg = np.degrees(ts.return_variable("s"))
+            t = ts.return_variable("t")
+            vtau = ts.return_variable("speed_tangential")
+            tension = ts.return_variable("tension_tether_ground")
+            vr = ts.return_variable("speed_radial")
+            if len(s_deg) == 0:
+                return slice(None), s_deg, t, vtau, tension, vr
+            start = s_deg[0]
+            mask = (s_deg > start) & (s_deg < start + phase_window_degrees)
+            # Fallback if mask empty
+            if not np.any(mask):
+                mask = slice(None)
+            return mask, s_deg, t, vtau, tension, vr
+
+        mask_a, s_a, t_a, vtau_a, ten_a, vr_a = _mask_series(self)
+        mask_b, s_b, t_b, vtau_b, ten_b, vr_b = _mask_series(other)
+
+        # Sliced data
+        s_a_m, s_b_m = s_a[mask_a], s_b[mask_b]
+        t_a_m, t_b_m = t_a[mask_a], t_b[mask_b]
+        vtau_a_m, vtau_b_m = vtau_a[mask_a], vtau_b[mask_b]
+        ten_a_m, ten_b_m = ten_a[mask_a], ten_b[mask_b]
+        vr_a_m, vr_b_m = vr_a[mask_a], vr_b[mask_b]
+
+        # Energy and average power over window
+        if len(t_a_m) > 1:
+            dt_a = np.diff(t_a_m, prepend=t_a_m[0])
+            energy_a = np.sum(ten_a_m * vr_a_m * dt_a)
+            avg_pow_a = energy_a / (t_a_m[-1] - t_a_m[0] + 1e-12)
+        else:
+            energy_a = 0.0
+            avg_pow_a = 0.0
+        if len(t_b_m) > 1:
+            dt_b = np.diff(t_b_m, prepend=t_b_m[0])
+            energy_b = np.sum(ten_b_m * vr_b_m * dt_b)
+            avg_pow_b = energy_b / (t_b_m[-1] - t_b_m[0] + 1e-12)
+        else:
+            energy_b = 0.0
+            avg_pow_b = 0.0
+
+        # Mean mechanical power (if available)
+        try:
+            pow_a = self.return_variable("mechanical_power")[mask_a]
+            mean_pow_a = float(np.mean(pow_a)) if len(pow_a) else 0.0
+        except Exception:
+            mean_pow_a = avg_pow_a
+        try:
+            pow_b = other.return_variable("mechanical_power")[mask_b]
+            mean_pow_b = float(np.mean(pow_b)) if len(pow_b) else 0.0
+        except Exception:
+            mean_pow_b = avg_pow_b
+
+        power_diff_percent = (
+            (avg_pow_a - avg_pow_b) / (avg_pow_b + 1e-12) * 100.0
+            if (avg_pow_a or avg_pow_b)
+            else 0.0
+        )
+
+        # Cross-correlation for vtau to estimate lag
+        if len(t_a_m) > 1 and len(t_b_m) > 1:
+            t0 = max(t_a_m[0], t_b_m[0])
+            t1 = min(t_a_m[-1], t_b_m[-1])
+            if t1 > t0:
+                t_common = np.linspace(t0, t1, 1000)
+                v1 = np.interp(t_common, t_a_m, vtau_a_m) - np.mean(vtau_a_m)
+                v2 = np.interp(t_common, t_b_m, vtau_b_m) - np.mean(vtau_b_m)
+                corr = np.correlate(v1, v2, mode="full")
+                lags = np.arange(-len(v1) + 1, len(v1))
+                dt = t_common[1] - t_common[0]
+                best_time_lag = float(lags[np.argmax(corr)] * dt)
+            else:
+                best_time_lag = 0.0
+        else:
+            best_time_lag = 0.0
+
+        # Tension differences
+        def _pct(a, b):
+            return float((a - b) / (b + 1e-12) * 100.0)
+
+        delta_ft_mean_percent = _pct(np.mean(ten_a_m), np.mean(ten_b_m)) if len(ten_a_m) and len(ten_b_m) else 0.0
+        delta_ft_max_percent = _pct(np.max(ten_a_m), np.max(ten_b_m)) if len(ten_a_m) and len(ten_b_m) else 0.0
+        delta_ft_min_percent = _pct(np.min(ten_a_m), np.min(ten_b_m)) if len(ten_a_m) and len(ten_b_m) else 0.0
+
+        # Tangential speed differences
+        delta_vtau_max_percent = _pct(np.max(vtau_a_m), np.max(vtau_b_m)) if len(vtau_a_m) and len(vtau_b_m) else 0.0
+        delta_vtau_min_percent = _pct(np.min(vtau_a_m), np.min(vtau_b_m)) if len(vtau_a_m) and len(vtau_b_m) else 0.0
+
+        # Phase lags at max/min vtau
+        if len(vtau_a_m) and len(vtau_b_m):
+            s_a_max = s_a_m[np.argmax(vtau_a_m)] if len(s_a_m := s_a_m) else 0.0
+            s_b_max = s_b_m[np.argmax(vtau_b_m)] if len(s_b_m := s_b_m) else 0.0
+            s_lag_vtau_max_deg = float(s_a_max - s_b_max)
+
+            s_a_min = s_a_m[np.argmin(vtau_a_m)] if len(s_a_m) else 0.0
+            s_b_min = s_b_m[np.argmin(vtau_b_m)] if len(s_b_m) else 0.0
+            s_lag_vtau_min_deg = float(s_a_min - s_b_min)
+        else:
+            s_lag_vtau_max_deg = 0.0
+            s_lag_vtau_min_deg = 0.0
+
+        return {
+            "avg_power_self": float(avg_pow_a),
+            "avg_power_other": float(avg_pow_b),
+            "mean_power_self": float(mean_pow_a),
+            "mean_power_other": float(mean_pow_b),
+            "power_diff_percent": float(power_diff_percent),
+            "best_time_lag": float(best_time_lag),
+            "delta_ft_mean_percent": float(delta_ft_mean_percent),
+            "delta_ft_max_percent": float(delta_ft_max_percent),
+            "delta_ft_min_percent": float(delta_ft_min_percent),
+            "delta_vtau_max_percent": float(delta_vtau_max_percent),
+            "delta_vtau_min_percent": float(delta_vtau_min_percent),
+            "s_lag_vtau_max_deg": float(s_lag_vtau_max_deg),
+            "s_lag_vtau_min_deg": float(s_lag_vtau_min_deg),
+        }
+
+    def plot_angles_scatter(
+        self,
+        ax=None,
+        color_var: str = "speed_tangential",
+        scatter_kwargs: dict = None,
+    ):
+        """Scatter of azimuth vs elevation colored by a variable.
+
+        Args:
+            ax: optional axis to plot on; creates a new one if None.
+            color_var: variable name for color mapping.
+            scatter_kwargs: dict with kwargs like s, cmap, vmin, vmax.
+
+        Returns:
+            PathCollection: matplotlib scatter artist.
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        if scatter_kwargs is None:
+            scatter_kwargs = {}
+
+        if ax is None:
+            fig, ax = plt.subplots()
+
+        az = np.degrees(self.return_variable("angle_azimuth"))
+        el = np.degrees(self.return_variable("angle_elevation"))
+        c = self.return_variable(color_var)
+
+        sc = ax.scatter(az, el, c=c, **scatter_kwargs)
+        ax.set_xlabel(PLOT_LABELS.get("angle_azimuth", "angle_azimuth"))
+        ax.set_ylabel(PLOT_LABELS.get("angle_elevation", "angle_elevation"))
+        return sc
+
+    def plot_overview(
+        self,
+        label: str = None,
+        color: str = None,
+        linestyle: str = None,
+        variables=None,
+        x_param: str = "s",
+        scatter_kwargs: dict = None,
+        add_colorbar: bool = True,
+        axes: dict | None = None,
+    ):
+        """Plot this series on the standard overview figure.
+
+        Layout:
+        - Left column: two panels (dynamic top, quasi-steady bottom) with azimuth vs elevation,
+          colored by speed_tangential.
+        - Right column: stacked traces vs phase `s` (or chosen x).
+
+        Call this once to create the figure and again with axes to overlay another phase.
+
+        Args:
+            label, color, linestyle: styling for this series.
+            variables: list of variables to plot on the right column (defaults to CST layout).
+            x_param: x-axis variable for traces (default 's').
+            scatter_kwargs: dict of kwargs for the scatter plot.
+            add_colorbar: whether to add a colorbar (only applies when creating axes).
+            axes: dict of axes to reuse: {"left_dynamic": ax, "left_qs": ax, "right_axes": [ax3,...]}.
+
+        Returns:
+            (fig, axes_dict, scatter): figure, axes mapping, and the scatter artist for this series.
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        if variables is None:
+            variables = [
+                "speed_tangential",
+                "tension_tether_ground",
+                "input_steering",
+                "speed_radial",
+            ]
+
+        if scatter_kwargs is None:
+            scatter_kwargs = {}
+
+        created = False
+        if axes is None:
+            created = True
+            fig = plt.figure(figsize=(14, 8))
+            gs = fig.add_gridspec(
+                8, 3, width_ratios=[1, 0.25, 2], height_ratios=[1] * 8
+            )
+            ax_dyn = fig.add_subplot(gs[:4, 0])
+            ax_qs = fig.add_subplot(gs[4:, 0])
+            ax3 = fig.add_subplot(gs[:2, 2])
+            ax4 = fig.add_subplot(gs[2:4, 2])
+            ax5 = fig.add_subplot(gs[4:6, 2])
+            ax6 = fig.add_subplot(gs[6:, 2])
+            right_axes = [ax3, ax4, ax5, ax6][: len(variables)]
+        else:
+            ax_dyn = axes.get("left_dynamic")
+            ax_qs = axes.get("left_qs")
+            right_axes = axes.get("right_axes", [])
+            # infer figure from any provided axis
+            fig = (ax_dyn or ax_qs or (right_axes[0] if right_axes else None)).figure
+
+        # Choose top/bottom axis based on quasi_steady flag
+        is_qs = getattr(self, "quasi_steady", False)
+        ax_left = ax_qs if is_qs else ax_dyn
+        last_scatter = self.plot_angles_scatter(
+            ax=ax_left,
+            color_var="speed_tangential",
+            scatter_kwargs=scatter_kwargs,
+        )
+        # Tension scaling to kN for readability
+        y_scaling = {"tension_tether_ground": 1 / 1000.0}
+        self.plot_variables_grid(
+            variables=variables,
+            x_param=x_param,
+            axes=right_axes,
+            label=label,
+            color=color,
+            linestyle=linestyle,
+            y_scaling=y_scaling,
+        )
+
+        # Formatting similar to CST script
+        if created:
+            for ax in [ax_dyn, ax_qs]:
+                ax.set_ylim(0, 50)
+                ax.set_xlim(-50, 50)
+                ax.legend(loc="lower right", fontsize=9)
+
+        for ax in right_axes:
+            if x_param == "s":
+                ax.set_xlim(0, 360)
+        # Left labels and annotations
+        if created:
+            ax_dyn.text(
+                0.95,
+                0.95,
+                "Dynamic",
+                transform=ax_dyn.transAxes,
+                ha="right",
+                va="top",
+                fontsize=12,
+                weight="bold",
+                bbox=dict(facecolor="white", edgecolor="gray", alpha=0.8),
+            )
+            ax_qs.text(
+                0.95,
+                0.95,
+                "Quasi-Steady",
+                transform=ax_qs.transAxes,
+                ha="right",
+                va="top",
+                fontsize=12,
+                weight="bold",
+                bbox=dict(facecolor="white", edgecolor="gray", alpha=0.8),
+            )
+
+        # Y labels for right axes
+        for ax, var in zip(right_axes, variables):
+            ax.set_ylabel(PLOT_LABELS.get(var, var))
+        if right_axes:
+            right_axes[-1].set_xlabel(PLOT_LABELS.get(x_param, x_param))
+
+        # Optional colorbar next to the left panels (only when creating new axes)
+        if created and add_colorbar and last_scatter is not None:
+            cbar_ax = fig.add_axes([0.35, 0.3, 0.02, 0.4])
+            cbar = fig.colorbar(last_scatter, cax=cbar_ax)
+            cbar.set_label(PLOT_LABELS.get("speed_tangential", "speed_tangential"))
+
+        return (
+            fig,
+            {"left_dynamic": ax_dyn, "left_qs": ax_qs, "right_axes": right_axes},
+            last_scatter,
+        )
+
     def interactive_plot(
         self,
         parameters: list = None,

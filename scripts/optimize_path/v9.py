@@ -12,19 +12,6 @@ from picawe.environment import Wind
 import json
 import copy
 
-T0 = 3000  # N
-
-b = 2500  # N/(m/s)^2
-eps = 1e-6  # to avoid sqrt(0)
-vr = np.linspace(0, 10, 1000)
-T_model = T0 + b * vr**2
-beta = 1e-4  # steepness of the softplus transition
-T_max = 25000
-# T = min(T_model, T_max) via softplus
-softplus = (1 / beta) * np.log(1 + np.exp(beta * (T_model - T_max)))
-plt.plot(vr, T_model - softplus, label="Softplus approximation")
-plt.show()
-
 file_path = "./data/LEI-V9-KITE/v9_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
@@ -100,7 +87,6 @@ for i in range(N):
             "kbeta": 0,
             "beta0": 0.3844981096025447,
             "kappa": 0,
-            "k_vr": 2716,
         },
         "start_time": 0,
         "end_time": 60,
