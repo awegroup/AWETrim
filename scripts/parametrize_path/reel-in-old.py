@@ -35,7 +35,7 @@ wind = Wind(
     wind_model="uniform",
     z0=0.1,
 )
-wind.speed_wind_ref = 10
+wind.speed_wind_ref = 8
 
 with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
     aero_input_v9 = json.load(file)
@@ -58,10 +58,8 @@ pattern_config_v9 = {
         "U_interior": U_interior,
     },
     "start_time": 0,
-    "end_time": 150,
-    "start_angle": 0,
-    "end_angle": 1,
-    "n_points": 400,
+    "end_time": 30,
+    "n_points": 300,
     "optimization_parameters": [],
 }
 
