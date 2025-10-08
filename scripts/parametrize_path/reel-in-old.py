@@ -1,16 +1,95 @@
 import numpy as np
-import matplotlib.pyplot as plt
 import json
-from scipy.interpolate import interp1d
-from picawe.kinematics.parametrized_patterns import Helix
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 from picawe import SystemModel, State
-from picawe.utils.color_palette import set_plot_style, get_color_list, custom_cmap
-from picawe.timeseries.reelin_phase import ReelinPhase
+from picawe.timeseries.reelin_phase_minimal import ReelinPhase
 from picawe.system.kite import Kite
 from picawe.system.tether import RigidLumpedTether
-from picawe.utils.defaults import PLOT_LABELS
 from picawe.environment.Wind import Wind
-from mpl_toolkits.mplot3d import Axes3D
+from picawe.kinematics.parametrized_patterns import create_pattern_from_dict
+import pickle
+from picawe.utils.color_palette import set_plot_style, get_color_list
+from picawe.utils.defaults import PLOT_LABELS
+
+# ---------- Load precomputed fit data ----------
+with open("fit_results.pkl", "rb") as f:
+    fit_data = pickle.load(f)
+
+C_sph = fit_data["C_sph"]
+crs0 = fit_data["crs0"]
+crsf = fit_data["crsf"]
+phi0 = fit_data["phi0"]
+phif = fit_data["phif"]
+beta0 = fit_data["beta0"]
+betaf = fit_data["betaf"]
+C_interior = fit_data["C_interior"]
+u_vals = fit_data["u_vals"]
+U_interior = fit_data["U_interior"]
+v0 = float(
+    np.sqrt(fit_data["v0"][0] ** 2 + fit_data["v0"][1] ** 2 + fit_data["v0"][2] ** 2)
+)
+
+# ---------- Config ----------
+wind = Wind(
+    wind_model="uniform",
+    z0=0.1,
+)
+wind.speed_wind_ref = 10
+
+with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
+    aero_input_v9 = json.load(file)
+
+pattern_config_v9 = {
+    "pattern_type": "spline",
+    "parameters": {
+        "p": 3,
+        "n_ctrl": 8,
+        "r0": 300,
+        "r1": 200,
+        "crs0": crs0,
+        "crsf": crsf,
+        "phi0": phi0,
+        "phif": phif,
+        "beta0": beta0,
+        "betaf": betaf,
+        "C_interior": C_interior,
+        "u_vals": u_vals,
+        "U_interior": U_interior,
+    },
+    "start_time": 0,
+    "end_time": 150,
+    "start_angle": 0,
+    "end_angle": 1,
+    "n_points": 400,
+    "optimization_parameters": [],
+}
+
+
+# Calculate realistic s_dot from fitted data
+def calculate_consistent_speeds(
+    s_current, pattern_config, v0_target, tether_length=330
+):
+    test_pattern = create_pattern_from_dict(pattern_config)
+    result = test_pattern.evaluate_spline(tether_length, s_current)
+
+    dphi_ds = float(result["dS"][0])
+    dbeta_ds = float(result["dS"][1])
+
+    angular_speed_magnitude = np.sqrt(dphi_ds**2 + dbeta_ds**2)
+
+    if angular_speed_magnitude < 1e-6:
+        return 0.001, 1.0
+
+    calculated_s_dot = v0_target / (tether_length * angular_speed_magnitude)
+    realistic_speed_radial = v0_target * 0.05
+
+    return calculated_s_dot, realistic_speed_radial
+
+
+s_dot_realistic, speed_radial_realistic = calculate_consistent_speeds(
+    0.2, pattern_config_v9, v0
+)
 
 # ---------- Config ----------
 speed_wind_at_100 = 10
@@ -27,18 +106,6 @@ colors = get_color_list()
 
 with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
     aero_input_v9 = json.load(file)
-
-pattern_config_v9 = {
-    "pattern_type": "reel_in",
-    "parameters": {
-        "r0": 330.0,
-        "r1": 230.0,
-    },
-    "start_time": 0,
-    "end_time": 30,
-    "n_points": 300,
-    "optimization_parameters": [],
-}
 
 # ---------- Starting state ----------
 base_start_state = State(
@@ -166,7 +233,6 @@ def run_sim(
             result[sim_type]["az"],
             result[sim_type]["el"],
             c=result[sim_type]["vtau"],
-            cmap=custom_cmap,
             s=10,
             vmin=20,
             vmax=40,
