@@ -57,7 +57,6 @@ tension_tether_results = {}
 phases = {}
 parameters = ["speed_tangential", "tension_tether_ground", "angle_roll"]
 x_param = "s"
-fig, axs = plt.subplots(len(parameters), 1, figsize=(10, 4), sharex=True)
 
 N = 1
 tether = RigidLumpedTether(diameter=0.01)
@@ -74,8 +73,8 @@ for i in range(N):
         "path_parameters": {
             "omega": 1.0,
             "r0": 230.0,
-            "az_amp0": 0.48777050522375176,
-            "beta_amp0": 0.25,
+            "az_amp0": 0.4815631965341702,
+            "beta_amp0": 0.09875937127714636,
             "width_phi": 0.5,
             "width_beta": 0.5,
             "left_first": True,
@@ -83,11 +82,11 @@ for i in range(N):
             "repeat_phi": True,
             "repeat_beta": True,
             "beta_coeffs": np.array(
-                [0.00793318, -1.00000001, -0.09528962, -1.00000001, -0.43694973]
+                [0.25485496, -0.99986137, 0.12645635, -0.86821607, 0.35302077]
             ),
             "az_coeffs": [0, 0, 0, 0, 0],
             "kbeta": 0,
-            "beta0": 0.6936021090152621,
+            "beta0": 0.4414535012239937,
             "kappa": 0,
         },
         "radial_parameters": {
@@ -101,7 +100,7 @@ for i in range(N):
             "softminus": True,
             "softminus_beta": 1e-3,
             "slope": 2716,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
-            "offset": -1,  # m/s
+            "offset": 0,  # m/s
         },
         "start_time": 0,
         "end_time": 35,
@@ -113,6 +112,9 @@ for i in range(N):
             "beta_amp0",
             "beta0",
             "beta_coeffs",
+            # "kappa",
+            # "slope",
+            # "offset",
         ],
     }
 

@@ -57,7 +57,10 @@ class PhaseParameterized(TimeSeries):
     def run_simulation(self, start_state, allow_failure=True, return_states=False):
 
         # print("Starting state:", start_state)
-        km_copy = self.substitute_parametrized_kinematics()
+        pattern = create_pattern_from_dict(
+            self.pattern_config["pattern_type"], self.pattern_config["path_parameters"]
+        )
+        km_copy = self.substitute_parametrized_kinematics(pattern=pattern)
         self.states = []
         km_copy.reset_solver()
         self.km_param = km_copy
@@ -162,7 +165,10 @@ class PhaseParameterized(TimeSeries):
 
         # --- setup / housekeeping
         self.kite_model.reset_solver()
-        km_copy = self.substitute_parametrized_kinematics()
+        pattern = create_pattern_from_dict(
+            self.pattern_config["pattern_type"], self.pattern_config["path_parameters"]
+        )
+        km_copy = self.substitute_parametrized_kinematics(pattern)
         self.km_param = km_copy
         self.states = []
 
@@ -380,31 +386,44 @@ class PhaseParameterized(TimeSeries):
             self.states.append(new_state.to_dict())
 
     def run_simulation_opti_phase(self, start_state):
-        import casadi as ca, numpy as np
+        # warm-start with a simulated trajectory (QS uses dt = ds / s_dot)
 
-        self.states = []
+        opti = ca.Opti()
+        self.run_simulation_phase(start_state, return_states=True)
         self.kite_model.reset_solver()
 
         N = int(self.pattern_config["n_points"])
         s_grid = np.linspace(
             self.pattern_config["start_angle"], self.pattern_config["end_angle"], N + 1
         )
+        # Replace optimized parameters with symbolic variables
+        path_params = copy.deepcopy(self.pattern_config.get("path_parameters", {}))
+        optimization_params = self.pattern_config.get("optimization_parameters", [])
+        radial_params = copy.deepcopy(self.pattern_config.get("radial_parameters", {}))
 
-        # warm-start with a simulated trajectory (QS uses dt = ds / s_dot)
-        self.run_simulation_phase(start_state, return_states=True)
-        pattern_inputs, pattern, km_copy = self.substitute_parametrized_kinematics(True)
-        self.km_param = km_copy
-        opti = ca.Opti()
+        pattern = create_pattern_from_dict(
+            self.pattern_config["pattern_type"], path_params
+        )
         self.optimization_vars = {}
 
         # --- Optimization/design parameters
         for var in self.pattern_config["optimization_parameters"]:
-            val = np.atleast_1d(self.pattern_config["path_parameters"][var])
-            self.optimization_vars[var] = (
-                opti.variable(len(val)) if len(val) > 1 else opti.variable()
-            )
-            setattr(pattern, var, self.optimization_vars[var])
+            if var in self.pattern_config["path_parameters"]:
+                val = np.atleast_1d(self.pattern_config["path_parameters"][var])
+                self.optimization_vars[var] = (
+                    opti.variable(len(val)) if len(val) > 1 else opti.variable()
+                )
+                setattr(pattern, var, self.optimization_vars[var])
+            elif var in self.pattern_config["radial_parameters"]:
+                val = np.atleast_1d(self.pattern_config["radial_parameters"][var])
+                self.optimization_vars[var] = (
+                    opti.variable(len(val)) if len(val) > 1 else opti.variable()
+                )
+                radial_params[var] = self.optimization_vars[var]
 
+        winch_model = Winch(pattern_config=radial_params)
+        km_copy = self.substitute_parametrized_kinematics(pattern)
+        self.km_param = km_copy
         # --- Decision variables per node (N nodes for intervals 0..N-1)
         opti_vars = {
             "s_dot": opti.variable(N),  # tangential speed
@@ -440,7 +459,7 @@ class PhaseParameterized(TimeSeries):
 
         # Build model functions
         km_copy.establish_residual()
-        flat = [ca.vertcat(*pattern_inputs)]
+        flat = [ca.vertcat(*self.optimization_vars.values())]
 
         residual = ca.Function(
             "residual",
@@ -515,7 +534,7 @@ class PhaseParameterized(TimeSeries):
                 *flat,
             )
 
-            T_model = self.winch_model.tension_curve(opti_vars["speed_radial"][i])
+            T_model = winch_model.tension_curve(opti_vars["speed_radial"][i])
 
             opti.subject_to(T_i == T_model)
 
@@ -571,8 +590,16 @@ class PhaseParameterized(TimeSeries):
 
         # Initials for optimization parameters
         for var, mx in self.optimization_vars.items():
-            init_val = self.pattern_config["path_parameters"][var]
-            opti.set_initial(mx, init_val)
+            if var in self.pattern_config["path_parameters"]:
+                init_val = self.pattern_config["path_parameters"][var]
+                opti.set_initial(mx, init_val)
+            elif var in self.pattern_config["radial_parameters"]:
+                init_val = self.pattern_config["radial_parameters"][var]
+                opti.set_initial(mx, init_val)
+            else:
+                raise ValueError(
+                    f"Optimization parameter '{var}' not found in 'path_parameters' or 'radial_parameters'."
+                )
 
         # Default limits for vector vars (if provided)
         for var_name, mx in opti_vars.items():
@@ -597,8 +624,10 @@ class PhaseParameterized(TimeSeries):
 
                 # write back optimized parameters
                 optimized_config = self.pattern_config.copy()
-
-                optimized_config["path_parameters"][var_name] = solution.value(mx)
+                if var_name in optimized_config["path_parameters"]:
+                    optimized_config["path_parameters"][var_name] = solution.value(mx)
+                elif var_name in optimized_config["radial_parameters"]:
+                    optimized_config["radial_parameters"][var_name] = solution.value(mx)
                 self.pattern_config = optimized_config
                 # self.substitute_parametrized_kinematics()
         except Exception as e:
@@ -610,9 +639,7 @@ class PhaseParameterized(TimeSeries):
                     pass
             print("Optimization failed:", e)
 
-    def substitute_parametrized_kinematics(self, optimize=False):
-
-        pattern = create_pattern_from_dict(self.pattern_config, optimize=optimize)
+    def substitute_parametrized_kinematics(self, pattern):
 
         kinematics = ParametrizedKinematics(pattern, self)
 
@@ -635,10 +662,7 @@ class PhaseParameterized(TimeSeries):
         km_copy.angle_azimuth = kinematics.phi
         km_copy.angle_elevation = kinematics.beta
 
-        if optimize:
-            return list(kinematics.pattern.optimization_vars.values()), pattern, km_copy
-        else:
-            return km_copy
+        return km_copy
 
     def integrator(self, time_step, kite_model=None):
         if kite_model is None:
