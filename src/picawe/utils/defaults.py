@@ -105,7 +105,7 @@ DEFAULT_OPTI_LIMITS = {
     "s": (0, 300),  # Range for s: 0 to 10
     "angle_elevation": (0.0, np.pi / 2),  # Range for angle_elevation: 0 to pi
     # HElix
-    "kappa": (0, 1),  # Range for kappa: 0 to 5
+    "kappa": (0, 1),  # Range for kappa: 0 to 1
     # "vr": (-10, 10),      # Range for vr: 0 to 100
     "beta0": (0.35, 1),  # Range for beta: 20 ot 50 degrees
     "d0": (40, 500),  # Range for d0: 0 to 100
@@ -128,4 +128,7 @@ DEFAULT_OPTI_LIMITS = {
     "speed_radial": (0.2, 6),
     "distance_radial": (100, 2000),
     "k_vr": (0.5, 1.5),
+    "slope": (100, 8000),  # Range for slope in winch model
+    "offset": (-2, 2),  # Range for offset in winch model
+    "max_tether_force": (20000, 50000),  # Range for max tether force in winch model
 }
