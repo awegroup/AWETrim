@@ -1,13 +1,16 @@
+from matplotlib import pyplot as plt
 from picawe.timeseries.timeseries import TimeSeries
 from picawe.kinematics.parametrized_patterns import create_pattern_from_dict
 from picawe import SystemModel
-from picawe.kinematics.Kinematics_with_new_spline_based_code import (
-    ParametrizedKinematics,
-)
+from picawe.kinematics.Kinematics_with_new_spline_based_code import ParametrizedKinematics
 import casadi as ca
 import numpy as np
-from picawe.utils.defaults_and_spline import DEFAULT_SPLINE_PATTERN_CONFIG
+from picawe.utils.defaults_and_spline import DEFAULT_SPLINE_PATTERN_CONFIG, DEFAULT_OPTI_LIMITS
+import copy
+from picawe.system.tether import RigidLinkTether
 from picawe import State
+from picawe.system.kite import Kite
+
 import logging
 
 
@@ -207,7 +210,7 @@ class ReelinPhase(TimeSeries):
 
             self.states.append(new_state.to_dict())
 
-    def _flatten_for_function_call(vals):  # FUNCTION CHECKED
+    def _flatten_for_function_call(vals):  
         flat = []
         for v in vals:
             if isinstance(v, ca.MX) and v.numel() > 1:
@@ -217,7 +220,7 @@ class ReelinPhase(TimeSeries):
                 flat.append(v)
         return flat
 
-    def substitute_parametrized_kinematics(self, optimize=False):  # FUNCTION CHECKED
+    def substitute_parametrized_kinematics(self, optimize=False):  
 
         pattern = create_pattern_from_dict(self.pattern_config, optimize=optimize)
         # print(pattern.r0, pattern.r1)
@@ -248,19 +251,19 @@ class ReelinPhase(TimeSeries):
         if optimize:
             return list(kinematics.pattern.optimization_vars.values()), pattern
 
-    @property  # FUNCTION CHECKED
+    @property  
     def target_lift_coefficient(self):
         return self._target_lift_coefficient
 
-    @target_lift_coefficient.setter  # FUNCTION CHECKED
+    @target_lift_coefficient.setter  
     def target_lift_coefficient(self, value):
         self._target_lift_coefficient = value
 
-    @property  # FUNCTION CHECKED
+    @property  
     def target_drag_coefficient(self):
         return self._target_drag_coefficient
 
-    @target_drag_coefficient.setter  # FUNCTION CHECKED
+    @target_drag_coefficient.setter  
     def target_drag_coefficient(self, value):
         self._target_drag_coefficient = value
 
@@ -343,7 +346,7 @@ class ReelinPhase(TimeSeries):
         return intg
 
 
-def smooth_gate_interval(s, s0, sf, eps=1e-2):  # FUNCTION CHECKED
+def smooth_gate_interval(s, s0, sf, eps=1e-2):  
     """
     Smooth gate active only on [s0, sf], 0 outside.
     eps controls the ramp width at both ends.

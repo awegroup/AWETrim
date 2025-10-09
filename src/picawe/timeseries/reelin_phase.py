@@ -169,7 +169,7 @@ class ReelinPhase(TimeSeries):
                 )
 
             if new_state.speed_radial > self.pattern_config["parameters"].get(
-                "min_vr", -6
+                "min_vr", -4
             ) and (new_state.distance_radial > self.pattern_config["parameters"]["r1"]):
                 ddot_vr = -self.kite_model.acceleration_winch
             elif (
@@ -192,6 +192,18 @@ class ReelinPhase(TimeSeries):
             t += time_step
             x0 = xf
             z0 = zf
+            
+            # Recompute angles from updated s and r BEFORE appending to states
+            try:
+                pattern = create_pattern_from_dict(self.pattern_config)
+                pattern_result = pattern.evaluate_spline(
+                    new_state.distance_radial, new_state.s
+                )
+                new_state.angle_azimuth = float(pattern_result["S"][0])
+                new_state.angle_elevation = float(pattern_result["S"][1])
+            except Exception as e:
+                print(f"Warning: Could not compute angles for step {i}: {e}")
+
             self.states.append(new_state.to_dict())
 
     # def run_simulation_opti(self, start_state):
@@ -573,9 +585,9 @@ class ReelinPhase(TimeSeries):
         # self.kite_model.speed_radial = kinematics.vr
         self.kite_model.speed_tangential = kinematics.vtau
 
-        print("chi_dot from kinematics:", kinematics.dot_chi)
+        # print("chi_dot from kinematics:", kinematics.dot_chi)
         self.kite_model.timeder_angle_course = kinematics.dot_chi
-        print("chi_dot from model:", self.kite_model.timeder_angle_course)
+        # print("chi_dot from model:", self.kite_model.timeder_angle_course)
 
         if not self.quasi_steady:
             # self.kite_model.timeder_speed_radial = kinematics.dot_vr
