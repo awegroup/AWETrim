@@ -116,106 +116,66 @@ for i in range(N):
         ],
     }
 
-    # TODO: PLOT PATTERN BEFORE SIMULATING IT
-    # TODO: Investigate why beta0 does not go towards where it should
-    for quasi_steady in [True]:  # Only quasi-steady
+    # aero_input["params"]["angle_pitch_depower_0"] = thetat
+    # Define kite model with current parameters
+    kite = Kite(
+        mass_wing=60,
+        area_wing=area_wing,
+        aero_input=aero_input,
+        mass_kcu=30,
+        steering_control="asymmetric",
+    )
 
-        # aero_input["params"]["angle_pitch_depower_0"] = thetat
-        # Define kite model with current parameters
-        kite = Kite(
-            mass_wing=60,
-            area_wing=area_wing,
-            aero_input=aero_input,
-            mass_kcu=30,
-            steering_control="asymmetric",
-        )
+    kite_model = SystemModel(
+        dof=dof,
+        quasi_steady=True,
+        kite=kite,
+        tether=tether,
+        wind_model=wind,
+    )
+    kite_model.input_depower = 0
 
-        kite_model = SystemModel(
-            dof=dof,
-            quasi_steady=quasi_steady,
-            kite=kite,
-            tether=tether,
-            wind_model=wind,
-        )
-        kite_model.input_depower = 0
+    # Run simulation
 
-        # Run simulation
+    phase = PhaseParameterized(
+        kite_model,
+        quasi_steady=True,
+        pattern_config=pattern_config,
+        tension_min=tension_min,
+        tension_max=tension_max,
+    )
 
-        phase = PhaseParameterized(
-            kite_model,
-            quasi_steady=quasi_steady,
-            pattern_config=pattern_config,
-            tension_min=tension_min,
-            tension_max=tension_max,
-        )
-        # phase.set_optimal_speed_radial()
+    phase_base = PhaseParameterized(
+        kite_model,
+        quasi_steady=True,
+        pattern_config=copy.deepcopy(pattern_config),
+        tension_min=tension_min,
+        tension_max=tension_max,
+    )
+    phase_base.run_simulation_phase(start_state=start_state)
+    phases_qs.append(copy.deepcopy(phase_base))
 
-        if quasi_steady:
-            # Baseline (no optimization)
-            phase_base = PhaseParameterized(
-                kite_model,
-                quasi_steady=quasi_steady,
-                pattern_config=copy.deepcopy(pattern_config),
-                tension_min=tension_min,
-                tension_max=tension_max,
-            )
-            phase_base.run_simulation_phase(start_state=start_state)
-            phases_qs.append(copy.deepcopy(phase_base))
+    # Optimized
+    phase.run_simulation_opti_phase(start_state=start_state)
+    pattern_config = phase.pattern_config
+    print("Optimized pattern configuration:")
+    print(pattern_config)
 
-            # Optimized
-            phase.run_simulation_opti_phase(start_state=start_state)
-            pattern_config = phase.pattern_config
-            print("Optimized pattern configuration:")
-            print(pattern_config)
-            # start_state = phase.states[0]
+    phase.run_simulation_phase(start_state=start_state)
+    start_state = phase.states[0]
 
-        # kite = Kite(
-        #     mass_wing=mass_wing,
-        #     area_wing=area_wing,
-        #     aero_input=aero_input,
-        #     mass_kcu=0,
-        #     steering_control="asymmetric",
-        # )
-        # kite_model = SystemModel(
-        #     dof=dof,
-        #     quasi_steady=quasi_steady,
-        #     kite=kite,
-        #     tether=tether,
-        #     wind_model=wind,
-        # )
-        # kite_model.input_depower = 0
-        # phase.kite_model = kite_model
+    s = phase.return_variable("s")
+    s_dot = phase.return_variable("s_dot")
 
-        # phase = PhaseParameterized(
-        #     kite_model, quasi_steady=quasi_steady, pattern_config=pattern_config
-        # )
-        phase.run_simulation_phase(start_state=start_state)
-        start_state = phase.states[0]
+    phases_qs.append(copy.deepcopy(phase))
 
-        # start_state = phase.states[0]
+    print(s_dot[0])
+    start_state["s_dot"] = s_dot[0]
+    start_state["s"] = s[0]
+    start_state["tension_tether_ground"] = phase.return_variable(
+        "tension_tether_ground"
+    )[0]
 
-        # TODO: One should not run the simulation twice, but rather use the optimized pattern, but somehow there is a problem using the optimized pattern directly
-        # phase.run_simulation(start_state=start_state, s_array=s_array)
-        # Extract variables
-        s = phase.return_variable("s")
-        s_dot = phase.return_variable("s_dot")
-        # aoa = phase.return_variable("angle_of_attack")
-        # print("Mean aoa:", np.mean(aoa) * 180 / np.pi)
-        if quasi_steady:
-            phases_qs.append(copy.deepcopy(phase))
-        else:
-            phases_dyn.append(copy.deepcopy(phase))
-
-        print(s_dot[0])
-        start_state["s_dot"] = s_dot[0]
-        start_state["s"] = s[0]
-        start_state["tension_tether_ground"] = phase.return_variable(
-            "tension_tether_ground"
-        )[0]
-
-
-# fig, slider = phase.interactive_plot()
-# plt.show()
 # -----------------------------------------------
 # Plot results
 # -----------------------------------------------
