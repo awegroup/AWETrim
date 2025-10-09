@@ -12,7 +12,7 @@ from picawe.environment import Wind
 import json
 import copy
 
-file_path = "./data/LEI-V9-KITE/v9_aero_input.json"
+file_path = "./data/LEI-V3-KITE/v3_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
@@ -35,7 +35,7 @@ print("Friction speed:", wind.speed_friction)
 start_state = State(
     t=0,
     s=np.pi / 2,
-    s_dot=0.8,
+    s_dot=2,
     s_ddot=0,
     length_tether=199.6,
     input_steering=0,
@@ -44,7 +44,7 @@ start_state = State(
     angle_yaw=0,
     tension_tether_ground=1e8,
     speed_radial=2,
-    distance_radial=230,
+    distance_radial=200,
 )
 time = np.arange(0, 50, 0.1)
 s_array = np.linspace(5 * np.pi / 2, 9 * np.pi / 2, 200)
@@ -59,13 +59,15 @@ parameters = ["speed_tangential", "tension_tether_ground", "angle_roll"]
 x_param = "s"
 
 N = 1
-tether = RigidLumpedTether(diameter=0.01)
-mass_wing = 90
-area_wing = 47
+
+mass_wing = 14.2
+mass_kcu = 10
+area_wing = 19.75
 tension_min = 3000
 tension_max = 25000
+tether_diameter = 0.01
+tether = RigidLumpedTether(diameter=tether_diameter)
 phases_qs = []
-phases_dyn = []
 for i in range(N):
 
     pattern_config = {
@@ -121,10 +123,10 @@ for i in range(N):
     # aero_input["params"]["angle_pitch_depower_0"] = thetat
     # Define kite model with current parameters
     kite = Kite(
-        mass_wing=60,
+        mass_wing=mass_wing,
         area_wing=area_wing,
         aero_input=aero_input,
-        mass_kcu=30,
+        mass_kcu=mass_kcu,
         steering_control="asymmetric",
     )
 

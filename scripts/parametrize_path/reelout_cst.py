@@ -12,6 +12,11 @@ from picawe.utils.defaults import PLOT_LABELS
 from picawe.environment.Wind import Wind
 
 # ---------- Config ----------
+mass_wing = 14.2
+mass_kcu = 10
+area_wing = 19.75
+tether_diameter = 0.01
+
 speed_wind_at_100 = 10
 wind = Wind(
     wind_model="logarithmic",
@@ -24,10 +29,10 @@ wind.speed_friction = speed_friction
 # color palette available via get_color_list() as needed
 
 
-with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
-    aero_input_v9 = json.load(file)
+with open("./data/LEI-V3-KITE/v3_aero_input.json", "r") as file:
+    aero_input_v3 = json.load(file)
 
-pattern_config_v9 = {
+pattern_config = {
     "pattern_type": "cst_lissajous",
     "path_parameters": {
         "omega": 1.0,
@@ -88,10 +93,9 @@ def run_sim(
     pattern_config,
     label_prefix,
     mass_wing,
+    mass_kcu,
     area_wing,
     tether_diameter,
-    color_base,
-    marker="o",
 ):
     result = {}
     phases = {}
@@ -118,6 +122,7 @@ def run_sim(
         )
         kite = Kite(
             mass_wing=mass_wing,
+            mass_kcu=mass_kcu,
             area_wing=area_wing,
             aero_input=aero_input,
             steering_control="asymmetric",
@@ -145,10 +150,12 @@ def run_sim(
     return phases
 
 
-phases_v9 = run_sim(aero_input_v9, pattern_config_v9, "V9", 90, 47, 0.01, 2, marker="^")
+phases = run_sim(
+    aero_input_v3, pattern_config, "V3", mass_wing, mass_kcu, area_wing, tether_diameter
+)
 
-dynamic_phase = phases_v9["dynamic"]
-qs_phase = phases_v9["quasi_steady"]
+dynamic_phase = phases["dynamic"]
+qs_phase = phases["quasi_steady"]
 
 # First series creates the overview figure
 fig, axes_map, scatter = dynamic_phase.plot_overview_3d(
