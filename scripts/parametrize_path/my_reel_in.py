@@ -1,13 +1,14 @@
 import numpy as np
 import json
+from scipy.interpolate import interp1d
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from picawe import SystemModel, State
-from picawe.timeseries.reelin_phase import ReelinPhase
+from picawe.timeseries.my_reelin_phase import ReelinPhase
 from picawe.system.kite import Kite
 from picawe.system.tether import RigidLumpedTether
 from picawe.environment.Wind import Wind
-from picawe.kinematics.parametrized_patterns import create_pattern_from_dict
+from picawe.kinematics.my_parametrized_patterns import create_pattern_from_dict
 import pickle
 from picawe.utils.color_palette import set_plot_style, get_color_list
 from picawe.utils.defaults import PLOT_LABELS
@@ -355,89 +356,89 @@ plt.tight_layout()
 plt.show()
 
 
-# # ---------- Energy, power and phase comparison ----------
-# def compute_energy_metrics(results, label=""):
-#     s_qs = results["quasi_steady"]["s"]
-#     s_dyn = results["dynamic"]["s"]
-#     print("Maximum s: ", max(s_qs), max(s_dyn))
-#     mask_qs = (s_qs > s_qs[0]) & (s_qs < s_qs[0] + 360)
-#     mask_dyn = (s_dyn > s_dyn[0]) & (s_dyn < s_dyn[0] + 360)
-#     vtau_qs = results["quasi_steady"]["vtau"][mask_qs]
-#     vtau_dyn = results["dynamic"]["vtau"][mask_dyn]
-#     tension_qs = results["quasi_steady"]["tension"][mask_qs]
-#     tension_dyn = results["dynamic"]["tension"][mask_dyn]
-#     vr_qs = results["quasi_steady"]["vr"][mask_qs]
-#     vr_dyn = results["dynamic"]["vr"][mask_dyn]
-#     t_qs = results["quasi_steady"]["t"][mask_qs]
-#     t_dyn = results["dynamic"]["t"][mask_dyn]
+# ---------- Energy, power and phase comparison ----------
+def compute_energy_metrics(results, label=""):
+    s_qs = results["quasi_steady"]["s"]
+    s_dyn = results["dynamic"]["s"]
+    print("Maximum s: ", max(s_qs), max(s_dyn))
+    mask_qs = (s_qs > s_qs[0]) & (s_qs < s_qs[0] + 360)
+    mask_dyn = (s_dyn > s_dyn[0]) & (s_dyn < s_dyn[0] + 360)
+    vtau_qs = results["quasi_steady"]["vtau"][mask_qs]
+    vtau_dyn = results["dynamic"]["vtau"][mask_dyn]
+    tension_qs = results["quasi_steady"]["tension"][mask_qs]
+    tension_dyn = results["dynamic"]["tension"][mask_dyn]
+    vr_qs = results["quasi_steady"]["vr"][mask_qs]
+    vr_dyn = results["dynamic"]["vr"][mask_dyn]
+    t_qs = results["quasi_steady"]["t"][mask_qs]
+    t_dyn = results["dynamic"]["t"][mask_dyn]
 
-#     sum_energy_qs = np.sum(tension_qs * vr_qs * np.diff(t_qs, prepend=t_qs[0]))
-#     sum_energy_dyn = np.sum(tension_dyn * vr_dyn * np.diff(t_dyn, prepend=t_dyn[0]))
-#     sum_pow_qs = sum_energy_qs / (t_qs[-1] - t_qs[0])
-#     sum_pow_dyn = sum_energy_dyn / (t_dyn[-1] - t_dyn[0])
-#     power_diff = (sum_pow_qs - sum_pow_dyn) / sum_pow_dyn * 100
+    sum_energy_qs = np.sum(tension_qs * vr_qs * np.diff(t_qs, prepend=t_qs[0]))
+    sum_energy_dyn = np.sum(tension_dyn * vr_dyn * np.diff(t_dyn, prepend=t_dyn[0]))
+    sum_pow_qs = sum_energy_qs / (t_qs[-1] - t_qs[0])
+    sum_pow_dyn = sum_energy_dyn / (t_dyn[-1] - t_dyn[0])
+    power_diff = (sum_pow_qs - sum_pow_dyn) / sum_pow_dyn * 100
 
-#     pow_qs = results["quasi_steady"]["power_mechanical"][mask_qs]
-#     pow_dyn = results["dynamic"]["power_mechanical"][mask_dyn]
+    pow_qs = results["quasi_steady"]["power_mechanical"][mask_qs]
+    pow_dyn = results["dynamic"]["power_mechanical"][mask_dyn]
 
-#     print(f"\n--- {label} ---")
-#     print(f"Power QS: {sum_pow_qs:.2f}, Power Dyn: {sum_pow_dyn:.2f}.")
-#     print(
-#         f"Mean power QS: {np.mean(pow_qs):.2f}, Mean power Dyn: {np.mean(pow_dyn):.2f}"
-#     )
-#     print(f"Δ Power: {power_diff:.2f}%")
+    print(f"\n--- {label} ---")
+    print(f"Power QS: {sum_pow_qs:.2f}, Power Dyn: {sum_pow_dyn:.2f}.")
+    print(
+        f"Mean power QS: {np.mean(pow_qs):.2f}, Mean power Dyn: {np.mean(pow_dyn):.2f}"
+    )
+    print(f"Δ Power: {power_diff:.2f}%")
 
-#     # Cross-correlation
-#     t_common = np.linspace(max(t_qs[0], t_dyn[0]), min(t_qs[-1], t_dyn[-1]), 1000)
-#     v1 = interp1d(t_qs, vtau_qs, kind="linear")(t_common) - np.mean(vtau_qs)
-#     v2 = interp1d(t_dyn, vtau_dyn, kind="linear")(t_common) - np.mean(vtau_dyn)
-#     corr = np.correlate(v1, v2, mode="full")
-#     lags = np.arange(-len(v1) + 1, len(v1))
-#     time_lags = lags * (t_common[1] - t_common[0])
-#     best_lag = time_lags[np.argmax(corr)]
-#     print(f"Estimated time lag: {best_lag:.3f} s")
+    # Cross-correlation
+    t_common = np.linspace(max(t_qs[0], t_dyn[0]), min(t_qs[-1], t_dyn[-1]), 1000)
+    v1 = interp1d(t_qs, vtau_qs, kind="linear")(t_common) - np.mean(vtau_qs)
+    v2 = interp1d(t_dyn, vtau_dyn, kind="linear")(t_common) - np.mean(vtau_dyn)
+    corr = np.correlate(v1, v2, mode="full")
+    lags = np.arange(-len(v1) + 1, len(v1))
+    time_lags = lags * (t_common[1] - t_common[0])
+    best_lag = time_lags[np.argmax(corr)]
+    print(f"Estimated time lag: {best_lag:.3f} s")
 
-#     # Mean and Max tension differences (%)
-#     mean_t_qs = np.mean(tension_qs)
-#     mean_t_dyn = np.mean(tension_dyn)
-#     delta_ft_mean = (mean_t_qs - mean_t_dyn) / mean_t_dyn * 100
+    # Mean and Max tension differences (%)
+    mean_t_qs = np.mean(tension_qs)
+    mean_t_dyn = np.mean(tension_dyn)
+    delta_ft_mean = (mean_t_qs - mean_t_dyn) / mean_t_dyn * 100
 
-#     max_t_qs = np.max(tension_qs)
-#     max_t_dyn = np.max(tension_dyn)
-#     delta_ft_max = (max_t_qs - max_t_dyn) / max_t_dyn * 100
+    max_t_qs = np.max(tension_qs)
+    max_t_dyn = np.max(tension_dyn)
+    delta_ft_max = (max_t_qs - max_t_dyn) / max_t_dyn * 100
 
-#     # Max tangential speed difference (%)
-#     max_vtau_qs = np.max(vtau_qs)
-#     max_vtau_dyn = np.max(vtau_dyn)
-#     delta_vtau_max = (max_vtau_qs - max_vtau_dyn) / max_vtau_dyn * 100
+    # Max tangential speed difference (%)
+    max_vtau_qs = np.max(vtau_qs)
+    max_vtau_dyn = np.max(vtau_dyn)
+    delta_vtau_max = (max_vtau_qs - max_vtau_dyn) / max_vtau_dyn * 100
 
-#     # --- TENSION MIN DIFFERENCE ---
-#     min_t_qs = np.min(tension_qs)
-#     min_t_dyn = np.min(tension_dyn)
-#     delta_ft_min = (min_t_qs - min_t_dyn) / min_t_dyn * 100
+    # --- TENSION MIN DIFFERENCE ---
+    min_t_qs = np.min(tension_qs)
+    min_t_dyn = np.min(tension_dyn)
+    delta_ft_min = (min_t_qs - min_t_dyn) / min_t_dyn * 100
 
-#     # --- VTAU MIN DIFFERENCE ---
-#     min_vtau_qs = np.min(vtau_qs)
-#     min_vtau_dyn = np.min(vtau_dyn)
-#     delta_vtau_min = (min_vtau_qs - min_vtau_dyn) / min_vtau_dyn * 100
+    # --- VTAU MIN DIFFERENCE ---
+    min_vtau_qs = np.min(vtau_qs)
+    min_vtau_dyn = np.min(vtau_dyn)
+    delta_vtau_min = (min_vtau_qs - min_vtau_dyn) / min_vtau_dyn * 100
 
-#     # --- PHASE LAG AT MAX vtau ---
-#     s_dyn_vtau_max = s_dyn[np.argmax(vtau_dyn)]
-#     s_qs_vtau_max = s_qs[np.argmax(vtau_qs)]
-#     s_lag_max = s_qs_vtau_max - s_dyn_vtau_max
+    # --- PHASE LAG AT MAX vtau ---
+    s_dyn_vtau_max = s_dyn[np.argmax(vtau_dyn)]
+    s_qs_vtau_max = s_qs[np.argmax(vtau_qs)]
+    s_lag_max = s_qs_vtau_max - s_dyn_vtau_max
 
-#     # --- PHASE LAG AT MIN vtau ---
-#     s_dyn_vtau_min = s_dyn[np.argmin(vtau_dyn)]
-#     s_qs_vtau_min = s_qs[np.argmin(vtau_qs)]
-#     s_lag_min = s_qs_vtau_min - s_dyn_vtau_min
+    # --- PHASE LAG AT MIN vtau ---
+    s_dyn_vtau_min = s_dyn[np.argmin(vtau_dyn)]
+    s_qs_vtau_min = s_qs[np.argmin(vtau_qs)]
+    s_lag_min = s_qs_vtau_min - s_dyn_vtau_min
 
-#     print(f"ΔF_t,mean: {delta_ft_mean:.2f}%")
-#     print(f"ΔF_t,max: {delta_ft_max:.2f}%")
-#     print(f"ΔF_t,min: {delta_ft_min:.2f}%")
-#     print(f"Δv_tau,max: {delta_vtau_max:.2f}%")
-#     print(f"Δv_tau,min: {delta_vtau_min:.2f}%")
-#     print(f"ΔΦ_v_tau,max: {s_lag_max:.2f} deg")
-#     print(f"ΔΦ_v_tau,min: {s_lag_min:.2f} deg")
+    print(f"ΔF_t,mean: {delta_ft_mean:.2f}%")
+    print(f"ΔF_t,max: {delta_ft_max:.2f}%")
+    print(f"ΔF_t,min: {delta_ft_min:.2f}%")
+    print(f"Δv_tau,max: {delta_vtau_max:.2f}%")
+    print(f"Δv_tau,min: {delta_vtau_min:.2f}%")
+    print(f"ΔΦ_v_tau,max: {s_lag_max:.2f} deg")
+    print(f"ΔΦ_v_tau,min: {s_lag_min:.2f} deg")
 
 
 fig_3d = plt.figure()

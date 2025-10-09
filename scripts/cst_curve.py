@@ -175,7 +175,7 @@ ax[1].grid(True, alpha=0.3)
 plt.tight_layout()
 
 
-from picawe.kinematics.parametrized_patterns import CST_Lissajous
+from picawe.kinematics.my_parametrized_patterns import CST_Lissajous
 import casadi as ca
 
 # your NumPy setup: t in [0,1)

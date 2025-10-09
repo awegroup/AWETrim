@@ -50,7 +50,7 @@ from picawe.system.kite import Kite
 from picawe.system import SystemModel, State
 import numpy as np
 from picawe.environment import Wind
-from picawe.timeseries.reelout_phase import PhaseParameterized
+from picawe.timeseries.my_phase_parametrized import PhaseParameterized
 
 mass_wing = 90
 area_wing = 47

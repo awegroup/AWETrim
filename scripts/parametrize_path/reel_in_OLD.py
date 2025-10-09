@@ -3,11 +3,11 @@ import json
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
 from picawe import SystemModel, State
-from picawe.timeseries.reelin_phase import ReelinPhase
+from picawe.timeseries.my_reelin_phase import ReelinPhase
 from picawe.system.kite import Kite
 from picawe.system.tether import RigidLumpedTether
 from picawe.environment.Wind import Wind
-from picawe.kinematics.parametrized_patterns import create_pattern_from_dict
+from picawe.kinematics.my_parametrized_patterns import create_pattern_from_dict
 import pickle
 from picawe.utils.color_palette import set_plot_style, get_color_list
 from picawe.utils.defaults import PLOT_LABELS

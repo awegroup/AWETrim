@@ -1,6 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from picawe.kinematics.parametrized_patterns import (
+from picawe.kinematics.my_parametrized_patterns import (
     Helix,
     Lissajous,
     FigureEight,

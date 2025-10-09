@@ -1,7 +1,7 @@
 import numpy as np
 import casadi as ca
-import picawe.kinematics.RI_fitting as ribfit
-from picawe.kinematics.theo_reelin_parametrization import ParametrizedPatternsAngles
+import picawe.kinematics.my_RI_fitting as ribfit
+from picawe.kinematics.my_reelin_parametrization import ParametrizedPatternsAngles
 
 # -------------------------------
     # something0 or somethingf means the start or end 0 for start and f for final
@@ -234,7 +234,7 @@ if __name__ == "__main__":
         
     #     if spline_func is None:
     #         spline_func = self.build_bspline_symbolic()
-import picawe.kinematics.RI_fitting as ribfit
+import picawe.kinematics.my_RI_fitting as ribfit
 
     #     S_list, dS_list = [], []
     #     for ui in self.u_vals:

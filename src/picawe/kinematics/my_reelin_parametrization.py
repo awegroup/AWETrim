@@ -2,10 +2,10 @@
 import numpy as np
 import casadi as ca
 import matplotlib.pyplot as plt
-from picawe.kinematics.Kinematics_with_new_spline_based_code import ParametrizedKinematics
+from picawe.kinematics.my_Kinematics import ParametrizedKinematics
 from picawe.system.system_model import SystemModel
-from picawe.kinematics.RI_fitting import RI_fitting as ribfit
-from picawe .kinematics.Bspline_build import Bspline_build
+from picawe.kinematics.my_RI_fitting import RI_fitting as ribfit
+from picawe.kinematics.my_parametrized_patterns import Bspline as Bspline_build
 
 # =========================================================
 # Base class: angles-only pattern (radians) + numeric eval

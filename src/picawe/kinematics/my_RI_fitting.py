@@ -1,10 +1,10 @@
 import numpy as np
 from scipy.optimize import least_squares
-from picawe.kinematics.RI_data_processing import RI_data_processing as ribdata
-from picawe.kinematics.Bspline_build import Bspline_build as ribbuild
+from picawe.kinematics.my_RI_data_processing import RI_data_processing as ribdata
+from picawe.kinematics.my_parametrized_patterns import Bspline as Bspline_build
 import casadi as ca
 
-class RI_fitting(ribdata, ribbuild):
+class RI_fitting(ribdata, Bspline_build):
     """
     B-spline fitting class using CasADi, fully leveraging the existing build class.
     """
@@ -66,7 +66,7 @@ class RI_fitting(ribdata, ribbuild):
         ri_pf = self.ri_pf_sph if mode == "spherical" else self.ri_pf_cart
 
         # -------- builder instance --------
-        builder = ribbuild()
+        builder = Bspline_build()
         builder.n_ctrl = self.n_ctrl
         builder.p = self.p
         builder.dim = dim

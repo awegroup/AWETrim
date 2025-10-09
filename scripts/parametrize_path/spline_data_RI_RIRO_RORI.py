@@ -1,4 +1,4 @@
-from picawe.kinematics.RI_fitting import RI_fitting as rifit
+from picawe.kinematics.my_RI_fitting import RI_fitting as rifit
 from picawe.kinematics.my_RI_RO_fitting import RI_RO_fitting as rirofit
 from picawe.kinematics.my_RO_RI_fitting import RO_RI_fitting as rorifit
 import pickle

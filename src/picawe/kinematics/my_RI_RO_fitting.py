@@ -1,4 +1,4 @@
-from picawe.kinematics.Bspline_build import Bspline_build
+from picawe.kinematics.my_parametrized_patterns import Bspline as Bspline_build
 from picawe.kinematics.my_RI_RO_data_processing import RI_RO_data_processing
 import numpy as np
 from scipy.optimize import least_squares

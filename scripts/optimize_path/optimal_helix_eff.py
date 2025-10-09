@@ -1,13 +1,13 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
-from picawe.kinematics.parametrized_patterns import Helix, Lissajous, FigureEight
+from picawe.kinematics.my_parametrized_patterns import Helix, Lissajous, FigureEight
 from picawe.system.kite import Kite
 from picawe.system.tether import RigidLinkTether, RigidLumpedTether
 from picawe.kinematics.Kinematics import ParametrizedKinematics, KiteKinematics
 from picawe import SystemModel, State
 from picawe.utils.color_palette import set_plot_style_no_latex, get_color_list
-from picawe.timeseries.reelout_phase import PhaseParameterized
+from picawe.timeseries.my_phase_parametrized import PhaseParameterized
 import json
 import copy
 

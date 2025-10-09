@@ -1,5 +1,5 @@
-from picawe.kinematics.parametrized_patterns import CST_Lissajous
-from picawe.kinematics.Lisajous_data_processing import Lisajous_data_processing
+from picawe.kinematics.my_parametrized_patterns import CST_Lissajous
+from picawe.kinematics.my_Lisajous_data_processing import Lisajous_data_processing
 import numpy as np
 from scipy.optimize import least_squares
 import matplotlib.pyplot as plt

@@ -1,21 +1,21 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import json
-from picawe.kinematics.parametrized_patterns import Helix
+from picawe.kinematics.my_parametrized_patterns import Helix
 from picawe import SystemModel, State
 from picawe.utils.color_palette import (
     set_plot_style,
     get_color_list,
     set_plot_style_no_latex,
 )
-from picawe.timeseries.reelout_phase import PhaseParameterized
+from picawe.timeseries.my_phase_parametrized import PhaseParameterized
 from picawe.system.kite import Kite
 from picawe.system.tether import (
     FlexibleLumpedTether,
     RigidLumpedTether,
     RigidLinkTether,
 )
-from picawe.kinematics.parametrized_patterns import create_pattern_from_dict
+from picawe.kinematics.my_parametrized_patterns import create_pattern_from_dict
 from picawe import SystemModel
 from picawe.kinematics.Kinematics import ParametrizedKinematics
 from picawe.utils.defaults import PLOT_LABELS

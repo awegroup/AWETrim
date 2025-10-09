@@ -1,5 +1,5 @@
 from picawe.timeseries.timeseries import TimeSeries
-from picawe.kinematics.parametrized_patterns import create_pattern_from_dict
+from picawe.kinematics.my_parametrized_patterns import create_pattern_from_dict
 from picawe import SystemModel
 from picawe.kinematics.Kinematics import ParametrizedKinematics
 import casadi as ca

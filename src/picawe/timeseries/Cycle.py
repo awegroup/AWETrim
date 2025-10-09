@@ -1,5 +1,5 @@
 import time
-from picawe.timeseries.reelout_phase import PhaseParameterized
+from picawe.timeseries.my_phase_parametrized import PhaseParameterized
 from picawe.timeseries.reelin_phase_old import ReelinPhase
 from picawe.system.kite import Kite
 from picawe.system.tether import RigidLumpedTether

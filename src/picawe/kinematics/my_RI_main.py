@@ -1,4 +1,4 @@
-from picawe.kinematics.RI_plotting import RI_plotting as plot
+from picawe.kinematics.my_RI_plotting import RI_plotting as plot
 
 # -------------------------------
 # Main script

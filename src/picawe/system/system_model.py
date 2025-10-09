@@ -2,7 +2,7 @@ import casadi as ca
 import numpy as np
 from picawe.system.tether import RigidLinkTether, FlexibleLinkTether
 from picawe.system.kite import Kite
-from picawe.kinematics.Kinematics_with_new_spline_based_code import KiteKinematics
+from picawe.kinematics.my_Kinematics import KiteKinematics
 from picawe.environment.Wind import Wind
 from picawe.utils.defaults import DEFAULT_BOUNDS
 import inspect
