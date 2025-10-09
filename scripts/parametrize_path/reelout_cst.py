@@ -29,7 +29,7 @@ with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
 
 pattern_config_v9 = {
     "pattern_type": "cst_lissajous",
-    "parameters": {
+    "path_parameters": {
         "omega": 1.0,
         "r0": 230.0,
         "az_amp0": 0.48777050522375176,

@@ -363,7 +363,7 @@ def create_pattern_from_dict(
     config: dict, optimize: bool = False
 ) -> ParametrizedPatterns:
     pattern_type = config.get("pattern_type").lower()
-    params = config.get("parameters", {})
+    params = config.get("path_parameters", {})
     optimization_params = config.get("optimization_parameters", {})
 
     print(params)
