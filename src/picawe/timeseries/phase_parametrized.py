@@ -379,360 +379,6 @@ class PhaseParameterized(TimeSeries):
             t += time_step
             self.states.append(new_state.to_dict())
 
-    def run_simulation_opti(self, start_state):
-
-        self.states = []
-        self.kite_model.reset_solver()
-
-        N = self.pattern_config["n_points"]
-        time_step = self.pattern_config["end_time"] / N
-        t0 = 0
-
-        self.run_simulation(start_state, return_states=True)
-        pattern_inputs, pattern = self.substitute_parametrized_kinematics(True)
-        opti = ca.Opti()
-        # pattern_inputs = self.substitute_parametrized_kinematics(True)
-
-        self.optimization_vars = {}  # Store optimization variables
-
-        # Create optimization variables for parameters to optimize
-        for var in self.pattern_config["optimization_parameters"]:
-
-            val = np.atleast_1d(
-                self.pattern_config["parameters"][var]
-            )  # guarantees array, even for scalar
-
-            if len(val) > 1:
-                self.optimization_vars[var] = opti.variable(len(val))
-            else:
-                self.optimization_vars[var] = (
-                    opti.variable()
-                )  # No bounds if not specified
-            # If the optimization variable is a vector, set as a list of variables
-            opt_var = self.optimization_vars[var]
-            setattr(pattern, var, opt_var)
-            # print(getattr(pattern, var))
-
-        if "k_vr" in self.optimization_vars:
-            k_vr = self.optimization_vars["k_vr"]
-            pattern_inputs.append(k_vr)
-        else:
-            k_vr = 1
-        opti_variables = {
-            "s": opti.variable(N + 1),
-            "s_dot": opti.variable(N + 1),
-            "input_steering": opti.variable(N + 1),
-            "tension_tether_ground": opti.variable(N + 1),
-            "speed_radial": opti.variable(N + 1),
-            "distance_radial": opti.variable(N + 1),
-        }
-
-        # Add optimization parameters
-        for var in self.optimization_vars:
-            opti_variables[var] = self.optimization_vars[var]
-
-        opti.set_initial(opti_variables["s"], self.return_variable("s"))
-        opti.set_initial(opti_variables["s_dot"], self.return_variable("s_dot"))
-        opti.set_initial(
-            opti_variables["input_steering"], self.return_variable("input_steering")
-        )
-        opti.set_initial(
-            opti_variables["tension_tether_ground"],
-            self.return_variable("tension_tether_ground"),
-        )
-        opti.set_initial(
-            opti_variables["speed_radial"], self.return_variable("speed_radial")
-        )
-        opti.set_initial(
-            opti_variables["distance_radial"], self.return_variable("distance_radial")
-        )
-
-        opti.subject_to(opti_variables["s"][0] == start_state.s)
-        opti.subject_to(
-            opti_variables["distance_radial"][0]
-            == self.return_variable("distance_radial")[0]
-        )
-
-        if not self.quasi_steady:
-            opti.subject_to(
-                opti_variables["s_dot"][0] == self.return_variable("s_dot")[0]
-            )
-        self.kite_model.establish_residual()
-        flat = [ca.vertcat(*pattern_inputs)]
-
-        if self.quasi_steady:
-            residual = ca.Function(
-                "residual",
-                [
-                    self.kite_model.s,
-                    self.kite_model.s_dot,
-                    self.kite_model.input_steering,
-                    self.kite_model.tension_tether_ground,
-                    self.kite_model.speed_radial,
-                    self.kite_model.distance_radial,
-                ]
-                + flat,
-                [self.kite_model.residual],
-            )
-            tether_tension_eq = ca.Function(
-                "tether_tension_eq",
-                [
-                    self.kite_model.s,
-                    self.kite_model.s_dot,
-                    self.kite_model.input_steering,
-                    self.kite_model.speed_radial,
-                    self.kite_model.distance_radial,
-                ]
-                + flat,
-                [self.kite_model.tension_tether_equation],
-            )
-        else:
-            residual = ca.Function(
-                "residual",
-                [
-                    self.kite_model.t,
-                    self.kite_model.s,
-                    self.kite_model.s_dot,
-                    self.kite_model.s_ddot,
-                    self.kite_model.input_steering,
-                    self.kite_model.tension_tether_ground,
-                ]
-                + flat,
-                [self.kite_model.residual],
-            )
-
-        # # Set the time values
-        time_array = np.arange(N + 1) * time_step + t0
-        height = pattern.z(opti_variables["distance_radial"], opti_variables["s"])
-        opti.subject_to(height >= 50)
-        # radius_curvature = pattern.radius_curvature(time_array, opti_variables["s"])
-
-        P_scale = opti.parameter()
-        # set from your initial trajectory (rough but effective):
-        T0 = self.return_variable("tension_tether_ground")
-        vr0 = self.return_variable("speed_radial")
-        s = self.return_variable("s")
-        mask = (s > s[0]) & (s < s[0] + 2 * np.pi)
-        P0 = (np.dot(T0[mask], vr0[mask]) * time_step) / max(
-            time_array[mask]
-        )  # crude scale for T*vr
-        print(f"Initial P0: {P0}")
-        opti.set_value(P_scale, max(abs(P0), 1.0))
-        total_time = opti.parameter()
-        opti.set_value(total_time, self.pattern_config["end_time"])
-        energy = 0
-        t_eff = 0
-        for i in range(N + 1):
-            opt_par_values = [opti_variables[var] for var in self.optimization_vars]
-            flat = [ca.vertcat(*opt_par_values)]
-
-            if self.quasi_steady:
-                tether_inputs = [
-                    opti_variables["s"][i],
-                    opti_variables["s_dot"][i],
-                    opti_variables["input_steering"][i],
-                    opti_variables["speed_radial"][i],
-                    opti_variables["distance_radial"][i],
-                ] + flat
-                tether_tension = tether_tension_eq(*tether_inputs)
-                opti.subject_to(
-                    (
-                        opti_variables["speed_radial"][i] ** 2
-                        * k_vr
-                        * self.pattern_config["parameters"]["k_vr"]
-                        - tether_tension
-                    )
-                    == 0
-                )
-                opti_variables["tension_tether_ground"][i] = tether_tension
-
-                residual_inputs = [
-                    opti_variables["s"][i],
-                    opti_variables["s_dot"][i],
-                    opti_variables["input_steering"][i],
-                    tether_tension,
-                    opti_variables["speed_radial"][i],
-                    opti_variables["distance_radial"][i],
-                ] + flat
-
-            else:
-                # For dynamic case, include s_ddot
-                residual_inputs = [
-                    time_array[i],
-                    opti_variables["s"][i],
-                    opti_variables["s_dot"][i],
-                    opti_variables["s_ddot"][i],
-                    opti_variables["input_steering"][i],
-                    opti_variables["tension_tether_ground"][i],
-                ] + flat
-            res = residual(*residual_inputs)
-
-            W = ca.diag(
-                ca.vertcat(0.01, 0.01, 0.001)
-            )  # tune so |W r| ~ 1 near feasible
-            # opti.subject_to(W @ res == 0)
-            opti.subject_to(res[0] / 100 == 0)
-            opti.subject_to(res[1] / 100 == 0)
-
-            if i < N:
-                if self.quasi_steady:
-                    opti.subject_to(
-                        opti_variables["s"][i + 1]
-                        == opti_variables["s"][i]
-                        + opti_variables["s_dot"][i] * time_step
-                    )
-                    opti.subject_to(
-                        opti_variables["distance_radial"][i + 1]
-                        == opti_variables["distance_radial"][i]
-                        + opti_variables["speed_radial"][i] * time_step
-                    )
-
-                else:
-                    raise NotImplementedError("Dynamic case not implemented")
-
-            # Only accumulate power when s is between 0 and 2π
-        w = smooth_gate_interval(
-            opti_variables["s"], start_state.s, start_state.s + 2 * np.pi
-        )
-        w = ca.reshape(w, (-1, 1))
-        T = ca.reshape(opti_variables["tension_tether_ground"], (-1, 1))
-        energy = ca.sum1(
-            w * (T**1.5) / ca.sqrt(k_vr * self.pattern_config["parameters"]["k_vr"])
-        )
-
-        # t_eff = time_step * ca.sum1(w)
-        power = energy / ca.sum1(w)
-        opti.minimize(-power / P_scale)  # drop duplicate min with -power/P_scale
-        # power = ca.dot(
-        #     w, opti_variables["tension_tether_ground"] * opti_variables["speed_radial"]
-        # )
-
-        rho = 1  # demand at least 95% of warm-start power
-        sigma = opti.variable()  # slack ≥ 0
-        opti.subject_to(sigma >= 0)
-        opti.subject_to(power >= rho * P_scale - sigma)
-
-        # Take the mean
-
-        # energy = time_step * ca.dot(
-        #     opti_variables["tension_tether_ground"], opti_variables["speed_radial"]
-        # )
-        # power = power / (time_array[-1] - time_array[0])
-
-        # # Check gradient with respect to optimization variables
-        # for var in self.optimization_vars:
-        #     grad = ca.gradient(power, opti_variables[var])
-        # print(f"Gradient for {var}: {grad}")
-
-        w_sigma = 1e3  # big penalty on violating the floor
-        opti.minimize(opti.f + w_sigma * sigma)  # 'opti.f' is your current objective
-
-        # Average power only over s∈[0,2π]
-        # power = energy / (t_eff + 1e-12)
-        opti.solver(
-            "ipopt",
-            {
-                "ipopt": {
-                    # "max_iter": 100,
-                    "bound_relax_factor": 1e-8,
-                    "tol": 1e-4,  # Main tolerance
-                    # "acceptable_iter": 3,  # Accept if solution is good for 3 iter
-                    "acceptable_tol": 1e-4,  # Acceptable early termination
-                    "constr_viol_tol": 1e-4,  # Constraint violation tolerance
-                    "dual_inf_tol": 1e-4,  # Dual infeasibility
-                    # "honor_original_bounds": "yes",
-                    "hessian_approximation": "limited-memory",
-                    "mu_strategy": "adaptive",
-                    # "linear_solver": "mumps",
-                }
-            },
-        )
-
-        # Set initial conditions for optimization parameters
-        for var in self.optimization_vars:
-            print(
-                f"Setting initial value for {var}: {self.pattern_config['parameters'][var]}"
-            )
-            print(self.optimization_vars[var])
-            if var == "k_vr":
-                opti.set_initial(self.optimization_vars[var], 1)
-            else:
-                opti.set_initial(
-                    self.optimization_vars[var], self.pattern_config["parameters"][var]
-                )
-        ### APPLY CONSTRAINTS DYNAMICALLY FROM DEFAULT_OPTI_LIMITS ###
-        for var_name, opti_var in opti_variables.items():
-            if isinstance(opti_var, ca.MX):
-                if var_name in DEFAULT_OPTI_LIMITS:
-                    if var_name in self.optimization_vars:
-                        print(f"Applying constraints for {var_name}")
-                        lb, ub = DEFAULT_OPTI_LIMITS[var_name]
-                        opti.subject_to(lb <= opti_var)
-                        opti.subject_to(opti_var <= ub)
-                    else:
-                        print(f"Applying constraints for {var_name}")
-                        lb, ub = DEFAULT_OPTI_LIMITS[var_name]
-                        opti.subject_to(lb <= opti_var[:])
-                        opti.subject_to(opti_var[:] <= ub)
-
-        try:
-            solution = opti.solve()
-            # Print optimized values for variables in the pattern
-            print("\n Optimized Pattern Variables:")
-            for var_name, var in self.optimization_vars.items():
-                print(f"  {var_name}: {solution.value(var)}")
-                optimized_config = self.pattern_config.copy()
-
-                if var_name == "k_vr":
-                    optimized_config["parameters"].update(
-                        {
-                            "k_vr": opti.debug.value(var)
-                            * self.pattern_config["parameters"]["k_vr"]
-                        }
-                    )
-                else:
-                    optimized_config["parameters"].update(
-                        {var_name: opti.debug.value(var)}
-                    )
-                self.pattern_config = optimized_config
-                self.substitute_parametrized_kinematics()
-
-            print(solution.value(power))
-        except Exception as e:
-            # Print debug optimization information
-            print("Debug optimization information:")
-            for var_name, var in self.optimization_vars.items():
-                print(f"  {var_name}: {opti.debug.value(var)}")
-            print("Optimization failed:", e)
-
-        # plt.plot(solution.value(opti_variables["input_steering"]))
-        # plt.show()
-        print("Optimization status:", solution)
-        s_vals = solution.value(opti_variables["s"])  # shape: (N+1,)
-        s_dot_vals = solution.value(opti_variables["s_dot"])  # shape: (N+1,)
-        tension_vals = solution.value(
-            opti_variables["tension_tether_ground"]
-        )  # shape: (N+1,)
-        input_steering_vals = solution.value(
-            opti_variables["input_steering"]
-        )  # shape: (N+1,)
-        self.states = []
-        for i in range(N + 1):
-
-            new_state = State(
-                t=float(time_array[i]),
-                s=float(s_vals[i]),
-                input_steering=float(input_steering_vals[i]),
-                tension_tether_ground=float(tension_vals[i]),
-                s_dot=float(s_dot_vals[i]),
-                distance_radial=float(
-                    solution.value(opti_variables["distance_radial"][i])
-                ),
-                speed_radial=float(solution.value(opti_variables["speed_radial"][i])),
-            )
-
-            self.states.append(new_state.to_dict())
-
     def run_simulation_opti_phase(self, start_state):
         import casadi as ca, numpy as np
 
@@ -753,19 +399,11 @@ class PhaseParameterized(TimeSeries):
 
         # --- Optimization/design parameters
         for var in self.pattern_config["optimization_parameters"]:
-            val = np.atleast_1d(self.pattern_config["parameters"][var])
+            val = np.atleast_1d(self.pattern_config["path_parameters"][var])
             self.optimization_vars[var] = (
                 opti.variable(len(val)) if len(val) > 1 else opti.variable()
             )
             setattr(pattern, var, self.optimization_vars[var])
-
-        # k_vr effective = base * factor (if factor is optimized)
-        kvr_base = float(self.pattern_config["parameters"].get("k_vr", 1.0))
-        if "k_vr" in self.optimization_vars:
-            kvr_eff = self.optimization_vars["k_vr"] * kvr_base
-            pattern_inputs.append(self.optimization_vars["k_vr"])
-        else:
-            kvr_eff = kvr_base
 
         # --- Decision variables per node (N nodes for intervals 0..N-1)
         opti_vars = {
@@ -860,8 +498,6 @@ class PhaseParameterized(TimeSeries):
         # --- Objective assembly with SAME quadrature as simulation (left rule)
         energy = 0
         t_eff = 0
-        T_min = self.tension_min
-        T_max = self.tension_max
 
         for i in range(N):
             # Current parameter pack (MX)
@@ -880,7 +516,7 @@ class PhaseParameterized(TimeSeries):
             )
 
             T_model = self.winch_model.tension_curve(opti_vars["speed_radial"][i])
-            # Physics tie: v_r^2 * kvr_eff == T_i   (implicit coupling via T_i(v_r))
+
             opti.subject_to(T_i == T_model)
 
             # Residual equations (unscaled)
@@ -935,7 +571,7 @@ class PhaseParameterized(TimeSeries):
 
         # Initials for optimization parameters
         for var, mx in self.optimization_vars.items():
-            init_val = 1 if var == "k_vr" else self.pattern_config["parameters"][var]
+            init_val = self.pattern_config["path_parameters"][var]
             opti.set_initial(mx, init_val)
 
         # Default limits for vector vars (if provided)
@@ -961,12 +597,8 @@ class PhaseParameterized(TimeSeries):
 
                 # write back optimized parameters
                 optimized_config = self.pattern_config.copy()
-                if var_name == "k_vr":
-                    optimized_config["parameters"]["k_vr"] = (
-                        float(solution.value(mx)) * kvr_base
-                    )
-                else:
-                    optimized_config["parameters"][var_name] = solution.value(mx)
+
+                optimized_config["path_parameters"][var_name] = solution.value(mx)
                 self.pattern_config = optimized_config
                 # self.substitute_parametrized_kinematics()
         except Exception as e:
