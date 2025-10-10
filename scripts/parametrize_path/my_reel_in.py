@@ -20,19 +20,10 @@ filename = f"fit_results_{segment_name}.pkl"
 with open(filename, "rb") as f:
     fit_data = pickle.load(f)
 
-C_sph = fit_data["C_sph"]
-crs0 = fit_data["crs0"]
-crsf = fit_data["crsf"]
-phi0 = fit_data["phi0"]
-phif = fit_data["phif"]
-beta0 = fit_data["beta0"]
-betaf = fit_data["betaf"]
-C_interior = fit_data["C_interior"]
-u_vals = fit_data["u_vals"]
-U_interior = fit_data["U_interior"]
-v0 = float(
-    np.sqrt(fit_data["v0"][0] ** 2 + fit_data["v0"][1] ** 2 + fit_data["v0"][2] ** 2)
-)
+C_az = fit_data["C_az"]
+C_el = fit_data["C_el"]
+s_norm_az = fit_data["s_norm_az"]
+s_norm_el = fit_data["s_norm_el"]
 
 # ---------- Config ----------
 wind = Wind(
@@ -44,26 +35,21 @@ wind.speed_wind_ref = 8
 with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
     aero_input_v9 = json.load(file)
 
+# r0=None, r1=None, C_az=None, C_el=None, s_norm_az=None, s_norm_el=None
+
 pattern_config_v9 = {
     "pattern_type": "spline",
     "parameters": {
-        "p": 3,
-        "n_ctrl": 8,
-        "r0": 300,
-        "r1": 200,
-        "crs0": crs0,
-        "crsf": crsf,
-        "phi0": phi0,
-        "phif": phif,
-        "beta0": beta0,
-        "betaf": betaf,
-        "C_interior": C_interior,
-        "u_vals": u_vals,
-        "U_interior": U_interior,
+        "r0": 322,
+        "r1": 240,
+        "C_az": C_az,
+        "C_el": C_el,
+        "s_norm_az": s_norm_az,
+        "s_norm_el": s_norm_el,
     },
     "start_time": 0,
-    "end_time": 30,
-    "n_points": 300,
+    "end_time": 40,
+    "n_points": 600,
     "optimization_parameters": [],
 }
 

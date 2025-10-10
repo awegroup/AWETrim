@@ -28,10 +28,13 @@ colors = get_color_list()
 with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
     aero_input_v9 = json.load(file)
 
-full_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/ProtoLogger_csv/2025-09-25_11-48-58_ProtoLogger.csv"
-cycle_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/cycles/cycle_data_sheet_lines.csv"
+# File paths
+base_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2"
+waypoint_path = f"{base_path}/waypoints/2025-09-25_11-48-58_ProtoLogger_waypoints.csv"
+full_path = f"{base_path}/ProtoLogger_csv/2025-09-25_11-48-58_ProtoLogger.csv"
+cycle_path = f"{base_path}/cycles/cycle_data_sheet_lines.csv"
 
-Lisajous_fitting_obj = Lisajous_fitting(file_path_cycle=cycle_path, file_path_full=full_path, cyc_idx=0)
+Lisajous_fitting_obj = Lisajous_fitting(file_path_cycle=cycle_path, file_path_full=full_path, file_path_waypoint=waypoint_path, cyc_idx=0)
 results, best_params = Lisajous_fitting_obj.LSQ()
 az_amp0 = float(best_params["az_amp0"])
 beta_amp0 = float(best_params["beta_amp0"])

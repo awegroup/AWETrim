@@ -84,26 +84,16 @@ DEFAULT_PATTERN_CONFIG = {
 
 DEFAULT_SPLINE_PATTERN_CONFIG = {
     "pattern_type": "spline",
-    "initial_parameters": {
-        "p": 3,
-        "n_ctrl": 8,
+    "parameters": {
         "r0": 300,
         "r1": 150,
-        "crs0": (11/6)*np.pi,
-        "crsf": np.pi/2,
-        "phi0": 0,
-        "phif": 0,
-        "beta0": 0,
-        "betaf": 0,
-        "C_interior": np.ones((6, 2)),  # n_ctrl-2 x dim
-        "u_vals": np.linspace(0, 1, 100),
-        "U_interior": np.linspace(0.15, 0.85, 6)[1:-1],
-    },
-    "optimization_parameters": {
-        "C_interior",  # Only the interior control points
-    },
+        "C_az": np.deg2rad(np.array([-60, -45, -20, 0, 20, 35, 45, 50, 40, 20], dtype=float)),
+        "C_el": np.deg2rad(np.array([10, 20, 35, 45, 55, 60, 55, 45, 30, 15], dtype=float)),
+        "s_norm_az": np.linspace(0, 1, 10),
+            "s_norm_el": np.linspace(0,1,10),
+        },
+        "optimization_parameters": {}
 }
-
 
 # defaults.py (This is your file containing the limits)
 DEFAULT_OPTI_LIMITS = {

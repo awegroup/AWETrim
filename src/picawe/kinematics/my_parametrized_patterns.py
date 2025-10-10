@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 import numpy as np
 from math import comb
 import matplotlib.pyplot as plt
+from picawe.utils.my_defaults import DEFAULT_SPLINE_PATTERN_CONFIG
 
 
 
@@ -401,19 +402,12 @@ def create_pattern_from_dict(
             "az_coeffs",
         ],
         "spline": [
-            "p",
-            "n_ctrl", 
             "r0", 
             "r1", 
-            "crs0", 
-            "crsf", 
-            "phi0", 
-            "phif", 
-            "beta0", 
-            "betaf", 
-            "C_interior", 
-            "u_vals", 
-            "U_interior",
+            "C_az", 
+            "C_el", 
+            "s_norm_az", 
+            "s_norm_el", 
         ],
     }
 
@@ -448,7 +442,7 @@ def create_pattern_from_dict(
         "figure_eight": FigureEight,
         "figure_eight_angles": FigureEightAngles,
         "cst_lissajous": CST_Lissajous,
-        "spline": Bspline,
+        "spline": CasadiSpline,
     }
 
     return pattern_classes[pattern_type](**final_params)
@@ -719,11 +713,10 @@ import matplotlib.pyplot as plt
 from math import comb
 
 class CasadiSpline(ParametrizedPatternsAngles):
-    """
-    N-point Bézier spline (2D: azimuth and elevation)
-    Fully symbolic using CasADi MX.
-    Accepts scalar or vector s directly.
-    """
+
+    # =======================================
+    """ NO COURSE ANGLE ENFORCEMENT YET """
+    # =======================================
 
     def __init__(self, r0=None, r1=None, C_az=None, C_el=None, s_norm_az=None, s_norm_el=None):
 
@@ -801,3 +794,18 @@ if __name__ == "__main__":
     plt.figure()
     plt.plot(az, el)
     plt.show()
+
+    pattern = create_pattern_from_dict({
+        "pattern_type": "spline",
+        "parameters": {
+            "r0": 300,
+            "r1": 150,
+            "C_az": np.deg2rad(np.array([-60, -45, -20, 0, 20, 35, 45, 50, 40, 20], dtype=float)),
+            "C_el": np.deg2rad(np.array([10, 20, 35, 45, 55, 60, 55, 45, 30, 15], dtype=float)),
+            "s_norm_az": np.linspace(0,1,10),
+            "s_norm_el": np.linspace(0,1,10),
+        },
+        "optimization_parameters": []
+    }, optimize=False) 
+
+    pattern2 = create_pattern_from_dict(DEFAULT_SPLINE_PATTERN_CONFIG, optimize=False)

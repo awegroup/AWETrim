@@ -93,24 +93,24 @@ class RI_data_processing:
         # # Reel-in slices
         self.RI_az = self.az_cyc[self.ri_idx0 : self.ri_idxf + 1]
         self.RI_el = self.el_cyc[self.ri_idx0 : self.ri_idxf + 1]
-        # self.r_ri = self.r_cyc[self.ri_idx0 : self.ri_idxf + 1]
-        # self.crs_ri = self.crs_cyc[self.ri_idx0 : self.ri_idxf + 1]
+        self.r_ri = self.r_cyc[self.ri_idx0 : self.ri_idxf + 1]
+        self.crs_ri = self.crs_cyc[self.ri_idx0 : self.ri_idxf + 1]
         self.x_ri = self.x_cyc[self.ri_idx0 : self.ri_idxf + 1]
         self.y_ri = self.y_cyc[self.ri_idx0 : self.ri_idxf + 1]
         self.z_ri = self.z_cyc[self.ri_idx0 : self.ri_idxf + 1]
-        # self.dx_ri = self.dx_cyc[self.ri_idx0 : self.ri_idxf + 1]
-        # self.dy_ri = self.dy_cyc[self.ri_idx0 : self.ri_idxf + 1]
-        # self.dz_ri = self.dz_cyc[self.ri_idx0 : self.ri_idxf + 1]
+        self.dx_ri = self.dx_cyc[self.ri_idx0 : self.ri_idxf + 1]
+        self.dy_ri = self.dy_cyc[self.ri_idx0 : self.ri_idxf + 1]
+        self.dz_ri = self.dz_cyc[self.ri_idx0 : self.ri_idxf + 1]
 
-        # # Start/end points for reel-in
-        # self.ri_p0_sph = np.array([self.az_ri[0], self.el_ri[0]])
-        # self.ri_pf_sph = np.array([self.az_ri[-1], self.el_ri[-1]])
-        # self.ri_p0_cart = np.array([self.x_ri[0], self.y_ri[0], self.z_ri[0]])
-        # self.ri_pf_cart = np.array([self.x_ri[-1], self.y_ri[-1], self.z_ri[-1]])
-        # self.ri_crs0 = self.crs_ri[0]
-        # self.ri_crsf = self.crs_ri[-1]
-        # self.ri_v0 = np.array([self.dx_ri[0], self.dy_ri[0], self.dz_ri[0]])
-        # self.ri_vf = np.array([self.dx_ri[-1], self.dy_ri[-1], self.dz_ri[-1]])
+        # Start/end points for reel-in
+        self.ri_p0_sph = np.array([self.RI_az[0], self.RI_el[0]])
+        self.ri_pf_sph = np.array([self.RI_az[-1], self.RI_el[-1]])
+        self.ri_p0_cart = np.array([self.x_ri[0], self.y_ri[0], self.z_ri[0]])
+        self.ri_pf_cart = np.array([self.x_ri[-1], self.y_ri[-1], self.z_ri[-1]])
+        self.ri_crs0 = self.crs_ri[0]
+        self.ri_crsf = self.crs_ri[-1]
+        self.ri_v0 = np.array([self.dx_ri[0], self.dy_ri[0], self.dz_ri[0]])
+        self.ri_vf = np.array([self.dx_ri[-1], self.dy_ri[-1], self.dz_ri[-1]])
 
         self._compute_u_vals()
 

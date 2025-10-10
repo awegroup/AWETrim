@@ -157,12 +157,12 @@ class Fitting(build):
         fitted_data = {
             'segment_name': segment_name,
             'n_ctrl_pts': self.n_ctrl,
-            'fitted_indices_az': self.fitted_indices_az,
-            'fitted_indices_el': self.fitted_indices_el,
+            's_norm_az': self.fitted_indices_az,
+            's_norm_el': self.fitted_indices_el,
             'original_data_az': self.data_az,
             'original_data_el': self.data_el,
-            'full_control_points_az': np.concatenate(([self.data_az[0]], self.fitted_params_az, [self.data_az[len(self.data_az)-1]])),
-            'full_control_points_el': np.concatenate(([self.data_el[0]], self.fitted_params_el, [self.data_el[len(self.data_az)-1]])),
+            'C_az': np.concatenate(([self.data_az[0]], self.fitted_params_az, [self.data_az[len(self.data_az)-1]])),
+            'C_el': np.concatenate(([self.data_el[0]], self.fitted_params_el, [self.data_el[len(self.data_az)-1]])),
         }
 
         filename = f"fit_results_{segment_name}.pkl" if segment_name else "fit_results.pkl"
