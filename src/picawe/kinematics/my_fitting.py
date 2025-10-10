@@ -4,54 +4,80 @@ import pandas as pd
 import casadi as ca
 import pickle
 from scipy.optimize import least_squares
+
 from picawe.kinematics.my_parametrized_patterns import CasadiSpline as build
 from picawe.kinematics.my_RI_data_processing import RI_data_processing
 from picawe.kinematics.my_RI_RO_data_processing import RI_RO_data_processing
 from picawe.kinematics.my_RO_RI_data_processing import RO_RI_data_processing
 
+
 class Fitting(build):
-    def __init__(self, az_data, el_data, n_ctrl_pts=15):
-        # Don't call super().__init__() here since we need custom initialization
+    """Performs spline fitting on azimuth and elevation data."""
+
+    def __init__(self, az_data, el_data, u_vals, n_ctrl_pts=8):
+        # Parameters
         self.n_ctrl = n_ctrl_pts
         self.data_az = az_data
         self.data_el = el_data
+        self.u_vals = u_vals
 
-        self.initial_params_az = np.linspace(np.min(az_data), np.max(az_data), num=n_ctrl_pts)[1:-1]
-        self.initial_params_el = np.linspace(np.min(el_data), np.max(el_data), num=n_ctrl_pts)[1:-1]
+        # Choose evenly spaced indices (excluding endpoints)
+        self.indices0 = np.linspace(0, len(az_data) - 1, n_ctrl_pts, dtype=int)[1:-1]
 
-        # Fix the shape - should be 1D arrays, not 2D
-        self.init_params = np.concatenate([self.initial_params_az, self.initial_params_el])
+        # Initialize control points
+        self.initial_params_az = az_data[self.indices0]
+        self.initial_params_el = el_data[self.indices0]
 
-        self.lower_bounds_az = np.full(n_ctrl_pts-2, -np.pi)
-        self.upper_bounds_az = np.full(n_ctrl_pts-2, np.pi)
-        self.lower_bounds_el = np.full(n_ctrl_pts-2, -np.pi)
-        self.upper_bounds_el = np.full(n_ctrl_pts-2, np.pi)
+        # Concatenate all initial parameters into a flat array
+        self.init_params = np.concatenate([
+            self.initial_params_az,
+            self.initial_params_el,
+            self.indices0,
+            self.indices0
+        ])
+
+        # Parameter bounds
+        bounds_az = (np.full(n_ctrl_pts - 2, -np.pi / 2), np.full(n_ctrl_pts - 2, np.pi / 2))
+        bounds_el = (np.full(n_ctrl_pts - 2, -0.01), np.full(n_ctrl_pts - 2, np.pi / 2 + 0.01))
+        bounds_idx = (np.full(n_ctrl_pts - 2, 2), np.full(n_ctrl_pts - 2, len(az_data) - 3))
 
         self.bounds = (
-                np.concatenate([self.lower_bounds_az, self.lower_bounds_el]),
-                np.concatenate([self.upper_bounds_az, self.upper_bounds_el])
-            )
+            np.concatenate([bounds_az[0], bounds_el[0], bounds_idx[0], bounds_idx[0]]),
+            np.concatenate([bounds_az[1], bounds_el[1], bounds_idx[1], bounds_idx[1]])
+        )
 
-        self.fitted_params_az, self.fitted_params_el = self.Fit()
+        # Perform the fit
+        self.Fit()
 
+    # -------------------------------------------------------------------------
     def residuals(self, params):
-        # Split the 1D params array back into az and el components
-        params_az = params[:self.n_ctrl-2]
-        params_el = params[self.n_ctrl-2:]
+        """Compute residuals between data and fitted spline."""
+        n = self.n_ctrl - 2
+        params_az = params[:n]
+        params_el = params[n:2 * n]
+        indices_az = np.concatenate(([0], params[2 * n:3 * n].astype(int), [len(self.data_az)-1]))
+        indices_el = np.concatenate(([0], params[3 * n:].astype(int), [len(self.data_az)-1]))
 
-        obj = build(C_az=np.concatenate(([self.data_az[0]], params_az, [self.data_az[-1]])), C_el=np.concatenate(([self.data_el[0]], params_el, [self.data_el[-1]])))
-        u_vals = np.linspace(0, 1, num=len(self.data_az))
+        if not np.all(np.diff(self.u_vals[indices_az]) > 0):
+            print("⚠️ Non-increasing u_vals[indices_az]:", self.u_vals[indices_az])
+            return np.full(2 * len(self.data_az), 1e6)
 
-        # Use dummy r=1.0 value since CasadiSpline doesn't really use it
-        az = obj.azimuth(1.0, u_vals)
-        el = obj.elevation(1.0, u_vals)
 
-        res_az = az - self.data_az
-        res_el = el - self.data_el
+        spline = build(
+            C_az=np.concatenate(([self.data_az[0]], params_az, [self.data_az[len(self.data_az)-1]])),
+            C_el=np.concatenate(([self.data_el[0]], params_el, [self.data_el[len(self.data_az)-1]])),
+            s_norm_az=self.u_vals[indices_az],
+            s_norm_el=self.u_vals[indices_el]
+        )
 
-        return np.concatenate([res_az, res_el])
-    
+        az = spline.azimuth(1.0, self.u_vals)
+        el = spline.elevation(1.0, self.u_vals)
+
+        return np.concatenate([az - self.data_az, el - self.data_el])
+
+    # -------------------------------------------------------------------------
     def Fit(self):
+        """Run least-squares fitting."""
         result = least_squares(
             self.residuals,
             self.init_params,
@@ -61,143 +87,124 @@ class Fitting(build):
             ftol=1e-10,
             gtol=1e-10,
         )
-        
-        # Split results back into az and el components
-        fitted_params_az = result.x[:self.n_ctrl-2]
-        fitted_params_el = result.x[self.n_ctrl-2:]
-        
-        print("Fitting completed.")
-        return fitted_params_az, fitted_params_el
 
+        n = self.n_ctrl - 2
+        self.fitted_params_az = result.x[:n]
+        self.fitted_params_el = result.x[n:2 * n]
+        self.fitted_indices_az = np.concatenate(([0], result.x[2 * n:3 * n].astype(int), [len(self.data_az)-1]))
+        print("Fitted azimuth indices:", self.fitted_indices_az)
+        self.fitted_indices_el = np.concatenate(([0], result.x[3 * n:].astype(int), [len(self.data_az)-1]))
+        print("Fitted elevation indices:", self.fitted_indices_el)
+        print("✅ Fitting completed.")
+
+    # -------------------------------------------------------------------------
     def plot_fit(self, title_prefix="", ax=None, show_control_points=True):
-        """
-        Plot the original data vs fitted spline curves.
-        
-        Parameters:
-        -----------
-        title_prefix : str
-            Prefix for plot titles (e.g., "RI", "RI_RO", "RO_RI")
-        ax : matplotlib axes array, optional
-            Array of 2 axes for azimuth and elevation plots. If None, creates new figure.
-        show_control_points : bool
-            Whether to show control points on the plot
-            
-        Returns:
-        --------
-        fig, axes : matplotlib figure and axes
-        """
+        """Plot the original and fitted spline for azimuth and elevation."""
         if ax is None:
             fig, axes = plt.subplots(2, 1, figsize=(10, 8))
         else:
+            fig = ax[0].get_figure()
             axes = ax
-            fig = axes[0].get_figure()
-        
-        # Generate u values for plotting
-        u_vals = np.linspace(0, 1, len(self.data_az))
-        
-        # Create fitted spline object
-        C_az_full = np.concatenate(([self.data_az[0]], self.fitted_params_az, [self.data_az[-1]]))
-        C_el_full = np.concatenate(([self.data_el[0]], self.fitted_params_el, [self.data_el[-1]]))
-        fitted_spline = build(C_az=C_az_full, C_el=C_el_full)
-        
-        # Evaluate fitted spline
-        fitted_az = fitted_spline.azimuth(1.0, u_vals)
-        fitted_el = fitted_spline.elevation(1.0, u_vals)
-        
-        # Plot azimuth
-        axes[0].plot(u_vals, self.data_az, 'b-', label='Data', linewidth=2)
-        axes[0].plot(u_vals, fitted_az, 'r--', label='Fitted', linewidth=2)
-        
+
+        # Build fitted spline
+        C_az_full = np.concatenate(([self.data_az[0]], self.fitted_params_az, [self.data_az[len(self.data_az)-1]]))
+        C_el_full = np.concatenate(([self.data_el[0]], self.fitted_params_el, [self.data_el[len(self.data_az)-1]]))
+
+        spline = build(
+            C_az=C_az_full,
+            C_el=C_el_full,
+            s_norm_az=self.u_vals[self.fitted_indices_az],
+            s_norm_el=self.u_vals[self.fitted_indices_el]
+        )
+
+        fitted_az = spline.azimuth(1.0, self.u_vals)
+        fitted_el = spline.elevation(1.0, self.u_vals)
+
+        # --- Azimuth Plot ---
+        axes[0].plot(self.u_vals, self.data_az, 'b-', label='Data', linewidth=2)
+        axes[0].plot(self.u_vals, fitted_az, 'r--', label='Fitted', linewidth=2)
         if show_control_points:
-            u_ctrl_pts = np.linspace(0, 1, len(C_az_full))
-            axes[0].scatter(u_ctrl_pts, C_az_full, c='red', s=50, marker='o', 
-                          label='Control Points', zorder=5, edgecolors='black')
-        
+            axes[0].scatter(
+                self.u_vals[self.fitted_indices_az], C_az_full,
+                c='red', s=25, edgecolors='black', label='Control Points', zorder=5
+            )
         axes[0].set_title(f'{title_prefix} Azimuth Fit')
         axes[0].set_xlabel('u parameter')
         axes[0].set_ylabel('Azimuth (rad)')
         axes[0].legend()
         axes[0].grid(True, alpha=0.3)
-        
-        # Plot elevation
-        axes[1].plot(u_vals, self.data_el, 'b-', label='Data', linewidth=2)
-        axes[1].plot(u_vals, fitted_el, 'r--', label='Fitted', linewidth=2)
-        
+
+        # --- Elevation Plot ---
+        axes[1].plot(self.u_vals, self.data_el, 'b-', label='Data', linewidth=2)
+        axes[1].plot(self.u_vals, fitted_el, 'r--', label='Fitted', linewidth=2)
         if show_control_points:
-            u_ctrl_pts = np.linspace(0, 1, len(C_el_full))
-            axes[1].scatter(u_ctrl_pts, C_el_full, c='red', s=50, marker='o', 
-                          label='Control Points', zorder=5, edgecolors='black')
-        
+            axes[1].scatter(
+                self.u_vals[self.fitted_indices_el], C_el_full,
+                c='red', s=25, edgecolors='black', label='Control Points', zorder=5
+            )
         axes[1].set_title(f'{title_prefix} Elevation Fit')
         axes[1].set_xlabel('u parameter')
         axes[1].set_ylabel('Elevation (rad)')
         axes[1].legend()
         axes[1].grid(True, alpha=0.3)
-        
+
         plt.tight_layout()
         return fig, axes
-    
+
+    # -------------------------------------------------------------------------
     def save_data(self, segment_name=""):
+        """Save fitted spline results to a pickle file."""
         fitted_data = {
-            'fitted_params_az': self.fitted_params_az,
-            'fitted_params_el': self.fitted_params_el,
-            'n_ctrl_pts': self.n_ctrl,
             'segment_name': segment_name,
+            'n_ctrl_pts': self.n_ctrl,
+            'fitted_indices_az': self.fitted_indices_az,
+            'fitted_indices_el': self.fitted_indices_el,
             'original_data_az': self.data_az,
             'original_data_el': self.data_el,
-            'full_control_points_az': np.concatenate(([self.data_az[0]], self.fitted_params_az, [self.data_az[-1]])),
-            'full_control_points_el': np.concatenate(([self.data_el[0]], self.fitted_params_el, [self.data_el[-1]]))
+            'full_control_points_az': np.concatenate(([self.data_az[0]], self.fitted_params_az, [self.data_az[len(self.data_az)-1]])),
+            'full_control_points_el': np.concatenate(([self.data_el[0]], self.fitted_params_el, [self.data_el[len(self.data_az)-1]])),
         }
 
-        # Create filename with segment name
         filename = f"fit_results_{segment_name}.pkl" if segment_name else "fit_results.pkl"
-        
-        # Save to disk
         with open(filename, "wb") as f:
             pickle.dump(fitted_data, f)
-        
-        print(f"Data saved to {filename}")
 
+        print(f"💾 Saved results to {filename}")
+
+
+# =============================================================================
+# MAIN SCRIPT
+# =============================================================================
 if __name__ == "__main__":
-    waypoint_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/waypoints/2025-09-25_11-48-58_ProtoLogger_waypoints.csv"
-    full_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/ProtoLogger_csv/2025-09-25_11-48-58_ProtoLogger.csv"
-    cycle_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/cycles/cycle_data_sheet_lines.csv"
+    # File paths
+    base_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2"
+    waypoint_path = f"{base_path}/waypoints/2025-09-25_11-48-58_ProtoLogger_waypoints.csv"
+    full_path = f"{base_path}/ProtoLogger_csv/2025-09-25_11-48-58_ProtoLogger.csv"
+    cycle_path = f"{base_path}/cycles/cycle_data_sheet_lines.csv"
 
-    # -------Fitting all three segments-------
-    # -------Reel In-------
-    RI = RI_data_processing(file_path_full=full_path, file_path_cycle=cycle_path, file_path_waypoints=waypoint_path, cyc_idx=0)
-    data_RI_az = RI.RI_az
-    data_RI_el = RI.RI_el
+    # --- Reel In ---
+    print("🔹 Fitting RI segment...")
+    RI = RI_data_processing(full_path, cycle_path, waypoint_path, cyc_idx=0)
+    fit_RI = Fitting(RI.RI_az, RI.RI_el, RI.u_vals, n_ctrl_pts=15)
+    fit_RI.save_data("RI")
 
-    print("Fitting RI data...")
-    fitting_RI = Fitting(data_RI_az, data_RI_el)
-    fitting_RI.save_data("RI")
+    # --- Reel In to Reel Out ---
+    print("\n🔹 Fitting RI_RO segment...")
+    RIRO = RI_RO_data_processing(full_path, cycle_path, waypoint_path, cyc_idx=0)
+    fit_RIRO = Fitting(RIRO.RI_RO_az, RIRO.RI_RO_el, RIRO.u_vals)
+    fit_RIRO.save_data("RI_RO")
 
-    # -------Reel In to Reel Out-------
-    RIRO = RI_RO_data_processing(file_path_full=full_path, file_path_cycle=cycle_path, file_path_waypoints=waypoint_path, cyc_idx=0)
-    data_RIRO_az = RIRO.RI_RO_az
-    data_RIRO_el = RIRO.RI_RO_el
+    # --- Reel Out to Reel In ---
+    print("\n🔹 Fitting RO_RI segment...")
+    RORI = RO_RI_data_processing(full_path, cycle_path, waypoint_path, cyc_idx=0)
+    fit_RORI = Fitting(RORI.RO_RI_az, RORI.RO_RI_el, RORI.u_vals)
+    fit_RORI.save_data("RO_RI")
 
-    print("\nFitting RI_RO data...")
-    fitting_RIRO = Fitting(data_RIRO_az, data_RIRO_el)
-    fitting_RIRO.save_data("RI_RO")
-
-    # -------Reel Out to Reel In-------
-    RORI = RO_RI_data_processing(file_path_full=full_path, file_path_cycle=cycle_path, file_path_waypoints=waypoint_path, cyc_idx=0)
-    data_RORI_az = RORI.RO_RI_az
-    data_RORI_el = RORI.RO_RI_el
-
-    print("\nFitting RO_RI data...")
-    fitting_RORI = Fitting(data_RORI_az, data_RORI_el)
-    fitting_RORI.save_data("RO_RI")
-
-    # -------Plotting using the new method-------
+    # --- Plot all segments ---
     fig, axes = plt.subplots(2, 3, figsize=(15, 10))
-    
-    # Plot each segment
-    fitting_RI.plot_fit(title_prefix="RI", ax=axes[:, 0])
-    fitting_RIRO.plot_fit(title_prefix="RI_RO", ax=axes[:, 1])
-    fitting_RORI.plot_fit(title_prefix="RO_RI", ax=axes[:, 2])
-    
+    fit_RI.plot_fit(title_prefix="RI", ax=axes[:, 0])
+    fit_RIRO.plot_fit(title_prefix="RI_RO", ax=axes[:, 1])
+    fit_RORI.plot_fit(title_prefix="RO_RI", ax=axes[:, 2])
+
     plt.tight_layout()
     plt.show()

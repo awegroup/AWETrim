@@ -95,9 +95,9 @@ class RI_data_processing:
         self.RI_el = self.el_cyc[self.ri_idx0 : self.ri_idxf + 1]
         # self.r_ri = self.r_cyc[self.ri_idx0 : self.ri_idxf + 1]
         # self.crs_ri = self.crs_cyc[self.ri_idx0 : self.ri_idxf + 1]
-        # self.x_ri = self.x_cyc[self.ri_idx0 : self.ri_idxf + 1]
-        # self.y_ri = self.y_cyc[self.ri_idx0 : self.ri_idxf + 1]
-        # self.z_ri = self.z_cyc[self.ri_idx0 : self.ri_idxf + 1]
+        self.x_ri = self.x_cyc[self.ri_idx0 : self.ri_idxf + 1]
+        self.y_ri = self.y_cyc[self.ri_idx0 : self.ri_idxf + 1]
+        self.z_ri = self.z_cyc[self.ri_idx0 : self.ri_idxf + 1]
         # self.dx_ri = self.dx_cyc[self.ri_idx0 : self.ri_idxf + 1]
         # self.dy_ri = self.dy_cyc[self.ri_idx0 : self.ri_idxf + 1]
         # self.dz_ri = self.dz_cyc[self.ri_idx0 : self.ri_idxf + 1]
@@ -112,6 +112,8 @@ class RI_data_processing:
         # self.ri_v0 = np.array([self.dx_ri[0], self.dy_ri[0], self.dz_ri[0]])
         # self.ri_vf = np.array([self.dx_ri[-1], self.dy_ri[-1], self.dz_ri[-1]])
 
+        self._compute_u_vals()
+
     def convert_time_to_seconds(self, time_series):
         """Convert HH:MM:SS.sss strings to total seconds."""
         return np.array([
@@ -125,6 +127,15 @@ class RI_data_processing:
         y = r * np.cos(el) * np.sin(az)
         z = r * np.sin(el)
         return x, y, z
+    
+    def _compute_u_vals(self):
+        if hasattr(self, 'x_ri') and hasattr(self, 'y_ri') and hasattr(self, 'z_ri'):
+            # Compute u_vals for the reel-in segment
+            self.cart = np.vstack([self.x_ri, self.y_ri, self.z_ri]).T
+
+            dist = np.cumsum(np.linalg.norm(np.diff(self.cart, axis=0), axis=1))
+            dist = np.insert(dist, 0, 0.0)
+            self.u_vals = dist / dist[-1]
 
     def plot_path_3D(self):
         """3D plot of the full path."""

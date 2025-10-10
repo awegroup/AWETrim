@@ -13,6 +13,7 @@ class RI_RO_data_processing(Lisajous_data_processing):
         self.RI_RO_idxf = None  # End index of the RI to RO transition (relative to cycle start)
 
         self.find_end_RI_RO_idx()
+        self._compute_u_vals()
 
         # This class has to find the end index of the RI to RO transition
 
@@ -42,6 +43,16 @@ class RI_RO_data_processing(Lisajous_data_processing):
 
         self.RI_RO_sph = (self.RI_RO_az, self.RI_RO_el)
         self.RI_RO_cart = (self.x_cyc[self.RI_RO_idx0:self.RI_RO_idxf+1], self.y_cyc[self.RI_RO_idx0:self.RI_RO_idxf+1], self.z_cyc[self.RI_RO_idx0:self.RI_RO_idxf+1])
+
+    def _compute_u_vals(self):
+        # Only compute if RI_RO_cart exists (i.e., after find_end_RI_RO_idx is called)
+        if hasattr(self, 'RI_RO_cart'):
+            # Convert tuple to numpy array for proper axis handling
+            cart_array = np.array(self.RI_RO_cart).T  # Transpose to get (n_points, 3)
+            dist = np.cumsum(np.linalg.norm(np.diff(cart_array, axis=0), axis=1))
+            dist = np.insert(dist, 0, 0.0)
+            self.u_vals = dist / dist[-1]
+        # If RI_RO_cart doesn't exist yet, do nothing (parent class will call this prematurely)
 
     def plot_RI_RO_path3D(self):
         fig = plt.figure()

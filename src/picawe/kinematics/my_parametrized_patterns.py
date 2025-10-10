@@ -725,7 +725,7 @@ class CasadiSpline(ParametrizedPatternsAngles):
     Accepts scalar or vector s directly.
     """
 
-    def __init__(self, r0=None, r1=None, C_az=None, C_el=None):
+    def __init__(self, r0=None, r1=None, C_az=None, C_el=None, s_norm_az=None, s_norm_el=None):
 
         if r0 is None:
             self.r0 = 322  # m
@@ -749,20 +749,34 @@ class CasadiSpline(ParametrizedPatternsAngles):
             self.C_el = C_el
         
         # ---------- Chord-length parameterization on [0,1] ----------
-        pts = np.vstack([self.C_az, self.C_el]).T
-        d = np.sqrt(np.sum(np.diff(pts, axis=0) ** 2, axis=1))
-        s = np.hstack([[0.0], np.cumsum(d)])
-        if s[-1] == 0.0:
-            s[-1] = 1.0
-        self.s_norm = s / s[-1]
+        if s_norm_az is not None:
+            self.s_norm_az = s_norm_az
+        else:
+            pts = np.vstack([self.C_az, self.C_el]).T
+            d = np.sqrt(np.sum(np.diff(pts, axis=0) ** 2, axis=1))
+            s = np.hstack([[0.0], np.cumsum(d)])
+            if s[-1] == 0.0:
+                s[-1] = 1.0
+            self.s_norm_az = s / s[-1]
 
+        if s_norm_el is not None:
+            self.s_norm_el = s_norm_el
+        else:
+            pts = np.vstack([self.C_az, self.C_el]).T
+            d = np.sqrt(np.sum(np.diff(pts, axis=0) ** 2, axis=1))
+            s = np.hstack([[0.0], np.cumsum(d)])
+            if s[-1] == 0.0:
+                s[-1] = 1.0
+            self.s_norm_el = s / s[-1]
+        
+        
         self.opts = opts = {"degree": [3]}
 
         self.build()
 
     def build(self):
-        self.spline_phi = ca.interpolant("spline_phi", "bspline", [self.s_norm], self.C_az, self.opts)
-        self.spline_beta = ca.interpolant("spline_beta", "bspline", [self.s_norm], self.C_el, self.opts)
+        self.spline_phi = ca.interpolant("spline_phi", "bspline", [self.s_norm_az], self.C_az, self.opts)
+        self.spline_beta = ca.interpolant("spline_beta", "bspline", [self.s_norm_el], self.C_el, self.opts)
 
     
     # helpers to evaluate from Python (vectorized)

@@ -14,7 +14,10 @@ from picawe.utils.color_palette import set_plot_style, get_color_list
 from picawe.utils.defaults import PLOT_LABELS
 
 # ---------- Load precomputed fit data ----------
-with open("fit_results.pkl", "rb") as f:
+segment_name = input("Enter segment name (e.g., 'RI' or 'RI_RO' or 'RO_RI'): ").strip()
+
+filename = f"fit_results_{segment_name}.pkl"
+with open(filename, "rb") as f:
     fit_data = pickle.load(f)
 
 C_sph = fit_data["C_sph"]
