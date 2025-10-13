@@ -24,41 +24,45 @@ with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
 pattern_config_v3 = {
     "pattern_type": "cst_lissajous",
     "parameters": {
-        "omega": -1.0,
+        "omega": 1.0,
         "r0": 200.0,
         "az_amp0": np.radians(20),
-        "beta_amp0": np.radians(10),
+        "beta_amp0": np.radians(5),
         "width_phi": 0.5,
         "width_beta": 0.5,
         "left_first": True,
         "normalize_bumps": False,
         "repeat_phi": True,
         "repeat_beta": True,
-        "beta_coeffs": [-1, 0, 0, 0, 0],
+        "beta_coeffs": [0, 0, 0, 0, 0],
         "az_coeffs": [0, 0, 0, 0, 0],
         # "ky": 1,
         # "kz": 1,
-        "vr": 1,
+        # "vr": 1,
         "beta0": 0.55,
         "kappa": 0,
+        "k_vr": 5000,
     },
     "start_time": 0,
-    "end_time": 25,
-    "n_points": 400,
+    "end_time": 30,
+    "n_points": 300,
     "optimization_parameters": [],
 }
 pattern_config_v9 = {
-    "pattern_type": "lissajous_angles",
+    "pattern_type": "cst_lissajous",
     "parameters": {
-        "omega": -1.0,
+        "omega": 1.0,
         "r0": 220.0,
         "az_amp0": np.radians(40),
-        "beta_amp0": np.radians(20),
+        "beta_amp0": np.radians(10),
+        "beta_coeffs": [0, 0, 0, 0, 0],
+        "az_coeffs": [0, 0, 0, 0, 0],
         # "ky": 1,
         # "kz": 1,
-        "vr": 1.5,
+        # "vr": 1.5,
         "beta0": 0.5,
         "kappa": 0,
+        "k_vr": 8000,
     },
     "start_time": 0,
     "end_time": 60,
@@ -75,6 +79,8 @@ base_start_state = State(
     length_tether=199.6,
     input_steering=0,
     tension_tether_ground=1e8,
+    speed_radial=1,
+    distance_radial=230,
 )
 
 # ---------- Plot layout ----------
@@ -93,6 +99,7 @@ def run_sim(
     pattern_config,
     label_prefix,
     mass_wing,
+    mass_kcu,
     area_wing,
     tether_diameter,
     color_base,
@@ -100,7 +107,7 @@ def run_sim(
 ):
     result = {}
     start_state = base_start_state
-    simulation_types = ["quasi_steady", "dynamic", "inertia_free", "no_mass"]
+    simulation_types = ["quasi_steady", "dynamic", "inertia_free"]
     for sim_type in simulation_types:
         if sim_type == "quasi_steady":
             quasi_steady = True
@@ -131,6 +138,7 @@ def run_sim(
         kite = Kite(
             mass_wing=mass_wing,
             area_wing=area_wing,
+            mass_kcu=mass_kcu,
             aero_input=aero_input,
             steering_control="asymmetric",
         )
@@ -203,7 +211,7 @@ def run_sim(
         )
         ax6.plot(
             s,
-            result[sim_type]["aoa"],
+            result[sim_type]["vr"],
             linestyle=linestyle,
             color=color,
         )
@@ -235,10 +243,11 @@ def run_sim(
 
 
 results_v3, scatter_v3 = run_sim(
-    aero_input_v3, pattern_config_v3, "V3", 43, 20, 0.01, 1
+    aero_input_v3, pattern_config_v3, "V3", 12, 27, 20, 0.01, 1
 )
+
 results_v9, scatter_v9 = run_sim(
-    aero_input_v9, pattern_config_v9, "V9", 94, 47, 0.014, 2, marker="^"
+    aero_input_v9, pattern_config_v9, "V9", 60, 30, 47, 0.014, 2, marker="^"
 )
 
 # ---------- Final plot formatting ----------

@@ -103,6 +103,18 @@ class Wing:
         return self.angle_pitch_tether + self.input_depower * self.delta_pitch_depower
 
     @property
+    def pitch_bridle(self):
+        force_bridle = (
+            transformation_C_from_A(
+                self.angle_pitch_aerodynamic, self.angle_yaw_aerodynamic, 0
+            ).T
+            @ self.force_tether_at_kite
+        )
+        tow_line = project_onto_plane(force_bridle, ca.vertcat(0, 1, 0))
+        angle_bridle = ca.atan2(tow_line[0], -tow_line[2] + 1e-6)
+        return angle_bridle
+
+    @property
     def angle_of_attack(self):
         """
         Compute the angle of attack based on the air velocity vector and tether angle.
@@ -113,15 +125,8 @@ class Wing:
             self._angle_of_attack = (
                 self.angle_pitch_aerodynamic + self.angle_pitch_depower
             )
-        force_bridle = (
-            transformation_C_from_A(
-                self.angle_pitch_aerodynamic, self.angle_yaw_aerodynamic, 0
-            ).T
-            @ self.force_tether_at_kite
-        )
-        tow_line = project_onto_plane(force_bridle, ca.vertcat(0, 1, 0))
-        angle_bridle = ca.atan2(tow_line[0], -tow_line[2] + 1e-6)
-        self._angle_of_attack = angle_bridle + self.angle_pitch_depower
+
+        self._angle_of_attack = self.pitch_bridle + self.angle_pitch_depower
 
         return self._angle_of_attack
 

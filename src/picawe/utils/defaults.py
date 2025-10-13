@@ -82,6 +82,20 @@ DEFAULT_PATTERN_CONFIG = {
     },
 }
 
+# Default configuration for the winch subsystem
+# Values align with common bounds used elsewhere
+# and provide reasonable physical limits for simulations.
+DEFAULT_WINCH_CONFIG = {
+    "max_tether_length": 2000.0,  # m
+    "min_tether_length": 100.0,  # m
+    "max_speed": 8.0,  # m/s (reel-out positive)
+    "min_speed": -6.0,  # m/s (reel-in negative)
+    "max_acceleration": 2.0,  # m/s^2
+    "min_acceleration": -2.0,  # m/s^2
+    # Softplus sharpness for force limiting in winch model
+    "sharpness_beta": 1e-4,
+}
+
 # defaults.py (This is your file containing the limits)
 DEFAULT_OPTI_LIMITS = {
     "tension_tether_ground": (1e-2, 1e9),  # Range for tension_tether_ground: 0 to 1e9
@@ -91,7 +105,7 @@ DEFAULT_OPTI_LIMITS = {
     "s": (0, 300),  # Range for s: 0 to 10
     "angle_elevation": (0.0, np.pi / 2),  # Range for angle_elevation: 0 to pi
     # HElix
-    "kappa": (0, 1),  # Range for kappa: 0 to 5
+    "kappa": (0, 1),  # Range for kappa: 0 to 1
     # "vr": (-10, 10),      # Range for vr: 0 to 100
     "beta0": (0.35, 1),  # Range for beta: 20 ot 50 degrees
     "d0": (40, 500),  # Range for d0: 0 to 100
@@ -114,4 +128,7 @@ DEFAULT_OPTI_LIMITS = {
     "speed_radial": (0.2, 6),
     "distance_radial": (100, 2000),
     "k_vr": (0.5, 1.5),
+    "slope": (100, 8000),  # Range for slope in winch model
+    "offset": (-2, 2),  # Range for offset in winch model
+    "max_tether_force": (20000, 50000),  # Range for max tether force in winch model
 }

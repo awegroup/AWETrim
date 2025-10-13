@@ -1,0 +1,127 @@
+import numpy as np
+import matplotlib.pyplot as plt
+import json
+from picawe.system.kite import Kite
+from picawe.system.tether import RigidLumpedTether
+from picawe import SystemModel, State
+from picawe.timeseries.phase_parametrized import PhaseParameterized
+from picawe.environment import Wind
+from picawe.utils.color_palette import set_plot_style_no_latex, get_color_list
+
+
+def main():
+    # Load aero input
+    file_path = "./data/LEI-V9-KITE/v9_aero_input.json"
+    with open(file_path, "r") as file:
+        aero_input = json.load(file)
+
+    # Wind setup
+    speed_wind_at_100 = 10  # m/s
+    wind = Wind(wind_model="uniform", z0=0.1)
+    wind.speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
+    wind.speed_wind_ref = speed_wind_at_100
+    print("Friction speed:", wind.speed_friction)
+
+    # Initial state
+    start_state = State(
+        t=0,
+        s=np.pi / 2,
+        s_dot=0.8,
+        s_ddot=0,
+        length_tether=199.6,
+        input_steering=0,
+        tension_tether_ground=1e8,
+        speed_radial=2,
+        distance_radial=230,
+    )
+
+    # Path config (CST Lissajous)
+    pattern_config = {
+        "pattern_type": "cst_lissajous",
+        "path_parameters": {
+            "omega": 1.0,
+            "r0": 230.0,
+            "az_amp0": 0.48777050522375176,
+            "beta_amp0": 0.25,
+            "width_phi": 0.5,
+            "width_beta": 0.5,
+            "left_first": True,
+            "normalize_bumps": False,
+            "repeat_phi": True,
+            "repeat_beta": True,
+            "beta_coeffs": np.array(
+                [0.00793318, -1.00000001, -0.09528962, -1.00000001, -0.43694973]
+            ),
+            "az_coeffs": [0, 0, 0, 0, 0],
+            "kbeta": 0,
+            "beta0": 0.6936021090152621,
+            "kappa": 0,
+        },
+        "radial_parameters": {
+            "reeling_strategy": "force",
+            "force_model": "quadratic",
+            "reeling_speed": 0.0,
+            "max_tether_force": 2e4,
+            "min_tether_force": 2000.0,
+            "softplus": True,
+            "softplus_beta": 1e-4,
+            "softminus": True,
+            "softminus_beta": 1e-3,
+            "slope": 2716,
+            "offset": -1,
+        },
+        "start_time": 0,
+        "end_time": 35,
+        "start_angle": np.pi / 2,
+        "end_angle": 2 * np.pi + np.pi / 2,
+        "n_points": 600,
+        "optimization_parameters": ["az_amp0", "beta_amp0", "beta0", "beta_coeffs"],
+    }
+
+    # QS system model
+    tether = RigidLumpedTether(diameter=0.01)
+    kite = Kite(
+        mass_wing=60,
+        area_wing=47,
+        aero_input=aero_input,
+        steering_control="asymmetric",
+    )
+    model = SystemModel(
+        dof=3, quasi_steady=True, kite=kite, tether=tether, wind_model=wind
+    )
+    model.input_depower = 0.0  # fixed depower for QS
+    # Create QS phase object
+    phase = PhaseParameterized(model, quasi_steady=True, pattern_config=pattern_config)
+    # 1) Optimize path parameters over the phase
+    phase.run_simulation_opti_phase(start_state=start_state)
+    # 2) Re-simulate the phase with optimized parameters
+    phase.run_simulation_phase(start_state=start_state)
+
+    # Plot overview (single QS series)
+    fig, axes_map, _ = phase.plot_overview_3d(
+        label="QS",
+        color=get_color_list()[0],
+        linestyle="--",
+        variables=[
+            "speed_tangential",
+            "tension_tether_ground",
+            "input_steering",
+            "speed_radial",
+        ],
+        x_param="s",
+    )
+    set_plot_style_no_latex()
+    plt.tight_layout()
+    plt.savefig(
+        "./results/figures/translational_paper/reelout_cst_qs_overview.pdf",
+        bbox_inches="tight",
+    )
+
+    # Energy metrics (QS vs QS) — report average power after optimization
+    metrics = phase.energy_metrics(phase)
+    print(f"Average power (QS, optimized): {metrics['avg_power_self']:.2f} W")
+
+
+if __name__ == "__main__":
+    main()
+

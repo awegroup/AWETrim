@@ -12,6 +12,7 @@ from picawe.environment.Wind import Wind
 import casadi as ca
 import time
 import matplotlib.pyplot as plt
+from scipy.ndimage import gaussian_filter1d
 
 
 def read_results(year, month, day, kite_model, addition="", path_to_main=""):
@@ -78,7 +79,8 @@ results, flight_data, config_data = read_results(
 )
 print(max(flight_data.cycle))
 # mask = (flight_data.cycle>10)&(flight_data.cycle<70)
-mask = flight_data.cycle.isin(range(5, 83))
+mask = flight_data.cycle.isin(range(10, 120))
+# mask = flight_data.cycle.isin(range(64, 68))
 mask = flight_data.cycle == 65
 # mask = mask & (flight_data.kite_elevation < 0.75)
 flight_data = flight_data[mask]
@@ -121,6 +123,9 @@ flight_data["up"] = (flight_data["up"] - flight_data["up"].min()) / (
 )
 
 course_rate = np.gradient(np.unwrap(flight_data.kite_course), flight_data.time)
+course_rate = gaussian_filter1d(course_rate, sigma=3)
+plt.plot(flight_data.time, course_rate)
+plt.show()
 flight_data["course_rate"] = course_rate
 # Run simulation for both aerodynamic models
 aero_files = [
@@ -138,10 +143,10 @@ for aero_file, label in zip(aero_files, aero_labels):
     tether = RigidLumpedTether(diameter=0.01)
     wind_model = Wind(wind_model="logarithmic", z0=0.1)
     kite = Kite(
-        mass_wing=14,
+        mass_wing=14,  # 14,
         area_wing=20,
         aero_input=aero_input,
-        mass_kcu=10,
+        mass_kcu=16,
         steering_control="asymmetric",
     )
     kite_model = SystemModel(
@@ -180,6 +185,9 @@ for aero_file, label in zip(aero_files, aero_labels):
     aoa_func = kite_model.extract_function("angle_of_attack")
     tension_func = kite_model.extract_function("tension_tether_ground")
     speed_apparent_wind_func = kite_model.extract_function("speed_apparent_wind")
+    pitch_bridle_func = kite_model.extract_function("pitch_bridle")
+    pitch_aero_func = kite_model.extract_function("angle_pitch_aerodynamic")
+    roll_aero_func = kite_model.extract_function("angle_roll_aerodynamic")
 
     kite_model.setup_qs_solver(unknown_vars, solver_options=solver_options)
 
@@ -224,11 +232,11 @@ for aero_file, label in zip(aero_files, aero_labels):
         sol = kite_model._qs_solver(
             x0=qs_guess, p=p, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg
         )
-
+        qs_guess = sol["x"]
+        qs_state = {name: float(sol["x"][i]) for i, name in enumerate(unknown_vars)}
+        state_combined = {**qs_state, **current_state}
         if np.linalg.norm(sol["g"]) < 1:
-            qs_guess = sol["x"]
-            qs_state = {name: float(sol["x"][i]) for i, name in enumerate(unknown_vars)}
-            state_combined = {**qs_state, **current_state}
+
             state_combined["lift_coefficient"] = float(
                 cl_func(*[state_combined[name] for name in cl_func.name_in()])
             )
@@ -241,6 +249,21 @@ for aero_file, label in zip(aero_files, aero_labels):
             state_combined["tension_tether_ground"] = float(
                 tension_func(*[state_combined[name] for name in tension_func.name_in()])
             )
+            state_combined["pitch_bridle"] = float(
+                pitch_bridle_func(
+                    *[state_combined[name] for name in pitch_bridle_func.name_in()]
+                )
+            )
+            state_combined["angle_pitch_aerodynamic"] = float(
+                pitch_aero_func(
+                    *[state_combined[name] for name in pitch_aero_func.name_in()]
+                )
+            )
+            state_combined["angle_roll_aerodynamic"] = float(
+                roll_aero_func(
+                    *[state_combined[name] for name in roll_aero_func.name_in()]
+                )
+            )
             state_combined["speed_apparent_wind"] = float(
                 speed_apparent_wind_func(
                     *[
@@ -252,10 +275,10 @@ for aero_file, label in zip(aero_files, aero_labels):
             state_combined["time"] = row.time
             state_combined["original_index"] = i  # Track original index
             solutions.append(state_combined)
-            print(
-                "angle_of_attack (deg):",
-                state_combined["angle_of_attack"] * 180 / np.pi,
-            )
+            # print(
+            #     "angle_of_attack (deg):",
+            #     state_combined["angle_of_attack"] * 180 / np.pi,
+            # )
 
         else:
             for dict_entry in state_combined:
@@ -700,10 +723,26 @@ def plot_main_results_comparison(
         flight_data["ground_tether_force"] / 1000,
         color=colors[0],
     )
+    # Smooth the EKF pitch and roll signals for clearer plots
+
+    pitch_ekf = -np.degrees(results["kite_pitch"] - results["radial_pitch"])
+    roll_ekf = -np.degrees(results["kite_roll"] - results["radial_roll"])
+
+    pitch_ekf_smooth = gaussian_filter1d(pitch_ekf, sigma=3)
+    roll_ekf_smooth = gaussian_filter1d(roll_ekf, sigma=3)
+
     ax5.plot(
         flight_data["time"],
-        flight_data["kcu_actual_steering"] / max(flight_data["kcu_actual_steering"]),
+        pitch_ekf_smooth,
         color=colors[0],
+        label="Kite pitch EKF",
+    )
+    ax5.plot(
+        flight_data["time"],
+        roll_ekf_smooth,
+        color=colors[0],
+        label="Kite roll EKF",
+        linestyle="--",
     )
 
     # Plot results for aerodynamic models
@@ -723,8 +762,17 @@ def plot_main_results_comparison(
         )
         ax5.plot(
             solutions_df["time"],
-            -solutions_df["input_steering"],
+            -np.degrees(solutions_df["pitch_bridle"])
+            + np.degrees(solutions_df["angle_pitch_aerodynamic"]),
             color=color,
+            label="Kite pitch QS",
+        )
+        ax5.plot(
+            solutions_df["time"],
+            np.degrees(solutions_df["angle_roll_aerodynamic"]),
+            color=color,
+            linestyle="--",
+            label="Aerodynamic roll QS",
         )
     axs = [ax3, ax4, ax5]
     # Add phase shading to all subplots
@@ -759,8 +807,10 @@ def plot_main_results_comparison(
     ]
     ax4.legend(handles=phase_patches, loc="best", frameon=True)
     ax3.legend(loc="best", frameon=True)
+    ax5.legend(loc="best", frameon=True)
     ax3.set_ylim(0, 40)
     ax4.set_ylim(0, 5)
+    ax5.set_ylim(-20, 20)
     for ax in axs:
         ax.set_xlim(flight_data["time"].min(), flight_data["time"].max())
 

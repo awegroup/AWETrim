@@ -360,13 +360,9 @@ class FigureEightAngles(ParametrizedPatternsAngles):
         ) + self.beta(t)
 
 def create_pattern_from_dict(
-    config: dict, optimize: bool = False
+    pattern_type,
+    parameters,
 ) -> ParametrizedPatterns:
-    pattern_type = config.get("pattern_type").lower()
-    params = config.get("parameters", {})
-    optimization_params = config.get("optimization_parameters", {})
-
-    # print(params)
 
     required_params = {
         "helix": ["omega", "r0", "d0", "vr", "beta0", "kappa"],
@@ -415,24 +411,12 @@ def create_pattern_from_dict(
         raise ValueError(f"Unknown pattern type: {pattern_type}")
 
     missing_params = [
-        param for param in required_params[pattern_type] if param not in params
+        param for param in required_params[pattern_type] if param not in parameters
     ]
     if missing_params:
         raise ValueError(
             f"Missing required parameters in 'parameters' for '{pattern_type}': {', '.join(missing_params)}"
         )
-
-    # Replace optimized parameters with symbolic variables
-    final_params = params.copy()
-    if optimize:
-        for param in optimization_params:
-            if param in required_params[pattern_type]:
-
-                val = np.atleast_1d(params[param])  # guarantees array, even for scalar
-                if len(val) > 1:
-                    final_params[param] = ca.MX.sym(param, len(val))
-                else:
-                    final_params[param] = ca.MX.sym(param)
 
     # Instantiate the appropriate pattern class
     pattern_classes = {
@@ -445,7 +429,7 @@ def create_pattern_from_dict(
         "spline": CasadiSpline,
     }
 
-    return pattern_classes[pattern_type](**final_params)
+    return pattern_classes[pattern_type](**parameters)
 
 
 class CST_Lissajous(ParametrizedPatternsAngles):
