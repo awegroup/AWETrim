@@ -1,5 +1,5 @@
 import casadi as ca
-from picawe.utils.reference_frames import transformation_C_from_W
+from awetrim.utils.reference_frames import transformation_C_from_W
 
 
 class Wind:

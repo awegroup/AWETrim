@@ -2,14 +2,14 @@ import numpy as np
 import matplotlib.pyplot as plt
 import json
 
-# from picawe.kinematics.parametrized_patterns import Helix  # unused
-from picawe import SystemModel, State
-from picawe.utils.color_palette import set_plot_style, get_color_list
-from picawe.timeseries.phase_parametrized import PhaseParameterized
-from picawe.system.kite import Kite
-from picawe.system.tether import RigidLumpedTether
-from picawe.utils.defaults import PLOT_LABELS
-from picawe.environment.Wind import Wind
+# from awetrim.kinematics.parametrized_patterns import Helix  # unused
+from awetrim import SystemModel, State
+from awetrim.utils.color_palette import set_plot_style, get_color_list
+from awetrim.timeseries.phase_parametrized import PhaseParameterized
+from awetrim.system.kite import Kite
+from awetrim.system.tether import RigidLumpedTether
+from awetrim.utils.defaults import PLOT_LABELS
+from awetrim.environment.Wind import Wind
 
 # ---------- Config ----------
 mass_wing = 14.2

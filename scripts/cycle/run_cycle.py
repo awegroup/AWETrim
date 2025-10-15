@@ -1,6 +1,6 @@
 import json
 import numpy as np
-from picawe import Cycle
+from awetrim import Cycle
 
 # -------------------- Load Aero Input --------------------
 with open("./data/V11/v11_aero_input.json", "r") as file:
@@ -83,7 +83,7 @@ reelout_phase, reelin_phase = cycle_sim.run_cycle(CYCLE_SETTINGS)
 
 # -------------------- Plotting --------------------
 import matplotlib.pyplot as plt
-from picawe.utils.color_palette import get_color_list
+from awetrim.utils.color_palette import get_color_list
 
 # --- Extract variables from reel-out phase ---
 t_ro = reelout_phase.return_variable("t")

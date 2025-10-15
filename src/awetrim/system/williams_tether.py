@@ -1,13 +1,14 @@
-from picawe.system.tether import Tether
+from awetrim.system.tether import Tether
 import casadi as ca
-from picawe.utils.utils import calculate_angle_2vec
+from awetrim.utils.utils import calculate_angle_2vec
 import numpy as np
-
 
 
 class WilliamsTether(Tether):
 
-    def __init__(self, E=132e9, diameter=0.01, density=970, n_elements=30, elastic=False, cf = 0.01):
+    def __init__(
+        self, E=132e9, diameter=0.01, density=970, n_elements=30, elastic=False, cf=0.01
+    ):
         super().__init__(E, diameter, density)
         self.elevation_first_element = ca.SX.sym("elevation_first_element")
         self.azimuth_first_element = ca.SX.sym("azimuth_first_element")
@@ -15,7 +16,6 @@ class WilliamsTether(Tether):
         self.n_elements = n_elements
         self.elastic = elastic
         self.cf = cf
-
 
     @property
     def force_tether_at_kite(self):
@@ -29,12 +29,11 @@ class WilliamsTether(Tether):
             ["force_tether_at_kite"],
         )
         return force_fun
-    
 
     def tether_shape_symbolic(self):
         """Calculate tether shape using symbolic expressions"""
 
-        elevation_0 = self.elevation_first_element  
+        elevation_0 = self.elevation_first_element
         azimuth_0 = self.azimuth_first_element
         tether_length = self.tether_length
         tension_ground = self.tension_tether_ground
@@ -46,7 +45,6 @@ class WilliamsTether(Tether):
         m_s = ca.pi * diameter**2 / 4 * l_unstrained * density
 
         n_elements = self.n_elements
-
 
         uf = self.speed_friction
 
@@ -83,24 +81,34 @@ class WilliamsTether(Tether):
             accelerations[j + 1, :] = aj
             delta_p = positions[j + 1, :] - positions[j, :]
             ej = delta_p.T / ca.norm_2(delta_p)  # Axial direction of tether element
-            vwj = uf/self.kappa * ca.log(positions[j + 1, 2] / self.z0) * ca.vertcat(1, 0, 0)  
+            vwj = (
+                uf
+                / self.kappa
+                * ca.log(positions[j + 1, 2] / self.z0)
+                * ca.vertcat(1, 0, 0)
+            )
 
             # Determine flow at point mass j.
-            vaj = vwj -vj  # Apparent wind velocity
+            vaj = vwj - vj  # Apparent wind velocity
 
             vajp = ca.dot(vaj, ej) * ej  # Parallel to tether element
             # TODO: check whether to use vajn
             vajn = vaj - vajp  # Perpendicular to tether element
 
-            vaj_sq = ca.norm_2(vaj)**2
+            vaj_sq = ca.norm_2(vaj) ** 2
 
             # Determina angle between  va and tether
             theta = calculate_angle_2vec(vaj, ej)
-            cd_t = cdt * ca.sin(theta) ** 3 + ca.pi*self.cf*ca.cos(theta)**3
-            cl_t = cdt * ca.sin(theta) ** 2 * ca.cos(theta)-ca.pi*self.cf*ca.sin(theta)*ca.cos(theta)**2
-            dir_D = vaj / ca.norm_2(vaj) # Drag direction
-            dir_L = -(ej - ca.dot(ej, dir_D) * dir_D) # Lift direction
-            dynamic_pressure_area = 0.5 * self.rho * ca.norm_2(vaj) ** 2 * l_unstrained * diameter
+            cd_t = cdt * ca.sin(theta) ** 3 + ca.pi * self.cf * ca.cos(theta) ** 3
+            cl_t = (
+                cdt * ca.sin(theta) ** 2 * ca.cos(theta)
+                - ca.pi * self.cf * ca.sin(theta) * ca.cos(theta) ** 2
+            )
+            dir_D = vaj / ca.norm_2(vaj)  # Drag direction
+            dir_L = -(ej - ca.dot(ej, dir_D) * dir_D)  # Lift direction
+            dynamic_pressure_area = (
+                0.5 * self.rho * ca.norm_2(vaj) ** 2 * l_unstrained * diameter
+            )
 
             # Save va norm and angle with tether
             velocities_apparent_wind[j + 1, :] = ca.norm_2(vaj)
@@ -117,14 +125,11 @@ class WilliamsTether(Tether):
                 faj = 0.5 * drag_j + 0.5 * lift_j
             else:
                 faj = 0.5 * drag_j + 0.5 * lift_j
-            
-  
-            
+
             if last_element:
                 point_mass = m_s / 2 + self.mass_wing
             else:
                 point_mass = m_s
-            
 
             # Use force balance to infer tension on next element.
             fgj = ca.SX.zeros((3))
@@ -146,13 +151,13 @@ class WilliamsTether(Tether):
                     + tensions[j + 1, :] / ca.norm_2(tensions[j + 1, :]) * l_s
                 )
             elif last_element:
-                next_tension = tensions[j, :].T - fgj - faj  
+                next_tension = tensions[j, :].T - fgj - faj
 
         tension_kite = -tensions[-1, :].T
-        
-        cd_tether = drag_tether / (0.5 * self.rho * ca.norm_2(vaj) ** 2 * self.area_wing)
 
-
+        cd_tether = drag_tether / (
+            0.5 * self.rho * ca.norm_2(vaj) ** 2 * self.area_wing
+        )
 
         res = {
             "kite_position": ca.vertcat(positions[-1, :]),
@@ -164,7 +169,9 @@ class WilliamsTether(Tether):
     def objective_function(self, r_kite):
         """Objective function for optimization"""
 
-        return ca.vertcat(r_kite).T - ca.vertcat(self.tether_shape_symbolic()["kite_position"])
+        return ca.vertcat(r_kite).T - ca.vertcat(
+            self.tether_shape_symbolic()["kite_position"]
+        )
 
     def solve_tether_shape(self, r_kite):
         """Solve tether shape using optimization"""
@@ -180,8 +187,6 @@ class WilliamsTether(Tether):
         x = ca.symvar(f)
         x_names = [var.name() for var in x]
         nlp = {"x": ca.vertcat(*x), "f": 0, "g": f}
-        solver = ca.nlpsol("solver", "ipopt", nlp, solver_opts
-        )
+        solver = ca.nlpsol("solver", "ipopt", nlp, solver_opts)
 
-    
         return solver, x_names

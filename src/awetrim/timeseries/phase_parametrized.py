@@ -1,16 +1,16 @@
 from matplotlib import pyplot as plt
-from picawe.timeseries.timeseries import TimeSeries
-from picawe.kinematics.parametrized_patterns import create_pattern_from_dict
-from picawe import SystemModel
-from picawe.kinematics.Kinematics import ParametrizedKinematics
+from awetrim.timeseries.timeseries import TimeSeries
+from awetrim.kinematics.parametrized_patterns import create_pattern_from_dict
+from awetrim import SystemModel
+from awetrim.kinematics.Kinematics import ParametrizedKinematics
 import casadi as ca
 import numpy as np
-from picawe.utils.defaults import DEFAULT_PATTERN_CONFIG, DEFAULT_OPTI_LIMITS
+from awetrim.utils.defaults import DEFAULT_PATTERN_CONFIG, DEFAULT_OPTI_LIMITS
 import copy
-from picawe.system.tether import RigidLinkTether
-from picawe import State
-from picawe.system.kite import Kite
-from picawe.system.winch import Winch
+from awetrim.system.tether import RigidLinkTether
+from awetrim import State
+from awetrim.system.kite import Kite
+from awetrim.system.winch import Winch
 
 import logging
 

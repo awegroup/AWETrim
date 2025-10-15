@@ -1,14 +1,14 @@
 import h5py
 import pandas as pd
 import numpy as np
-from picawe import SystemModel
-from picawe.system.kite import Kite
-from picawe.system.tether import (
+from awetrim import SystemModel
+from awetrim.system.kite import Kite
+from awetrim.system.tether import (
     RigidLumpedTether,
     FlexibleLumpedTether,
     RigidLinkTether,
 )
-from picawe.environment.Wind import Wind
+from awetrim.environment.Wind import Wind
 import casadi as ca
 import time
 import matplotlib.pyplot as plt

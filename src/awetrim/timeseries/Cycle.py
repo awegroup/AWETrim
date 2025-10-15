@@ -1,10 +1,10 @@
 import time
-from picawe.timeseries.phase_parametrized import PhaseParameterized
-from picawe.timeseries.reelin_phase_old import ReelinPhase
-from picawe.system.kite import Kite
-from picawe.system.tether import RigidLumpedTether
-from picawe import SystemModel, State
-from picawe.environment.Wind import Wind
+from awetrim.timeseries.phase_parametrized import PhaseParameterized
+from awetrim.timeseries.reelin_phase_old import ReelinPhase
+from awetrim.system.kite import Kite
+from awetrim.system.tether import RigidLumpedTether
+from awetrim import SystemModel, State
+from awetrim.environment.Wind import Wind
 import numpy as np
 
 

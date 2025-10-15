@@ -1,4 +1,4 @@
-from picawe.utils.utils import read_ekf_results
+from awetrim.utils.utils import read_ekf_results
 import numpy as np
 import matplotlib.pyplot as plt
 

@@ -1,5 +1,5 @@
 import casadi as ca
-from picawe.utils.reference_frames import (
+from awetrim.utils.reference_frames import (
     transformation_AZR_from_W,
     transformation_C_from_W,
 )

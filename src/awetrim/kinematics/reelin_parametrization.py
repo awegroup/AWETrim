@@ -2,8 +2,8 @@
 import numpy as np
 import casadi as ca
 import matplotlib.pyplot as plt
-from picawe.kinematics.Kinematics import ParametrizedKinematics
-from picawe.system.system_model import SystemModel
+from awetrim.kinematics.Kinematics import ParametrizedKinematics
+from awetrim.system.system_model import SystemModel
 
 
 # =========================================================

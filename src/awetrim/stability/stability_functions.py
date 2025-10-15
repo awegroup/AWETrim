@@ -4,8 +4,8 @@ import numpy as np
 import casadi as ca
 import json
 import matplotlib.pyplot as plt
-from picawe import SystemModel
-from picawe.system.kite import Kite
+from awetrim import SystemModel
+from awetrim.system.kite import Kite
 from typing import Dict, List, Tuple
 
 

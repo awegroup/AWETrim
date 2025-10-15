@@ -1,14 +1,14 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import os
-from picawe.kinematics.parametrized_patterns import Helix, Lissajous, FigureEight
-from picawe.system.kite import Kite
-from picawe.system.tether import RigidLinkTether, RigidLumpedTether
-from picawe.kinematics.Kinematics import ParametrizedKinematics, KiteKinematics
-from picawe import SystemModel, State
-from picawe.utils.color_palette import set_plot_style_no_latex, get_color_list
-from picawe.timeseries.phase_parametrized import PhaseParameterized
-from picawe.environment import Wind
+from awetrim.kinematics.parametrized_patterns import Helix, Lissajous, FigureEight
+from awetrim.system.kite import Kite
+from awetrim.system.tether import RigidLinkTether, RigidLumpedTether
+from awetrim.kinematics.Kinematics import ParametrizedKinematics, KiteKinematics
+from awetrim import SystemModel, State
+from awetrim.utils.color_palette import set_plot_style_no_latex, get_color_list
+from awetrim.timeseries.phase_parametrized import PhaseParameterized
+from awetrim.environment import Wind
 import json
 import copy
 

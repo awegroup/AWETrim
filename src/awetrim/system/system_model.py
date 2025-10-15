@@ -1,10 +1,10 @@
 import casadi as ca
 import numpy as np
-from picawe.system.tether import RigidLinkTether, FlexibleLinkTether
-from picawe.system.kite import Kite
-from picawe.kinematics.Kinematics import KiteKinematics
-from picawe.environment.Wind import Wind
-from picawe.utils.defaults import DEFAULT_BOUNDS
+from awetrim.system.tether import RigidLinkTether, FlexibleLinkTether
+from awetrim.system.kite import Kite
+from awetrim.kinematics.Kinematics import KiteKinematics
+from awetrim.environment.Wind import Wind
+from awetrim.utils.defaults import DEFAULT_BOUNDS
 import inspect
 import logging
 

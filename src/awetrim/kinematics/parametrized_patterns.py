@@ -356,7 +356,7 @@ class FigureEightAngles(ParametrizedPatternsAngles):
         ) + self.beta(t)
 
 
-from picawe.kinematics.reelin_parametrization import ReelInBezier
+from awetrim.kinematics.reelin_parametrization import ReelInBezier
 
 
 def create_pattern_from_dict(

@@ -1,6 +1,6 @@
 import json
 import numpy as np
-from picawe import Cycle
+from awetrim import Cycle
 
 # -------------------- Load Aero Input --------------------
 with open("./data/V11/v11_aero_input.json", "r") as file:

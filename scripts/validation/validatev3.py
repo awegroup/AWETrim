@@ -1,14 +1,14 @@
 import h5py
 import pandas as pd
 import numpy as np
-from picawe import SystemModel
-from picawe.system.kite import Kite
-from picawe.system.tether import (
+from awetrim import SystemModel
+from awetrim.system.kite import Kite
+from awetrim.system.tether import (
     RigidLumpedTether,
     FlexibleLumpedTether,
     RigidLinkTether,
 )
-from picawe.environment.Wind import Wind
+from awetrim.environment.Wind import Wind
 import casadi as ca
 import time
 import matplotlib.pyplot as plt
@@ -656,8 +656,8 @@ for label, solutions_df in all_solutions.items():
     print("Measured power depower: ", measured_power_dep, "W")
 
 
-from picawe.utils.color_palette import set_plot_style
-from picawe.utils.defaults import PLOT_LABELS
+from awetrim.utils.color_palette import set_plot_style
+from awetrim.utils.defaults import PLOT_LABELS
 
 set_plot_style()
 
@@ -671,7 +671,7 @@ def plot_main_results_comparison(
     show=True,
 ):
     import matplotlib.pyplot as plt
-    from picawe.utils.color_palette import get_color_list
+    from awetrim.utils.color_palette import get_color_list
 
     colors = get_color_list()
     # Define phase masks and colors

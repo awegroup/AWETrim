@@ -2,8 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import json
 import pandas as pd
-from picawe.utils.color_palette import set_plot_style_no_latex, get_color_list
-from picawe.utils.fitting import fit_and_evaluate_model
+from awetrim.utils.color_palette import set_plot_style_no_latex, get_color_list
+from awetrim.utils.fitting import fit_and_evaluate_model
 
 set_plot_style_no_latex()
 colors = get_color_list()

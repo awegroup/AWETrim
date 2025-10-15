@@ -7,7 +7,7 @@ import pandas as pd
 import numpy as np
 import os
 from scipy import signal
-from picawe.utils.utils import read_ekf_results
+from awetrim.utils.utils import read_ekf_results
 
 
 # Re-define the function after reset
@@ -251,7 +251,7 @@ df_results = pd.DataFrame(results)
 
 
 import json
-from picawe import Cycle
+from awetrim import Cycle
 
 
 # Function to simulate experimental cycles using stats extracted from flight logs

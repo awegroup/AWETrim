@@ -1,5 +1,5 @@
 import casadi as ca
-from picawe.utils.defaults import DEFAULT_WINCH_CONFIG
+from awetrim.utils.defaults import DEFAULT_WINCH_CONFIG
 
 
 class Winch:
