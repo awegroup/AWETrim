@@ -2,6 +2,7 @@
 results/
 data/LEI-V9-KITE/
 flight_logs/
+processed_data/fitting/
 *.prof
 
 # Byte-compiled / optimized / DLL files
