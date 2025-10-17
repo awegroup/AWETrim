@@ -53,7 +53,7 @@ class Winch_and_Depower_data_processing(DataProcessing):
         self.RORI_t0 = self.time_cyc[self.RO_RI_idx0]
 
         # Start of reel in:
-        self.RI_t0 = self.time_cyc[self.RI_idx0]-2
+        self.RI_t0 = self.time_cyc[self.RI_idx0-21]
 
         # print(f"\nStarting indices: \n RIRO: {self.RIRO_idx0} \n RO: {self.RO_idx0} \n RORI: {self.RORI_idx0} \n RI: {self.RI_idx0} \n")
         # print(f"Length of cycle: {len(self.az_cyc)} \n")
