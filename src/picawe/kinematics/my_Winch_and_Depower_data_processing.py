@@ -53,7 +53,7 @@ class Winch_and_Depower_data_processing(DataProcessing):
         self.RORI_t0 = self.time_cyc[self.RO_RI_idx0]
 
         # Start of reel in:
-        self.RI_t0 = self.time_cyc[self.RI_idx0]
+        self.RI_t0 = self.time_cyc[self.RI_idx0]-2
 
         # print(f"\nStarting indices: \n RIRO: {self.RIRO_idx0} \n RO: {self.RO_idx0} \n RORI: {self.RORI_idx0} \n RI: {self.RI_idx0} \n")
         # print(f"Length of cycle: {len(self.az_cyc)} \n")
@@ -172,15 +172,15 @@ class Winch_and_Depower_data_processing(DataProcessing):
         plt.plot(time_cyc, self.f_low, label="f_low")
         plt.plot(time_cyc, self.f_high, label="f_high")
         for i, (t, label, color) in enumerate(zip(phase_times, phase_labels, phase_colors)):
-            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7, label=label if i == 0 else "")
-        plt.ylabel("Tether Force (N)")
+            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7, label=label)
+        plt.ylabel("Tether Force (kg)")
         plt.legend()
         plt.grid()
 
         plt.subplot(5, 1, 2)
         plt.plot(time_cyc, self.reelout_speed, label="reelout_speed", color='orange')
         for t, label, color in zip(phase_times, phase_labels, phase_colors):
-            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7)
+            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7, label=label)
         plt.ylabel("Reelout Speed (m/s)")
         plt.legend()
         plt.grid()
@@ -188,7 +188,7 @@ class Winch_and_Depower_data_processing(DataProcessing):
         plt.subplot(5, 1, 3)
         plt.plot(time_cyc, self.depower, label="depower", color='green')
         for t, label, color in zip(phase_times, phase_labels, phase_colors):
-            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7)
+            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7, label=label)
         plt.ylabel("Depower Setting")
         plt.legend()
         plt.grid()
@@ -196,7 +196,7 @@ class Winch_and_Depower_data_processing(DataProcessing):
         plt.subplot(5, 1, 4)
         plt.plot(time_cyc, self.force_slope_factor, label="force_slope_factor", color='purple')
         for t, label, color in zip(phase_times, phase_labels, phase_colors):
-            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7)
+            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7, label=label)
         plt.ylabel("Force Slope Factor")
         plt.legend()
         plt.grid()
@@ -205,7 +205,7 @@ class Winch_and_Depower_data_processing(DataProcessing):
         plt.plot(time_cyc, self.force_knee, label="force_knee", color='red')
         for i, (t, label, color) in enumerate(zip(phase_times, phase_labels, phase_colors)):
             plt.axvline(x=t, color=color, linestyle='--', alpha=0.7, label=label)
-        plt.ylabel("Force Knee (N)")
+        plt.ylabel("Force Knee (kg)")
         plt.xlabel("Time (s)")
         plt.legend()
         plt.grid()
