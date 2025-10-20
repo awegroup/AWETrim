@@ -30,12 +30,10 @@ Each waypoint dictionary contains:
 
 '''
 
-# -------------------------
-# DISCLAIMER
-# -------------------------
-
 ''' 
-The parameters extraceted form the JSON file, are not actual numbers that make sense physically.
+DISCLAIMER:
+
+The parameters extracted from the JSON file, are not actual numbers that make sense physically.
 These parameters are taken through modifications to lead to the final winch controller curve.
 These are thus unitless but I will explain what they mean and how they affect the winch controller curve:
 
