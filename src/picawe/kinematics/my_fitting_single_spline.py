@@ -91,7 +91,7 @@ class Fitting(DataProcessing):
             return np.full(2 * len(self.data_az), 1e7)
 
         try:
-            spline = CasadiSpline(
+            self.spline = CasadiSpline(
                 C_az=np.concatenate(([self.data_az[0]], params_az, [self.data_az[-1]])),
                 C_el=np.concatenate(([self.data_el[0]], params_el, [self.data_el[-1]])),
                 s_norm_az=self.u_vals[indices_az],
@@ -101,8 +101,8 @@ class Fitting(DataProcessing):
             print("Error creating spline:", e)
             return np.full(2 * len(self.data_az), 1e7)
     
-        az_fit = np.array(spline.azimuth(1.0, self.u_vals).full()).ravel()
-        el_fit = np.array(spline.elevation(1.0, self.u_vals).full()).ravel()
+        az_fit = np.array(self.spline.azimuth(1.0, self.u_vals).full()).ravel()
+        el_fit = np.array(self.spline.elevation(1.0, self.u_vals).full()).ravel()
         return np.concatenate([az_fit - self.data_az, el_fit - self.data_el])
 
     def FitSpline(self):
@@ -126,15 +126,15 @@ class Fitting(DataProcessing):
             ([0], result.x[3 * n :].astype(int), [len(self.data_az) - 1])
         )
 
-        spline = CasadiSpline(
+        self.final_spline = CasadiSpline(
             C_az=np.concatenate(([self.data_az[0]], self.fitted_params_az, [self.data_az[-1]])),
             C_el=np.concatenate(([self.data_el[0]], self.fitted_params_el, [self.data_el[-1]])),
             s_norm_az=self.u_vals[self.fitted_indices_az],
             s_norm_el=self.u_vals[self.fitted_indices_el],
         )
 
-        self.az_fit = np.array(spline.azimuth(1.0, self.u_vals).full()).ravel()
-        self.el_fit = np.array(spline.elevation(1.0, self.u_vals).full()).ravel()
+        self.az_fit = np.array(self.final_spline.azimuth(1.0, self.u_vals).full()).ravel()
+        self.el_fit = np.array(self.final_spline.elevation(1.0, self.u_vals).full()).ravel()
 
         print(f"✅ Spline fitting completed.")
 
@@ -282,7 +282,7 @@ if __name__ == "__main__":
     axes_list = []
 
     fit = Fitting(
-            full_path, cycle_path, waypoint_path, cyc_idx=0, n_ctrl_pts=35
+            full_path, cycle_path, waypoint_path, cyc_idx=0, n_ctrl_pts=30
         )
 
     # Set up spline segment and perform fitting
@@ -292,3 +292,11 @@ if __name__ == "__main__":
 
     # Plot all spline segments on one 3D trajectory for validation
     plot_spline(fit)
+
+
+    s = np.linspace(0, 1, 10000)
+    for i in s:
+        print(i)
+        az = fit.final_spline.azimuth(1.0, i)
+        el = fit.final_spline.elevation(1.0, i)
+    print("Done evaluating final spline at high resolution.")
