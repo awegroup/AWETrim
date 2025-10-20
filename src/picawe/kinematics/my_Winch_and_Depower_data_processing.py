@@ -85,29 +85,29 @@ class Winch_and_Depower_data_processing(DataProcessing):
         # RI means reel in (csv RI + RIRO + RORI)
         # RO means reel out (csv RO)
 
-
-
-        # Start of RIRO:
-        self.RIRO_t0 = self.time_cyc[self.RI_RO_idx0]
-
-        # Start of reel out:
-        self.RO_t0 = self.time_cyc[self.Lissajous_idx0]
-
-        # Start of RORI:
-        self.RORI_t0 = self.time_cyc[self.RO_RI_idx0]
-
-        # Start of reel in:
-        self.RI_t0 = self.time_cyc[self.RI_idx0-21]
-
+        # # Start of RIRO:
+        # self.RIRO_t0 = self.time_cyc[self.RI_RO_idx0]
+        # # Start of reel out:
+        # self.RO_t0 = self.time_cyc[self.Lissajous_idx0]
+        # # Start of RORI:
+        # self.RORI_t0 = self.time_cyc[self.RO_RI_idx0]
+        # # Start of reel in:
+        # self.RI_t0 = self.time_cyc[self.RI_idx0-21]
+        
         # print(f"\nStarting indices: \n RIRO: {self.RIRO_idx0} \n RO: {self.RO_idx0} \n RORI: {self.RORI_idx0} \n RI: {self.RI_idx0} \n")
         # print(f"Length of cycle: {len(self.az_cyc)} \n")
 
         # Waypoint data
+        self.time_cyc_norm = self.time_cyc - self.time_cyc[0]
+
         self._find_cycle_wp0_wpf()
         self._extrapolate_wp_names()
         self._winch_and_depower_dictionary()
         self._create_settings_lists_for_cyc()
+        self._identify_winch_phases()
         self._plot_settings_over_cycle_time()
+        self._get_winch_phase_settings()
+
     
     # -------------------------
     # Waypoint inter/extrapolation
@@ -193,86 +193,85 @@ class Winch_and_Depower_data_processing(DataProcessing):
         self.kp_f = []
 
         for name in self.extrapolated_wp_names:
-            self.f_low.append([self.waypoint_data_dictionary[name]["f_low"] if self.waypoint_data_dictionary[name]["f_low"] is not None else np.nan])
-            self.f_high.append([self.waypoint_data_dictionary[name]["f_high"] if self.waypoint_data_dictionary[name]["f_high"] is not None else np.nan])
-            self.reelout_speed.append([self.waypoint_data_dictionary[name]["reelout_speed"] if self.waypoint_data_dictionary[name]["reelout_speed"] is not None else np.nan])
-            self.force_slope_factor.append([self.waypoint_data_dictionary[name]["force_slope_factor"] if self.waypoint_data_dictionary[name]["force_slope_factor"] is not None else np.nan])
-            self.force_knee.append([self.waypoint_data_dictionary[name]["force_knee"] if self.waypoint_data_dictionary[name]["force_knee"] is not None else np.nan])
-            self.depower.append([self.waypoint_data_dictionary[name]["depower"] if self.waypoint_data_dictionary[name]["depower"] is not None else np.nan])
-            self.kp_v.append([self.waypoint_data_dictionary[name]["kp_v"] if self.waypoint_data_dictionary[name]["kp_v"] is not None else np.nan])
-            self.kp_f.append([self.waypoint_data_dictionary[name]["kp_f"] if self.waypoint_data_dictionary[name]["kp_f"] is not None else np.nan])
+            self.f_low.append(self.waypoint_data_dictionary[name]["f_low"] if self.waypoint_data_dictionary[name]["f_low"] is not None else np.nan)
+            self.f_high.append(self.waypoint_data_dictionary[name]["f_high"] if self.waypoint_data_dictionary[name]["f_high"] is not None else np.nan)
+            self.reelout_speed.append(self.waypoint_data_dictionary[name]["reelout_speed"] if self.waypoint_data_dictionary[name]["reelout_speed"] is not None else np.nan)
+            self.force_slope_factor.append(self.waypoint_data_dictionary[name]["force_slope_factor"] if self.waypoint_data_dictionary[name]["force_slope_factor"] is not None else np.nan)
+            self.force_knee.append(self.waypoint_data_dictionary[name]["force_knee"] if self.waypoint_data_dictionary[name]["force_knee"] is not None else np.nan)
+            self.depower.append(self.waypoint_data_dictionary[name]["depower"] if self.waypoint_data_dictionary[name]["depower"] is not None else np.nan)
+            self.kp_v.append(self.waypoint_data_dictionary[name]["kp_v"] if self.waypoint_data_dictionary[name]["kp_v"] is not None else np.nan)
+            self.kp_f.append(self.waypoint_data_dictionary[name]["kp_f"] if self.waypoint_data_dictionary[name]["kp_f"] is not None else np.nan)
 
     def _plot_settings_over_cycle_time(self):
-        time_cyc = self.time_cyc - self.time_cyc[0]
+        L = len(self.time_cyc_norm)
         
-        # Calculate phase starting times relative to cycle start
-        RIRO_t0_rel = self.RIRO_t0 - self.time_cyc[0]
-        RO_t0_rel = self.RO_t0 - self.time_cyc[0]
-        RORI_t0_rel = self.RORI_t0 - self.time_cyc[0]
-        RI_t0_rel = self.RI_t0 - self.time_cyc[0]
+        # # Calculate phase starting times relative to cycle start
+        # RIRO_t0_rel = self.RIRO_t0 - self.time_cyc[0]
+        # RO_t0_rel = self.RO_t0 - self.time_cyc[0]
+        # RORI_t0_rel = self.RORI_t0 - self.time_cyc[0]
+        # RI_t0_rel = self.RI_t0 - self.time_cyc[0]
 
         plt.figure(figsize=(20, 20))
 
         # Define phase lines and labels
-        phase_times = [RIRO_t0_rel, RO_t0_rel, RORI_t0_rel, RI_t0_rel]
-        phase_labels = ['RIRO', 'RO', 'RORI', 'RI']
-        phase_colors = ['blue', 'green', 'orange', 'red']
+        phase_times = self.phase_start_times
+        phase_colors = ['blue', 'green', 'orange', 'red', 'pink', 'grey', 'purple']
 
         plt.subplot(7, 1, 1)
-        plt.plot(time_cyc, self.f_low, label="f_low")
-        plt.plot(time_cyc, self.f_high, label="f_high")
-        for i, (t, label, color) in enumerate(zip(phase_times, phase_labels, phase_colors)):
-            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7, label=label)
+        plt.plot(self.time_cyc_norm, self.f_low, label="f_low")
+        plt.plot(self.time_cyc_norm, self.f_high, label="f_high")
+        for i, (t, color) in enumerate(zip(phase_times, phase_colors)):
+            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7)
         plt.ylabel("Force")
         plt.legend()
         plt.grid()
 
         plt.subplot(7, 1, 2)
-        plt.plot(time_cyc, self.reelout_speed, label="reelout_speed", color='orange')
-        for t, label, color in zip(phase_times, phase_labels, phase_colors):
-            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7, label=label)
+        plt.plot(self.time_cyc_norm, self.reelout_speed, label="reelout_speed", color='orange')
+        for t, color in zip(phase_times, phase_colors):
+            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7)
         plt.ylabel("Reelout Speed offset")
         plt.legend()
         plt.grid()
 
         plt.subplot(7, 1, 3)
-        plt.plot(time_cyc, self.depower, label="depower", color='green')
-        for t, label, color in zip(phase_times, phase_labels, phase_colors):
-            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7, label=label)
+        plt.plot(self.time_cyc_norm, self.depower, label="depower", color='green')
+        for t, color in zip(phase_times, phase_colors):
+            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7)
         plt.ylabel("Depower Setting")
         plt.legend()
         plt.grid()
 
         plt.subplot(7, 1, 4)
-        plt.plot(time_cyc, self.force_slope_factor, label="force_slope_factor", color='purple')
-        for t, label, color in zip(phase_times, phase_labels, phase_colors):
-            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7, label=label)
+        plt.plot(self.time_cyc_norm, self.force_slope_factor, label="force_slope_factor", color='purple')
+        for t, color in zip(phase_times, phase_colors):
+            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7)
         plt.ylabel("Force Slope Factor")
         plt.legend()
         plt.grid()
 
         plt.subplot(7, 1, 5)
-        plt.plot(time_cyc, self.force_knee, label="force_knee", color='red')
-        for i, (t, label, color) in enumerate(zip(phase_times, phase_labels, phase_colors)):
-            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7, label=label)
+        plt.plot(self.time_cyc_norm, self.force_knee, label="force_knee", color='red')
+        for i, (t, color) in enumerate(zip(phase_times, phase_colors)):
+            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7)
         plt.ylabel("Force Knee")
         plt.xlabel("Time (s)")
         plt.legend()
         plt.grid()
 
         plt.subplot(7, 1, 6)
-        plt.plot(time_cyc, self.kp_v, label="kp_v", color='red')
-        for i, (t, label, color) in enumerate(zip(phase_times, phase_labels, phase_colors)):
-            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7, label=label)
+        plt.plot(self.time_cyc_norm, self.kp_v, label="kp_v", color='red')
+        for i, (t, color) in enumerate(zip(phase_times, phase_colors)):
+            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7)
         plt.ylabel("Kp Velocity")
         plt.xlabel("Time (s)")
         plt.legend()
         plt.grid()
 
         plt.subplot(7, 1, 7)
-        plt.plot(time_cyc, self.kp_f, label="kp_f", color='red')
-        for i, (t, label, color) in enumerate(zip(phase_times, phase_labels, phase_colors)):
-            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7, label=label)
+        plt.plot(self.time_cyc_norm, self.kp_f, label="kp_f", color='red')
+        for i, (t, color) in enumerate(zip(phase_times, phase_colors)):
+            plt.axvline(x=t, color=color, linestyle='--', alpha=0.7)
         plt.ylabel("Kp Force")
         plt.xlabel("Time (s)")
         plt.legend()
@@ -281,10 +280,107 @@ class Winch_and_Depower_data_processing(DataProcessing):
         plt.tight_layout()
         plt.show()
 
+
+    def _identify_winch_phases(self, tol=1e-6):
+        import numpy as np
+
+        # Compute diffs for each parameter
+        diffs = np.column_stack([
+            np.diff(self.f_low),
+            np.diff(self.f_high),
+            np.diff(self.reelout_speed),
+            np.diff(self.force_slope_factor),
+            np.diff(self.force_knee),
+            np.diff(self.kp_v),
+            np.diff(self.kp_f),
+        ])
+
+        parameter_names = [
+            "f_low",
+            "f_high",
+            "reelout_speed",
+            "force_slope_factor",
+            "force_knee",
+            "kp_v",
+            "kp_f",
+        ]
+
+        change_times = {}
+        change_indices = {}
+
+        # Collect change *times* for each parameter
+        for i, name in enumerate(parameter_names):
+            idx = np.where(~np.isclose(diffs[:, i], 0, atol=tol))[0]
+            t_changes = np.round(self.time_cyc_norm[idx], 1)  # map indices → times
+            change_times[name] = t_changes
+            change_indices[name] = idx
+
+            # if t_changes.size > 0:
+            #     print(f"{name} changes value at times: {t_changes.tolist()}")
+            # else:
+            #     print(f"{name} has no changes.")
+
+        # Combine all change times (unique + sorted)
+        self.all_change_times = np.unique(np.concatenate(list(change_times.values())))
+        self.all_change_indices = np.unique(np.concatenate(list(change_indices.values())))
+        self.phase_start_indices = self.all_change_indices + 1
+
+        # print(f"\nOverall change detected at times: {self.all_change_times}")
+        print(f"Overall change detected at indices: {self.all_change_indices}")
+        print(f"\nIdentified phase start indices: {self.phase_start_indices}")
+
+        diffs2 = np.diff(self.phase_start_indices)
+        duplicates = np.where(diffs2 <= 2)[0]
+        if duplicates.size > 0:
+            print("Warning: Duplicate phase start indices detected!")
+
+        for dup in duplicates:
+            print(f"Duplicate at index {dup}: {self.phase_start_indices[dup]} and {self.phase_start_indices[dup+1]}")
+
+        self.phase_start_indices = np.delete(self.phase_start_indices, duplicates)
+        
+        if 0 not in self.phase_start_indices and 1 not in self.phase_start_indices:
+            self.phase_start_indices = np.concatenate(([0], self.phase_start_indices))
+
+        self.phase_start_times = self.time_cyc_norm[self.phase_start_indices]
+
+        print(f"\nFinal phase start times after removing duplicates: {self.phase_start_times}")
+        print(f"Final phase start indices after removing duplicates: {self.phase_start_indices}")
+
+        return self.phase_start_indices, self.phase_start_times
+    
+    def _get_winch_phase_settings(self):
+        self.phase_settings = []
+        start_indices = self.phase_start_indices
+
+        self.winch_phases_s_values = self.u_vals_cyc[start_indices]
+
+        for i in range(len(start_indices)):
+            start_idx = start_indices[i]
+
+            settings = {
+                "start_index": start_idx,
+                "f_low": self.f_low[start_idx],
+                "f_high": self.f_high[start_idx],
+                "reelout_speed": self.reelout_speed[start_idx],
+                "force_slope_factor": self.force_slope_factor[start_idx],
+                "force_knee": self.force_knee[start_idx],
+                "kp_v": self.kp_v[start_idx],
+                "kp_f": self.kp_f[start_idx],
+                "depower": self.depower[start_idx],
+            }
+
+            self.phase_settings.append(settings)
+        
+        # print(f"\nWinch phase settings: {self.phase_settings}\n")
+        print(f"Winch phase s values: {self.winch_phases_s_values}\n")
+
+        return self.phase_settings, self.winch_phases_s_values
+
 if __name__ == "__main__":
     # File paths
     base_path = "./processed_data/fitting"
     waypoint_path = f"{base_path}/2025-09-25_11-48-58_ProtoLogger_waypoints.csv"
     full_path = f"{base_path}/2025-09-25_11-48-58_ProtoLogger.csv"
     cycle_path = f"{base_path}/cycle_data_sheet_lines.csv"
-    obj = Winch_and_Depower_data_processing(full_path, cycle_path, waypoint_path, json_trajectory)
+    obj = Winch_and_Depower_data_processing(full_path, cycle_path, waypoint_path, json_trajectory)  

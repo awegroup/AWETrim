@@ -134,6 +134,7 @@ class DataProcessing:
         self.dy_cyc = self.dy_full[s:f]
         self.dz_cyc = self.dz_full[s:f]
         self.depower_cyc = self.depower_full[s:f]
+        self.u_vals_cyc = self._compute_u(self.x_cyc, self.y_cyc, self.z_cyc)
 
     # -------------------------
     # Reel-Out (RO_) extraction
@@ -332,5 +333,3 @@ if __name__ == "__main__":
     dp = DataProcessing(full_path, cycle_path, waypoint_path, cyc_idx=0)
     dp.plot_cycle_3D()
     dp.plot_Single_Spline_3D()
-
-    print(dp.Single_Spline_u_vals)

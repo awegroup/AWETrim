@@ -441,8 +441,6 @@ if __name__ == "__main__":
         if seg != "LISSAJOUS":
             objects.append(fit)
         
-        print(fit.u_vals[-1])
-        
         fit.save_data()
     #     fig, axes = fit.plot_fit(title_prefix=seg)
     #     figs.append(fig)
