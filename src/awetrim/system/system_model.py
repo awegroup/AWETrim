@@ -2,7 +2,11 @@ import casadi as ca
 import numpy as np
 from awetrim.system.tether import RigidLinkTether, FlexibleLinkTether
 from awetrim.system.kite import Kite
+<<<<<<< HEAD
 from awetrim.kinematics.my_Kinematics import KiteKinematics
+=======
+from awetrim.kinematics.Kinematics import KiteKinematics
+>>>>>>> develop
 from awetrim.environment.Wind import Wind
 from awetrim.utils.defaults import DEFAULT_BOUNDS
 import inspect

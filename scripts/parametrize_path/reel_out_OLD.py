@@ -2,15 +2,26 @@ import numpy as np
 import matplotlib.pyplot as plt
 import json
 from scipy.interpolate import interp1d
+<<<<<<< HEAD:scripts/parametrize_path/reel_out_OLD.py
 import pickle
 # from picawe.kinematics.parametrized_patterns import Helix
 from awetrim import SystemModel, State
 from awetrim.utils.color_palette import set_plot_style, get_color_list, custom_cmap
 from awetrim.timeseries.my_phase_parametrized import PhaseParameterized
+=======
+from awetrim.kinematics.parametrized_patterns import Helix
+from awetrim import SystemModel, State
+from awetrim.utils.color_palette import set_plot_style, get_color_list, custom_cmap
+from awetrim.timeseries.reelin_phase import ReelinPhase
+>>>>>>> develop:scripts/parametrize_path/reel-in.py
 from awetrim.system.kite import Kite
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.utils.defaults import PLOT_LABELS
 from awetrim.environment.Wind import Wind
+<<<<<<< HEAD:scripts/parametrize_path/reel_out_OLD.py
+=======
+from mpl_toolkits.mplot3d import Axes3D
+>>>>>>> develop:scripts/parametrize_path/reel-in.py
 
 # ---------- Config ----------
 speed_wind_at_100 = 12

@@ -107,7 +107,7 @@ DEFAULT_OPTI_LIMITS = {
     # HElix
     "kappa": (0, 1),  # Range for kappa: 0 to 1
     # "vr": (-10, 10),      # Range for vr: 0 to 100
-    "beta0": (0.35, 1),  # Range for beta: 20 ot 50 degrees
+    "beta0": (0.25, 0.5),  # Range for beta: 20 ot 50 degrees
     "d0": (40, 500),  # Range for d0: 0 to 100
     # Figure Eight
     "ry": (60, 180),  # Range for ry: 0 to 100
@@ -116,11 +116,11 @@ DEFAULT_OPTI_LIMITS = {
     "kz": (0.5, 1),  # Range for kz: 0 to 100
     "vr": (0.5, 4),  # Range for vr: 0 to 100
     "az_amp0": (
-        np.radians(0),
+        np.radians(5),
         np.radians(50),
     ),  # Range for azimuth amplitude: 10 to 30 degrees
     "beta_amp0": (
-        np.radians(0),
+        np.radians(5),
         np.radians(30),
     ),  # Range for beta amplitude: 5 to 20 degrees
     "beta_coeffs": (-1, 1),  # Range for beta coefficients: -1 to 1

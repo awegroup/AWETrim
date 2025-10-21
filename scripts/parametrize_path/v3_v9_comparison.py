@@ -2,10 +2,17 @@ import numpy as np
 import matplotlib.pyplot as plt
 import json
 from scipy.interpolate import interp1d
+<<<<<<< HEAD
 from awetrim.kinematics.my_parametrized_patterns import Helix
 from awetrim import SystemModel, State
 from awetrim.utils.color_palette import set_plot_style, get_color_list, custom_cmap
 from awetrim.timeseries.my_phase_parametrized import PhaseParameterized
+=======
+from awetrim.kinematics.parametrized_patterns import Helix
+from awetrim import SystemModel, State
+from awetrim.utils.color_palette import set_plot_style, get_color_list, custom_cmap
+from awetrim.timeseries.phase_parametrized import PhaseParameterized
+>>>>>>> develop
 from awetrim.system.kite import Kite
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.utils.defaults import PLOT_LABELS

@@ -741,13 +741,33 @@ class TimeSeries:
         def _pct(a, b):
             return float((a - b) / (b + 1e-12) * 100.0)
 
-        delta_ft_mean_percent = _pct(np.mean(ten_a_m), np.mean(ten_b_m)) if len(ten_a_m) and len(ten_b_m) else 0.0
-        delta_ft_max_percent = _pct(np.max(ten_a_m), np.max(ten_b_m)) if len(ten_a_m) and len(ten_b_m) else 0.0
-        delta_ft_min_percent = _pct(np.min(ten_a_m), np.min(ten_b_m)) if len(ten_a_m) and len(ten_b_m) else 0.0
+        delta_ft_mean_percent = (
+            _pct(np.mean(ten_a_m), np.mean(ten_b_m))
+            if len(ten_a_m) and len(ten_b_m)
+            else 0.0
+        )
+        delta_ft_max_percent = (
+            _pct(np.max(ten_a_m), np.max(ten_b_m))
+            if len(ten_a_m) and len(ten_b_m)
+            else 0.0
+        )
+        delta_ft_min_percent = (
+            _pct(np.min(ten_a_m), np.min(ten_b_m))
+            if len(ten_a_m) and len(ten_b_m)
+            else 0.0
+        )
 
         # Tangential speed differences
-        delta_vtau_max_percent = _pct(np.max(vtau_a_m), np.max(vtau_b_m)) if len(vtau_a_m) and len(vtau_b_m) else 0.0
-        delta_vtau_min_percent = _pct(np.min(vtau_a_m), np.min(vtau_b_m)) if len(vtau_a_m) and len(vtau_b_m) else 0.0
+        delta_vtau_max_percent = (
+            _pct(np.max(vtau_a_m), np.max(vtau_b_m))
+            if len(vtau_a_m) and len(vtau_b_m)
+            else 0.0
+        )
+        delta_vtau_min_percent = (
+            _pct(np.min(vtau_a_m), np.min(vtau_b_m))
+            if len(vtau_a_m) and len(vtau_b_m)
+            else 0.0
+        )
 
         # Phase lags at max/min vtau
         if len(vtau_a_m) and len(vtau_b_m):

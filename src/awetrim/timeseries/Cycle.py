@@ -1,5 +1,9 @@
 import time
+<<<<<<< HEAD
 from awetrim.timeseries.my_phase_parametrized import PhaseParameterized
+=======
+from awetrim.timeseries.phase_parametrized import PhaseParameterized
+>>>>>>> develop
 from awetrim.timeseries.reelin_phase_old import ReelinPhase
 from awetrim.system.kite import Kite
 from awetrim.system.tether import RigidLumpedTether

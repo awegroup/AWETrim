@@ -2,7 +2,11 @@
 import numpy as np
 import casadi as ca
 import matplotlib.pyplot as plt
+<<<<<<< HEAD
 from awetrim.kinematics.my_Kinematics import ParametrizedKinematics
+=======
+from awetrim.kinematics.Kinematics import ParametrizedKinematics
+>>>>>>> develop
 from awetrim.system.system_model import SystemModel
 
 

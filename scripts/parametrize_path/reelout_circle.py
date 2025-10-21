@@ -1,7 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 import json
-import pickle
 
 # from awetrim.kinematics.parametrized_patterns import Helix  # unused
 from awetrim import SystemModel, State
@@ -13,14 +12,14 @@ from awetrim.utils.defaults import PLOT_LABELS
 from awetrim.environment.Wind import Wind
 
 # ---------- Config ----------
-mass_wing = 61
-mass_kcu = 30
-area_wing = 46.85
+mass_wing = 14.2
+mass_kcu = 10
+area_wing = 19.75
 tether_diameter = 0.01
 
 speed_wind_at_100 = 10
 wind = Wind(
-    wind_model="uniform",
+    wind_model="logarithmic",
     z0=0.0002,
 )
 speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
@@ -30,80 +29,59 @@ wind.speed_friction = speed_friction
 # color palette available via get_color_list() as needed
 
 
-with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
+with open("./data/LEI-V3-KITE/v3_aero_input.json", "r") as file:
     aero_input_v3 = json.load(file)
 
-segment_name = "LISSAJOUS"
-
-filename = f"fit_results_{segment_name}.pkl"
-with open(filename, "rb") as f:
-    fit_data = pickle.load(f)
-
-r0 = fit_data["r0"]
-duration = fit_data["duration"]
-az_amp0 = fit_data["best_params"]["az_amp0"]
-beta_amp0 = fit_data["best_params"]["beta_amp0"]
-beta_coeffs = fit_data["best_params"]["beta_coeffs"]
-az_coeffs = fit_data["best_params"]["az_coeffs"]
-beta0 = fit_data["best_params"]["beta0"]
-
-# Recreating the starting and ending point of the path used to validate the model
-start_angle = 1.36 * np.pi
-range = 1.45 * np.pi
-cycles = 1
-
-Realistic_RO_eg = {
-    "reeling_strategy": "force",  # "force" or "constant"
-    "force_model": "quadratic",  # "linear" or "quadratic"
-    "reeling_speed": 0,  # m/s, only for constant reeling
-    "max_tether_force": 3.5e4,  # N, only for force reeling
-    "min_tether_force": 4400.0,  # N, only for force reeling
-    "softplus": True,
-    "softplus_beta": 1e-4,
-    "softminus": True,
-    "softminus_beta": 1e-3,
-    "slope": 1800,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
-    "offset": -2,  # m/s
-}
-
 pattern_config = {
-    "pattern_type": "cst_lissajous",
+    "pattern_type": "cst_helix",
     "path_parameters": {
         "omega": 1.0,
-        "r0": r0,
-        "az_amp0": az_amp0,
-        "beta_amp0": beta_amp0,
+        "r0": 230.0,
+        "az_amp0": np.deg2rad(10),
+        "beta_amp0": np.deg2rad(10),
         "width_phi": 0.5,
         "width_beta": 0.5,
-        "left_first": True,  # Match the Julia simulation start of Lissajous after connecting RIRO spline
+        "left_first": True,
         "normalize_bumps": False,
         "repeat_phi": True,
         "repeat_beta": True,
-        "beta_coeffs": np.array(beta_coeffs),
-        "az_coeffs": az_coeffs,
+        "beta_coeffs": np.array([0, 0, 0, 0, 0]),
+        "az_coeffs": [0, 0, 0, 0, 0],
         "kbeta": 0,
-        "beta0": beta0,
+        "beta0": np.deg2rad(30),
         "kappa": 0,
     },
-    "radial_parameters": Realistic_RO_eg,
+    "radial_parameters": {
+        "reeling_strategy": "force",  # "force" or "constant"
+        "force_model": "quadratic",  # "linear" or "quadratic"
+        "reeling_speed": 0.0,  # m/s, only for constant reeling
+        "max_tether_force": 2e4,  # N, only for force reeling
+        "min_tether_force": 2000.0,  # N, only for force reeling
+        "softplus": True,
+        "softplus_beta": 1e-4,
+        "softminus": True,
+        "softminus_beta": 1e-3,
+        "slope": 2716,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
+        "offset": 0,  # m/s
+    },
     "start_time": 0,
-    "end_time": duration + 1,
-    "start_angle": start_angle,
-    "end_angle": start_angle + range * cycles,
-    "n_points": 900,
+    "end_time": 35,
+    "start_angle": np.pi / 2,
+    "end_angle": 2 * np.pi + np.pi / 2,
+    "n_points": 600,
     "optimization_parameters": [],
 }
 
 # ---------- Starting state ----------
 base_start_state = State(
     t=0,
-    s=start_angle,
+    s=np.pi / 2,
     s_dot=1,
     s_ddot=0,
     length_tether=199.6,
     input_steering=0,
     tension_tether_ground=1e8,
-    distance_radial=r0,
+    distance_radial=230,
     speed_radial=speed_wind_at_100 / 5,
 )
 
@@ -188,7 +166,7 @@ fig, axes_map, scatter = dynamic_phase.plot_overview_3d(
         "input_steering",
         "speed_radial",
     ],
-    x_param="t",
+    x_param="s",
 )
 
 # Second series overlays on the same axes
@@ -202,15 +180,15 @@ qs_phase.plot_overview_3d(
         "input_steering",
         "speed_radial",
     ],
-    x_param="t",
+    x_param="s",
     axes=axes_map,
 )
 
 fig.legend(loc="upper center", bbox_to_anchor=(0.5, 0.95), ncol=2)
 set_plot_style()
 plt.tight_layout()
-# # Save the figure as pdf
-# plt.savefig("./results/figures/reelout_cst.pdf", bbox_inches="tight")
+# Save the figure as pdf
+plt.savefig("./results/figures/reelout_cst.pdf", bbox_inches="tight")
 plt.show()
 
 

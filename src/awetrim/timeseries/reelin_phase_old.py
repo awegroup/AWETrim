@@ -1,5 +1,9 @@
 from awetrim.timeseries.timeseries import TimeSeries
+<<<<<<< HEAD
 from awetrim.kinematics.my_parametrized_patterns import create_pattern_from_dict
+=======
+from awetrim.kinematics.parametrized_patterns import create_pattern_from_dict
+>>>>>>> develop
 from awetrim import SystemModel
 from awetrim.kinematics.Kinematics import ParametrizedKinematics
 import casadi as ca
