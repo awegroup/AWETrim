@@ -84,7 +84,7 @@ class Winch_and_Depower_data_processing(DataProcessing):
         self.start = self.RO_RI_idx0
         self.end = self.RI_RO_idxf
 
-        print(f"Cycle starts at index {self.start} and ends at index {self.end}")
+        # print(f"Cycle starts at index {self.start} and ends at index {self.end}")
 
         # Start/End Time of single_spline
         self.time_start = self.time_cyc[self.start]
@@ -124,21 +124,21 @@ class Winch_and_Depower_data_processing(DataProcessing):
         self.wp0 = None
         self.wpf = None
 
-        print(self.time_waypoints, "\n")
-        print(self.time_cyc[0], "\n", self.time_cyc[-1], "\n")
+        # print(self.time_waypoints, "\n")
+        # print(self.time_cyc[0], "\n", self.time_cyc[-1], "\n")
 
         for i, t in enumerate(self.time_waypoints):
             if t > self.time_cyc[0] and self.wp0 is None:
-                print("Got the start!", t)
+                # print("Got the start!", t)
                 self.wp0_idx = i-1
                 self.wp0 = self.wp_names[self.wp0_idx]
             elif t >= self.time_cyc[-1] and self.wpf is None:
-                print("got the end!", t)
+                # print("got the end!", t)
                 self.wpf_idx = i
                 self.wpf = self.wp_names[self.wpf_idx]
                 break
 
-        print(f"Cycle starts at waypoint {self.wp0} (idx {self.wp0_idx}) and ends at waypoint {self.wpf} (idx {self.wpf_idx})")
+        # print(f"Cycle starts at waypoint {self.wp0} (idx {self.wp0_idx}) and ends at waypoint {self.wpf} (idx {self.wpf_idx})")
         
     def _extrapolate_cycle_wp_names(self):
 
@@ -311,18 +311,18 @@ class Winch_and_Depower_data_processing(DataProcessing):
             change_indices[name] = idx
 
             # if t_changes.size > 0:
-            #     print(f"{name} changes value at times: {t_changes.tolist()}")
+            #     # print(f"{name} changes value at times: {t_changes.tolist()}")
             # else:
-            #     print(f"{name} has no changes.")
+            #     # print(f"{name} has no changes.")
 
         # Combine all change times (unique + sorted)
         self.all_change_times = np.unique(np.concatenate(list(change_times.values())))
         self.all_change_indices = np.unique(np.concatenate(list(change_indices.values())))
         self.phase_start_indices = self.all_change_indices + 1
 
-        print(f"\nOverall change detected at times: {self.all_change_times}")
-        print(f"Overall change detected at indices: {self.all_change_indices}")
-        print(f"\nIdentified phase start indices: {self.phase_start_indices}")
+        # print(f"\nOverall change detected at times: {self.all_change_times}")
+        # print(f"Overall change detected at indices: {self.all_change_indices}")
+        # print(f"\nIdentified phase start indices: {self.phase_start_indices}")
 
         diffs2 = np.diff(self.phase_start_indices)
         duplicates = np.where(diffs2 <= 2)[0]
@@ -341,8 +341,8 @@ class Winch_and_Depower_data_processing(DataProcessing):
 
         self.phase_start_times = self.time_cyc_norm[self.phase_start_indices]
 
-        print(f"\nFinal phase start times after removing duplicates: {self.phase_start_times}")
-        print(f"Final phase start indices after removing duplicates: {self.phase_start_indices}")
+        # print(f"\nFinal phase start times after removing duplicates: {self.phase_start_times}")
+        # print(f"Final phase start indices after removing duplicates: {self.phase_start_indices}")
 
         return self.phase_start_indices, self.phase_start_times
     
@@ -373,29 +373,24 @@ class Winch_and_Depower_data_processing(DataProcessing):
                 s_value = self.Single_Spline_u_vals[idx+(len(self.time_cyc)- 1 - self.start)]
                 self.rel_s.append(s_value)
 
-        self.winch_phases_s_values = self.rel_s # All relative to single spline (excluding the reelout Lissajous portion of the cycle)
-        print("self.rel_idx", self.rel_idx)
-
-        s_idx = 0
-        for i in self.phase_start_indices:
-
             settings = {
-                "s": self.winch_phases_s_values[s_idx],
-                "f_low": self.f_low[i],
-                "f_high": self.f_high[i],
-                "reelout_speed": self.reelout_speed[i],
-                "force_slope_factor": self.force_slope_factor[i],
-                "force_knee": self.force_knee[i],
-                "kp_v": self.kp_v[i],
-                "kp_f": self.kp_f[i],
-                "depower": self.depower[i],
+                "s": s_value,
+                "f_low": self.f_low[idx],
+                "f_high": self.f_high[idx],
+                "reelout_speed": self.reelout_speed[idx],
+                "force_slope_factor": self.force_slope_factor[idx],
+                "force_knee": self.force_knee[idx],
+                "kp_v": self.kp_v[idx],
+                "kp_f": self.kp_f[idx],
+                "depower": self.depower[idx],
             }
-            s_idx += 1
             self.Single_Spline_phase_settings.append(settings)
 
         self.rel_s.sort()
         self.rel_idx.sort()
         self.Single_Spline_phase_settings.sort(key=lambda d: d["s"])
+
+        self.winch_phases_s_values = self.rel_s # All relative to single spline (excluding the reelout Lissajous portion of the cycle)
 
         self.RO_phase_settings = {
                 "s": 0,

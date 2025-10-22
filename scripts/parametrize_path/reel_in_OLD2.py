@@ -9,7 +9,6 @@ from awetrim.environment.Wind import Wind
 import pickle
 from awetrim.utils.color_palette import set_plot_style, get_color_list
 from awetrim.utils.defaults import PLOT_LABELS
-from my_reel_in import init_conditions as Single_Spline_final_state
 
 # ---------- Config ----------
 mass_wing = 61
@@ -29,96 +28,102 @@ wind.speed_friction = speed_friction
 # color palette available via get_color_list() as needed
 
 with open("./data/LEI-V9-KITE/v9_aero_input.json", "r") as file:
-    aero_input_v3 = json.load(file)
+    aero_input_v9 = json.load(file)
 
-# ---------- Load precomputed Lissajous fit data ----------
-segment_name = "LISSAJOUS"
+# ---------- Load precomputed spline fit data ----------
+segment_name = "Single_Spline" # input("Enter segment name (e.g., 'RI' or 'RI_RO' or 'RO_RI or 'Single_Spline'): ").strip()
 
 filename = f"fit_results_{segment_name}.pkl"
 with open(filename, "rb") as f:
     fit_data = pickle.load(f)
 
 r0 = fit_data["r0"]
-duration = fit_data["duration"]
-az_amp0 = fit_data["best_params"]["az_amp0"]
-beta_amp0 = fit_data["best_params"]["beta_amp0"]
-beta_coeffs = fit_data["best_params"]["beta_coeffs"]
-az_coeffs = fit_data["best_params"]["az_coeffs"]
-beta0 = fit_data["best_params"]["beta0"]
-
-# Recreating the starting and ending point of the path used to validate the model
-s_start = 1.36 * np.pi
-range = 1.45 * np.pi
-cycles = 1
+r1 = fit_data["r1"]
+C_az = fit_data["C_az"]
+C_el = fit_data["C_el"]
+s_norm_az = fit_data["s_norm_az"]
+s_norm_el = fit_data["s_norm_el"]
 
 # ---------Load winch and depower data ----------
 
-with open("fit_winch_results_RO_phase_settings.pkl", "rb") as f:
-    winch_depower_data = pickle.load(f)
+if segment_name == "Single_Spline":
+    with open("fit_winch_results_Single_Spline_phase_settings.pkl", "rb") as f:
+        winch_depower_data = pickle.load(f)
 
-f_max = winch_depower_data[0]["max_tether_force"]
-f_min = winch_depower_data[0]["min_tether_force"]
-beta_plus = winch_depower_data[0]["softplus_beta"]
-beta_minus= winch_depower_data[0]["softminus_beta"]
-slope = winch_depower_data[0]["slope"]
-offset = winch_depower_data[0]["offset"]
-# s_start = winch_depower_data[0]["s"]
-depower = winch_depower_data[0]["depower"]
-# s_end = 2*np.pi
+    try:
+        phase_idx = int(
+            input(
+                f"Enter phase index (0 to {len(winch_depower_data)-1}): "
+            ).strip()
+        )
+    except ValueError:
+        print("Invalid input. Defaulting to phase index 0.")
+        phase_idx = 0
 
-Realistic_RO_eg = {
+    f_max = winch_depower_data[phase_idx]["max_tether_force"]
+    f_min = winch_depower_data[phase_idx]["min_tether_force"]
+    beta_plus = winch_depower_data[phase_idx]["softplus_beta"]
+    beta_minus= winch_depower_data[phase_idx]["softminus_beta"]
+    slope = winch_depower_data[phase_idx]["slope"]
+    offset = winch_depower_data[phase_idx]["offset"]
+    s_start = winch_depower_data[phase_idx]["s"]
+    depower = winch_depower_data[phase_idx]["depower"]
+    if phase_idx == len(winch_depower_data)-1:
+        s_end = 1
+    else:
+        s_end = winch_depower_data[phase_idx+1]["s"]                        
+
+Realistic_RI_eg = {
     "reeling_strategy": "force",  # "force" or "constant"
     "force_model": "quadratic",  # "linear" or "quadratic"
     "reeling_speed": 0,  # m/s, only for constant reeling
-    "max_tether_force": 3.5e4,  # N, only for force reeling
-    "min_tether_force": 4400.0,  # N, only for force reeling
+    "max_tether_force": f_max,  # N, only for force reeling
+    "min_tether_force": f_min,  # N, only for force reeling
     "softplus": True,
-    "softplus_beta": 1e-4,
+    "softplus_beta": beta_plus,
     "softminus": True,
-    "softminus_beta": 1e-3,
-    "slope": 1800,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
-    "offset": -2,  # m/s
+    "softminus_beta": beta_minus,
+    "slope": slope,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
+    "offset": offset,  # m/s
 }
-
 pattern_config = {
-    "pattern_type": "cst_lissajous",
+    "pattern_type": "spline",
     "path_parameters": {
-        "omega": 1.0,
         "r0": r0,
-        "az_amp0": az_amp0,
-        "beta_amp0": beta_amp0,
-        "width_phi": 0.5,
-        "width_beta": 0.5,
-        "left_first": True,  # Match the Julia simulation start of Lissajous after connecting RIRO spline
-        "normalize_bumps": False,
-        "repeat_phi": True,
-        "repeat_beta": True,
-        "beta_coeffs": np.array(beta_coeffs),
-        "az_coeffs": az_coeffs,
-        "kbeta": 0,
-        "beta0": beta0,
-        "kappa": 0,
+        "r1": r1,
+        "C_az": C_az,
+        "C_el": C_el,
+        "s_norm_az": s_norm_az,
+        "s_norm_el": s_norm_el,
     },
-    "radial_parameters": Realistic_RO_eg,
+    "radial_parameters": Realistic_RI_eg,
     "start_time": 0,
-    "end_time": duration + 1,
+    "end_time": 60,
     "start_angle": s_start,
-    "end_angle": s_start + range + cycles * (2*np.pi),
+    "end_angle": s_end,
     "n_points": 500,
     "optimization_parameters": [],
 }
 
 # ---------- Starting state ----------
-Single_Spline_final_state["s"] = s_start
+base_start_state = State(
+    t=0,
+    s=s_start,
+    s_dot=0.01,
+    s_ddot=0,
+    input_steering=0,
+    tension_tether_ground=1e10,
+    distance_radial=r0,
+    speed_radial=0,
+    input_depower=1,
+)
 
-base_start_state = State(**Single_Spline_final_state)
 
 def run_sim(
     aero_input,
     pattern_config,
     label_prefix,
     mass_wing,
-    mass_kcu,
     area_wing,
     tether_diameter,
     depower,
@@ -177,9 +182,8 @@ def run_sim(
 
     return phases, states
 
-
 phases, states = run_sim(
-    aero_input_v3, pattern_config, "V3", mass_wing, mass_kcu, area_wing, tether_diameter, depower
+    aero_input_v9, pattern_config, "V9", mass_wing, mass_kcu, tether_diameter, depower
 )
 
 dynamic_phase = phases["dynamic"]
