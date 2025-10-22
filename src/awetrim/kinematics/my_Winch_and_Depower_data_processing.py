@@ -359,22 +359,22 @@ class Winch_and_Depower_data_processing(DataProcessing):
                 "depower": self.depower[self.start],
             }]
 
-        rel_s = [0]
-        rel_idx = [0]
+        self.rel_s = [0]
+        self.rel_idx = [0]
 
         # Single Spline relative s values
         for idx in self.phase_start_indices:
             if idx >= self.start:
-                rel_idx.append(idx - self.start)
+                self.rel_idx.append(idx - self.start)
                 s_value = self.Single_Spline_u_vals[idx - self.start]
-                rel_s.append(s_value)
+                self.rel_s.append(s_value)
             elif idx <= self.end:
-                rel_idx.append(idx+(len(self.time_cyc)- 1 - self.start))
+                self.rel_idx.append(idx+(len(self.time_cyc)- 1 - self.start))
                 s_value = self.Single_Spline_u_vals[idx+(len(self.time_cyc)- 1 - self.start)]
-                rel_s.append(s_value)
+                self.rel_s.append(s_value)
 
-        self.winch_phases_s_values = rel_s # All relative to single spline (excluding the reelout Lissajous portion of the cycle)
-        print("rel_idx", rel_idx)
+        self.winch_phases_s_values = self.rel_s # All relative to single spline (excluding the reelout Lissajous portion of the cycle)
+        print("self.rel_idx", self.rel_idx)
 
         s_idx = 0
         for i in self.phase_start_indices:
@@ -393,8 +393,8 @@ class Winch_and_Depower_data_processing(DataProcessing):
             s_idx += 1
             self.Single_Spline_phase_settings.append(settings)
 
-        rel_s.sort()
-        print(rel_s)
+        self.rel_s.sort()
+        self.rel_idx.sort()
         self.Single_Spline_phase_settings.sort(key=lambda d: d["s"])
 
         self.RO_phase_settings = {
