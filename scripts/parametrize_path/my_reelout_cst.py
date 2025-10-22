@@ -10,6 +10,7 @@ import pickle
 from awetrim.utils.color_palette import set_plot_style, get_color_list
 from awetrim.utils.defaults import PLOT_LABELS
 from my_reel_in import init_conditions as Single_Spline_final_state
+from awetrim.kinematics.find_Lissajous_RO_start_end_angles import find_Lissajous_RO_start_end_angles
 
 # ---------- Config ----------
 mass_wing = 61
@@ -46,10 +47,27 @@ beta_coeffs = fit_data["best_params"]["beta_coeffs"]
 az_coeffs = fit_data["best_params"]["az_coeffs"]
 beta0 = fit_data["best_params"]["beta0"]
 
-# Recreating the starting and ending point of the path used to validate the model
-s_start = 4.272566008882119 # from the find_Lissajous_RO_start_end_angles script
-range = 4.5553093477052 # from the find_Lissajous_RO_start_end_angles script
-cycles = 1
+pattern_type = "cst_lissajous"
+parameters = {
+        "omega": 1.0,
+        "r0": r0,
+        "az_amp0": az_amp0,
+        "beta_amp0": beta_amp0,
+        "width_phi": 0.5,
+        "width_beta": 0.5,
+        "left_first": True,
+        "normalize_bumps": False,
+        "repeat_phi": True,
+        "repeat_beta": True,    
+        "beta_coeffs": np.array(beta_coeffs),
+        "az_coeffs": az_coeffs,
+        "kbeta": 0,
+        "beta0": beta0,
+        "kappa": 0,
+    }
+
+s_start_opt, range_opt, cycles = find_Lissajous_RO_start_end_angles(pattern_type, parameters)
+# cycles is by default 1
 
 # ---------Load winch and depower data ----------
 
@@ -81,35 +99,19 @@ Realistic_RO_eg = {
 }
 
 pattern_config = {
-    "pattern_type": "cst_lissajous",
-    "path_parameters": {
-        "omega": 1.0,
-        "r0": r0,
-        "az_amp0": az_amp0,
-        "beta_amp0": beta_amp0,
-        "width_phi": 0.5,
-        "width_beta": 0.5,
-        "left_first": True,  # Match the Julia simulation start of Lissajous after connecting RIRO spline
-        "normalize_bumps": False,
-        "repeat_phi": True,
-        "repeat_beta": True,
-        "beta_coeffs": np.array(beta_coeffs),
-        "az_coeffs": az_coeffs,
-        "kbeta": 0,
-        "beta0": beta0,
-        "kappa": 0,
-    },
+    "pattern_type": pattern_type,
+    "path_parameters": parameters,
     "radial_parameters": Realistic_RO_eg,
     "start_time": 0,
     "end_time": duration + 1,
-    "start_angle": s_start,
-    "end_angle": s_start + range + cycles * (2*np.pi),
+    "start_angle": s_start_opt,
+    "end_angle": s_start_opt + range_opt + cycles * (2*np.pi),
     "n_points": 500,
     "optimization_parameters": [],
 }
 
 # ---------- Starting state ----------
-Single_Spline_final_state["s"] = s_start
+Single_Spline_final_state["s"] = s_start_opt
 Single_Spline_final_state["length_tether"] = 199.6
 Single_Spline_final_state["tension_tether_ground"] = 1e7 
 # NOT CORRECT, if I lower the tension QS and Dyn are totally different, well only QS is wrong
