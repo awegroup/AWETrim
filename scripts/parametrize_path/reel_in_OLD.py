@@ -64,7 +64,7 @@ pattern_config_v9 = {
 }
 
 # ---------- Config ----------
-speed_wind_at_100 = 10
+speed_wind_at_100 = 7.6374
 wind = Wind(
     wind_model="uniform",
     z0=0.1,

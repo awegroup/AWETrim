@@ -20,7 +20,7 @@ class RI_data_processing:
     def __init__(self, file_path_full, file_path_cycle, file_path_waypoints, cyc_idx=0):
         """Load CSVs, preprocess times, compute cycle + reel-in slices."""
         self.waypoints_df = pd.read_csv(file_path_waypoints)
-        self.full_df = pd.read_csv(file_path_full)
+        self.full_df = pd.read_csv(file_path_full, delim_whitespace=True)
         self.cycle_df = pd.read_csv(file_path_cycle)
         self.cyc_idx = cyc_idx
 
@@ -154,8 +154,8 @@ class RI_data_processing:
         plt.show()
 
 if __name__ == "__main__":
-    waypoint_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/waypoints/2025-09-25_11-48-58_ProtoLogger_waypoints.csv"
-    full_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/ProtoLogger_csv/2025-09-25_11-48-58_ProtoLogger.csv"
+    waypoint_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/waypoints/2025-10-23_09-43-50_ProtoLogger_waypoints.csv"
+    full_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/ProtoLogger_csv/2025-10-23_09-43-50_ProtoLogger.csv"
     cycle_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/cycles/cycle_data_sheet_lines.csv"
 
     obj = RI_data_processing(file_path_full=full_path, file_path_cycle=cycle_path, file_path_waypoints=waypoint_path, cyc_idx=0)

@@ -6,7 +6,7 @@ from awetrim.kinematics.my_RI_plotting import RI_plotting as plot
 
 if __name__ == "__main__":
     # --- File paths ---
-    full_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/ProtoLogger_csv/2025-09-25_11-48-58_ProtoLogger.csv"
+    full_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/ProtoLogger_csv/2025-10-23_09-43-50_ProtoLogger.csv"
     cycle_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2/cycles/cycle_data_sheet_lines.csv"
 
     cyc_idx = 0       # index of the cycle you want to process

@@ -18,7 +18,7 @@ class DataProcessing:
     def __init__(self, file_path_full, file_path_cycle, file_path_waypoints, cyc_idx=0):
         # --- Load CSVs ---
         self.wp_df = pd.read_csv(file_path_waypoints)
-        self.full_df = pd.read_csv(file_path_full)
+        self.full_df = pd.read_csv(file_path_full, delim_whitespace=True)
         self.cycle_df = pd.read_csv(file_path_cycle)
         self.cyc_idx = cyc_idx
 
@@ -328,8 +328,8 @@ class DataProcessing:
 if __name__ == "__main__":
     # File paths
     base_path = "./processed_data/fitting"
-    waypoint_path = f"{base_path}/2025-09-25_11-48-58_ProtoLogger_waypoints.csv"
-    full_path = f"{base_path}/2025-09-25_11-48-58_ProtoLogger.csv"
+    waypoint_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger_waypoints.csv"
+    full_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger.csv"
     cycle_path = f"{base_path}/cycle_data_sheet_lines.csv"
 
     dp = DataProcessing(full_path, cycle_path, waypoint_path, cyc_idx=0)

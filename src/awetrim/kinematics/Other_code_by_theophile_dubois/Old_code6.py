@@ -22,7 +22,7 @@ class ReelInBspline():
     def __init__(self, file_path_full, file_path_cycle, cycle_idx=0):
         """Initialize Cycle object from CSV files and cycle index."""
         # Load CSVs
-        self.full_df = pd.read_csv(file_path_full)
+        self.full_df = pd.read_csv(file_path_full, delim_whitespace=True)
         self.cycle_df = pd.read_csv(file_path_cycle)
         self.cycle_idx = cycle_idx
 

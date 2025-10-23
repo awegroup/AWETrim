@@ -16,7 +16,7 @@ def main():
         aero_input = json.load(file)
 
     # Wind setup
-    speed_wind_at_100 = 10  # m/s
+    speed_wind_at_100 = 7.6374  # m/s
     wind = Wind(wind_model="uniform", z0=0.1)
     wind.speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
     wind.speed_wind_ref = speed_wind_at_100

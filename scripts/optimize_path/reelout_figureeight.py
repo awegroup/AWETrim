@@ -16,7 +16,7 @@ file_path = "./data/LEI-V9-KITE/v9_aero_input.json"
 with open(file_path, "r") as file:
     aero_input = json.load(file)
 
-speed_wind_at_100 = 10  # m/s
+speed_wind_at_100 = 7.6374  # m/s
 
 wind = Wind(
     wind_model="uniform",  # logarithmic

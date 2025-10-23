@@ -16,9 +16,9 @@ mass_kcu = 30
 area_wing = 46.85
 tether_diameter = 0.01
 
-speed_wind_at_100 = 10
+speed_wind_at_100 = 7.6374
 wind = Wind(
-    wind_model="uniform",
+    wind_model="logarithmic",
     z0=0.0002,
 )
 speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)

@@ -17,7 +17,7 @@ mass_kcu = 10
 area_wing = 19.75
 tether_diameter = 0.01
 
-speed_wind_at_100 = 10
+speed_wind_at_100 = 7.6374
 wind = Wind(
     wind_model="logarithmic",
     z0=0.0002,

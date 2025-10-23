@@ -9,7 +9,8 @@ from awetrim.environment.Wind import Wind
 import pickle
 from awetrim.utils.color_palette import set_plot_style, get_color_list
 from awetrim.utils.defaults import PLOT_LABELS
-from my_reel_in import init_conditions as Single_Spline_final_state
+from my_reel_in import init_conditions_QS as Single_Spline_final_state_QS
+from my_reel_in import init_conditions_Dyn as Single_Spline_final_state_Dyn
 from awetrim.kinematics.find_Lissajous_RO_start_end_angles import find_Lissajous_RO_start_end_angles
 
 # ---------- Config ----------
@@ -18,9 +19,9 @@ mass_kcu = 30
 area_wing = 46.85
 tether_diameter = 0.01
 
-speed_wind_at_100 = 10 # 7.5492  # m/s (6 m/s at reference height of 6 m) got from KP software for EXPLOG
+speed_wind_at_100 = 7.6374  # m/s (6 m/s at reference height of 6 m) got from KP software for LOG
 wind = Wind(
-    wind_model="uniform",
+    wind_model="logarithmic",
     z0=0.0002,
 )
 speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
@@ -113,15 +114,25 @@ pattern_config = {
 }
 
 # ---------- Starting state ----------
-Single_Spline_final_state["s"] = s_start_opt
-Single_Spline_final_state["tension_tether_ground"] = 1e10
+Single_Spline_final_state_QS["s"] = s_start_opt
+Single_Spline_final_state_QS["tension_tether_ground"] = 1e10
+
+Single_Spline_final_state_Dyn["s"] = s_start_opt
+Single_Spline_final_state_Dyn["tension_tether_ground"] = 1e10
 
 print("\n")
-for key in Single_Spline_final_state.keys():
-    print(f"{key}:              {Single_Spline_final_state[key]}")
+for key in Single_Spline_final_state_QS.keys():
+    print(f"{key}:              {Single_Spline_final_state_QS[key]}")
 print("\n")
 
-base_start_state = State(**Single_Spline_final_state)
+base_start_state_QS = State(**Single_Spline_final_state_QS)
+
+print("\n")
+for key in Single_Spline_final_state_Dyn.keys():
+    print(f"{key}:              {Single_Spline_final_state_Dyn[key]}")
+print("\n")
+
+base_start_state_Dyn = State(**Single_Spline_final_state_Dyn)
 
 def run_sim(
     aero_input,
@@ -134,70 +145,68 @@ def run_sim(
     depower,
     start_state,
     wind,
+    sim_type,
 ):
-    result = {}
-    phases = {}
-    states = {}
-    simulation_types = ["quasi_steady", "dynamic"]
-    for sim_type in simulation_types:
-        if sim_type == "quasi_steady":
-            quasi_steady = True
-            inertia_free = False
-        elif sim_type == "dynamic":
-            quasi_steady = False
-            inertia_free = False
-        elif sim_type == "inertia_free":
-            quasi_steady = True
-            inertia_free = True
-        elif sim_type == "no_mass":
-            quasi_steady = True
-            inertia_free = True
-        else:
-            continue
-        print(f"Running simulation for {sim_type} with label: {label_prefix}")
-        tether = RigidLumpedTether(
-            diameter=tether_diameter,
-        )
-        kite = Kite(
-            mass_wing=mass_wing,
-            mass_kcu=mass_kcu,
-            area_wing=area_wing,
-            aero_input=aero_input,
-            steering_control="asymmetric",
-        )
-        if inertia_free:
-            kite.override_centripetal = True
-            kite.override_coriolis = True
 
-        model = SystemModel(
-            dof=3, quasi_steady=quasi_steady, kite=kite, tether=tether, wind_model=wind
-        )
+    if sim_type == "quasi_steady":
+        quasi_steady = True
+        inertia_free = False
+    elif sim_type == "dynamic":
+        quasi_steady = False
+        inertia_free = False
+    elif sim_type == "inertia_free":
+        quasi_steady = True
+        inertia_free = True
+    elif sim_type == "no_mass":
+        quasi_steady = True
+        inertia_free = True
 
-        model.input_depower = depower/100 # depower is given in percentage
-        if sim_type == "no_mass":
-            model.mass_wing = 0
-            start_state["input_steering"] = 0
-        phase = PhaseParameterized(
-            model, quasi_steady=quasi_steady, pattern_config=pattern_config
-        )
-        state = phase.run_simulation_phase(start_state=start_state, return_states=True)
-        s_dot = phase.return_variable("s_dot")
-        start_state.s_dot = s_dot[0]
-        phases[sim_type] = phase
-        states[sim_type] = state
+    print(f"Running simulation for {sim_type} with label: {label_prefix}")
+    tether = RigidLumpedTether(
+        diameter=tether_diameter,
+    )
+    kite = Kite(
+        mass_wing=mass_wing,
+        mass_kcu=mass_kcu,
+        area_wing=area_wing,
+        aero_input=aero_input,
+        steering_control="asymmetric",
+    )
+    if inertia_free:
+        kite.override_centripetal = True
+        kite.override_coriolis = True
 
-    return phases, states
+    model = SystemModel(
+        dof=3, quasi_steady=quasi_steady, kite=kite, tether=tether, wind_model=wind
+    )
 
-phases, states = run_sim(
-    aero_input_v9, pattern_config, "V9", mass_wing, area_wing, mass_kcu, tether_diameter, depower_norm, base_start_state, wind
+    model.input_depower = depower/100 # depower is given in percentage
+    if sim_type == "no_mass":
+        model.mass_wing = 0
+        start_state["input_steering"] = 0
+    phase = PhaseParameterized(
+        model, quasi_steady=quasi_steady, pattern_config=pattern_config
+    )
+    state = phase.run_simulation_phase(start_state=start_state, return_states=True)
+    s_dot = phase.return_variable("s_dot")
+    start_state.s_dot = s_dot[0]
+
+    return phase, state
+
+phaseQS, stateQS = run_sim(
+    aero_input_v9, pattern_config, "V9", mass_wing, area_wing, mass_kcu, tether_diameter, depower_norm, base_start_state_QS, wind, "quasi_steady"
 )
 
+phaseDyn, stateDyn = run_sim(
+    aero_input_v9, pattern_config, "V9", mass_wing, area_wing, mass_kcu, tether_diameter, depower_norm, base_start_state_Dyn, wind, "dynamic"
+)   
+
 QS_tension = []
-for i in states["quasi_steady"]:
+for i in stateQS:
     QS_tension.append(i["tension_tether_ground"])
 
 Dyn_tension = []
-for i in states["dynamic"]:
+for i in stateDyn:
     Dyn_tension.append(i["tension_tether_ground"])
 
 plt.figure()
@@ -206,8 +215,8 @@ plt.plot(Dyn_tension, label="Dynamic")
 plt.legend()
 plt.show()
 
-dynamic_phase = phases["dynamic"]
-qs_phase = phases["quasi_steady"]
+dynamic_phase = phaseDyn
+qs_phase = phaseQS
 
 # First series creates the overview figure
 fig, axes_map, scatter = dynamic_phase.plot_overview_3d(
@@ -246,21 +255,21 @@ plt.tight_layout()
 plt.show()
 
 
-# metrics = dynamic_phase.energy_metrics(qs_phase)
-# print("\n--- V9 ---")
-# print(
-#     f"Power QS: {metrics['avg_power_other']:.2f}, Power Dyn: {metrics['avg_power_self']:.2f}."
-# )
-# print(
-#     f"Mean power QS: {metrics['mean_power_other']:.2f}, Mean power Dyn: {metrics['mean_power_self']:.2f}"
-# )
-# print(f"Δ Power: {metrics['power_diff_percent']:.2f}%")
-# print(f"Estimated time lag: {metrics['best_time_lag']:.3f} s")
-# print(f"ΔF_t,mean: {metrics['delta_ft_mean_percent']:.2f}%")
-# print(f"ΔF_t,max: {metrics['delta_ft_max_percent']:.2f}%")
-# print(f"ΔF_t,min: {metrics['delta_ft_min_percent']:.2f}%")
-# print(f"Δv_tau,max: {metrics['delta_vtau_max_percent']:.2f}%")
-# print(f"Δv_tau,min: {metrics['delta_vtau_min_percent']:.2f}%")
-# print(f"Δs_v_tau,max: {metrics['s_lag_vtau_max_deg']:.2f} deg")
-# print(f"Δs_v_tau,min: {metrics['s_lag_vtau_min_deg']:.2f} deg")
-# plt.show()
+metrics = dynamic_phase.energy_metrics(qs_phase)
+print("\n--- V9 ---")
+print(
+    f"Power QS: {metrics['avg_power_other']:.2f}, Power Dyn: {metrics['avg_power_self']:.2f}."
+)
+print(
+    f"Mean power QS: {metrics['mean_power_other']:.2f}, Mean power Dyn: {metrics['mean_power_self']:.2f}"
+)
+print(f"Δ Power: {metrics['power_diff_percent']:.2f}%")
+print(f"Estimated time lag: {metrics['best_time_lag']:.3f} s")
+print(f"ΔF_t,mean: {metrics['delta_ft_mean_percent']:.2f}%")
+print(f"ΔF_t,max: {metrics['delta_ft_max_percent']:.2f}%")
+print(f"ΔF_t,min: {metrics['delta_ft_min_percent']:.2f}%")
+print(f"Δv_tau,max: {metrics['delta_vtau_max_percent']:.2f}%")
+print(f"Δv_tau,min: {metrics['delta_vtau_min_percent']:.2f}%")
+print(f"Δs_v_tau,max: {metrics['s_lag_vtau_max_deg']:.2f} deg")
+print(f"Δs_v_tau,min: {metrics['s_lag_vtau_min_deg']:.2f} deg")
+plt.show()

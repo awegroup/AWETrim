@@ -391,6 +391,7 @@ class Winch_and_Depower_data_processing(DataProcessing):
         self.Single_Spline_phase_settings.sort(key=lambda d: d["s"])
 
         self.winch_phases_s_values = self.rel_s # All relative to single spline (excluding the reelout Lissajous portion of the cycle)
+        print(f"\nWinch phases s values (Single Spline): {self.winch_phases_s_values}\n")
 
         self.RO_phase_settings = {
                 "s": 0,
@@ -409,7 +410,7 @@ class Winch_and_Depower_data_processing(DataProcessing):
 if __name__ == "__main__":
     # File paths
     base_path = "./processed_data/fitting"
-    waypoint_path = f"{base_path}/2025-09-25_11-48-58_ProtoLogger_waypoints.csv"
-    full_path = f"{base_path}/2025-09-25_11-48-58_ProtoLogger.csv"
+    waypoint_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger_waypoints.csv"
+    full_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger.csv"
     cycle_path = f"{base_path}/cycle_data_sheet_lines.csv"
     obj = Winch_and_Depower_data_processing(full_path, cycle_path, waypoint_path, json_trajectory)  

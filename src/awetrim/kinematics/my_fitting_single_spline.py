@@ -288,8 +288,8 @@ class Fitting(DataProcessing):
 if __name__ == "__main__":
     # File paths
     base_path = "./processed_data/fitting"
-    waypoint_path = f"{base_path}/2025-09-25_11-48-58_ProtoLogger_waypoints.csv"
-    full_path = f"{base_path}/2025-09-25_11-48-58_ProtoLogger.csv"
+    waypoint_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger_waypoints.csv"
+    full_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger.csv"
     cycle_path = f"{base_path}/cycle_data_sheet_lines.csv"
 
     figs = []
@@ -304,91 +304,91 @@ if __name__ == "__main__":
     fit.save_data()
     fit.plot_spline_cart()
     
-    # print(fit.u_vals[-1])
+    print(fit.u_vals[-1])
 
-    # fit.plot_spline_sph()
+    fit.plot_spline_sph()
 
-    # if fit.az_fit[-1] == fit.data_az[-1]:
-    #     print("Max s check passed: final azimuth matches data azimuth.")
-    # else:
-    #     print("Max s check failed: final azimuth does not match data azimuth.")
-    #     print(fit.az_fit[-1], fit.data_az[-1])
+    if fit.az_fit[-1] == fit.data_az[-1]:
+        print("Max s check passed: final azimuth matches data azimuth.")
+    else:
+        print("Max s check failed: final azimuth does not match data azimuth.")
+        print(fit.az_fit[-1], fit.data_az[-1])
 
-    # if fit.el_fit[-1] == fit.data_el[-1]:
-    #     print("Max s check passed: final elevation matches data elevation.")   
-    # else:
-    #     print("Max s check failed: final elevation does not match data elevation.")
-    #     print(fit.el_fit[-1], fit.data_el[-1])
+    if fit.el_fit[-1] == fit.data_el[-1]:
+        print("Max s check passed: final elevation matches data elevation.")   
+    else:
+        print("Max s check failed: final elevation does not match data elevation.")
+        print(fit.el_fit[-1], fit.data_el[-1])
 
-    # s = np.linspace(0, 1, len(fit.data_az))
-    # az = []
-    # el = []
-    # for i in s:
-    #     a = np.array(fit.final_spline.azimuth(1.0, i).full()).ravel()[0]
-    #     e = np.array(fit.final_spline.elevation(1.0, i).full()).ravel()[0]
-    #     az.append(a)
-    #     el.append(e)
-    # print("Done evaluating final spline at high resolution.")
+    s = np.linspace(0, 1, len(fit.data_az))
+    az = []
+    el = []
+    for i in s:
+        a = np.array(fit.final_spline.azimuth(1.0, i).full()).ravel()[0]
+        e = np.array(fit.final_spline.elevation(1.0, i).full()).ravel()[0]
+        az.append(a)
+        el.append(e)
+    print("Done evaluating final spline at high resolution.")
 
-    # plt.figure()
-    # plt.plot(s, az, 'r-', label='Fitted Azimuth')
-    # plt.plot(fit.u_vals, fit.data_az, 'b--', label='Data Azimuth')
-    # plt.show()
+    plt.figure()
+    plt.plot(s, az, 'r-', label='Fitted Azimuth')
+    plt.plot(fit.u_vals, fit.data_az, 'b--', label='Data Azimuth')
+    plt.show()
 
-    # plt.figure()
-    # plt.plot(s, el, 'r-', label='Fitted Elevation')
-    # plt.plot(fit.u_vals, fit.data_el, 'b--', label='Data Elevation')
-    # plt.show()
+    plt.figure()
+    plt.plot(s, el, 'r-', label='Fitted Elevation')
+    plt.plot(fit.u_vals, fit.data_el, 'b--', label='Data Elevation')
+    plt.show()
     
-    # # ---------- Load precomputed fit data ----------
-    # segment_name = 'Single_Spline'
+    # ---------- Load precomputed fit data ----------
+    segment_name = 'Single_Spline'
 
-    # filename = f"fit_results_{segment_name}.pkl"
-    # with open(filename, "rb") as f:
-    #     fit_data = pickle.load(f)
+    filename = f"fit_results_{segment_name}.pkl"
+    with open(filename, "rb") as f:
+        fit_data = pickle.load(f)
 
-    # r0 = fit_data["r0"]
-    # r1 = fit_data["r1"]
-    # C_az = fit_data["C_az"]
-    # C_el = fit_data["C_el"]
-    # s_norm_az = fit_data["s_norm_az"]
-    # s_norm_el = fit_data["s_norm_el"]
+    r0 = fit_data["r0"]
+    r1 = fit_data["r1"]
+    C_az = fit_data["C_az"]
+    C_el = fit_data["C_el"]
+    s_norm_az = fit_data["s_norm_az"]
+    s_norm_el = fit_data["s_norm_el"]
 
-    # # r0=None, r1=None, C_az=None, C_el=None, s_norm_az=None, s_norm_el=None
+    # r0=None, r1=None, C_az=None, C_el=None, s_norm_az=None, s_norm_el=None
 
-    # obj = CasadiSpline(
-    #     r0=r0,
-    #     r1=r1,
-    #     C_az=C_az,
-    #     C_el=C_el,
-    #     s_norm_az=s_norm_az,
-    #     s_norm_el=s_norm_el,
-    # )
+    obj = CasadiSpline(
+        r0=r0,
+        r1=r1,
+        C_az=C_az,
+        C_el=C_el,
+        s_norm_az=s_norm_az,
+        s_norm_el=s_norm_el,
+    )
 
-    # s = np.linspace(0, 1, len(fit.data_az))
-    # az = []
-    # el = []
-    # for i in s:
-    #     az_spline = az.append((obj.azimuth(1, i).full().ravel()[0]))
-    #     el_spline = el.append((obj.elevation(1, i).full().ravel()[0]))
+    s = np.linspace(0, 1, len(fit.data_az))
+    az = []
+    el = []
+    for i in s:
+        az_spline = az.append((obj.azimuth(1, i).full().ravel()[0]))
+        el_spline = el.append((obj.elevation(1, i).full().ravel()[0]))
 
-    # # print(az)
-    # # # print(el)
+    # print(az)
+    # # print(el)
 
-    # plt.figure()
-    # plt.plot(s, az, 'r-', label='Fitted Azimuth')
-    # # plt.plot(fit.u_vals, fit.data_az, 'b--', label='Data Azimuth')
-    # plt.title('Azimuth vs u parameter from loaded spline')
-    # plt.xlabel('u parameter')
-    # plt.ylabel('Azimuth (rad)')
-    # plt.grid(True, alpha=0.3)
-    # plt.show()  
+    plt.figure()
+    plt.plot(s, az, 'r-', label='Fitted Azimuth')
+    # plt.plot(fit.u_vals, fit.data_az, 'b--', label='Data Azimuth')
+    plt.title('Azimuth vs u parameter from loaded spline')
+    plt.xlabel('u parameter')
+    plt.ylabel('Azimuth (rad)')
+    plt.grid(True, alpha=0.3)
+    plt.show()  
 
-    # plt.figure()
-    # plt.plot(s, el, 'g-', label='Fitted Elevation')  
-    # # plt.plot(fit.u_vals, fit.data_el, 'b--', label='Data Elevation')
-    # plt.title('Elevation vs u parameter from loaded spline')
-    # plt.xlabel('u parameter')
-    # plt.ylabel('Elevation (rad)')
-    # plt.grid(True, alpha=0.3)
-    # plt.show()
+    plt.figure()
+    plt.plot(s, el, 'g-', label='Fitted Elevation')  
+    # plt.plot(fit.u_vals, fit.data_el, 'b--', label='Data Elevation')
+    plt.title('Elevation vs u parameter from loaded spline')
+    plt.xlabel('u parameter')
+    plt.ylabel('Elevation (rad)')
+    plt.grid(True, alpha=0.3)
+    plt.show()

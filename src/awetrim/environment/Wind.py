@@ -12,7 +12,7 @@ class Wind:
     ):
         self._speed_wind_ref = ca.MX.sym("speed_wind_ref")
         self._speed_friction = ca.MX.sym("speed_friction")
-        self._height_ref = 10
+        self._height_ref = 6 # 10
         self.wind_model = wind_model
         self.kappa = 0.41
         self.z0 = z0

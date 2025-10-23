@@ -185,8 +185,8 @@ class Fitting(DataProcessing):
 if __name__ == "__main__":
     # File paths
     base_path = "/home/theophile/src/Simulation_Results/trial_Uri_valid_2"
-    waypoint_path = f"{base_path}/waypoints/2025-09-25_11-48-58_ProtoLogger_waypoints.csv"
-    full_path = f"{base_path}/ProtoLogger_csv/2025-09-25_11-48-58_ProtoLogger.csv"
+    waypoint_path = f"{base_path}/waypoints/2025-10-23_09-43-50_ProtoLogger_waypoints.csv"
+    full_path = f"{base_path}/ProtoLogger_csv/2025-10-23_09-43-50_ProtoLogger.csv"
     cycle_path = f"{base_path}/cycles/cycle_data_sheet_lines.csv"
 
     segments = ["RI", "RI_RO", "RO_RI"]

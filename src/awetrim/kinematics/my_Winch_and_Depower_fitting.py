@@ -28,8 +28,8 @@ class WinchCurveFitter:
 
         json_trajectory = data["trajectory"]
 
-        waypoint_path = f"{self.base_path}/2025-09-25_11-48-58_ProtoLogger_waypoints.csv"
-        full_path = f"{self.base_path}/2025-09-25_11-48-58_ProtoLogger.csv"
+        waypoint_path = f"{self.base_path}/2025-10-23_09-43-50_ProtoLogger_waypoints.csv"
+        full_path = f"{self.base_path}/2025-10-23_09-43-50_ProtoLogger.csv"
         cycle_path = f"{self.base_path}/cycle_data_sheet_lines.csv"
 
         self.processed = Winch_and_Depower_data_processing(
@@ -264,8 +264,8 @@ if __name__ == "__main__":
     fitter = WinchCurveFitter(json_path, base_path)
     fitter.run()
 
-    # for i in range(len(fitter.processed.Single_Spline_phase_settings)):
-    #     fitter.plot_example(fitter.SS_curve_data_stored, fitter.SS_final_fitted_params, phase_index=i)
+    for i in range(len(fitter.processed.Single_Spline_phase_settings)):
+        fitter.plot_example(fitter.SS_curve_data_stored, fitter.SS_final_fitted_params, phase_index=i)
 
     # RO phase example
     fitter.plot_example(fitter.RO_curve_data_stored, fitter.RO_final_fitted_params, phase_index=0)

@@ -422,8 +422,8 @@ def plot_all_splines(objects):
 if __name__ == "__main__":
     # File paths
     base_path = "./processed_data/fitting"
-    waypoint_path = f"{base_path}/2025-09-25_11-48-58_ProtoLogger_waypoints.csv"
-    full_path = f"{base_path}/2025-09-25_11-48-58_ProtoLogger.csv"
+    waypoint_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger_waypoints.csv"
+    full_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger.csv"
     cycle_path = f"{base_path}/cycle_data_sheet_lines.csv"
 
     segments = ["RI", "RI_RO", "RO_RI", "LISSAJOUS"]
@@ -442,10 +442,10 @@ if __name__ == "__main__":
             objects.append(fit)
         
         fit.save_data()
-    #     fig, axes = fit.plot_fit(title_prefix=seg)
-    #     figs.append(fig)
-    #     axes_list.append(axes)
-    # plt.show()
+        fig, axes = fit.plot_fit(title_prefix=seg)
+        figs.append(fig)
+        axes_list.append(axes)
+    plt.show()
 
     # Plot all spline segments on one 3D trajectory for validation
     plot_all_splines(objects)
