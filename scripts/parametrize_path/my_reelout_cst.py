@@ -84,6 +84,8 @@ offset = winch_depower_data[0]["offset"]
 depower = winch_depower_data[0]["depower"]
 # s_end = 2*np.pi
 
+depower_norm = ((depower / 100)-0.4)/0.2 # normalize depower between 0 and 1 for V9
+
 Realistic_RO_eg = {
     "reeling_strategy": "force",  # "force" or "constant"
     "force_model": "quadratic",  # "linear" or "quadratic"
@@ -112,10 +114,7 @@ pattern_config = {
 
 # ---------- Starting state ----------
 Single_Spline_final_state["s"] = s_start_opt
-Single_Spline_final_state["length_tether"] = 199.6
-Single_Spline_final_state["tension_tether_ground"] = 1e7 
-# NOT CORRECT, if I lower the tension QS and Dyn are totally different, well only QS is wrong
-# True value should be around 17000 N according to real flight csv data 
+Single_Spline_final_state["tension_tether_ground"] = 1e10
 
 print("\n")
 for key in Single_Spline_final_state.keys():
@@ -190,7 +189,7 @@ def run_sim(
     return phases, states
 
 phases, states = run_sim(
-    aero_input_v9, pattern_config, "V9", mass_wing, area_wing, mass_kcu, tether_diameter, depower, base_start_state, wind
+    aero_input_v9, pattern_config, "V9", mass_wing, area_wing, mass_kcu, tether_diameter, depower_norm, base_start_state, wind
 )
 
 QS_tension = []

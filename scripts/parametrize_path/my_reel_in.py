@@ -147,6 +147,8 @@ def main():
             s_end = winch_depower_data[phase_idx+1]["s"] 
         # print(s_start)
         # print(s_end)
+
+        depower_norm = ((depower / 100)-0.4)/0.2 # normalize depower between 0 and 1 for V9
         
         Realistic_RI_eg = {
         "reeling_strategy": "force",  # "force" or "constant"
@@ -184,7 +186,7 @@ def main():
         base_start_state = State(**init_condit_dict[phase_idx])
 
         phases, states = run_sim(
-            aero_input_v9, pattern_config, "V9", mass_wing, area_wing, mass_kcu, tether_diameter, depower, base_start_state, wind
+            aero_input_v9, pattern_config, "V9", mass_wing, area_wing, mass_kcu, tether_diameter, depower_norm, base_start_state, wind
         )
         quasi_steady_s_ends.append(states["quasi_steady"][-1]["s"])
 
@@ -200,64 +202,64 @@ def main():
             "distance_radial": states["quasi_steady"][-1]["distance_radial"]
         })
 
-        # dynamic_phase = phases["dynamic"]
-        # qs_phase = phases["quasi_steady"]
+        dynamic_phase = phases["dynamic"]
+        qs_phase = phases["quasi_steady"]
 
-        # # First series creates the overview figure
-        # fig, axes_map, scatter = dynamic_phase.plot_overview_3d(
-        #     label="V9 Dynamic",
-        #     color=get_color_list()[2],
-        #     linestyle="-",
-        #     variables=[
-        #         "speed_tangential",
-        #         "tension_tether_ground",
-        #         "input_steering",
-        #         "speed_radial",
-        #     ],
-        #     x_param="t",
-        # )
+        # First series creates the overview figure
+        fig, axes_map, scatter = dynamic_phase.plot_overview_3d(
+            label="V9 Dynamic",
+            color=get_color_list()[2],
+            linestyle="-",
+            variables=[
+                "speed_tangential",
+                "tension_tether_ground",
+                "input_steering",
+                "speed_radial",
+            ],
+            x_param="t",
+        )
 
-        # # Second series overlays on the same axes
-        # qs_phase.plot_overview_3d(
-        #     label="V9 Quasi-Steady",
-        #     color=get_color_list()[1],
-        #     linestyle="--",
-        #     variables=[
-        #         "speed_tangential",
-        #         "tension_tether_ground",
-        #         "input_steering",
-        #         "speed_radial",
-        #     ],
-        #     x_param="t",
-        #     axes=axes_map,
-        # )
+        # Second series overlays on the same axes
+        qs_phase.plot_overview_3d(
+            label="V9 Quasi-Steady",
+            color=get_color_list()[1],
+            linestyle="--",
+            variables=[
+                "speed_tangential",
+                "tension_tether_ground",
+                "input_steering",
+                "speed_radial",
+            ],
+            x_param="t",
+            axes=axes_map,
+        )
 
-        # fig.legend(loc="upper center", bbox_to_anchor=(0.5, 0.95), ncol=2)
-        # set_plot_style()
-        # plt.tight_layout()
-        # # # Save the figure as pdf
-        # # plt.savefig("./results/figures/reelout_cst.pdf", bbox_inches="tight")
-        # plt.show()
+        fig.legend(loc="upper center", bbox_to_anchor=(0.5, 0.95), ncol=2)
+        set_plot_style()
+        plt.tight_layout()
+        # # Save the figure as pdf
+        # plt.savefig("./results/figures/reelout_cst.pdf", bbox_inches="tight")
+        plt.show()
 
 
-        # metrics = dynamic_phase.energy_metrics(qs_phase)
-        # print("\n--- V9 ---")
-        # print(
-        #     f"Power QS: {metrics['avg_power_other']:.2f}, Power Dyn: {metrics['avg_power_self']:.2f}."
-        # )
-        # print(
-        #     f"Mean power QS: {metrics['mean_power_other']:.2f}, Mean power Dyn: {metrics['mean_power_self']:.2f}"
-        # )
-        # print(f"Δ Power: {metrics['power_diff_percent']:.2f}%")
-        # print(f"Estimated time lag: {metrics['best_time_lag']:.3f} s")
-        # print(f"ΔF_t,mean: {metrics['delta_ft_mean_percent']:.2f}%")
-        # print(f"ΔF_t,max: {metrics['delta_ft_max_percent']:.2f}%")
-        # print(f"ΔF_t,min: {metrics['delta_ft_min_percent']:.2f}%")
-        # print(f"Δv_tau,max: {metrics['delta_vtau_max_percent']:.2f}%")
-        # print(f"Δv_tau,min: {metrics['delta_vtau_min_percent']:.2f}%")
-        # print(f"Δs_v_tau,max: {metrics['s_lag_vtau_max_deg']:.2f} deg")
-        # print(f"Δs_v_tau,min: {metrics['s_lag_vtau_min_deg']:.2f} deg")
-        # plt.show()
+        metrics = dynamic_phase.energy_metrics(qs_phase)
+        print("\n--- V9 ---")
+        print(
+            f"Power QS: {metrics['avg_power_other']:.2f}, Power Dyn: {metrics['avg_power_self']:.2f}."
+        )
+        print(
+            f"Mean power QS: {metrics['mean_power_other']:.2f}, Mean power Dyn: {metrics['mean_power_self']:.2f}"
+        )
+        print(f"Δ Power: {metrics['power_diff_percent']:.2f}%")
+        print(f"Estimated time lag: {metrics['best_time_lag']:.3f} s")
+        print(f"ΔF_t,mean: {metrics['delta_ft_mean_percent']:.2f}%")
+        print(f"ΔF_t,max: {metrics['delta_ft_max_percent']:.2f}%")
+        print(f"ΔF_t,min: {metrics['delta_ft_min_percent']:.2f}%")
+        print(f"Δv_tau,max: {metrics['delta_vtau_max_percent']:.2f}%")
+        print(f"Δv_tau,min: {metrics['delta_vtau_min_percent']:.2f}%")
+        print(f"Δs_v_tau,max: {metrics['s_lag_vtau_max_deg']:.2f} deg")
+        print(f"Δs_v_tau,min: {metrics['s_lag_vtau_min_deg']:.2f} deg")
+        plt.show()
 
     print("Quasi-steady end s values for each phase:", quasi_steady_s_ends)
 
