@@ -33,7 +33,7 @@ class DataProcessing:
         self.time_cycles = self.cycle_df["start_time_s"].to_numpy()
 
 
-        # primary spherical signals
+        # primary signals
         self.az_full = self.full_df["kite_azimuth"].astype(float).to_numpy()
         self.el_full = self.full_df["kite_elevation"].astype(float).to_numpy()
         self.r_full = self.full_df["kite_distance"].astype(float).to_numpy()
@@ -41,6 +41,8 @@ class DataProcessing:
         self.crs_full = self.full_df["kite_course"].astype(float).to_numpy()
         self.depower_full = self.full_df["kite_actual_depower"].astype(float).to_numpy()
         self.wp_names = self.wp_df["waypoint_name"].astype(str).to_numpy()
+        self.CL = self.full_df["lift_coeff"].astype(float).to_numpy()
+        self.CD = self.full_df["drag_coeff"].astype(float).to_numpy()
 
         # Cartesian & derivatives for full dataset
         self.x_full, self.y_full, self.z_full = self._sph2cart(self.az_full, self.el_full, self.r_full)
@@ -139,6 +141,8 @@ class DataProcessing:
         self.dz_cyc = self.dz_full[s:f]
         self.depower_cyc = self.depower_full[s:f]
         self.u_vals_cyc = self._compute_u(self.x_cyc, self.y_cyc, self.z_cyc)
+        self.CL_cyc = self.CL[s:f]
+        self.CD_cyc = self.CD[s:f]
 
     # -------------------------
     # Reel-In (RI_) extraction

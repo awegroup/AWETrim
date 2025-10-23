@@ -41,6 +41,8 @@ class DataProcessing:
         self.crs_full = self.full_df["kite_course"].astype(float).to_numpy()
         self.depower_full = self.full_df["kite_actual_depower"].astype(float).to_numpy()
         self.tension_tether_ground_full = self.full_df["ground_tether_force"].astype(float).to_numpy() # Kg
+        self.CL = self.full_df["lift_coeff"].astype(float).to_numpy()
+        self.CD = self.full_df["drag_coeff"].astype(float).to_numpy()
         self.wp_names = self.wp_df["waypoint_name"].astype(str).to_numpy()
 
         # Cartesian & derivatives for full dataset
@@ -137,6 +139,8 @@ class DataProcessing:
         self.dz_cyc = self.dz_full[s:f]
         self.depower_cyc = self.depower_full[s:f]
         self.u_vals_cyc = self._compute_u(self.x_cyc, self.y_cyc, self.z_cyc)
+        self.CL_cyc = self.CL[s:f]
+        self.CD_cyc = self.CD[s:f]
 
     # -------------------------
     # Reel-Out (RO_) extraction
@@ -213,6 +217,9 @@ class DataProcessing:
         dy_slice = self.dy_cyc[i0 : i1 + 1]
         dz_slice = self.dz_cyc[i0 : i1 + 1]
         r_slice = self.r_cyc[i0 : i1 + 1]
+        CL_slice = self.CL_cyc[i0 : i1 + 1]
+        CD_slice = self.CD_cyc[i0 : i1 + 1]
+        time_slice = self.time_cyc[i0 : i1 + 1] - self.time_cyc[i0]
 
         setattr(self, f"{prefix}_az", az_slice)
         setattr(self, f"{prefix}_el", el_slice)
@@ -223,6 +230,9 @@ class DataProcessing:
         setattr(self, f"{prefix}_dy", dy_slice)
         setattr(self, f"{prefix}_dz", dz_slice)
         setattr(self, f"{prefix}_r", r_slice)
+        setattr(self, f"{prefix}_CL", CL_slice)
+        setattr(self, f"{prefix}_CD", CD_slice)
+        setattr(self, f"{prefix}_time", time_slice)
         setattr(self, f"{prefix}_p0_sph", np.array([az_slice[0], el_slice[0]]))
         setattr(self, f"{prefix}_pf_sph", np.array([az_slice[-1], el_slice[-1]]))
         setattr(self, f"{prefix}_p0_cart", np.array([x_slice[0], y_slice[0], z_slice[0]]))
@@ -246,6 +256,9 @@ class DataProcessing:
         dy_combined = np.concatenate((getattr(self, f"{slice1}_dy"), getattr(self, f"{slice2}_dy")))
         dz_combined = np.concatenate((getattr(self, f"{slice1}_dz"), getattr(self, f"{slice2}_dz")))
         r_combined = np.concatenate((getattr(self, f"{slice1}_r"), getattr(self, f"{slice2}_r")))
+        CL_combined = np.concatenate((getattr(self, f"{slice1}_CL"), getattr(self, f"{slice2}_CL")))
+        CD_combined = np.concatenate((getattr(self, f"{slice1}_CD"), getattr(self, f"{slice2}_CD")))
+        time_combined = np.concatenate((getattr(self, f"{slice1}_time"), getattr(self, f"{slice2}_time")+(getattr(self, f"{slice1}_time")[-1])))
 
         setattr(self, f"{prefix}_az", az_combined)
         setattr(self, f"{prefix}_el", el_combined)
@@ -256,6 +269,9 @@ class DataProcessing:
         setattr(self, f"{prefix}_dy", dy_combined)
         setattr(self, f"{prefix}_dz", dz_combined)
         setattr(self, f"{prefix}_r", r_combined)
+        setattr(self, f"{prefix}_CL", CL_combined)
+        setattr(self, f"{prefix}_CD", CD_combined)
+        setattr(self, f"{prefix}_time", time_combined)
         setattr(self, f"{prefix}_p0_sph", np.array([az_combined[0], el_combined[0]]))
         setattr(self, f"{prefix}_pf_sph", np.array([az_combined[-1], el_combined[-1]]))
         setattr(self, f"{prefix}_p0_cart", np.array([x_combined[0], y_combined[0], z_combined[0]]))
@@ -335,3 +351,12 @@ if __name__ == "__main__":
     dp = DataProcessing(full_path, cycle_path, waypoint_path, cyc_idx=0)
     dp.plot_cycle_3D()
     dp.plot_Single_Spline_3D()
+
+    plt.figure()
+    plt.plot(dp.Single_Spline_time, dp.Single_Spline_CL, label="Lift Coefficient (CL)")
+    plt.plot(dp.Single_Spline_time, dp.Single_Spline_CD, label="Drag Coefficient (CD)")
+    plt.xlabel("Time (s)")
+    plt.ylabel("Coefficient Value")
+    plt.title("Single Spline Fit - Aerodynamic Coefficients")
+    plt.legend()
+    plt.show()
