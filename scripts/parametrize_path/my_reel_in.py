@@ -57,18 +57,16 @@ def run_sim(
         dof=3, quasi_steady=quasi_steady, kite=kite, tether=tether, wind_model=wind
     )
 
-    model.input_depower = depower/100 # depower is given in percentage
+    model.input_depower = depower  # depower is given in percentage
     if sim_type == "no_mass":
         model.mass_wing = 0
         start_state["input_steering"] = 0
     phase = PhaseParameterized(
         model, quasi_steady=quasi_steady, pattern_config=pattern_config
     )
-    state = phase.run_simulation_phase(start_state=start_state, return_states=True)
-    s_dot = phase.return_variable("s_dot")
-    start_state.s_dot = s_dot[0]
+    states = phase.run_simulation_phase(start_state=start_state, return_states=True)
 
-    return phase, state
+    return phase, states
 
 
 def main():
@@ -79,9 +77,11 @@ def main():
     area_wing = 46.85
     tether_diameter = 0.01
 
-    speed_wind_at_100 = 7.6374 # m/s (6 m/s at reference height of 6 m) got from KP software for LOG
+    speed_wind_at_100 = (
+        7.6374  # m/s (6 m/s at reference height of 6 m) got from KP software for LOG
+    )
     wind = Wind(
-        wind_model="uniform",
+        wind_model="logarithmic",
         z0=0.0002,
     )
     speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind.z0)
@@ -94,7 +94,7 @@ def main():
         aero_input_v9 = json.load(file)
 
     # ---------- Load precomputed spline fit data ----------
-    segment_name = "Single_Spline" # input("Enter segment name (e.g., 'RI' or 'RI_RO' or 'RO_RI or 'Single_Spline'): ").strip()
+    segment_name = "Single_Spline"  # input("Enter segment name (e.g., 'RI' or 'RI_RO' or 'RO_RI or 'Single_Spline'): ").strip()
 
     filename = f"fit_results_{segment_name}.pkl"
     with open(filename, "rb") as f:
@@ -113,29 +113,33 @@ def main():
         with open("fit_winch_results_Single_Spline_phase_settings.pkl", "rb") as f:
             winch_depower_data = pickle.load(f)
 
-    init_condit_QS_dict = [{
-        "t": 0,
-        "s": 0,
-        "s_dot": 0.01,
-        "s_ddot": 0,
-        "input_steering": 0,
-        "tension_tether_ground": 1e10,
-        "distance_radial": r0,
-        "speed_radial": 0,
-        "input_depower": 0.4,
-    }]
+    init_condit_QS_dict = [
+        {
+            "t": 0,
+            "s": 0,
+            "s_dot": 0.2,
+            "s_ddot": 0,
+            "input_steering": 0,
+            "tension_tether_ground": 1e8,
+            "distance_radial": r0,
+            "speed_radial": 0,
+            "input_depower": 0,
+        }
+    ]
 
-    init_condit_Dyn_dict = [{
-        "t": 0,
-        "s": 0,
-        "s_dot": 0.01,
-        "s_ddot": 0,
-        "input_steering": 0,
-        "tension_tether_ground": 1e10,
-        "distance_radial": r0,
-        "speed_radial": 0,
-        "input_depower": 0.4,
-    }]
+    init_condit_Dyn_dict = [
+        {
+            "t": 0,
+            "s": 0,
+            "s_dot": 0.2,
+            "s_ddot": 0,
+            "input_steering": 0,
+            "tension_tether_ground": 1e8,
+            "distance_radial": r0,
+            "speed_radial": 0,
+            "input_depower": 0,
+        }
+    ]
 
     quasi_steady_s_ends = []
     dynamic_s_ends = []
@@ -149,27 +153,29 @@ def main():
         offset = winch_depower_data[phase_idx]["offset"]
         s_start = winch_depower_data[phase_idx]["s"]
         depower = winch_depower_data[phase_idx]["depower"]
-        if phase_idx == len(winch_depower_data)-1:
+        if phase_idx == len(winch_depower_data) - 1:
             s_end = 1
         else:
-            s_end = winch_depower_data[phase_idx+1]["s"] 
+            s_end = winch_depower_data[phase_idx + 1]["s"]
         print(s_start)
         print(s_end)
 
-        depower_norm = ((depower / 100)-0.4)/0.2 # normalize depower between 0 and 1 for V9
-        
+        depower_norm = (
+            (depower / 100) - 0.4
+        ) / 0.2  # normalize depower between 0 and 1 for V9
+
         Realistic_RI_eg = {
-        "reeling_strategy": "force",  # "force" or "constant"
-        "force_model": "quadratic",  # "linear" or "quadratic"
-        "reeling_speed": 0,  # m/s, only for constant reeling
-        "max_tether_force": f_max,  # N, only for force reeling
-        "min_tether_force": f_min,  # N, only for force reeling
-        "softplus": True,
-        "softplus_beta": beta_plus,
-        "softminus": True,
-        "softminus_beta": beta_minus,
-        "slope": slope,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
-        "offset": offset,  # m/s
+            "reeling_strategy": "force",  # "force" or "constant"
+            "force_model": "quadratic",  # "linear" or "quadratic"
+            "reeling_speed": 0,  # m/s, only for constant reeling
+            "max_tether_force": f_max,  # N, only for force reeling
+            "min_tether_force": f_min,  # N, only for force reeling
+            "softplus": True,
+            "softplus_beta": beta_plus,
+            "softminus": True,
+            "softminus_beta": beta_minus,
+            "slope": slope,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
+            "offset": offset,  # m/s
         }
 
         pattern_config = {
@@ -189,107 +195,148 @@ def main():
             "end_angle": s_end,
             "n_points": 500,
             "optimization_parameters": [],
-        }    
+        }
 
         base_start_state_QS = State(**init_condit_QS_dict[phase_idx])
         base_start_state_Dyn = State(**init_condit_Dyn_dict[phase_idx])
 
         phaseQS, stateQS = run_sim(
-            aero_input_v9, pattern_config, "V9", mass_wing, area_wing, mass_kcu, tether_diameter, depower_norm, base_start_state_QS, wind, "quasi_steady"
+            aero_input_v9,
+            pattern_config,
+            "V9",
+            mass_wing,
+            area_wing,
+            mass_kcu,
+            tether_diameter,
+            depower_norm,
+            base_start_state_QS,
+            wind,
+            "quasi_steady",
         )
 
+        base_start_state_Dyn = stateQS[0]
+
         phaseDyn, stateDyn = run_sim(
-            aero_input_v9, pattern_config, "V9", mass_wing, area_wing, mass_kcu, tether_diameter, depower_norm, base_start_state_Dyn, wind, "dynamic"
+            aero_input_v9,
+            pattern_config,
+            "V9",
+            mass_wing,
+            area_wing,
+            mass_kcu,
+            tether_diameter,
+            depower_norm,
+            base_start_state_Dyn,
+            wind,
+            "dynamic",
         )
 
         quasi_steady_s_ends.append(stateQS[-1]["s"])
         dynamic_s_ends.append(stateDyn[-1]["s"])
 
-        init_condit_QS_dict.append({
-            "t": stateQS[-1]["t"],
-            "s": stateQS[-1]["s"],
-            "s_dot": stateQS[-1]["s_dot"],
-            "s_ddot": stateQS[-1]["s_ddot"] if stateQS[-1]["s_ddot"] is not None else 0,
-            "input_steering": stateQS[-1]["input_steering"],
-            "tension_tether_ground": stateQS[-1]["tension_tether_ground"],
-            "input_depower": stateQS[-1]["input_depower"] if stateQS[-1]["input_depower"] is not None else 0.4,
-            "speed_radial": stateQS[-1]["speed_radial"],
-            "distance_radial": stateQS[-1]["distance_radial"]
-        })
+        init_condit_QS_dict.append(
+            {
+                "t": stateQS[-1]["t"],
+                "s": stateQS[-1]["s"],
+                "s_dot": stateQS[-1]["s_dot"],
+                "s_ddot": (
+                    stateQS[-1]["s_ddot"] if stateQS[-1]["s_ddot"] is not None else 0
+                ),
+                "input_steering": stateQS[-1]["input_steering"],
+                "tension_tether_ground": stateQS[-1]["tension_tether_ground"],
+                "input_depower": (
+                    stateQS[-1]["input_depower"]
+                    if stateQS[-1]["input_depower"] is not None
+                    else 0
+                ),
+                "speed_radial": stateQS[-1]["speed_radial"],
+                "distance_radial": stateQS[-1]["distance_radial"],
+            }
+        )
 
-        init_condit_Dyn_dict.append({
-            "t": stateDyn[-1]["t"],
-            "s": stateDyn[-1]["s"],
-            "s_dot": stateDyn[-1]["s_dot"],
-            "s_ddot": stateDyn[-1]["s_ddot"] if stateDyn[-1]["s_ddot"] is not None else 0,
-            "input_steering": stateDyn[-1]["input_steering"],
-            "tension_tether_ground": stateDyn[-1]["tension_tether_ground"],
-            "input_depower": stateDyn[-1]["input_depower"] if stateDyn[-1]["input_depower"] is not None else 0.4,
-            "speed_radial": stateDyn[-1]["speed_radial"],
-            "distance_radial": stateDyn[-1]["distance_radial"]
-        })
+        init_condit_Dyn_dict.append(
+            {
+                "t": stateDyn[-1]["t"],
+                "s": stateDyn[-1]["s"],
+                "s_dot": stateDyn[-1]["s_dot"],
+                "s_ddot": (
+                    stateDyn[-1]["s_ddot"] if stateDyn[-1]["s_ddot"] is not None else 0
+                ),
+                "input_steering": stateDyn[-1]["input_steering"],
+                "tension_tether_ground": stateDyn[-1]["tension_tether_ground"],
+                "input_depower": (
+                    stateDyn[-1]["input_depower"]
+                    if stateDyn[-1]["input_depower"] is not None
+                    else 0
+                ),
+                "speed_radial": stateDyn[-1]["speed_radial"],
+                "distance_radial": stateDyn[-1]["distance_radial"],
+            }
+        )
 
-        # dynamic_phase = phaseDyn
-        # qs_phase = phaseQS
+        dynamic_phase = phaseDyn
+        qs_phase = phaseQS
 
-        # # First series creates the overview figure
-        # fig, axes_map, scatter = dynamic_phase.plot_overview_3d(
-        #     label="V9 Dynamic",
-        #     color=get_color_list()[2],
-        #     linestyle="-",
-        #     variables=[
-        #         "speed_tangential",
-        #         "tension_tether_ground",
-        #         "input_steering",
-        #         "speed_radial",
-        #     ],
-        #     x_param="t",
-        # )
+        # First series creates the overview figure
+        fig, axes_map, scatter = dynamic_phase.plot_overview_3d(
+            label="V9 Dynamic",
+            color=get_color_list()[2],
+            linestyle="-",
+            variables=[
+                "speed_tangential",
+                "tension_tether_ground",
+                "input_steering",
+                "speed_radial",
+            ],
+            x_param="t",
+        )
 
-        # # Second series overlays on the same axes
-        # qs_phase.plot_overview_3d(
-        #     label="V9 Quasi-Steady",
-        #     color=get_color_list()[1],
-        #     linestyle="--",
-        #     variables=[
-        #         "speed_tangential",
-        #         "tension_tether_ground",
-        #         "input_steering",
-        #         "speed_radial",
-        #     ],
-        #     x_param="t",
-        #     axes=axes_map,
-        # )
+        # Second series overlays on the same axes
+        qs_phase.plot_overview_3d(
+            label="V9 Quasi-Steady",
+            color=get_color_list()[1],
+            linestyle="--",
+            variables=[
+                "speed_tangential",
+                "tension_tether_ground",
+                "input_steering",
+                "speed_radial",
+            ],
+            x_param="t",
+            axes=axes_map,
+        )
 
-        # fig.legend(loc="upper center", bbox_to_anchor=(0.5, 0.95), ncol=2)
-        # set_plot_style()
-        # plt.tight_layout()
-        # # # Save the figure as pdf
-        # # plt.savefig("./results/figures/reelout_cst.pdf", bbox_inches="tight")
-        # plt.show()
+        fig.legend(loc="upper center", bbox_to_anchor=(0.5, 0.95), ncol=2)
+        set_plot_style()
+        plt.tight_layout()
+        # # Save the figure as pdf
+        # plt.savefig("./results/figures/reelout_cst.pdf", bbox_inches="tight")
+        plt.show()
 
-
-        # metrics = dynamic_phase.energy_metrics(qs_phase)
-        # print("\n--- V9 ---")
-        # print(
-        #     f"Power QS: {metrics['avg_power_other']:.2f}, Power Dyn: {metrics['avg_power_self']:.2f}."
-        # )
-        # print(
-        #     f"Mean power QS: {metrics['mean_power_other']:.2f}, Mean power Dyn: {metrics['mean_power_self']:.2f}"
-        # )
-        # print(f"Δ Power: {metrics['power_diff_percent']:.2f}%")
-        # print(f"Estimated time lag: {metrics['best_time_lag']:.3f} s")
-        # print(f"ΔF_t,mean: {metrics['delta_ft_mean_percent']:.2f}%")
-        # print(f"ΔF_t,max: {metrics['delta_ft_max_percent']:.2f}%")
-        # print(f"ΔF_t,min: {metrics['delta_ft_min_percent']:.2f}%")
-        # print(f"Δv_tau,max: {metrics['delta_vtau_max_percent']:.2f}%")
-        # print(f"Δv_tau,min: {metrics['delta_vtau_min_percent']:.2f}%")
-        # print(f"Δs_v_tau,max: {metrics['s_lag_vtau_max_deg']:.2f} deg")
-        # print(f"Δs_v_tau,min: {metrics['s_lag_vtau_min_deg']:.2f} deg")
-        # plt.show()
+        metrics = dynamic_phase.energy_metrics(qs_phase)
+        print("\n--- V9 ---")
+        print(
+            f"Power QS: {metrics['avg_power_other']:.2f}, Power Dyn: {metrics['avg_power_self']:.2f}."
+        )
+        print(
+            f"Mean power QS: {metrics['mean_power_other']:.2f}, Mean power Dyn: {metrics['mean_power_self']:.2f}"
+        )
+        print(f"Δ Power: {metrics['power_diff_percent']:.2f}%")
+        print(f"Estimated time lag: {metrics['best_time_lag']:.3f} s")
+        print(f"ΔF_t,mean: {metrics['delta_ft_mean_percent']:.2f}%")
+        print(f"ΔF_t,max: {metrics['delta_ft_max_percent']:.2f}%")
+        print(f"ΔF_t,min: {metrics['delta_ft_min_percent']:.2f}%")
+        print(f"Δv_tau,max: {metrics['delta_vtau_max_percent']:.2f}%")
+        print(f"Δv_tau,min: {metrics['delta_vtau_min_percent']:.2f}%")
+        print(f"Δs_v_tau,max: {metrics['s_lag_vtau_max_deg']:.2f} deg")
+        print(f"Δs_v_tau,min: {metrics['s_lag_vtau_min_deg']:.2f} deg")
+        plt.show()
 
     print("Quasi-steady end s values for each phase:", quasi_steady_s_ends)
 
-    return init_condit_QS_dict[-1], init_condit_Dyn_dict[-1]  # Return the last state as initial condition for further use in the reelout_Lissajous segment
+    return (
+        init_condit_QS_dict[-1],
+        init_condit_Dyn_dict[-1],
+    )  # Return the last state as initial condition for further use in the reelout_Lissajous segment
+
 
 init_conditions_QS, init_conditions_Dyn = main()
