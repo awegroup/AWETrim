@@ -126,24 +126,12 @@ Single_Spline_final_state_QS["s"] = s_start_opt
 Single_Spline_final_state_QS["s_dot"] = 2
 Single_Spline_final_state_QS["tension_tether_ground"] = 1e8
 
-Single_Spline_final_state_Dyn["s"] = s_start_opt
-Single_Spline_final_state_Dyn["s_dot"] = 2
-Single_Spline_final_state_Dyn["tension_tether_ground"] = 1e8
-
 print("\n")
 for key in Single_Spline_final_state_QS.keys():
     print(f"{key}:              {Single_Spline_final_state_QS[key]}")
 print("\n")
 
 base_start_state_QS = State(**Single_Spline_final_state_QS)
-
-
-print("\n")
-for key in Single_Spline_final_state_Dyn.keys():
-    print(f"{key}:              {Single_Spline_final_state_Dyn[key]}")
-print("\n")
-
-base_start_state_Dyn = State(**Single_Spline_final_state_Dyn)
 
 
 def run_sim(
