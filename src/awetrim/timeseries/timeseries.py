@@ -612,6 +612,9 @@ class TimeSeries:
                 "tension_tether_ground",
                 "input_steering",
                 "speed_radial",
+                "mechanical_power",
+                "lift_coefficient",
+                "drag_coefficient",
             ]
 
         created = False

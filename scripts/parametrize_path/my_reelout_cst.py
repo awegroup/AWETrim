@@ -5,6 +5,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from pathlib import Path
 
 from awetrim import SystemModel, State
 from awetrim.environment.Wind import Wind
