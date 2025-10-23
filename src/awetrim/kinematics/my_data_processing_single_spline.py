@@ -40,9 +40,14 @@ class DataProcessing:
         self.phase_full = self.full_df["flight_phase"].astype(str).to_numpy()
         self.crs_full = self.full_df["kite_course"].astype(float).to_numpy()
         self.depower_full = self.full_df["kite_actual_depower"].astype(float).to_numpy()
+
         self.tension_tether_ground_full = self.full_df["ground_tether_force"].astype(float).to_numpy() # Kg
         self.CL = self.full_df["lift_coeff"].astype(float).to_numpy()
         self.CD = self.full_df["drag_coeff"].astype(float).to_numpy()
+        self.Mech_Power = self.full_df["ground_mech_power"].astype(float).to_numpy()
+        self.Vtan = self.full_df["kite_tangential_velocity_mps"].astype(float).to_numpy() # m/s
+        self.Vr = np.gradient(self.r_full, self.time_full)  # m/s
+
         self.wp_names = self.wp_df["waypoint_name"].astype(str).to_numpy()
 
         # Cartesian & derivatives for full dataset
@@ -77,6 +82,7 @@ class DataProcessing:
         self._find_RO_RI_transition()
 
         self._Single_Spline_segment()
+        self._RO_segment()
 
     # -------------------------
     # Utilities
@@ -141,6 +147,9 @@ class DataProcessing:
         self.u_vals_cyc = self._compute_u(self.x_cyc, self.y_cyc, self.z_cyc)
         self.CL_cyc = self.CL[s:f]
         self.CD_cyc = self.CD[s:f]
+        self.Vtan_cyc = self.Vtan[s:f]
+        self.Vr_cyc = self.Vr[s:f]
+        self.Mech_Power_cyc = self.Mech_Power[s:f]
 
     # -------------------------
     # Reel-Out (RO_) extraction
@@ -220,6 +229,10 @@ class DataProcessing:
         CL_slice = self.CL_cyc[i0 : i1 + 1]
         CD_slice = self.CD_cyc[i0 : i1 + 1]
         time_slice = self.time_cyc[i0 : i1 + 1] - self.time_cyc[i0]
+        Vtan_slice = self.Vtan_cyc[i0 : i1 + 1]
+        Vr_slice = self.Vr_cyc[i0 : i1 + 1]
+        Mech_Power_slice = self.Mech_Power_cyc[i0 : i1 + 1]
+        tension_slice = self.tension_tether_ground_cyc[i0 : i1 + 1]
 
         setattr(self, f"{prefix}_az", az_slice)
         setattr(self, f"{prefix}_el", el_slice)
@@ -233,6 +246,10 @@ class DataProcessing:
         setattr(self, f"{prefix}_CL", CL_slice)
         setattr(self, f"{prefix}_CD", CD_slice)
         setattr(self, f"{prefix}_time", time_slice)
+        setattr(self, f"{prefix}_Vtan", Vtan_slice)
+        setattr(self, f"{prefix}_Vr", Vr_slice)
+        setattr(self, f"{prefix}_Mech_Power", Mech_Power_slice)
+        setattr(self, f"{prefix}_tension_tether_ground", tension_slice)
         setattr(self, f"{prefix}_p0_sph", np.array([az_slice[0], el_slice[0]]))
         setattr(self, f"{prefix}_pf_sph", np.array([az_slice[-1], el_slice[-1]]))
         setattr(self, f"{prefix}_p0_cart", np.array([x_slice[0], y_slice[0], z_slice[0]]))
@@ -259,6 +276,10 @@ class DataProcessing:
         CL_combined = np.concatenate((getattr(self, f"{slice1}_CL"), getattr(self, f"{slice2}_CL")))
         CD_combined = np.concatenate((getattr(self, f"{slice1}_CD"), getattr(self, f"{slice2}_CD")))
         time_combined = np.concatenate((getattr(self, f"{slice1}_time"), getattr(self, f"{slice2}_time")+(getattr(self, f"{slice1}_time")[-1])))
+        Vr_combined = np.concatenate((getattr(self, f"{slice1}_Vr"), getattr(self, f"{slice2}_Vr")))
+        Vtan_combined = np.concatenate((getattr(self, f"{slice1}_Vtan"), getattr(self, f"{slice2}_Vtan")))
+        Mech_Power_combined = np.concatenate((getattr(self, f"{slice1}_Mech_Power"), getattr(self, f"{slice2}_Mech_Power")))
+        tension_combined = np.concatenate((getattr(self, f"{slice1}_tension_tether_ground"), getattr(self, f"{slice2}_tension_tether_ground")))
 
         setattr(self, f"{prefix}_az", az_combined)
         setattr(self, f"{prefix}_el", el_combined)
@@ -272,6 +293,10 @@ class DataProcessing:
         setattr(self, f"{prefix}_CL", CL_combined)
         setattr(self, f"{prefix}_CD", CD_combined)
         setattr(self, f"{prefix}_time", time_combined)
+        setattr(self, f"{prefix}_Vtan", Vtan_combined)
+        setattr(self, f"{prefix}_Vr", Vr_combined)
+        setattr(self, f"{prefix}_Mech_Power", Mech_Power_combined)
+        setattr(self, f"{prefix}_tension_tether_ground", tension_combined)
         setattr(self, f"{prefix}_p0_sph", np.array([az_combined[0], el_combined[0]]))
         setattr(self, f"{prefix}_pf_sph", np.array([az_combined[-1], el_combined[-1]]))
         setattr(self, f"{prefix}_p0_cart", np.array([x_combined[0], y_combined[0], z_combined[0]]))
@@ -315,6 +340,9 @@ class DataProcessing:
         self._assign_transition("pref2", 0, self.RI_RO_idxf)
         self._combine_slices("pref1", "pref2", self.RI_RO_idxf, self.RO_RI_idx0, prefix="Single_Spline")
 
+    def _RO_segment(self):
+        self._assign_transition("RO", self.RI_RO_idxf, self.RO_RI_idx0)
+
     # -------------------------
     # Plotting helpers (call plt.show() automatically)
     # -------------------------
@@ -351,12 +379,3 @@ if __name__ == "__main__":
     dp = DataProcessing(full_path, cycle_path, waypoint_path, cyc_idx=0)
     dp.plot_cycle_3D()
     dp.plot_Single_Spline_3D()
-
-    plt.figure()
-    plt.plot(dp.Single_Spline_time, dp.Single_Spline_CL, label="Lift Coefficient (CL)")
-    plt.plot(dp.Single_Spline_time, dp.Single_Spline_CD, label="Drag Coefficient (CD)")
-    plt.xlabel("Time (s)")
-    plt.ylabel("Coefficient Value")
-    plt.title("Single Spline Fit - Aerodynamic Coefficients")
-    plt.legend()
-    plt.show()
