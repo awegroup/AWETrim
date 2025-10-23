@@ -70,21 +70,62 @@ class TimeSeries:
 
     def return_variable(self, variable: str):
 
+        def _lookup_optional(state_obj, key):
+            if isinstance(state_obj, dict):
+                return state_obj.get(key)
+            return getattr(state_obj, key, None)
+
+        def _lookup_required(state_obj, key):
+            if isinstance(state_obj, dict):
+                return state_obj[key]
+            return getattr(state_obj, key)
+
         var = []
         for state in self.states:
-            if variable in state.keys() and state[variable] is not None:
-                var.append(float(state[variable]))
-            else:
+            value = _lookup_optional(state, variable)
+
+            if value is not None:
                 try:
-                    var_func = self.kite_model.extract_function(variable)
-                    input_dict = {name: state[name] for name in var_func.name_in()}
-                    output = var_func(**input_dict)[variable]
-                    var.append(float(output))
-                except Exception as e:
-                    var_func = self.km_param.extract_function(variable)
-                    input_dict = {name: state[name] for name in var_func.name_in()}
-                    output = var_func(**input_dict)[variable]
-                    var.append(float(output))
+                    var.append(float(value))
+                except (TypeError, ValueError):
+                    var.append(float(np.array(value).item()))
+                continue
+
+            if variable in {"x", "y", "z"}:
+                r_val = _lookup_optional(state, "distance_radial")
+                beta_val = _lookup_optional(state, "angle_elevation")
+                phi_val = _lookup_optional(state, "angle_azimuth")
+
+                if (
+                    r_val is not None
+                    and beta_val is not None
+                    and phi_val is not None
+                ):
+                    if variable == "x":
+                        computed = r_val * np.cos(beta_val) * np.cos(phi_val)
+                    elif variable == "y":
+                        computed = r_val * np.cos(beta_val) * np.sin(phi_val)
+                    else:
+                        computed = r_val * np.sin(beta_val)
+                    var.append(float(computed))
+                    continue
+
+            try:
+                var_func = self.kite_model.extract_function(variable)
+                input_dict = {
+                    name: _lookup_required(state, name)
+                    for name in var_func.name_in()
+                }
+                output = var_func(**input_dict)[variable]
+                var.append(float(output))
+            except Exception:
+                var_func = self.km_param.extract_function(variable)
+                input_dict = {
+                    name: _lookup_required(state, name)
+                    for name in var_func.name_in()
+                }
+                output = var_func(**input_dict)[variable]
+                var.append(float(output))
 
         return np.array(var)
 
@@ -530,11 +571,11 @@ class TimeSeries:
 
         # Prepare common x data (convert to degrees for phase variable)
         x = self.return_variable(x_param)
-        if x_param == "s":
-            x = np.degrees(x)
-            # Remove offset so x starts at zero
-            if len(x) > 0:
-                x = x - x[0]
+        # if x_param == "s":
+        #     x = np.degrees(x)
+        #     # Remove offset so x starts at zero
+        #     if len(x) > 0:
+        #         x = x - x[0]
 
         # Plot each variable
         for ax, var in zip(axes, variables):
@@ -625,16 +666,16 @@ class TimeSeries:
             y_scaling=y_scaling,
         )
 
-        if created and right_axes:
-            # Set x limits from 0 to last value
-            x = self.return_variable(x_param)
-            if x_param == "s":
-                x = np.degrees(x)
-                if len(x) > 0:
-                    x = x - x[0]
-            if len(x) > 0:
-                for ax in right_axes:
-                    ax.set_xlim(0, x[-1])
+        # if created and right_axes:
+        #     # Set x limits from 0 to last value
+        #     x = self.return_variable(x_param)
+        #     if x_param == "s":
+        #         x = np.degrees(x)
+        #         if len(x) > 0:
+        #             x = x - x[0]
+        #     if len(x) > 0:
+        #         for ax in right_axes:
+        #             ax.set_xlim(0, x[-1])
 
         return fig, {"left_3d": ax_left3d, "right_axes": right_axes}, None
 

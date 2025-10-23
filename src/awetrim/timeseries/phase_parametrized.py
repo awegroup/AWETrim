@@ -53,6 +53,11 @@ class PhaseParameterized(TimeSeries):
         self.winch_model = Winch(
             pattern_config=self.pattern_config["radial_parameters"]
         )
+        pattern = create_pattern_from_dict(
+            self.pattern_config["pattern_type"], self.pattern_config["path_parameters"]
+        )
+        km_copy = self.substitute_parametrized_kinematics(pattern)
+        self.km_param = km_copy
         # self.find_optimal_angle_pitch_tether()
 
     def run_simulation(self, start_state, allow_failure=True, return_states=False):
@@ -219,7 +224,7 @@ class PhaseParameterized(TimeSeries):
             x = ca.vertcat(s_grid[0], state_obj.s_dot, state_obj.distance_radial)
 
         lbx, ubx, lbg, ubg = self.get_boundaries(state_obj, unknown_vars, km_copy)
-        t = float(self.pattern_config.get("start_time", 0.0))
+        t = float(state_obj.t)
 
         # --- helper: stable Δt from ds, v, a  (ds = v*dt + 0.5*a*dt^2)
         def _dt_from_ds_v_a(ds_scalar, v_s, a_s):
