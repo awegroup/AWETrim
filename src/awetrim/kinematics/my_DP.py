@@ -1,5 +1,7 @@
+from unittest import skip
 import numpy as np
 import pandas as pd
+import re
 import matplotlib.pyplot as plt
 
 
@@ -15,22 +17,58 @@ class DataProcessing:
     Naming convention: cyc_*, RI_*, RO_*, RI_RO_*, RO_RI_*.
     """
 
-    def __init__(self, file_path_full, file_path_cycle, file_path_waypoints, cyc_idx=0):
+    def __init__(self, file_path_full, file_path_cycle, file_path_waypoints, cyc_idx=2):
         # --- Load CSVs ---
+        self.file_path_cycle = file_path_cycle
+
         self.wp_df = pd.read_csv(file_path_waypoints)
-        self.full_df = pd.read_csv(file_path_full, delim_whitespace=True)
-        self.cycle_df = pd.read_csv(file_path_cycle)
+
+        if file_path_cycle.endswith(".txt"):
+
+            with open(file_path_full, "r") as f:
+                total_rows = sum(1 for _ in f) - 1  # minus 1 for header
+
+            start = int(0.7 * total_rows)
+            end = int(0.9 * total_rows)
+
+            nrows = end - start  # number of rows to read
+            skip = range(1, start + 1)  # skip first 'start' rows (keep header)
+
+            self.full_df = pd.read_csv(file_path_full, skiprows=skip, nrows=nrows, delim_whitespace=True)
+        
+        else:
+            self.full_df = pd.read_csv(file_path_full, delim_whitespace=True)
+        
         self.cyc_idx = cyc_idx
 
         # --- Time preprocessing (rounded to 0.1s like original) ---
         self.wp_df["time_s"] = np.round(self._to_seconds(self.wp_df["time_string"]), 1)
         self.full_df["time_s"] = np.round(self._to_seconds(self.full_df["time_of_day"]), 1)
-        self.cycle_df["start_time_s"] = np.round(self._to_seconds(self.cycle_df["start_time_cycle_LT"]), 1)
-
+        
         # --- Full arrays ---
         self.time_waypoints = self.wp_df["time_s"].to_numpy()
         self.time_full = self.full_df["time_s"].to_numpy()
-        self.time_cycles = self.cycle_df["start_time_s"].to_numpy()
+
+        if file_path_cycle.endswith(".txt"):
+            cycle_pattern = re.compile(r"Cycle\s+\d+:\s+Start:\s+(\d{2}:\d{2}:\d{2})")
+
+            cycle_times = []
+
+            with open(file_path_cycle, "r") as f:
+                for line in f:
+                    # Look for cycle start times
+                    cycle_match = cycle_pattern.search(line)
+                    if cycle_match:
+                        cycle_times.append(cycle_match.group(1))
+                    
+            cycle_times = np.round(self._to_seconds(cycle_times), 1)
+
+            self.time_cycles = np.array(cycle_times)
+
+        else:
+            self.cycle_df = pd.read_csv(file_path_cycle)
+            self.cycle_df["start_time_s"] = np.round(self._to_seconds(self.cycle_df["start_time_cycle_LT"]), 1)
+            self.time_cycles = self.cycle_df["start_time_s"].to_numpy()
 
 
         # primary spherical signals
@@ -45,7 +83,10 @@ class DataProcessing:
         self.CL = self.full_df["lift_coeff"].astype(float).to_numpy()
         self.CD = self.full_df["drag_coeff"].astype(float).to_numpy()
         self.Mech_Power = self.full_df["ground_mech_power"].astype(float).to_numpy()
-        self.Vtan = self.full_df["kite_tangential_velocity_mps"].astype(float).to_numpy() # m/s
+        if file_path_cycle.endswith(".txt"):
+            self.Vtan = np.sqrt(self.r_full * np.gradient(self.az_full, self.time_full) + self.r_full * np.gradient(self.el_full, self.time_full))
+        else:
+            self.Vtan = self.full_df["kite_tangential_velocity_mps"].astype(float).to_numpy() # m/s
         self.Vr = self.full_df["ground_tether_reelout_speed"].astype(float).to_numpy() # m/s
 
         self.wp_names = self.wp_df["waypoint_name"].astype(str).to_numpy()
@@ -60,13 +101,13 @@ class DataProcessing:
 
         # --- Cycle selection (cyc_) ---
         start_indices = [i for i, t in enumerate(self.time_full) if t in self.time_cycles]
-        if self.cyc_idx >= len(start_indices) - 1:
+        if self.cyc_idx >= len(start_indices[1:-1]) - 1:
             raise IndexError("cyc_idx out of range")
-        self.cyc_idx0 = start_indices[self.cyc_idx]
-        # if next exists, end at next-1, else end at end-of-file (original logic used -1 fallback)
+        self.cyc_idx0 = start_indices[1:-1][self.cyc_idx]
+
         self.cyc_idxf = (
-            start_indices[self.cyc_idx + 1] - 1
-            if self.cyc_idx + 1 < len(start_indices)
+            start_indices[1:-1][self.cyc_idx + 1] - 1
+            if self.cyc_idx + 1 < len(start_indices[1:-1])
             else len(self.time_full) - 1
         )
 
@@ -180,16 +221,28 @@ class DataProcessing:
         self.L_shape_p0 = []
         self.L_shape_pf = []
         start_found = False
+        end_found = False
         self.L_shape_idx0 = None
         self.L_shape_idxf = None
 
-        for i in range(self.csv_RO_idxf+1):
-            cond = (
+        for i in range(len(self.csv_RO_daz)):
+            cond_julia = (
                 self.csv_RO_daz[i] > 0
                 and self.csv_RO_del[i] > 0
                 and -0.01 <= self.csv_RO_az[i] <= 0.01
                 and self.csv_RO_el[i] <= 0.5
             )
+            cond_experimental = (
+                self.csv_RO_daz[i] < 0
+                and self.csv_RO_del[i] > 0
+                and -0.01 <= self.csv_RO_az[i] <= 0.03
+                and self.csv_RO_el[i] <= 0.6
+            )
+            if self.file_path_cycle.endswith(".txt"):
+                cond = cond_experimental
+            else:
+                cond = cond_julia
+
             if cond and not start_found:
                 self.L_shape_idx0 = i
                 self.L_shape_p0.append((self.csv_RO_az[i], self.csv_RO_el[i]))
@@ -197,9 +250,29 @@ class DataProcessing:
             elif cond and start_found and i > self.L_shape_idx0 + 10:
                 self.L_shape_idxf = i
                 self.L_shape_pf.append((self.csv_RO_az[i], self.csv_RO_el[i]))
+                end_found = True
                 break
 
-        if not start_found or self.L_shape_idxf is None:
+        plt.figure()
+        plt.plot(self.csv_RO_az, self.csv_RO_el)
+        plt.scatter(self.csv_RO_az[0], self.csv_RO_el[0], color="green", label="Start Point")
+        plt.scatter(self.csv_RO_az[-1], self.csv_RO_el[-1], color="red", label="End Point")
+        plt.scatter(
+            self.csv_RO_az[self.L_shape_idx0],
+            self.csv_RO_el[self.L_shape_idx0],
+            color="orange",
+            label="Lissajous Start Point",
+        )
+        plt.scatter(
+            self.csv_RO_az[self.L_shape_idxf],
+            self.csv_RO_el[self.L_shape_idxf],
+            color="purple",
+            label="Lissajous End Point",
+        )
+        plt.legend()
+        plt.show()
+
+        if not start_found or not end_found:
             raise ValueError("No valid Lissajous pattern found in Reel-Out data")
 
         # store truncated Lissajous signals (azimuth / elevation)
@@ -215,9 +288,42 @@ class DataProcessing:
         """
         self.RI_RO_idxf = None
         for i in range(self.L_shape_idx0):
-            if self.az_cyc[i] < 0 and self.csv_RO_del[i] < 0 and self.csv_RO_daz[i] < 0:
+            cond_julia = self.csv_RO_az[i] < 0 and self.csv_RO_del[i] < 0 and self.csv_RO_daz[i] < 0
+            cond_experimental = self.csv_RO_az[i] < 0.32 and self.csv_RO_del[i] < 0 and self.csv_RO_daz[i] < 0
+
+            if self.file_path_cycle.endswith(".txt"):
+                cond = cond_experimental
+            else:
+                cond = cond_julia
+
+            if cond:
                 self.RI_RO_idxf = i
                 break
+
+        plt.figure()
+        plt.plot(self.csv_RO_az, self.csv_RO_el)
+        plt.scatter(self.csv_RO_az[0], self.csv_RO_el[0], color="green", label="Start Point")
+        plt.scatter(self.csv_RO_az[-1], self.csv_RO_el[-1], color="red", label="End Point")
+        plt.scatter(
+            self.csv_RO_az[self.L_shape_idx0],
+            self.csv_RO_el[self.L_shape_idx0],
+            color="orange",
+            label="Lissajous Start Point",
+        )
+        plt.scatter(
+            self.csv_RO_az[self.L_shape_idxf],
+            self.csv_RO_el[self.L_shape_idxf],
+            color="purple",
+            label="Lissajous End Point",
+        )
+        plt.scatter(
+            self.csv_RO_az[self.RI_RO_idxf],
+            self.csv_RO_el[self.RI_RO_idxf],
+            color="blue",
+            label="RI->RO Transition End Point",
+        )
+        plt.legend()
+        plt.show()
         if self.RI_RO_idxf is None:
             raise ValueError("No valid end point found for the RI->RO transition in the reel-out data.")
 
@@ -227,10 +333,48 @@ class DataProcessing:
         Heuristic: az_cyc[i] > 0.1 and csv_RO_del[i] > 0 and csv_RO_daz[i] < 0 and el_cyc[i] < 0.25
         """
         self.RO_RI_idx0 = None
-        for i in range(self.L_shape_idxf, len(self.phase_cyc)-1):
-            if self.az_cyc[i] > 0.1 and self.csv_RO_del[i] > 0 and self.csv_RO_daz[i] < 0 and self.el_cyc[i] < 0.25:
+        for i in range(self.L_shape_idxf-100, len(self.csv_RO_del)-1):
+            cond_julia = self.csv_RO_az[i] > 0.1 and self.csv_RO_del[i] > 0 and self.csv_RO_daz[i] < 0 and self.csv_RO_el[i] < 0.25
+            cond_experimental = self.csv_RO_az[i] < 0.35 and self.csv_RO_del[i] < 0 and self.csv_RO_daz[i] < 0 and self.csv_RO_el[i] < 0.4
+
+            if self.file_path_cycle.endswith(".txt"):
+                cond = cond_experimental
+            else:
+                cond = cond_julia
+
+            if cond:
                 self.RO_RI_idx0 = i
                 break
+        
+        plt.figure()
+        plt.plot(self.csv_RO_az, self.csv_RO_el)
+        plt.scatter(self.csv_RO_az[0], self.csv_RO_el[0], color="green", label="Start Point")
+        plt.scatter(self.csv_RO_az[-1], self.csv_RO_el[-1], color="red", label="End Point")
+        plt.scatter(
+            self.csv_RO_az[self.L_shape_idx0],
+            self.csv_RO_el[self.L_shape_idx0],
+            color="orange",
+            label="Lissajous Start Point",
+        )
+        plt.scatter(
+            self.csv_RO_az[self.L_shape_idxf],
+            self.csv_RO_el[self.L_shape_idxf],
+            color="purple",
+            label="Lissajous End Point",
+        )
+        plt.scatter(self.csv_RO_az[self.RI_RO_idxf],
+                    self.csv_RO_el[self.RI_RO_idxf],
+                    color="cyan",
+                    label="RI->RO Transition End Point",
+        )
+        plt.scatter(
+            self.csv_RO_az[self.RO_RI_idx0],
+            self.csv_RO_el[self.RO_RI_idx0],
+            color="blue",
+            label="RI->RO Transition Start Point",
+        )
+        plt.legend()
+        plt.show()
         if self.RO_RI_idx0 is None:
             raise ValueError("No valid start point found for the RO->RI transition in the reel-out data.")
 
@@ -422,6 +566,11 @@ if __name__ == "__main__":
     waypoint_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger_waypoints.csv"
     full_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger.csv"
     cycle_path = f"{base_path}/cycle_data_sheet_lines.csv"
+
+    # base_path = "./processed_data/experimental"
+    # waypoint_path = f"{base_path}/2024-11-05_12-58-54_ProtoLogger_waypoints.csv"
+    # full_path = f"{base_path}/2024-11-05_12-58-54_ProtoLogger.csv"
+    # cycle_path = f"{base_path}/2024-11-05_12-58-54_full_log.txt"
 
     dp = DataProcessing(full_path, cycle_path, waypoint_path, cyc_idx=0)
     dp.plot_cycle_3D()

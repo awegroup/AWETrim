@@ -409,8 +409,13 @@ class Winch_and_Depower_data_processing(DataProcessing):
 
 if __name__ == "__main__":
     # File paths
-    base_path = "./processed_data/fitting"
-    waypoint_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger_waypoints.csv"
-    full_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger.csv"
-    cycle_path = f"{base_path}/cycle_data_sheet_lines.csv"
+    # base_path = "./processed_data/fitting"
+    # waypoint_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger_waypoints.csv"
+    # full_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger.csv"
+    # cycle_path = f"{base_path}/cycle_data_sheet_lines.csv"
+
+    base_path = "./processed_data/experimental"
+    waypoint_path = f"{base_path}/2024-11-05_12-58-54_ProtoLogger_waypoints.csv"
+    full_path = f"{base_path}/2024-11-05_12-58-54_ProtoLogger.csv"
+    cycle_path = f"{base_path}/2024-11-05_12-58-54_full_log.txt"
     obj = Winch_and_Depower_data_processing(full_path, cycle_path, waypoint_path, json_trajectory)  

@@ -90,7 +90,7 @@ def run_sim(
     return phase
 
 
-def main(run_plots=True, save_csv=True):
+def main(run_plots=True, save_csv=True, depower_denom=0.28):
     global AGGREGATED_RESULTS, init_conditions_QS, init_conditions_Dyn
 
     aggregated_data = {
@@ -261,9 +261,10 @@ def main(run_plots=True, save_csv=True):
         print(s_start)
         print(s_end)
 
-        depower_norm = (
-            (depower / 100) - 0.4
-        ) / 0.28  # normalize depower between 0 and 1 for V9
+        def depower_norm(denom):
+            return ((depower / 100) - 0.4) / denom
+        
+        depower_normalized = depower_norm(depower_denom)
 
         Realistic_RI_eg = {
             "reeling_strategy": "force",  # "force" or "constant"
@@ -289,7 +290,7 @@ def main(run_plots=True, save_csv=True):
         phaseQS = run_sim(
             pattern_config,
             "V9",
-            depower_norm,
+            depower_normalized,
             base_start_state_QS,
             system_model,
             quasi_steady=True,
@@ -301,7 +302,7 @@ def main(run_plots=True, save_csv=True):
         phaseDyn = run_sim(
             pattern_config,
             "V9",
-            depower_norm,
+            depower_normalized,
             base_start_state_Dyn,
             system_model,
             quasi_steady=False,
@@ -557,4 +558,5 @@ def get_initial_conditions(run_if_needed=True):
         main(run_plots=False, save_csv=False)
     return init_conditions_QS, init_conditions_Dyn
 
-main()
+if __name__ == "__main__":
+    main()

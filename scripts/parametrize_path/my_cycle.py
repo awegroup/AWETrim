@@ -178,7 +178,7 @@ def write_cycle_csv(rows):
     print(f"Saved combined cycle timeseries to {CYCLE_CSV}")
 
 
-def main():
+def main(run_plots=True):
     ensure_timeseries()
     reel_out_rows = load_rows(REEL_OUT_CSV)
     reel_in_rows = load_rows(REEL_IN_CSV)
@@ -186,8 +186,9 @@ def main():
 
     aggregated = aggregate_rows(combined_rows)
     print(aggregated.keys())
-    plot_timeseries(aggregated)
-    plot_trajectory(aggregated)
+    if run_plots:
+        plot_timeseries(aggregated)
+        plot_trajectory(aggregated)
     write_cycle_csv(combined_rows)
 
     return aggregated

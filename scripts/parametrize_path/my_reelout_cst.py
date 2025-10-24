@@ -79,7 +79,7 @@ def run_sim(
     return phase
 
 
-def main(run_plots=True, save_csv=True):
+def main(run_plots=True, save_csv=True, depower_denom=0.28):
     global AGGREGATED_RESULTS
     # ---------- Config ----------
     mass_wing = 61
@@ -144,9 +144,10 @@ def main(run_plots=True, save_csv=True):
     s = winch_depower_data[0]["s"]
     depower = winch_depower_data[0]["depower"]
 
-    depower_norm = (
-        (depower / 100) - 0.4
-    ) / 0.28  # normalize depower between 0 and 1 for V9
+    def depower_norm(denom):
+        return ((depower / 100) - 0.4) / denom
+    
+    depower_normalized = depower_norm(depower_denom)
 
     Realistic_RO_eg = {
         "reeling_strategy": "force",  # "force" or "constant"
@@ -195,7 +196,7 @@ def main(run_plots=True, save_csv=True):
     phaseQS = run_sim(
         pattern_config,
         "V9",
-        depower_norm,
+        depower_normalized,
         base_start_state_QS,
         system_model_qs,
         quasi_steady=True,
@@ -216,7 +217,7 @@ def main(run_plots=True, save_csv=True):
     phaseDyn = run_sim(
         pattern_config,
         "V9",
-        depower_norm,
+        depower_normalized,
         base_start_state_Dyn,
         system_model_dyn,
         quasi_steady=False,
@@ -378,4 +379,5 @@ def get_results(run_if_needed=True):
         main(run_plots=False, save_csv=False)
     return AGGREGATED_RESULTS
 
-main()
+if __name__ == "__main__":
+    main()
