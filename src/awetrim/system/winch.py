@@ -63,7 +63,7 @@ class Winch:
                 "custom_T_spline",
                 "bspline",
                 [self.pattern_config["v_knots"]],
-                np.array(self.pattern_config["C_coeffs"]),
+                np.array(self.pattern_config["C_fitted"]),
             )
             T = spline_model(speed_radial)
         else:
