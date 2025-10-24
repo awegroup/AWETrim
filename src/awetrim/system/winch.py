@@ -11,8 +11,6 @@ class Winch:
         self.min_speed = config["min_speed"]
         self.max_acceleration = config["max_acceleration"]
         self.min_acceleration = config["min_acceleration"]
-        self.v_knots = pattern_config["v_knots"]
-        self.C_coeffs = pattern_config["C_fitted"]
 
         self.pattern_config = pattern_config
 
@@ -54,9 +52,19 @@ class Winch:
             )
         elif model == "custom_spline":
             # User-defined spline model
-            if "v_knots" not in self.pattern_config or "C_fitted" not in self.pattern_config:
-                raise ValueError("pattern_config must define 'v_knots' and 'C_fitted' for custom_spline force_model")
-            spline_model = ca.interpolant("custom_T_spline", "bspline", [self.v_knots], np.array(self.C_coeffs))
+            if (
+                "v_knots" not in self.pattern_config
+                or "C_fitted" not in self.pattern_config
+            ):
+                raise ValueError(
+                    "pattern_config must define 'v_knots' and 'C_fitted' for custom_spline force_model"
+                )
+            spline_model = ca.interpolant(
+                "custom_T_spline",
+                "bspline",
+                [self.pattern_config["v_knots"]],
+                np.array(self.pattern_config["C_coeffs"]),
+            )
             T = spline_model(speed_radial)
         else:
             raise ValueError(f"Unknown force_model '{model}' in pattern_config")
@@ -152,24 +160,25 @@ class Winch:
 
         return v_r, T_vals
 
+
 if __name__ == "__main__":
     import numpy as np
     import matplotlib.pyplot as plt
 
     # Example usage and test of Winch class and tension_curve plotting
     example_pattern_config = {
-    "reeling_strategy": "force",  # "force" or "constant"
-    "force_model": "linear",  # "linear" or "quadratic"
-    "reeling_speed": 0,  # m/s, only for constant reeling
-    "max_tether_force": 3e4,  # N, only for force reeling
-    "min_tether_force": 4070.0,  # N, only for force reeling
-    "softplus": True,
-    "softplus_beta": 5e-4, # bigger is sharper
-    "softminus": True,
-    "softminus_beta": 5e-3, # bigger is sharper
-    "slope": 14000,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
-    "offset": -1,  # m/s
-}
+        "reeling_strategy": "force",  # "force" or "constant"
+        "force_model": "linear",  # "linear" or "quadratic"
+        "reeling_speed": 0,  # m/s, only for constant reeling
+        "max_tether_force": 3e4,  # N, only for force reeling
+        "min_tether_force": 4070.0,  # N, only for force reeling
+        "softplus": True,
+        "softplus_beta": 5e-4,  # bigger is sharper
+        "softminus": True,
+        "softminus_beta": 5e-3,  # bigger is sharper
+        "slope": 14000,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
+        "offset": -1,  # m/s
+    }
 
     winch = Winch(pattern_config=example_pattern_config)
     winch.plot_tension_curve(vr_min=-10, vr_max=10, n_points=400)
