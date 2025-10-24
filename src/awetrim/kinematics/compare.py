@@ -17,7 +17,7 @@ class Compare(DataProcessing):
         super().__init__(full_path, cycle_path, waypoint_path)
         self.csv_path = Path(csv_path)
         self.df = None
-
+        self.sim_type = "quasi_steady" 
         # Load and process CSV automatically
         self._import_csv_data()
         self._set_attributes_from_csv()
@@ -32,8 +32,8 @@ class Compare(DataProcessing):
         if self.df is None:
             raise ValueError("CSV not loaded. Call _import_csv_data first.")
 
-        # Filter only quasi_steady simulation
-        df_qs = self.df[self.df["simulation"] == "quasi_steady"]
+        # Filter only sim_type simulation
+        df_qs = self.df[self.df["simulation"] == self.sim_type]
 
         segments_to_extract = ["reel_in", "reel_out"]
 
@@ -62,7 +62,7 @@ class Compare(DataProcessing):
             print(f"✅ Stored attributes for segment '{segment}' with mapped variable names.")        
 
     def _plot_all_data_overlayed(self):
-        """Overlay quasi_steady vs single-spline results for both reel_in and reel_out."""
+        """Overlay results for both reel_in and reel_out."""
         overlay_pairs = [
             ("reel_in", "Single_Spline"),
             ("reel_out", "RO"),
@@ -79,7 +79,7 @@ class Compare(DataProcessing):
 
         for (seg_qs, seg_ref) in overlay_pairs:
             fig, axes = plt.subplots(len(variables), 1, figsize=(8, 12), sharex=True)
-            fig.suptitle(f"Overlay: {seg_qs} (quasi_steady) vs {seg_ref} (reference)", fontsize=14, weight="bold")
+            fig.suptitle(f"Overlay: {seg_qs} {self.sim_type} vs {seg_ref} (reference)", fontsize=14, weight="bold")
 
             t_qs = getattr(self, f"{seg_qs}_time")
             t_ref = getattr(self, f"{seg_ref}_time")
@@ -108,7 +108,7 @@ class Compare(DataProcessing):
                 else:
                     y_ref = getattr(self, f"{seg_ref}_{var}")
 
-                ax.plot(t_qs, y_qs, label=f"{seg_qs} (quasi_steady)", linewidth=1.8)
+                ax.plot(t_qs, y_qs, label=f"{seg_qs} {self.sim_type}", linewidth=1.8)
                 ax.plot(t_ref, y_ref, label=f"{seg_ref} (reference)", linestyle="--", linewidth=1.3)
                 ax.set_ylabel(var)
                 ax.grid(True, linestyle="--", alpha=0.6)
