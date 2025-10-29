@@ -24,11 +24,25 @@ class Fitting(DataProcessing):
         file_path_waypoints,
         cyc_idx=0,
         n_ctrl_pts=30,
+        run_plots=True,
     ):
         # Initialize DataProcessing parent class
-        super().__init__(file_path_full, file_path_cycle, file_path_waypoints, cyc_idx)
+        super().__init__(file_path_full, file_path_cycle, file_path_waypoints, cyc_idx, run_plots_DP=run_plots)
         self.n_ctrl = n_ctrl_pts
     
+        self._setup_spline_segment()
+        self._setup_lissajous_segment()
+
+        self.FitSpline()
+        self.FitLissajous()
+
+        self.save_data_RI_spline()
+        self.save_data_L_shape()
+
+        if run_plots:
+            self.plot_spline_cart()
+            self.plot_fit_L_shape()
+
     # -------------------------------------------------------------------------
     # ------------------------ Lissajous Segment Setup ------------------------
     # -------------------------------------------------------------------------
@@ -39,6 +53,7 @@ class Fitting(DataProcessing):
 
     def FitLissajous(self):
         """Run least-squares Lissajous fitting."""
+        print("Starting Lissajous fitting...")
         fixed_params = {
             "omega": 1,
             "r0": self.L_shape_r0,
@@ -98,7 +113,7 @@ class Fitting(DataProcessing):
             ftol=1e-8,
             xtol=1e-8,
             gtol=1e-8,
-            verbose=2,
+            verbose=0,
         )
 
         self.best_params = unpack_params(res.x)
@@ -189,11 +204,12 @@ class Fitting(DataProcessing):
 
     def FitSpline(self):
         """Run least-squares spline fitting."""
+        print("Starting spline fitting...")
         result = least_squares(
             self.residuals,
             self.init_params,
             bounds=self.bounds,
-            verbose=2,
+            verbose=0,
             xtol=1e-10,
             ftol=1e-10,
             gtol=1e-10,
@@ -452,16 +468,16 @@ if __name__ == "__main__":
 
     fit = Fitting(full_path, cycle_path, waypoint_path, cyc_idx=0, n_ctrl_pts=25)
 
-    fit._setup_lissajous_segment()
-    fit._setup_spline_segment()
+    # fit._setup_lissajous_segment()
+    # fit._setup_spline_segment()
 
-    fit.FitSpline()
-    fit.save_data_RI_spline()
-    fit.plot_spline_cart()
+    # fit.FitSpline()
+    # fit.save_data_RI_spline()
+    # fit.plot_spline_cart()
 
-    fit.FitLissajous()
-    fit.save_data_L_shape()
-    fit.plot_fit_L_shape()
+    # fit.FitLissajous()
+    # fit.save_data_L_shape()
+    # fit.plot_fit_L_shape()
 
     # print(fit.u_vals[-1])
 

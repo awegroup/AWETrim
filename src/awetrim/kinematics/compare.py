@@ -4,17 +4,12 @@ import sys
 from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
-
 import pandas as pd
-import matplotlib.pyplot as plt
-import numpy as np
-from pathlib import Path
-from awetrim.kinematics.my_DP import DataProcessing
 
 
 class Compare(DataProcessing):
-    def __init__(self, full_path, cycle_path, waypoint_path, csv_path):
-        super().__init__(full_path, cycle_path, waypoint_path)
+    def __init__(self, full_path, cycle_path, waypoint_path, csv_path, run_plots_DP=True):
+        super().__init__(full_path, cycle_path, waypoint_path, cyc_idx=0, run_plots_DP=run_plots_DP)
         self.csv_path = Path(csv_path)
         self.df = None
         self.sim_type = "quasi_steady"

@@ -75,8 +75,8 @@ Connections (Uri's parameters  <->  JSON parameters):
 '''
 
 class Winch_and_Depower_data_processing(DataProcessing):
-    def __init__(self, file_path_full, file_path_cycle, file_path_waypoints, json_trajectory, cyc_idx=0):
-        super().__init__(file_path_full, file_path_cycle, file_path_waypoints, cyc_idx)
+    def __init__(self, file_path_full, file_path_cycle, file_path_waypoints, json_trajectory, cyc_idx=0, run_plots_DP=True):
+        super().__init__(file_path_full, file_path_cycle, file_path_waypoints, cyc_idx, run_plots_DP)
 
         self.json_trajectory = json_trajectory
 
@@ -110,8 +110,9 @@ class Winch_and_Depower_data_processing(DataProcessing):
         self._winch_and_depower_dictionary()
         self._create_settings_lists_for_cyc()
         self._identify_winch_phases()
-        self._plot_settings_over_cycle_time()
         self._get_winch_phase_settings()
+        self._plot_settings_over_cycle_time()
+        
 
     # -------------------------
     # Waypoint inter/extrapolation
@@ -409,13 +410,13 @@ class Winch_and_Depower_data_processing(DataProcessing):
 
 if __name__ == "__main__":
     # File paths
-    # base_path = "./processed_data/fitting"
-    # waypoint_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger_waypoints.csv"
-    # full_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger.csv"
-    # cycle_path = f"{base_path}/cycle_data_sheet_lines.csv"
+    base_path = "./processed_data/fitting"
+    waypoint_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger_waypoints.csv"
+    full_path = f"{base_path}/2025-10-23_09-43-50_ProtoLogger.csv"
+    cycle_path = f"{base_path}/cycle_data_sheet_lines.csv"
 
-    base_path = "./processed_data/experimental"
-    waypoint_path = f"{base_path}/2024-11-05_12-58-54_ProtoLogger_waypoints.csv"
-    full_path = f"{base_path}/2024-11-05_12-58-54_ProtoLogger.csv"
-    cycle_path = f"{base_path}/2024-11-05_12-58-54_full_log.txt"
+    # base_path = "./processed_data/experimental"
+    # waypoint_path = f"{base_path}/2024-11-05_12-58-54_ProtoLogger_waypoints.csv"
+    # full_path = f"{base_path}/2024-11-05_12-58-54_ProtoLogger.csv"
+    # cycle_path = f"{base_path}/2024-11-05_12-58-54_full_log.txt"
     obj = Winch_and_Depower_data_processing(full_path, cycle_path, waypoint_path, json_trajectory)  

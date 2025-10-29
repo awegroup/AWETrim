@@ -13,13 +13,26 @@ from awetrim.kinematics.winch_force_curve import (
 
 
 class WinchCurveFitter:
-    def __init__(self, json_path, base_path):
+    def __init__(self, json_path, base_path, cycle_idx=0, n_knots=25, run_plots=True, run_plots_DP=True):
+        self.cycle_idx = cycle_idx
         self.json_path = json_path
         self.base_path = base_path
         self.gravity = 9.81  # m/s^2
+        self.n_knots = n_knots
+        self.run_plots = run_plots
+        self.run_plots_DP = run_plots_DP
 
         # Load all data
         self._load_data()
+        self.run()
+
+        if self.run_plots:
+            # Example plots
+            for i in range(len(self.processed.RI_Spline_phase_settings)):
+                self.plot_example(self.SS_curve_data_stored, self.SS_final_params, phase_index=i)
+
+            # RO phase example
+            self.plot_example(self.RO_curve_data_stored, self.RO_final_params, phase_index=0)
 
     # ----------------------------
     # Data loading and preparation
@@ -44,7 +57,7 @@ class WinchCurveFitter:
 
         # custom data-processing class
         self.processed = Winch_and_Depower_data_processing(
-            full_path, cycle_path, waypoint_path, json_trajectory
+            full_path, cycle_path, waypoint_path, json_trajectory, cyc_idx=self.cycle_idx, run_plots_DP=self.run_plots_DP
         )
 
     # ----------------------------
@@ -64,16 +77,16 @@ class WinchCurveFitter:
     # ----------------------------
     # Fit function
     # ----------------------------
-    def fit_winch_curve(self, v_m_data, force_data, n_knots=25):
+    def fit_winch_curve(self, v_m_data, force_data):
         """
         Fit a CasADi spline to measured (v_m, force) data.
         n_knots: number of spline nodes used for fitting
         """
         # Define knot positions evenly spaced across the velocity range
-        v_knots = np.linspace(np.min(v_m_data), np.max(v_m_data), n_knots)
+        v_knots = np.linspace(np.min(v_m_data), np.max(v_m_data), self.n_knots)
 
         # Initial guess for tension values at each knot
-        C_init = np.linspace(np.min(force_data), np.max(force_data), n_knots)
+        C_init = np.linspace(np.min(force_data), np.max(force_data), self.n_knots)
 
         initial_guess = C_init
 
@@ -85,7 +98,7 @@ class WinchCurveFitter:
             method="trf",
             loss="soft_l1",
             f_scale=0.5,
-            verbose=2,
+            verbose=0,
         )
 
         # Build final spline model with fitted parameters
@@ -93,8 +106,8 @@ class WinchCurveFitter:
         C_fitted = fitted_params
         fitted_spline = ca.interpolant("T_spline", "bspline", [v_knots], np.array(C_fitted))
 
-        print("✅ Winch spline fit completed.")
-        print(f"Fitted parameters: {np.round(fitted_params, 3)}")
+        print("✅ Winch spline fit completed. \n")
+        # print(f"Fitted parameters: {np.round(fitted_params, 3)} \n")
 
         # Save for later use
         self.v_knots = v_knots
@@ -111,6 +124,8 @@ class WinchCurveFitter:
 
         curve_data_stored_RO = []
         final_params_RO = []
+
+        idx = 0
 
         for settings in self.processed.RI_Spline_phase_settings: 
 
@@ -152,11 +167,13 @@ class WinchCurveFitter:
                     "KP_settings": settings,
                 }
             )
-
             # Fit parameters to reproduce the true curve
+            print(f"Fitting RI_Spline phase {idx} ... ")
             fitted_spline, v_knots, C_fitted = self.fit_winch_curve(
                 winch_curve_velocity_data, winch_curve_force_data
             )
+
+            idx += 1
 
             final_params_SS.append({                                 
                                     "s": s,
@@ -216,6 +233,7 @@ class WinchCurveFitter:
                 "KP_settings": settings,
             }
         )
+        print(f"Fitting winch curve for RO phase ...")
 
         # Fit parameters to reproduce the true curve
         fitted_spline, v_knots, C_fitted = self.fit_winch_curve(
@@ -274,11 +292,11 @@ if __name__ == "__main__":
     json_path = "src/awetrim/kinematics/pp_ws6-9_GS3_KCU4.A_KiteV9.60.A.json"
     base_path = "./processed_data/fitting"
 
-    fitter = WinchCurveFitter(json_path, base_path)
-    fitter.run()
+    fitter = WinchCurveFitter(json_path, base_path, cycle_idx=0)
+    # fitter.run()
 
-    for i in range(len(fitter.processed.RI_Spline_phase_settings)):
-        fitter.plot_example(fitter.SS_curve_data_stored, fitter.SS_final_params, phase_index=i)
+    # for i in range(len(fitter.processed.RI_Spline_phase_settings)):
+    #     fitter.plot_example(fitter.SS_curve_data_stored, fitter.SS_final_params, phase_index=i)
 
-    # RO phase example
-    fitter.plot_example(fitter.RO_curve_data_stored, fitter.RO_final_params, phase_index=0)
+    # # RO phase example
+    # fitter.plot_example(fitter.RO_curve_data_stored, fitter.RO_final_params, phase_index=0)

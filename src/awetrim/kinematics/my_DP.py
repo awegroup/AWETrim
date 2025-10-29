@@ -17,7 +17,9 @@ class DataProcessing:
     Naming convention: cyc_*, RI_*, RO_*, RI_RO_*, RO_RI_*.
     """
 
-    def __init__(self, file_path_full, file_path_cycle, file_path_waypoints, cyc_idx=2):
+    def __init__(self, file_path_full, file_path_cycle, file_path_waypoints, cyc_idx=0, run_plots_DP=True):
+        self.run_plots_DP = run_plots_DP
+        
         # --- Load CSVs ---
         self.file_path_cycle = file_path_cycle
 
@@ -34,12 +36,10 @@ class DataProcessing:
             nrows = end - start  # number of rows to read
             skip = range(1, start + 1)  # skip first 'start' rows (keep header)
 
-            self.full_df = pd.read_csv(
-                file_path_full, skiprows=skip, nrows=nrows, delim_whitespace=True
-            )
-
+            self.full_df = pd.read_csv(file_path_full, skiprows=skip, nrows=nrows, sep='\s+')
+        
         else:
-            self.full_df = pd.read_csv(file_path_full, delim_whitespace=True)
+            self.full_df = pd.read_csv(file_path_full, sep='\s+')
 
         self.cyc_idx = cyc_idx
 
@@ -91,10 +91,10 @@ class DataProcessing:
         self.CD = self.full_df["drag_coeff"].astype(float).to_numpy()
         self.Mech_Power = self.full_df["ground_mech_power"].astype(float).to_numpy()
         if file_path_cycle.endswith(".txt"):
-            self.Vtan = np.sqrt(
-                self.r_full * np.gradient(self.az_full, self.time_full)
-                + self.r_full * np.gradient(self.el_full, self.time_full)
-            )
+            self.Vtan = np.sqrt((
+                self.r_full * np.gradient(self.az_full, self.time_full))**2
+                + (self.r_full * np.gradient(self.el_full, self.time_full)
+            )**2)
         else:
             self.Vtan = (
                 self.full_df["kite_tangential_velocity_mps"].astype(float).to_numpy()
@@ -142,6 +142,13 @@ class DataProcessing:
         self._RI_Spline_segment()
 
         self._RO_segment()
+
+        # -------Plotting-----------
+        if self.run_plots_DP:
+            self.plot_cycle_3D()
+            self.plot_RI_Spline_3D()
+            self.plot_Lissajous_path2D()
+            self.plot_Lissajous_path3D()
 
     # -------------------------
     # Utilities
@@ -287,28 +294,25 @@ class DataProcessing:
                 end_found = True
                 break
 
-        plt.figure()
-        plt.plot(self.csv_RO_az, self.csv_RO_el)
-        plt.scatter(
-            self.csv_RO_az[0], self.csv_RO_el[0], color="green", label="Start Point"
-        )
-        plt.scatter(
-            self.csv_RO_az[-1], self.csv_RO_el[-1], color="red", label="End Point"
-        )
-        plt.scatter(
-            self.csv_RO_az[self.L_shape_idx0],
-            self.csv_RO_el[self.L_shape_idx0],
-            color="orange",
-            label="Lissajous Start Point",
-        )
-        plt.scatter(
-            self.csv_RO_az[self.L_shape_idxf],
-            self.csv_RO_el[self.L_shape_idxf],
-            color="purple",
-            label="Lissajous End Point",
-        )
-        plt.legend()
-        plt.show()
+        # if self.run_plots_DP:
+        #     plt.figure()
+        #     plt.plot(self.csv_RO_az, self.csv_RO_el)
+        #     plt.scatter(self.csv_RO_az[0], self.csv_RO_el[0], color="green", label="Start Point")
+        #     plt.scatter(self.csv_RO_az[-1], self.csv_RO_el[-1], color="red", label="End Point")
+        #     plt.scatter(
+        #         self.csv_RO_az[self.L_shape_idx0],
+        #     self.csv_RO_el[self.L_shape_idx0],
+        #     color="orange",
+        #     label="Lissajous Start Point",
+        #     )
+        #     plt.scatter(
+        #         self.csv_RO_az[self.L_shape_idxf],
+        #         self.csv_RO_el[self.L_shape_idxf],
+        #         color="purple",
+        #         label="Lissajous End Point",
+        #     )
+        #     plt.legend()
+        #     plt.show()
 
         if not start_found or not end_found:
             raise ValueError("No valid Lissajous pattern found in Reel-Out data")
@@ -347,35 +351,33 @@ class DataProcessing:
             if cond:
                 self.RI_RO_idxf = i
                 break
+            
+        # if self.run_plots_DP:
+        #     plt.figure()
+        #     plt.plot(self.csv_RO_az, self.csv_RO_el)
+        #     plt.scatter(self.csv_RO_az[0], self.csv_RO_el[0], color="green", label="Start Point")
+        #     plt.scatter(self.csv_RO_az[-1], self.csv_RO_el[-1], color="red", label="End Point")
+        #     plt.scatter(
+        #         self.csv_RO_az[self.L_shape_idx0],
+        #         self.csv_RO_el[self.L_shape_idx0],
+        #         color="orange",
+        #         label="Lissajous Start Point",
+        #     )
+        #     plt.scatter(
+        #         self.csv_RO_az[self.L_shape_idxf],
+        #         self.csv_RO_el[self.L_shape_idxf],
+        #         color="purple",
+        #         label="Lissajous End Point",
+        #     )
+        #     plt.scatter(
+        #         self.csv_RO_az[self.RI_RO_idxf],
+        #         self.csv_RO_el[self.RI_RO_idxf],
+        #         color="blue",
+        #         label="RI->RO Transition End Point",
+        #     )
+        #     plt.legend()
+        #     plt.show()
 
-        plt.figure()
-        plt.plot(self.csv_RO_az, self.csv_RO_el)
-        plt.scatter(
-            self.csv_RO_az[0], self.csv_RO_el[0], color="green", label="Start Point"
-        )
-        plt.scatter(
-            self.csv_RO_az[-1], self.csv_RO_el[-1], color="red", label="End Point"
-        )
-        plt.scatter(
-            self.csv_RO_az[self.L_shape_idx0],
-            self.csv_RO_el[self.L_shape_idx0],
-            color="orange",
-            label="Lissajous Start Point",
-        )
-        plt.scatter(
-            self.csv_RO_az[self.L_shape_idxf],
-            self.csv_RO_el[self.L_shape_idxf],
-            color="purple",
-            label="Lissajous End Point",
-        )
-        plt.scatter(
-            self.csv_RO_az[self.RI_RO_idxf],
-            self.csv_RO_el[self.RI_RO_idxf],
-            color="blue",
-            label="RI->RO Transition End Point",
-        )
-        plt.legend()
-        plt.show()
         if self.RI_RO_idxf is None:
             raise ValueError(
                 "No valid end point found for the RI->RO transition in the reel-out data."
@@ -409,41 +411,38 @@ class DataProcessing:
             if cond:
                 self.RO_RI_idx0 = i
                 break
+            
+        if self.run_plots_DP:
+            plt.figure()
+            plt.plot(self.csv_RO_az, self.csv_RO_el)
+            plt.scatter(self.csv_RO_az[0], self.csv_RO_el[0], color="green", label="Start Point")
+            plt.scatter(self.csv_RO_az[-1], self.csv_RO_el[-1], color="red", label="End Point")
+            plt.scatter(
+                self.csv_RO_az[self.L_shape_idx0],
+                self.csv_RO_el[self.L_shape_idx0],
+                color="orange",
+                label="Lissajous Start Point",
+            )
+            plt.scatter(
+                self.csv_RO_az[self.L_shape_idxf],
+                self.csv_RO_el[self.L_shape_idxf],
+                color="purple",
+                label="Lissajous End Point",
+            )
+            plt.scatter(self.csv_RO_az[self.RI_RO_idxf],
+                        self.csv_RO_el[self.RI_RO_idxf],
+                        color="cyan",
+                        label="RI->RO Transition End Point",
+            )
+            plt.scatter(
+                self.csv_RO_az[self.RO_RI_idx0],
+                self.csv_RO_el[self.RO_RI_idx0],
+                color="blue",
+                label="RI->RO Transition Start Point",
+            )
+            plt.legend()
+            plt.show()
 
-        plt.figure()
-        plt.plot(self.csv_RO_az, self.csv_RO_el)
-        plt.scatter(
-            self.csv_RO_az[0], self.csv_RO_el[0], color="green", label="Start Point"
-        )
-        plt.scatter(
-            self.csv_RO_az[-1], self.csv_RO_el[-1], color="red", label="End Point"
-        )
-        plt.scatter(
-            self.csv_RO_az[self.L_shape_idx0],
-            self.csv_RO_el[self.L_shape_idx0],
-            color="orange",
-            label="Lissajous Start Point",
-        )
-        plt.scatter(
-            self.csv_RO_az[self.L_shape_idxf],
-            self.csv_RO_el[self.L_shape_idxf],
-            color="purple",
-            label="Lissajous End Point",
-        )
-        plt.scatter(
-            self.csv_RO_az[self.RI_RO_idxf],
-            self.csv_RO_el[self.RI_RO_idxf],
-            color="cyan",
-            label="RI->RO Transition End Point",
-        )
-        plt.scatter(
-            self.csv_RO_az[self.RO_RI_idx0],
-            self.csv_RO_el[self.RO_RI_idx0],
-            color="blue",
-            label="RI->RO Transition Start Point",
-        )
-        plt.legend()
-        plt.show()
         if self.RO_RI_idx0 is None:
             raise ValueError(
                 "No valid start point found for the RO->RI transition in the reel-out data."
@@ -733,8 +732,4 @@ if __name__ == "__main__":
     # full_path = f"{base_path}/2024-11-05_12-58-54_ProtoLogger.csv"
     # cycle_path = f"{base_path}/2024-11-05_12-58-54_full_log.txt"
 
-    dp = DataProcessing(full_path, cycle_path, waypoint_path, cyc_idx=0)
-    dp.plot_cycle_3D()
-    dp.plot_RI_Spline_3D()
-    dp.plot_Lissajous_path2D()
-    dp.plot_Lissajous_path3D()
+    dp = DataProcessing(full_path, cycle_path, waypoint_path)
