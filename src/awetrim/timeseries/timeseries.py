@@ -42,16 +42,19 @@ class TimeSeries:
     #     else:
     #         return np.nan
 
-    # @property
-    # def energy(self):
-    #     # Return the energy due to ground power at each state.
-    #     if self.states:
-    #         arr = np.array([[state.time, state.power_ground] for state in self.states])
-    #         time = arr[:, 0]
-    #         power = arr[:, 1]
-    #         return np.trapz(power, x=time)
-    #     else:
-    #         return np.nan
+    @property
+    def energy(self):
+        tension = self.return_variable("tension_tether_ground")
+        speed_radial = self.return_variable("speed_radial")
+        time = self.return_variable("t")
+        dt = np.diff(time, prepend=time[0])
+        energy = np.sum(tension * speed_radial * dt)
+        return energy
+
+    @property
+    def total_time(self):
+        time = self.return_variable("t")
+        return time[-1] - time[0]
 
     # @property
     # def average_power(self):

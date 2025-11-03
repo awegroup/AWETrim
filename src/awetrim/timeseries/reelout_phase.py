@@ -28,7 +28,7 @@ class SimulationResult:
     total_time: float
 
 
-class ReeloutSimple:
+class Reelout:
     """Handles single-phase reel-out optimization and simulation.
 
     This class manages the optimization and simulation of a reel-out maneuver
@@ -83,9 +83,10 @@ class ReeloutSimple:
         self.variables_to_plot = [
             "speed_tangential",
             "tension_tether_ground",
-            "s",
+            "input_steering",
             "distance_radial",
         ]
+        self._opti_params = {}
 
     def _validate_config(self) -> None:
         """Validate the pattern configuration and warn about missing required parameters."""
@@ -140,7 +141,7 @@ class ReeloutSimple:
             "distance_radial": self.pattern_config["path_parameters"][
                 "distance_radial_start"
             ],
-            "speed_radial": 1,  # Positive for reel-out
+            "speed_radial": 0,  # Positive for reel-out
         }
 
         pattern_config_opti = copy.deepcopy(self.pattern_config)
@@ -164,7 +165,10 @@ class ReeloutSimple:
         return self._phase
 
     def get_opti_components(
-        self, optimization_params: List[str] = None, opti: Any = None
+        self,
+        optimization_params: List[str] = None,
+        optimization_dict: Dict[str, Any] = None,
+        opti: Any = None,
     ) -> tuple:
         """Get optimization components (optimizer, variables, objective).
 
@@ -183,6 +187,11 @@ class ReeloutSimple:
         if optimization_params:
             for var in optimization_params:
                 self._opti_params[var] = opti.variable()
+            if "coeffs" in var:
+                num_coeffs = len(self.pattern_config["path_parameters"].get(var, []))
+                self._opti_params[var] = opti.variable(num_coeffs)
+        elif optimization_dict:
+            self._opti_params = optimization_dict
 
         self.initialize_phase()
 
@@ -257,10 +266,9 @@ class ReeloutSimple:
             optimized_config = self.pattern_config.copy()
             for var_name, mx in self._opti_params.items():
                 val = solution.value(mx)
-
+                print(f"  {var_name}: {val}")
                 if var_name in optimized_config.get("path_parameters", {}):
                     optimized_config["path_parameters"][var_name] = val
-                    print(f"  {var_name}: {val}")
                 elif var_name in optimized_config.get("radial_parameters", {}):
                     optimized_config["radial_parameters"][var_name] = val
                 elif var_name in optimized_config.get("sim_parameters", {}):
@@ -278,7 +286,7 @@ class ReeloutSimple:
             print("Optimization failed:", exc)
             return None
 
-    def run_simulation(self, *, solution: Any = None, run_plots: bool = False):
+    def run_simulation(self, *, run_plots: bool = False, axes: Any = None) -> None:
         """Execute the reel-out simulation.
 
         Args:
@@ -295,15 +303,22 @@ class ReeloutSimple:
         )
 
         if run_plots:
-            fig, axes, _ = phase.plot_overview_3d(
-                x_param="t",
-                variables=self.variables_to_plot,
-            )
-        plt.show()
+            if axes is not None:
+                fig, axes, _ = phase.plot_overview_3d(
+                    x_param="t",
+                    variables=self.variables_to_plot,
+                    axes=axes,
+                )
+            else:
+                fig, axes, _ = phase.plot_overview_3d(
+                    x_param="t",
+                    variables=self.variables_to_plot,
+                )
         print(
             "final radial distance:",
             phase.return_variable("distance_radial")[-1],
         )
+        return phase, axes or None
 
     def _run_parametrized_phase(
         self,
@@ -327,13 +342,13 @@ class ReeloutSimple:
         start_state = {
             "t": 0,
             "s": 0,
-            "s_dot": 0.2,
+            "s_dot": 2,
             "input_steering": 0,
             "tension_tether_ground": 1e8,
             "distance_radial": pattern_config["path_parameters"][
                 "distance_radial_start"
             ],
-            "speed_radial": 6,  # Positive for reel-out
+            "speed_radial": 0,  # Positive for reel-out
         }
 
         phase = PhaseParameterized(

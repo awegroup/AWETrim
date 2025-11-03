@@ -448,21 +448,42 @@ class PhaseParameterized(TimeSeries):
         # for var in self.optimization_vars:
         #     opti_vars[var] = self.optimization_vars[var]
 
-        # --- Warm starts from simulation
-        opti.set_initial(opti_vars["s_dot"], self.return_variable("s_dot"))
-        opti.set_initial(
-            opti_vars["input_steering"], self.return_variable("input_steering")
-        )
-        opti.set_initial(
-            opti_vars["speed_radial"], self.return_variable("speed_radial")
-        )
-        opti.set_initial(
-            opti_vars["distance_radial"], self.return_variable("distance_radial")
-        )
-        opti.set_initial(
-            opti_vars["tension_tether_ground"],
-            self.return_variable("tension_tether_ground"),
-        )
+        # --- Helper to check warm start against bounds
+        def check_warm_start(var_name, values, bounds):
+            if not bounds or len(bounds) != 2:
+                return
+            lb, ub = bounds
+            values = np.asarray(values).ravel()
+            violations_lb = values < lb
+            violations_ub = values > ub
+            if np.any(violations_lb) or np.any(violations_ub):
+                n_violations = np.sum(violations_lb) + np.sum(violations_ub)
+                print(
+                    f"Warning: Warm start for {var_name} violates bounds in {n_violations} points"
+                )
+                if np.any(violations_lb):
+                    min_val = np.min(values[violations_lb])
+                    print(f"  - Below lower bound ({lb}): min value = {min_val}")
+                if np.any(violations_ub):
+                    max_val = np.max(values[violations_ub])
+                    print(f"  - Above upper bound ({ub}): max value = {max_val}")
+
+        # --- Warm starts from simulation (with bound checking)
+        warm_starts = {
+            "s_dot": self.return_variable("s_dot"),
+            "input_steering": self.return_variable("input_steering"),
+            "speed_radial": self.return_variable("speed_radial"),
+            "distance_radial": self.return_variable("distance_radial"),
+            "tension_tether_ground": self.return_variable("tension_tether_ground"),
+        }
+
+        print("\nChecking warm start values against bounds:")
+        for var_name, values in warm_starts.items():
+            # Check against optimization bounds if defined
+            if var_name in DEFAULT_OPTI_LIMITS:
+                check_warm_start(var_name, values, DEFAULT_OPTI_LIMITS[var_name])
+            # Set the initial value regardless of violations
+            opti.set_initial(opti_vars[var_name], values)
 
         # # Fix initial radius
         opti.subject_to(opti_vars["distance_radial"][0] == state_obj.distance_radial)
@@ -470,7 +491,7 @@ class PhaseParameterized(TimeSeries):
         # --- Build model functions
         km_copy.establish_residual()
         flat_syms = [ca.vertcat(*opti_params.values())] if opti_params else []
-        print(flat_syms)
+
         residual = ca.Function(
             "residual",
             [
@@ -510,7 +531,6 @@ class PhaseParameterized(TimeSeries):
         T0 = float(np.sum(dt_hist))
         P0 = E0 / (T0 + 1e-12)
         P_scale = max(abs(P0), 1.0)
-        print(f"Initial P0: {P0}")
 
         # --- Auto scales from warm start (robust to outliers)
         def _scale(x, floor=1.0):
@@ -620,22 +640,33 @@ class PhaseParameterized(TimeSeries):
             if var in self.pattern_config["path_parameters"]:
                 init_val = self.pattern_config["path_parameters"][var]
                 opti.set_initial(mx, init_val)
+                # print(f"Applying constraints for {var}")
+                lb, ub = DEFAULT_OPTI_LIMITS[var]
+                opti.subject_to(mx >= lb)
+                opti.subject_to(mx <= ub)
             elif var in self.pattern_config["radial_parameters"]:
                 init_val = self.pattern_config["radial_parameters"][var]
                 opti.set_initial(mx, init_val)
+                # print(f"Applying constraints for {var}")
+                lb, ub = DEFAULT_OPTI_LIMITS[var]
+                opti.subject_to(mx >= lb)
+                opti.subject_to(mx <= ub)
             elif var in self.pattern_config["sim_parameters"]:
                 init_val = self.pattern_config["sim_parameters"][var]
                 opti.set_initial(mx, init_val)
-
-            else:
-                raise ValueError(
-                    f"Optimization parameter '{var}' not found in 'path_parameters' or 'radial_parameters'."
-                )
+                # print(f"Applying constraints for {var}")
+                lb, ub = DEFAULT_OPTI_LIMITS[var]
+                opti.subject_to(mx >= lb)
+                opti.subject_to(mx <= ub)
+            # else:
+            #     raise ValueError(
+            #         f"Optimization parameter '{var}' not found in 'path_parameters' or 'radial_parameters'."
+            #     )
 
         # --- Default limits for vector vars (if provided)
         for var_name, mx in opti_vars.items():
             if isinstance(mx, ca.MX) and var_name in DEFAULT_OPTI_LIMITS:
-                print(f"Applying constraints for {var_name}")
+                # print(f"Applying constraints for {var_name}")
                 lb, ub = DEFAULT_OPTI_LIMITS[var_name]
                 if mx.shape[0] == N:
                     opti.subject_to(lb <= mx[:])

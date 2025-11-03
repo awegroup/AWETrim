@@ -99,7 +99,7 @@ DEFAULT_WINCH_CONFIG = {
 # defaults.py (This is your file containing the limits)
 DEFAULT_OPTI_LIMITS = {
     "tension_tether_ground": (1e-2, 1e9),  # Range for tension_tether_ground: 0 to 1e9
-    "input_steering": (-1, 1),  # Range for input_steering: -pi/2 to pi/2
+    "input_steering": (-1.1, 1.1),  # Range for input_steering: -pi/2 to pi/2
     "s_dot": (0.01, 40),  # Range for s_dot: 0 to 30
     "s_ddot": (-100, 100),  # Range for s_ddot: -100 to 100
     "s": (0, 300),  # Range for s: 0 to 10
@@ -126,12 +126,13 @@ DEFAULT_OPTI_LIMITS = {
     "beta_coeffs": (-1, 1),  # Range for beta coefficients: -1 to 1
     "az_coeffs": (-1, 1),  # Range for azimuth coefficients: -1 to 1
     "speed_radial": (-10, 6),
-    "distance_radial": (100, 2000),
+    "distance_radial": (100, 360),
     "k_vr": (0.5, 1.5),
     "slope": (100, 8000),  # Range for slope in winch model
     "offset": (-2, 2),  # Range for offset in winch model
     "max_tether_force": (20000, 50000),  # Range for max tether force in winch model
     "end_angle": (0.6, 10),
+    "elevation_start_riro": (np.radians(30), np.radians(140)),
 }
 
 

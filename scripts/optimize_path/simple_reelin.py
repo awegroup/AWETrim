@@ -21,10 +21,10 @@ PHYSICAL_CONFIG = {
 
 PATH_PARAMETERS = {
     "elevation_start_ri": np.radians(30),
-    "elevation_start_riro": np.radians(90),
+    "elevation_start_riro": np.radians(100),
     "elevation_start_ro": np.radians(30),
     "distance_radial_start": 360,
-    "distance_radial_end": 220,
+    "distance_radial_end": 230,
 }
 
 RADIAL_PARAMETERS = {
@@ -38,12 +38,15 @@ RADIAL_PARAMETERS = {
     "softminus": True,
     "softminus_beta": 1e-3,
     "slope": 2716,
-    "offset": -3,
+    "offset": -4,
 }
 
 REELIN_CONFIG = {
     "path_parameters": PATH_PARAMETERS,
     "radial_parameters": RADIAL_PARAMETERS,
+    "sim_parameters": {
+        "start_time": 0,
+    },
 }
 
 AERO_INPUT_FILE = Path("data/LEI-V9-KITE/v9_aero_input.json")
@@ -55,7 +58,7 @@ def load_aero_input(path: Path = AERO_INPUT_FILE):
         return json.load(file)
 
 
-def build_wind_model(speed_wind_at_100=7.6374, z0=0.0002, model_type="logarithmic"):
+def build_wind_model(speed_wind_at_100=6, z0=0.0002, model_type="uniform"):
     """Create a wind model using the supplied parameters."""
     wind_model = Wind(
         wind_model=model_type,
@@ -63,6 +66,7 @@ def build_wind_model(speed_wind_at_100=7.6374, z0=0.0002, model_type="logarithmi
     )
     speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind_model.z0)
     wind_model.speed_friction = speed_friction
+    wind_model.speed_wind_ref = speed_wind_at_100
     return wind_model
 
 

@@ -82,7 +82,7 @@ class ReelinSimple:
         self.variables_to_plot = [
             "speed_tangential",
             "tension_tether_ground",
-            "s",
+            "input_steering",
             "distance_radial",
         ]
 
@@ -102,8 +102,9 @@ class ReelinSimple:
         distance_radial_start = self.pattern_config["path_parameters"].get(
             "distance_radial_start", 360
         )
+        start_time = self.pattern_config.get("sim_parameters", {}).get("start_time", 0)
         self.start_state_ri = {
-            "t": 0,
+            "t": start_time,
             "s": 0,
             "s_dot": 0.2,
             "input_steering": 0,
@@ -121,7 +122,7 @@ class ReelinSimple:
             "sim_parameters": {
                 "start_angle": 0,
                 "end_angle": elevation_start_riro - elevation_start_ri,
-                "n_points": 200,
+                "n_points": 100,
             },
         }
 
@@ -157,18 +158,19 @@ class ReelinSimple:
             "sim_parameters": {
                 "start_angle": 0,
                 "end_angle": elevation_start_riro - elevation_start_ro,
-                "n_points": 200,
+                "n_points": 100,
             },
         }
 
-    def initialize_ri_phase(self):
+    def initialize_ri_phase(self, start_state_opti: Optional[Dict[str, float]] = None):
         """Prepare the initial reel-in optimization phase."""
 
         self.create_ri_dicts()
         self.system_model.input_depower = self.depower_ri
 
         pattern_config_opti = copy.deepcopy(self.pattern_config_ri)
-        start_state_opti = copy.deepcopy(self.start_state_ri)
+        if start_state_opti is None:
+            start_state_opti = copy.deepcopy(self.start_state_ri)
         for var_name, mx in self._opti_params.items():
             if var_name == "elevation_start_riro":
                 pattern_config_opti["sim_parameters"]["end_angle"] = (
@@ -190,7 +192,6 @@ class ReelinSimple:
             start_state_opti=start_state_opti,
             opti_params=self._opti_params,
         )
-        # print(self._opti_vars_ri)
         return self._phase_ri
 
     def initialize_riro_phase(self):
@@ -227,7 +228,11 @@ class ReelinSimple:
         return self._phase_riro
 
     def get_opti_components(
-        self, optimization_params=["elevation_start_riro"], opti=None
+        self,
+        optimization_params=None,
+        opti=None,
+        optimization_dict=None,
+        start_state_opti: Optional[Dict[str, float]] = None,
     ):
         """Solve the optimization problem for the transition phase."""
 
@@ -235,20 +240,22 @@ class ReelinSimple:
             opti = ca.Opti()
         self._opti = opti
         self._opti_params = {}
-        for var in optimization_params:
-            self._opti_params[var] = opti.variable()
-        self.initialize_ri_phase()
+        if optimization_params:
+            for var in optimization_params:
+                self._opti_params[var] = opti.variable()
+        elif optimization_dict:
+            self._opti_params = optimization_dict
+
+        self.initialize_ri_phase(start_state_opti=start_state_opti)
 
         self.initialize_riro_phase()
 
-        self._opti.subject_to(
-            self._opti_vars_riro["distance_radial"][-1]
-            == self.pattern_config["path_parameters"]["distance_radial_end"]
-        )
-        combined_opti_vars = self._merge_phase_dicts(
+        # Combined optimization variables: expand/concatenate list/array-like entries
+        combined_opti_vars = self._merge_opti_vars(
             self._opti_vars_ri, self._opti_vars_riro
         )
-        combined_objective = self._merge_phase_dicts(
+        # Combined objective: add scalar or per-phase objective values together
+        combined_objective = self._merge_objective(
             self._objective_ri, self._objective_riro
         )
         return self._opti, combined_opti_vars, combined_objective, self._opti_params
@@ -285,6 +292,10 @@ class ReelinSimple:
         """
         opti, opti_vars, objective_dict, self._opti_params = self.get_opti_components(
             optimization_params=optimization_params
+        )
+        opti.subject_to(
+            self._opti_vars_riro["distance_radial"][-1]
+            == self.pattern_config["path_parameters"]["distance_radial_end"]
         )
         total_objective = -(
             objective_dict["energy"]
@@ -494,6 +505,99 @@ class ReelinSimple:
                         # Fallback: if addition fails for any reason, fall back to
                         # list concatenation to preserve data.
                         merged[key] = to_list(existing) + to_list(prepared)
+
+        return merged
+
+    @staticmethod
+    def _merge_opti_vars(primary, secondary):
+        """Merge optimization variable dictionaries by expanding list/array-like entries.
+
+        For entries that are lists, tuples or numpy arrays, the result will be a
+        single flat Python list containing elements from both phases. Scalar
+        entries will be converted into single-item lists and concatenated.
+        """
+
+        def to_list(val):
+            if isinstance(val, list):
+                return val.copy()
+            if isinstance(val, tuple):
+                return list(val)
+            if isinstance(val, np.ndarray):
+                return list(val.tolist())
+            return [val]
+
+        merged = {}
+        for source in (primary, secondary):
+            if not source:
+                continue
+            for key, value in source.items():
+                prepared = value
+                if key not in merged:
+                    # store as-is, but convert numpy arrays to list for consistency
+                    if isinstance(prepared, np.ndarray):
+                        merged[key] = list(prepared.tolist())
+                    else:
+                        merged[key] = (
+                            prepared.copy() if isinstance(prepared, list) else prepared
+                        )
+                    continue
+
+                existing = merged[key]
+                # If either side is array-like/sequence, concatenate as lists
+                if isinstance(existing, (list, tuple, np.ndarray)) or isinstance(
+                    prepared, (list, tuple, np.ndarray)
+                ):
+                    merged[key] = to_list(existing) + to_list(prepared)
+                else:
+                    # Both scalars: expand into list of two elements
+                    merged[key] = [existing, prepared]
+
+        return merged
+
+    @staticmethod
+    def _merge_objective(primary, secondary):
+        """Merge objective dictionaries by summing scalar or per-phase values.
+
+        If values are lists/tuples/arrays, they are summed element-wise using +
+        semantics (works with CasADi expressions). If they are scalars, they are
+        added. If addition fails, falls back to concatenation to preserve data.
+        """
+
+        def sum_val(v):
+            if isinstance(v, (list, tuple, np.ndarray)):
+                # sum entries into a single scalar/CasADi expression
+                vals = list(v) if not isinstance(v, np.ndarray) else list(v.tolist())
+                if len(vals) == 0:
+                    return 0
+                total = vals[0]
+                for e in vals[1:]:
+                    total = total + e
+                return total
+            return v
+
+        def to_list(v):
+            if isinstance(v, list):
+                return v.copy()
+            if isinstance(v, tuple):
+                return list(v)
+            if isinstance(v, np.ndarray):
+                return list(v.tolist())
+            return [v]
+
+        merged = {}
+        for source in (primary, secondary):
+            if not source:
+                continue
+            for key, value in source.items():
+                if key not in merged:
+                    merged[key] = value
+                    continue
+                existing = merged[key]
+                try:
+                    merged[key] = sum_val(existing) + sum_val(value)
+                except Exception:
+                    # Fallback: preserve data by concatenating lists
+                    merged[key] = to_list(existing) + to_list(value)
 
         return merged
 

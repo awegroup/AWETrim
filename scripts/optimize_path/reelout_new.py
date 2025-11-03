@@ -7,7 +7,7 @@ from awetrim import SystemModel
 from awetrim.environment.Wind import Wind
 from awetrim.system.kite import Kite
 from awetrim.system.tether import RigidLumpedTether
-from awetrim.timeseries.reelout_phase import ReeloutSimple
+from awetrim.timeseries.reelout_phase import Reelout
 
 # ---------------------------------------------------------------------------
 # Configuration knobs – tweak these values to experiment with the setup.
@@ -22,8 +22,8 @@ PHYSICAL_CONFIG = {
 PATH_PARAMETERS = {
     "omega": 1.0,
     "r0": 230.0,
-    "az_amp0": 0.4785941041623598,
-    "beta_amp0": 0.08726648368043392,
+    "az_amp0": 0.4814306739489051,
+    "beta_amp0": 0.08726645323472254,
     "width_phi": 0.5,
     "width_beta": 0.5,
     "left_first": True,
@@ -31,35 +31,36 @@ PATH_PARAMETERS = {
     "repeat_phi": True,
     "repeat_beta": True,
     "beta_coeffs": np.array(
-        [0.26689736, -0.99999995, 0.04902545, -0.84708337, 0.4426069]
+        [0.23282922, -1.00000001, 0.07106071, -0.8524058, 0.46303606]
     ),
     "az_coeffs": [0, 0, 0, 0, 0],
     "kbeta": 0,
-    "beta0": 0.45030399611963495,
+    "beta0": 0.45090333335903443,
     "kappa": 0,
-    "distance_radial_start": 220,
+    "distance_radial_start": 230,
 }
 
 RADIAL_PARAMETERS = {
     "reeling_strategy": "force",  # "force" or "constant"
     "force_model": "quadratic",  # "linear" or "quadratic"
     "reeling_speed": 0.0,  # m/s, only for constant reeling
-    "max_tether_force": 4000,  # N, only for force reeling
-    "min_tether_force": 25000,  # N, only for force reeling
+    "max_tether_force": 25000,  # N, only for force reeling
+    "min_tether_force": 4000,  # N, only for force reeling
     "softplus": True,
-    "softplus_beta": 5e-5,
+    "softplus_beta": 1e-4,
     "softminus": True,
     "softminus_beta": 1e-3,
     "slope": 2700,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
     "offset": 0,  # m/s
 }
 
+N = 3  # Number of half eight loops
 SIM_PARAMETERS = {
     "start_time": 0,
     "end_time": 35,
-    "start_angle": np.pi / 2,
-    "end_angle": 2 * np.pi + np.pi / 2,
-    "n_points": 300,
+    "start_angle": 0,
+    "end_angle": N * np.pi,
+    "n_points": 200,
 }
 
 REELOUT_CONFIG = {
@@ -71,6 +72,12 @@ REELOUT_CONFIG = {
 
 AERO_INPUT_FILE = Path("data/LEI-V9-KITE/v9_aero_input.json")
 
+WIND_CONFIG = {
+    "speed_wind_at_100": 8,
+    "z0": 0.01,
+    "model_type": "uniform",
+}
+
 
 def load_aero_input(path: Path = AERO_INPUT_FILE):
     """Load aerodynamic input data from disk."""
@@ -78,7 +85,7 @@ def load_aero_input(path: Path = AERO_INPUT_FILE):
         return json.load(file)
 
 
-def build_wind_model(speed_wind_at_100=10, z0=0.0002, model_type="uniform"):
+def build_wind_model(speed_wind_at_100=8, z0=0.01, model_type="uniform"):
     """Create a wind model using the supplied parameters."""
     wind_model = Wind(
         wind_model=model_type,
@@ -121,7 +128,11 @@ def define_system(
 def create_system_model():
     """Assemble the system model using the configuration dictionaries above."""
     aero_input = load_aero_input()
-    wind_model = build_wind_model()
+    wind_model = build_wind_model(
+        speed_wind_at_100=WIND_CONFIG["speed_wind_at_100"],
+        z0=WIND_CONFIG["z0"],
+        model_type=WIND_CONFIG["model_type"],
+    )
     return define_system(
         tether_diameter=PHYSICAL_CONFIG["tether_diameter"],
         mass_wing=PHYSICAL_CONFIG["mass_wing"],
@@ -134,7 +145,7 @@ def create_system_model():
 
 def main(run_plots=False):
     system_model = create_system_model()
-    reelout = ReeloutSimple(
+    reelout = Reelout(
         system_model=system_model,
         pattern_config=REELOUT_CONFIG,
         depower=0,
@@ -143,15 +154,19 @@ def main(run_plots=False):
         "az_amp0",
         "beta_amp0",
         "beta0",
-        # "beta_coeffs",
-        # "kappa",
         # "slope",
         # "offset",
+        "beta_coeffs",
+        # "kappa",
     ]
+    phase, axes = reelout.run_simulation(run_plots=run_plots)
     solution = reelout.run_simulation_opti(optimization_params=optimization_params)
-    reelout.run_simulation(solution=solution, run_plots=run_plots)
+    reelout.run_simulation(run_plots=run_plots, axes=axes)
     return reelout
 
 
 if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+
     main(run_plots=True)
+    plt.show()
