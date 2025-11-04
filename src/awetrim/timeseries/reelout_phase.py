@@ -74,7 +74,7 @@ class Reelout:
             "path_parameters": {},
             "radial_parameters": DEFAULT_RADIAL_PARAMETERS,  # Optional with defaults
         }
-        self._validate_config()
+        # self._validate_config()
 
         self.depower = depower
         self.system_model = system_model
@@ -83,49 +83,49 @@ class Reelout:
         self.variables_to_plot = [
             "speed_tangential",
             "tension_tether_ground",
-            "input_steering",
+            "angle_elevation",
             "distance_radial",
         ]
         self._opti_params = {}
 
-    def _validate_config(self) -> None:
-        """Validate the pattern configuration and warn about missing required parameters."""
-        missing_required = []
-        using_defaults = []
+    # def _validate_config(self) -> None:
+    #     """Validate the pattern configuration and warn about missing required parameters."""
+    #     missing_required = []
+    #     using_defaults = []
 
-        def check_section(required: Dict, actual: Dict, path: str = "") -> None:
-            for key, default in required.items():
-                current_path = f"{path}.{key}" if path else key
-                if isinstance(default, dict):
-                    # Recursively check nested dictionaries
-                    if key not in actual:
-                        if all(v is None for v in default.values()):
-                            missing_required.append(current_path)
-                        actual[key] = {}
-                    check_section(default, actual[key], current_path)
-                else:
-                    if key not in actual:
-                        if default is None:
-                            missing_required.append(current_path)
-                        else:
-                            actual[key] = default
-                            using_defaults.append(f"{current_path} = {default}")
+    #     def check_section(required: Dict, actual: Dict, path: str = "") -> None:
+    #         for key, default in required.items():
+    #             current_path = f"{path}.{key}" if path else key
+    #             if isinstance(default, dict):
+    #                 # Recursively check nested dictionaries
+    #                 if key not in actual:
+    #                     if all(v is None for v in default.values()):
+    #                         missing_required.append(current_path)
+    #                     actual[key] = {}
+    #                 check_section(default, actual[key], current_path)
+    #             else:
+    #                 if key not in actual:
+    #                     if default is None:
+    #                         missing_required.append(current_path)
+    #                     else:
+    #                         actual[key] = default
+    #                         using_defaults.append(f"{current_path} = {default}")
 
-        check_section(self._required_config, self.pattern_config)
+    #     check_section(self._required_config, self.pattern_config)
 
-        if missing_required:
-            missing_str = "\n  - ".join(missing_required)
-            raise ValueError(
-                f"Missing required configuration parameters:\n  - {missing_str}"
-            )
+    #     if missing_required:
+    #         missing_str = "\n  - ".join(missing_required)
+    #         raise ValueError(
+    #             f"Missing required configuration parameters:\n  - {missing_str}"
+    #         )
 
-        if using_defaults:
-            defaults_str = "\n  - ".join(using_defaults)
-            warnings.warn(
-                f"Using default values for configuration parameters:\n  - {defaults_str}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+    #     if using_defaults:
+    #         defaults_str = "\n  - ".join(using_defaults)
+    #         warnings.warn(
+    #             f"Using default values for configuration parameters:\n  - {defaults_str}",
+    #             RuntimeWarning,
+    #             stacklevel=2,
+    #         )
 
     def initialize_phase(self) -> PhaseParameterized:
         """Initialize and prepare the optimization phase."""
@@ -198,7 +198,7 @@ class Reelout:
         return self._opti, self._opti_vars, self._objective, self._opti_params
 
     def run_simulation_opti(
-        self, optimization_params: List[str] = None
+        self, optimization_params: List[str] = None, target: str = "power"
     ) -> Optional[SimulationResult]:
         """Run optimization and return results.
 
@@ -213,11 +213,16 @@ class Reelout:
         )
 
         # Maximize average power
-        total_objective = -(
-            objective_dict["energy"]
-            / objective_dict["total_time"]
-            / objective_dict["power_scale"]
-        )
+        if target == "power":
+            total_objective = -(
+                objective_dict["energy"]
+                / objective_dict["total_time"]
+                / objective_dict["power_scale"]
+            )
+        elif target == "energy":
+            total_objective = -objective_dict["energy"]
+        elif target == "zero":
+            total_objective = 0.0
 
         solution = self.run_opti(opti, total_objective)
         if solution is None:

@@ -397,7 +397,12 @@ class PhaseParameterized(TimeSeries):
             self.states.append(new_state.to_dict())
 
     def opti_phase(
-        self, start_state, opti=None, start_state_opti=None, opti_params=None
+        self,
+        start_state,
+        opti=None,
+        start_state_opti=None,
+        opti_params=None,
+        relax_tol=0.0,
     ):
 
         if not opti:
@@ -647,8 +652,10 @@ class PhaseParameterized(TimeSeries):
             elif var in self.pattern_config["radial_parameters"]:
                 init_val = self.pattern_config["radial_parameters"][var]
                 opti.set_initial(mx, init_val)
-                # print(f"Applying constraints for {var}")
+                # print(f"Setting initial for {var} to {init_val}")
+
                 lb, ub = DEFAULT_OPTI_LIMITS[var]
+                # print(f"Applying constraints for {var}: lb={lb}, ub={ub}")
                 opti.subject_to(mx >= lb)
                 opti.subject_to(mx <= ub)
             elif var in self.pattern_config["sim_parameters"]:
@@ -668,6 +675,10 @@ class PhaseParameterized(TimeSeries):
             if isinstance(mx, ca.MX) and var_name in DEFAULT_OPTI_LIMITS:
                 # print(f"Applying constraints for {var_name}")
                 lb, ub = DEFAULT_OPTI_LIMITS[var_name]
+                if relax_tol > 0:
+                    # expand bounds outward even if bounds are negative
+                    lb = lb - relax_tol * np.abs(lb)
+                    ub = ub + relax_tol * np.abs(ub)
                 if mx.shape[0] == N:
                     opti.subject_to(lb <= mx[:])
                     opti.subject_to(mx[:] <= ub)
@@ -675,11 +686,14 @@ class PhaseParameterized(TimeSeries):
                     opti.subject_to(lb <= mx)
                     opti.subject_to(mx <= ub)
 
+        angle_elevation = pattern.elevation(opti_vars["distance_radial"], s_grid[:-1])
         objective_dict = {
             "energy": energy,
             "total_time": t_eff,
             "power_scale": P_scale,
             "reg": reg,
+            "angle_elevation_start": angle_elevation[0],
+            "angle_elevation_end": angle_elevation[-1],
         }
         return (
             opti,

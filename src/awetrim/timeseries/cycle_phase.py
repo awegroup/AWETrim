@@ -69,6 +69,14 @@ class CycleSimple:
         )
         start_state_ri = self.reelin.start_state_ri.copy()
         start_state_ri["distance_radial"] = vars_ro["distance_radial"][-1]
+        # TODO: ADD ELEVATION SYNC
+        # pattern_config_ri = self.reelin.pattern_config_ri.copy()
+        # pattern_config_ri["path_parameters"]["elevation_start_ri"] = obj_ro[
+        #     "angle_elevation_end"
+        # ]
+        # pattern_config_ri["path_parameters"]["elevation_start_ro"] = obj_ro[
+        #     "angle_elevation_start"
+        # ]
         opti, vars_ri, obj_ri, params_ri = self.reelin.get_opti_components(
             optimization_dict=optimization_dict,
             opti=opti,
@@ -81,7 +89,6 @@ class CycleSimple:
             vars_ri["distance_radial"][1][-1]
             == self.reelout.pattern_config["path_parameters"]["distance_radial_start"]
         )
-        # opti.subject_to(vars_ri["distance_radial"][0] == vars_ro["distance_radial"][-1])
         # Merge dictionaries using reelin's helper (robust merging rules)
 
         merged_vars = ReelinSimple._merge_phase_dicts(vars_ri, vars_ro)
@@ -148,11 +155,11 @@ class CycleSimple:
             {
                 "ipopt": {
                     "bound_relax_factor": 1e-8,
-                    "tol": 1e-4,
-                    "acceptable_iter": 3,
-                    "acceptable_tol": 1e-4,
-                    "constr_viol_tol": 1e-4,
-                    "dual_inf_tol": 1e-4,
+                    "tol": 1e-6,
+                    # "acceptable_iter": 3,
+                    "acceptable_tol": 1e-6,
+                    "constr_viol_tol": 1e-6,
+                    "dual_inf_tol": 1e-6,
                     "hessian_approximation": "limited-memory",
                     "mu_strategy": "adaptive",
                 }
@@ -165,6 +172,7 @@ class CycleSimple:
             print("\nOptimized cycle parameters:")
             # Update parameter values in the appropriate phase configuration
             for var_name, opt_var in merged_params.items():
+                print("Processing variable:", var_name)
                 try:
                     val = solution.value(opt_var)
                 except Exception:
@@ -185,12 +193,26 @@ class CycleSimple:
                         self.reelout.pattern_config["path_parameters"][base_name] = val
                         print(f"  {var_name} -> reelout: {val}")
                         updated = True
+                    if base_name in self.reelout.pattern_config.get(
+                        "radial_parameters", {}
+                    ):
+                        self.reelout.pattern_config["radial_parameters"][
+                            base_name
+                        ] = val
+                        print(f"  {var_name} -> reelout: {val}")
+                        updated = True
 
                 # Check reelin if not updated or no _ro suffix
                 if not updated and base_name in self.reelin.pattern_config.get(
                     "path_parameters", {}
                 ):
                     self.reelin.pattern_config["path_parameters"][base_name] = val
+                    print(f"  {var_name} -> reelin: {val}")
+                    updated = True
+                if not updated and base_name in self.reelin.pattern_config.get(
+                    "radial_parameters", {}
+                ):
+                    self.reelin.pattern_config["radial_parameters"][base_name] = val
                     print(f"  {var_name} -> reelin: {val}")
                     updated = True
 
@@ -201,7 +223,12 @@ class CycleSimple:
                     self.reelout.pattern_config["path_parameters"][base_name] = val
                     print(f"  {var_name} -> reelout: {val}")
                     updated = True
-
+                if not updated and base_name in self.reelout.pattern_config.get(
+                    "radial_parameters", {}
+                ):
+                    self.reelout.pattern_config["radial_parameters"][base_name] = val
+                    print(f"  {var_name} -> reelout: {val}")
+                    updated = True
                 if not updated:
                     print(
                         f"  Warning: {var_name} = {val} (not stored in any configuration)"
@@ -266,13 +293,18 @@ class CycleSimple:
         optimization_result = None
         if optimize_reelin:
             # use only elevation_start_riro as optimization parameter
-            try:
-                optimization_result = self.reelin.run_simulation_opti(
-                    ["elevation_start_riro"]
-                )
-            except Exception as exc:
-                print("Reel-in optimization failed:", exc)
-                optimization_result = None
+            # try:
+            optimization_result = self.reelin.run_simulation_opti(
+                optimization_params=[
+                    "elevation_start_riro",
+                    "offset_winch_ri",
+                    # "slope_winch_ri",
+                ],
+                target="zero",
+            )
+            # except Exception as exc:
+            #     print("Reel-in optimization failed:", exc)
+            #     optimization_result = None
 
         # After optimization (or even if not optimizing) run reel-in simulation
         try:

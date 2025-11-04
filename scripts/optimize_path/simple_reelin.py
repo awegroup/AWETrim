@@ -20,9 +20,9 @@ PHYSICAL_CONFIG = {
 }
 
 PATH_PARAMETERS = {
-    "elevation_start_ri": np.radians(30),
-    "elevation_start_riro": np.radians(100),
-    "elevation_start_ro": np.radians(30),
+    "elevation_start_ri": np.radians(40),
+    "elevation_start_riro": np.radians(90),
+    "elevation_start_ro": np.radians(40),
     "distance_radial_start": 360,
     "distance_radial_end": 230,
 }
@@ -31,14 +31,14 @@ RADIAL_PARAMETERS = {
     "reeling_strategy": "force",
     "force_model": "quadratic",
     "reeling_speed": 1.0,
-    "max_tether_force": 2e4,
-    "min_tether_force": 5000.0,
-    "softplus": True,
+    "max_tether_force": 25e4,
+    "min_tether_force": 4000.0,
+    "softplus": False,
     "softplus_beta": 1e-4,
     "softminus": True,
     "softminus_beta": 1e-3,
-    "slope": 2716,
-    "offset": -4,
+    "slope_winch_ri": 1000,
+    "offset_winch_ri": -5,
 }
 
 REELIN_CONFIG = {

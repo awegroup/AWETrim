@@ -20,6 +20,11 @@ import importlib.util
 import argparse
 
 # helper to dynamically import the script modules by path
+WIND_CONFIG = {
+    "speed_wind_at_100": 10,
+    "z0": 0.01,
+    "model_type": "logarithmic",
+}
 
 
 def load_module_from_path(path: Path):
@@ -44,7 +49,11 @@ def main(run_plots: bool = False):
     # the components so both phases share the exact same SystemModel and wind.
     aero_input = reelout_mod.load_aero_input()
     # build_wind_model accepts optional args; use defaults from reelout script
-    wind_model = reelout_mod.build_wind_model()
+    wind_model = reelout_mod.build_wind_model(
+        speed_wind_at_100=WIND_CONFIG["speed_wind_at_100"],
+        z0=WIND_CONFIG["z0"],
+        model_type=WIND_CONFIG["model_type"],
+    )
     system_model = reelout_mod.define_system(
         tether_diameter=reelout_mod.PHYSICAL_CONFIG["tether_diameter"],
         mass_wing=reelout_mod.PHYSICAL_CONFIG["mass_wing"],
@@ -59,6 +68,20 @@ def main(run_plots: bool = False):
     from awetrim.timeseries.reelin_phase import ReelinSimple
     from awetrim.timeseries.cycle_phase import CycleSimple
 
+    optimization_params = [
+        "az_amp0",
+        "beta_amp0",
+        "beta0",
+        "elevation_start_riro",
+        # "slope",
+        # "offset",
+        "offset_winch_ri",
+        # "slope_winch_ri",
+        # "offset_winch_ro",
+        "slope_winch_ro",
+        "beta_coeffs",
+        # "kappa",
+    ]
     # Instantiate phases using the configs defined in the scripts
     reelout = Reelout(
         system_model=system_model,
@@ -66,6 +89,7 @@ def main(run_plots: bool = False):
         depower=0,
     )
 
+    reelout.run_simulation_opti(optimization_params=optimization_params, target="power")
     reelin = ReelinSimple(
         system_model=system_model,
         pattern_config=reelin_mod.REELIN_CONFIG,
@@ -77,18 +101,10 @@ def main(run_plots: bool = False):
 
     print("Running cycle simulation: reel-out -> (opt) reel-in -> transition")
     result = cycle.run_cycle_simulation(optimize_reelin=True, plotting=run_plots)
-    optimization_params = [
-        "az_amp0",
-        "beta_amp0",
-        "beta0",
-        "elevation_start_riro",
-        # "slope",
-        # "offset",
-        "beta_coeffs",
-        # "kappa",
-    ]
+
     cycle.run_cycle_opti(optimization_params=optimization_params)
-    result = cycle.run_cycle_simulation(optimize_reelin=True, plotting=run_plots)
+    print(cycle.reelin.pattern_config)
+    result = cycle.run_cycle_simulation(optimize_reelin=False, plotting=run_plots)
     plt.show()
     if result is None:
         print("Cycle simulation failed")

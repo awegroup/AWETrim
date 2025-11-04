@@ -68,12 +68,12 @@ class ReelinSimple:
             "path_parameters": {
                 "elevation_start_ri": np.radians(30),
                 "elevation_start_ro": np.radians(30),
-                "elevation_start_riro": np.radians(80),
+                "elevation_start_riro": np.radians(120),
                 "distance_radial_start": 360,
                 "distance_radial_end": None,  # Must be provided
             },
         }
-        self._validate_config()
+        # self._validate_config()
 
         self.depower_ri = depower_ri
         self.depower_riro = depower_riro
@@ -82,12 +82,16 @@ class ReelinSimple:
         self.variables_to_plot = [
             "speed_tangential",
             "tension_tether_ground",
-            "input_steering",
+            "angle_elevation",
             "distance_radial",
         ]
 
         # Components and state placeholders
         self.system_model = system_model
+        self.create_ri_dicts()
+        self.create_riro_dicts()
+        self._opti_params = {}
+        self._opti = ca.Opti()
 
     def create_ri_dicts(self):
         self.radial_parameters_ri = self.pattern_config.get(
@@ -162,16 +166,23 @@ class ReelinSimple:
             },
         }
 
-    def initialize_ri_phase(self, start_state_opti: Optional[Dict[str, float]] = None):
+    def initialize_ri_phase(
+        self,
+        start_state_opti: Optional[Dict[str, float]] = None,
+        pattern_config_opti: Optional[Dict[str, Any]] = None,
+    ):
         """Prepare the initial reel-in optimization phase."""
 
         self.create_ri_dicts()
         self.system_model.input_depower = self.depower_ri
-
-        pattern_config_opti = copy.deepcopy(self.pattern_config_ri)
+        if pattern_config_opti is None:
+            pattern_config_opti = copy.deepcopy(self.pattern_config_ri)
         if start_state_opti is None:
             start_state_opti = copy.deepcopy(self.start_state_ri)
         for var_name, mx in self._opti_params.items():
+            for entry in ["path_parameters", "radial_parameters", "sim_parameters"]:
+                if var_name in pattern_config_opti.get(entry, {}):
+                    pattern_config_opti[entry][var_name] = mx
             if var_name == "elevation_start_riro":
                 pattern_config_opti["sim_parameters"]["end_angle"] = (
                     mx - self.pattern_config_ri["path_parameters"]["elevation_start_ri"]
@@ -191,18 +202,24 @@ class ReelinSimple:
             opti=self._opti,
             start_state_opti=start_state_opti,
             opti_params=self._opti_params,
+            relax_tol=0.01,
         )
         return self._phase_ri
 
-    def initialize_riro_phase(self):
+    def initialize_riro_phase(self, pattern_config_opti=None, start_state_opti=None):
         """Extend the optimization problem with the transition phase setup."""
 
         self.create_riro_dicts()
         self.system_model.input_depower = self.depower_riro
-        pattern_config_opti = copy.deepcopy(self.pattern_config_riro)
-        start_state_opti = copy.deepcopy(self.start_state_riro)
+        if pattern_config_opti is None:
+            pattern_config_opti = copy.deepcopy(self.pattern_config_riro)
+        if start_state_opti is None:
+            start_state_opti = copy.deepcopy(self.start_state_riro)
         start_state_opti["distance_radial"] = self._opti_vars_ri["distance_radial"][-1]
         for var_name, mx in self._opti_params.items():
+            for entry in ["path_parameters", "radial_parameters", "sim_parameters"]:
+                if var_name in pattern_config_opti.get(entry, {}):
+                    pattern_config_opti[entry][var_name] = mx
             if var_name == "elevation_start_riro":
                 pattern_config_opti["sim_parameters"]["end_angle"] = (
                     mx - self.pattern_config["path_parameters"]["elevation_start_ro"]
@@ -224,6 +241,7 @@ class ReelinSimple:
             opti=self._opti,
             start_state_opti=start_state_opti,
             opti_params=self._opti_params,
+            relax_tol=0.01,
         )
         return self._phase_riro
 
@@ -238,7 +256,9 @@ class ReelinSimple:
 
         if opti is None:
             opti = ca.Opti()
+
         self._opti = opti
+
         self._opti_params = {}
         if optimization_params:
             for var in optimization_params:
@@ -261,7 +281,9 @@ class ReelinSimple:
         return self._opti, combined_opti_vars, combined_objective, self._opti_params
 
     def run_simulation_opti(
-        self, optimization_params: List[str] = ["elevation_start_riro"]
+        self,
+        optimization_params: List[str] = ["elevation_start_riro"],
+        target: str = "energy",
     ) -> Optional[SimulationResult]:
         """Set up and solve the optimization problem for the reel-in and transition.
 
@@ -291,17 +313,22 @@ class ReelinSimple:
             ...     print(f"Energy objective: {result.energy_objective}")
         """
         opti, opti_vars, objective_dict, self._opti_params = self.get_opti_components(
-            optimization_params=optimization_params
+            optimization_params=optimization_params,
         )
         opti.subject_to(
             self._opti_vars_riro["distance_radial"][-1]
             == self.pattern_config["path_parameters"]["distance_radial_end"]
         )
-        total_objective = -(
-            objective_dict["energy"]
-            / objective_dict["total_time"]
-            / objective_dict["power_scale"]
-        )
+        if target == "energy":
+            total_objective = -(objective_dict["energy"])
+        elif target == "power":
+            total_objective = -(
+                objective_dict["energy"]
+                / objective_dict["total_time"]
+                / objective_dict["power_scale"]
+            )
+        else:
+            total_objective = 0.0
 
         solution = self.run_opti(opti, total_objective)
         if solution is None:
@@ -325,11 +352,11 @@ class ReelinSimple:
             {
                 "ipopt": {
                     "bound_relax_factor": 1e-8,
-                    "tol": 1e-4,
+                    "tol": 1e-2,
                     "acceptable_iter": 3,
-                    "acceptable_tol": 1e-4,
-                    "constr_viol_tol": 1e-4,
-                    "dual_inf_tol": 1e-4,
+                    "acceptable_tol": 1e-2,
+                    "constr_viol_tol": 1e-2,
+                    "dual_inf_tol": 1e-2,
                     "hessian_approximation": "limited-memory",
                     "mu_strategy": "adaptive",
                 }
@@ -343,10 +370,10 @@ class ReelinSimple:
             optimized_config = self.pattern_config.copy()
             for var_name, mx in self._opti_params.items():
                 val = solution.value(mx)
-
+                print(f"  {var_name}: {val}")
                 if var_name in optimized_config.get("path_parameters", {}):
                     optimized_config["path_parameters"][var_name] = val
-                    print(f"  {var_name}: {val}")
+
                 elif var_name in optimized_config.get("radial_parameters", {}):
                     optimized_config["radial_parameters"][var_name] = val
                 elif var_name in optimized_config.get("sim_parameters", {}):
@@ -358,11 +385,19 @@ class ReelinSimple:
 
         except Exception as exc:
             print("Debug optimization information:")
+            optimized_config = self.pattern_config.copy()
             for var_name, mx in self._opti_params.items():
-                try:
-                    print(f"  {var_name}: {opti.debug.value(mx)}")
-                except Exception:
-                    pass
+                val = opti.debug.value(mx)
+                print(f"  {var_name}: {val}")
+                if var_name in optimized_config.get("path_parameters", {}):
+                    optimized_config["path_parameters"][var_name] = val
+                elif var_name in optimized_config.get("radial_parameters", {}):
+                    optimized_config["radial_parameters"][var_name] = val
+                elif var_name in optimized_config.get("sim_parameters", {}):
+                    optimized_config["sim_parameters"][var_name] = val
+            self.pattern_config = optimized_config
+            self.create_ri_dicts()
+            self.create_riro_dicts()
             print("Optimization failed:", exc)
             return None
 
@@ -615,47 +650,47 @@ class ReelinSimple:
 
         return {key: coerce(value) for key, value in source.items()}
 
-    def _validate_config(self):
-        """Validate the pattern configuration and warn about missing required parameters.
+    # def _validate_config(self):
+    #     """Validate the pattern configuration and warn about missing required parameters.
 
-        Checks if all required parameters are present in the configuration and issues
-        warnings for any that are missing or using defaults.
-        """
-        missing_required = []
-        using_defaults = []
+    #     Checks if all required parameters are present in the configuration and issues
+    #     warnings for any that are missing or using defaults.
+    #     """
+    #     missing_required = []
+    #     using_defaults = []
 
-        def check_section(required, actual, path=""):
-            for key, default in required.items():
-                current_path = f"{path}.{key}" if path else key
-                if isinstance(default, dict):
-                    # Recursively check nested dictionaries
-                    if key not in actual:
-                        if all(v is None for v in default.values()):
-                            missing_required.append(current_path)
-                        actual[key] = {}
-                    check_section(default, actual[key], current_path)
-                else:
-                    if key not in actual:
-                        if default is None:
-                            missing_required.append(current_path)
-                        else:
-                            actual[key] = default
-                            using_defaults.append(f"{current_path} = {default}")
+    #     def check_section(required, actual, path=""):
+    #         for key, default in required.items():
+    #             current_path = f"{path}.{key}" if path else key
+    #             if isinstance(default, dict):
+    #                 # Recursively check nested dictionaries
+    #                 if key not in actual:
+    #                     if all(v is None for v in default.values()):
+    #                         missing_required.append(current_path)
+    #                     actual[key] = {}
+    #                 check_section(default, actual[key], current_path)
+    #             else:
+    #                 if key not in actual:
+    #                     if default is None:
+    #                         missing_required.append(current_path)
+    #                     else:
+    #                         actual[key] = default
+    #                         using_defaults.append(f"{current_path} = {default}")
 
-        check_section(self._required_config, self.pattern_config)
+    #     check_section(self._required_config, self.pattern_config)
 
-        if missing_required:
-            missing_str = "\n  - ".join(missing_required)
-            raise ValueError(
-                f"Missing required configuration parameters:\n  - {missing_str}"
-            )
+    #     if missing_required:
+    #         missing_str = "\n  - ".join(missing_required)
+    #         raise ValueError(
+    #             f"Missing required configuration parameters:\n  - {missing_str}"
+    #         )
 
-        if using_defaults:
-            defaults_str = "\n  - ".join(using_defaults)
-            import warnings
+    #     if using_defaults:
+    #         defaults_str = "\n  - ".join(using_defaults)
+    #         import warnings
 
-            warnings.warn(
-                f"Using default values for configuration parameters:\n  - {defaults_str}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+    #         warnings.warn(
+    #             f"Using default values for configuration parameters:\n  - {defaults_str}",
+    #             RuntimeWarning,
+    #             stacklevel=2,
+    #         )

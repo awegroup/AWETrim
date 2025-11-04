@@ -392,7 +392,6 @@ def create_pattern_from_dict(
             "kappa",
         ],
         "cst_lissajous": [
-            "omega",
             "r0",
             "az_amp0",
             "beta_amp0",
@@ -402,7 +401,6 @@ def create_pattern_from_dict(
         ],
         "spline": ["r0", "r1", "C_az", "C_el", "s_norm_az", "s_norm_el"],
         "cst_helix": [
-            "omega",
             "r0",
             "az_amp0",
             "beta_amp0",
@@ -445,8 +443,6 @@ def create_pattern_from_dict(
 class CST_Lissajous(ParametrizedPatternsAngles):
     def __init__(
         self,
-        omega,
-        r0,
         az_amp0,
         beta_amp0,
         beta0,
@@ -458,13 +454,12 @@ class CST_Lissajous(ParametrizedPatternsAngles):
         width_beta=0.5,
         left_first=True,
         normalize_bumps=False,
-        repeat_phi=False,
-        repeat_beta=False,
+        repeat_phi=True,
+        repeat_beta=True,
+        downloops=True,
         **kwargs,
     ):  # <- only flags
         super().__init__(
-            omega=omega,
-            r0=r0,
             az_amp0=az_amp0,
             beta_amp0=beta_amp0,
             beta0=beta0,
@@ -479,6 +474,7 @@ class CST_Lissajous(ParametrizedPatternsAngles):
             **kwargs,
         )
 
+        self.omega = 1.0 if downloops else -1.0
         # Base weight vectors
         self.az_coeffs = ca.vertcat(az_coeffs)
         self.beta_coeffs = ca.vertcat(beta_coeffs)

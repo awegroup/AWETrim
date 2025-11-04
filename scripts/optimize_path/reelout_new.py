@@ -20,23 +20,16 @@ PHYSICAL_CONFIG = {
 }
 
 PATH_PARAMETERS = {
-    "omega": 1.0,
-    "r0": 230.0,
+    "r0": 230,
     "az_amp0": 0.4814306739489051,
     "beta_amp0": 0.08726645323472254,
-    "width_phi": 0.5,
-    "width_beta": 0.5,
-    "left_first": True,
-    "normalize_bumps": False,
-    "repeat_phi": True,
-    "repeat_beta": True,
     "beta_coeffs": np.array(
-        [0.23282922, -1.00000001, 0.07106071, -0.8524058, 0.46303606]
+        [0.23282922, -1.0000000, 0.07106071, -0.8524058, 0.46303606]
     ),
     "az_coeffs": [0, 0, 0, 0, 0],
     "kbeta": 0,
-    "beta0": 0.45090333335903443,
-    "kappa": 0,
+    "beta0": 0.6,  # 0.45090333335903443,
+    "kappa": 1,
     "distance_radial_start": 230,
 }
 
@@ -50,17 +43,17 @@ RADIAL_PARAMETERS = {
     "softplus_beta": 1e-4,
     "softminus": True,
     "softminus_beta": 1e-3,
-    "slope": 2700,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
-    "offset": 0,  # m/s
+    "slope_winch_ro": 8000,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
+    "offset_winch_ro": 0,  # m/s
 }
 
-N = 3  # Number of half eight loops
+N = 2  # Number of half eight loops
 SIM_PARAMETERS = {
     "start_time": 0,
     "end_time": 35,
     "start_angle": 0,
     "end_angle": N * np.pi,
-    "n_points": 200,
+    "n_points": 400,
 }
 
 REELOUT_CONFIG = {
@@ -73,9 +66,9 @@ REELOUT_CONFIG = {
 AERO_INPUT_FILE = Path("data/LEI-V9-KITE/v9_aero_input.json")
 
 WIND_CONFIG = {
-    "speed_wind_at_100": 8,
+    "speed_wind_at_100": 10,
     "z0": 0.01,
-    "model_type": "uniform",
+    "model_type": "logarithmic",
 }
 
 
@@ -92,8 +85,10 @@ def build_wind_model(speed_wind_at_100=8, z0=0.01, model_type="uniform"):
         z0=z0,
     )
     speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind_model.z0)
-    wind_model.speed_friction = speed_friction
-    wind_model.speed_wind_ref = speed_wind_at_100
+    if model_type == "logarithmic":
+        wind_model.speed_friction = speed_friction
+    elif model_type == "uniform":
+        wind_model.speed_wind_ref = speed_wind_at_100
     return wind_model
 
 
@@ -160,6 +155,7 @@ def main(run_plots=False):
         # "kappa",
     ]
     phase, axes = reelout.run_simulation(run_plots=run_plots)
+    plt.show()
     solution = reelout.run_simulation_opti(optimization_params=optimization_params)
     reelout.run_simulation(run_plots=run_plots, axes=axes)
     return reelout
