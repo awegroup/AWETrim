@@ -20,17 +20,18 @@ PHYSICAL_CONFIG = {
 }
 
 PATH_PARAMETERS = {
-    "r0": 230,
-    "az_amp0": 0.4814306739489051,
-    "beta_amp0": 0.08726645323472254,
+    "r0": 180,
+    "az_amp0": 0.4814306739489051 * 1.1,
+    "beta_amp0": 0.08726645323472254 * 1.1,
     "beta_coeffs": np.array(
         [0.23282922, -1.0000000, 0.07106071, -0.8524058, 0.46303606]
     ),
     "az_coeffs": [0, 0, 0, 0, 0],
     "kbeta": 0,
-    "beta0": 0.6,  # 0.45090333335903443,
-    "kappa": 1,
-    "distance_radial_start": 230,
+    "beta0": 0.45090333335903443 * 1.1,
+    "kappa": 0,
+    "downloops": True,
+    "distance_radial_start": 180,
 }
 
 RADIAL_PARAMETERS = {
@@ -66,8 +67,8 @@ REELOUT_CONFIG = {
 AERO_INPUT_FILE = Path("data/LEI-V9-KITE/v9_aero_input.json")
 
 WIND_CONFIG = {
-    "speed_wind_at_100": 10,
-    "z0": 0.01,
+    "speed_wind_at_100": 14,
+    "z0": 0.002,
     "model_type": "logarithmic",
 }
 
@@ -149,15 +150,21 @@ def main(run_plots=False):
         "az_amp0",
         "beta_amp0",
         "beta0",
-        # "slope",
+        "slope_winch_ro",
         # "offset",
         "beta_coeffs",
         # "kappa",
     ]
     phase, axes = reelout.run_simulation(run_plots=run_plots)
-    plt.show()
+
     solution = reelout.run_simulation_opti(optimization_params=optimization_params)
-    reelout.run_simulation(run_plots=run_plots, axes=axes)
+    phase, _ = reelout.run_simulation(run_plots=run_plots, axes=axes)
+    print(phase.energy_metrics())
+    reelout.pattern_config["path_parameters"]["kappa"] = 1
+    phase, _ = reelout.run_simulation(run_plots=run_plots, axes=axes)
+    print(phase.energy_metrics())
+
+    plt.show()
     return reelout
 
 

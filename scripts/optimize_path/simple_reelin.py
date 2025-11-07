@@ -20,9 +20,9 @@ PHYSICAL_CONFIG = {
 }
 
 PATH_PARAMETERS = {
-    "elevation_start_ri": np.radians(40),
+    "elevation_start_ri": np.radians(30),
     "elevation_start_riro": np.radians(90),
-    "elevation_start_ro": np.radians(40),
+    "elevation_start_ro": np.radians(30),
     "distance_radial_start": 360,
     "distance_radial_end": 230,
 }
@@ -120,7 +120,10 @@ def main(run_plots=False):
         depower_ri=1,
         depower_riro=1,
     )
+    import matplotlib.pyplot as plt
 
+    reelin.run_simulation(run_plots=run_plots)
+    plt.show()
     solution = reelin.run_simulation_opti()
     reelin.run_simulation(solution=solution, run_plots=run_plots)
     return reelin

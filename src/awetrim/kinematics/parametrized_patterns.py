@@ -964,7 +964,9 @@ class Reelin_Simple(ParametrizedPatternsAngles):
         )
 
     def elevation(self, r, s):
-        return self.elevation_start_ri + s
+        return self.elevation_start_ri + s * (
+            self.elevation_start_riro - self.elevation_start_ri
+        )
 
     def azimuth(self, r, s):
         return 0
@@ -982,7 +984,9 @@ class Transition_Simple(ParametrizedPatternsAngles):
         )
 
     def elevation(self, r, s):
-        return self.elevation_start_riro - s
+        return self.elevation_start_riro + s * (
+            self.elevation_start_ro - self.elevation_start_riro
+        )
 
     def azimuth(self, r, s):
         return 0

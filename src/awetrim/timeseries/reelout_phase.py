@@ -83,8 +83,8 @@ class Reelout:
         self.variables_to_plot = [
             "speed_tangential",
             "tension_tether_ground",
-            "angle_elevation",
-            "distance_radial",
+            "angle_of_attack",
+            "speed_radial",
         ]
         self._opti_params = {}
 
@@ -137,7 +137,7 @@ class Reelout:
             "s": 0,
             "s_dot": 2,
             "input_steering": 0,
-            "tension_tether_ground": 1e8,
+            "tension_tether_ground": 1e10,
             "distance_radial": self.pattern_config["path_parameters"][
                 "distance_radial_start"
             ],
@@ -349,7 +349,7 @@ class Reelout:
             "s": 0,
             "s_dot": 2,
             "input_steering": 0,
-            "tension_tether_ground": 1e8,
+            "tension_tether_ground": 1e10,
             "distance_radial": pattern_config["path_parameters"][
                 "distance_radial_start"
             ],

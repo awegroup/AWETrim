@@ -681,30 +681,18 @@ class TimeSeries:
 
         return fig, {"left_3d": ax_left3d, "right_axes": right_axes}, None
 
-    def energy_metrics(
-        self,
-        other: "TimeSeries",
-        phase_window_degrees: float = 360.0,
-    ) -> dict:
-        """Compute comparative energy and timing metrics between two series.
+    def energy_metrics(self, phase_window_degrees: float = 360.0) -> dict:
+        """Compute energy / power metrics for this time series over a phase window.
 
-        Compares this series (self) against `other` over a single-cycle window
-        in phase (defaults to 360 degrees), starting at each series' initial
-        phase value. Returns a dictionary of metrics.
-
-        Metrics include:
-        - avg_power_self / avg_power_other (via energy over window / duration)
-        - mean_power_self / mean_power_other (mean of mechanical_power)
-        - power_diff_percent
-        - best_time_lag (s) from cross-correlation of vtau
-        - delta_ft_mean_percent, delta_ft_max_percent, delta_ft_min_percent
-        - delta_vtau_max_percent, delta_vtau_min_percent
-        - s_lag_vtau_max_deg, s_lag_vtau_min_deg
+        This function no longer compares two TimeSeries objects. It extracts a
+        single-cycle window in phase (defaults to 360 degrees) starting at the
+        series' initial phase value and returns energy/power/timing statistics
+        for that window.
         """
         import numpy as np
 
         # Helper to get masked arrays for one phase window
-        def _mask_series(ts: "TimeSeries"):
+        def _mask_self(ts: "TimeSeries"):
             s_deg = np.degrees(ts.return_variable("s"))
             t = ts.return_variable("t")
             vtau = ts.return_variable("speed_tangential")
@@ -719,126 +707,52 @@ class TimeSeries:
                 mask = slice(None)
             return mask, s_deg, t, vtau, tension, vr
 
-        mask_a, s_a, t_a, vtau_a, ten_a, vr_a = _mask_series(self)
-        mask_b, s_b, t_b, vtau_b, ten_b, vr_b = _mask_series(other)
+        mask, s_deg, t, vtau, tension, vr = _mask_self(self)
 
-        # Sliced data
-        s_a_m, s_b_m = s_a[mask_a], s_b[mask_b]
-        t_a_m, t_b_m = t_a[mask_a], t_b[mask_b]
-        vtau_a_m, vtau_b_m = vtau_a[mask_a], vtau_b[mask_b]
-        ten_a_m, ten_b_m = ten_a[mask_a], ten_b[mask_b]
-        vr_a_m, vr_b_m = vr_a[mask_a], vr_b[mask_b]
+        s_m = s_deg[mask]
+        t_m = t[mask]
+        vtau_m = vtau[mask]
+        tension_m = tension[mask]
+        vr_m = vr[mask]
 
         # Energy and average power over window
-        if len(t_a_m) > 1:
-            dt_a = np.diff(t_a_m, prepend=t_a_m[0])
-            energy_a = np.sum(ten_a_m * vr_a_m * dt_a)
-            avg_pow_a = energy_a / (t_a_m[-1] - t_a_m[0] + 1e-12)
+        if len(t_m) > 1:
+            dt = np.diff(t_m, prepend=t_m[0])
+            energy = np.sum(tension_m * vr_m * dt)
+            avg_power = energy / (t_m[-1] - t_m[0] + 1e-12)
         else:
-            energy_a = 0.0
-            avg_pow_a = 0.0
-        if len(t_b_m) > 1:
-            dt_b = np.diff(t_b_m, prepend=t_b_m[0])
-            energy_b = np.sum(ten_b_m * vr_b_m * dt_b)
-            avg_pow_b = energy_b / (t_b_m[-1] - t_b_m[0] + 1e-12)
-        else:
-            energy_b = 0.0
-            avg_pow_b = 0.0
+            energy = 0.0
+            avg_power = 0.0
 
         # Mean mechanical power (if available)
         try:
-            pow_a = self.return_variable("mechanical_power")[mask_a]
-            mean_pow_a = float(np.mean(pow_a)) if len(pow_a) else 0.0
+            pow_hist = self.return_variable("mechanical_power")[mask]
+            mean_power = float(np.mean(pow_hist)) if len(pow_hist) else 0.0
         except Exception:
-            mean_pow_a = avg_pow_a
-        try:
-            pow_b = other.return_variable("mechanical_power")[mask_b]
-            mean_pow_b = float(np.mean(pow_b)) if len(pow_b) else 0.0
-        except Exception:
-            mean_pow_b = avg_pow_b
+            mean_power = avg_power
 
-        power_diff_percent = (
-            (avg_pow_a - avg_pow_b) / (avg_pow_b + 1e-12) * 100.0
-            if (avg_pow_a or avg_pow_b)
-            else 0.0
-        )
+        # Basic statistics (tension and vtau)
+        tension_mean = float(np.mean(tension_m)) if len(tension_m) else 0.0
+        tension_max = float(np.max(tension_m)) if len(tension_m) else 0.0
+        tension_min = float(np.min(tension_m)) if len(tension_m) else 0.0
 
-        # Cross-correlation for vtau to estimate lag
-        if len(t_a_m) > 1 and len(t_b_m) > 1:
-            t0 = max(t_a_m[0], t_b_m[0])
-            t1 = min(t_a_m[-1], t_b_m[-1])
-            if t1 > t0:
-                t_common = np.linspace(t0, t1, 1000)
-                v1 = np.interp(t_common, t_a_m, vtau_a_m) - np.mean(vtau_a_m)
-                v2 = np.interp(t_common, t_b_m, vtau_b_m) - np.mean(vtau_b_m)
-                corr = np.correlate(v1, v2, mode="full")
-                lags = np.arange(-len(v1) + 1, len(v1))
-                dt = t_common[1] - t_common[0]
-                best_time_lag = float(lags[np.argmax(corr)] * dt)
-            else:
-                best_time_lag = 0.0
-        else:
-            best_time_lag = 0.0
-
-        # Tension differences
-        def _pct(a, b):
-            return float((a - b) / (b + 1e-12) * 100.0)
-
-        delta_ft_mean_percent = (
-            _pct(np.mean(ten_a_m), np.mean(ten_b_m))
-            if len(ten_a_m) and len(ten_b_m)
-            else 0.0
-        )
-        delta_ft_max_percent = (
-            _pct(np.max(ten_a_m), np.max(ten_b_m))
-            if len(ten_a_m) and len(ten_b_m)
-            else 0.0
-        )
-        delta_ft_min_percent = (
-            _pct(np.min(ten_a_m), np.min(ten_b_m))
-            if len(ten_a_m) and len(ten_b_m)
-            else 0.0
-        )
-
-        # Tangential speed differences
-        delta_vtau_max_percent = (
-            _pct(np.max(vtau_a_m), np.max(vtau_b_m))
-            if len(vtau_a_m) and len(vtau_b_m)
-            else 0.0
-        )
-        delta_vtau_min_percent = (
-            _pct(np.min(vtau_a_m), np.min(vtau_b_m))
-            if len(vtau_a_m) and len(vtau_b_m)
-            else 0.0
-        )
-
-        # Phase lags at max/min vtau
-        if len(vtau_a_m) and len(vtau_b_m):
-            s_a_max = s_a_m[np.argmax(vtau_a_m)] if len(s_a_m := s_a_m) else 0.0
-            s_b_max = s_b_m[np.argmax(vtau_b_m)] if len(s_b_m := s_b_m) else 0.0
-            s_lag_vtau_max_deg = float(s_a_max - s_b_max)
-
-            s_a_min = s_a_m[np.argmin(vtau_a_m)] if len(s_a_m) else 0.0
-            s_b_min = s_b_m[np.argmin(vtau_b_m)] if len(s_b_m) else 0.0
-            s_lag_vtau_min_deg = float(s_a_min - s_b_min)
-        else:
-            s_lag_vtau_max_deg = 0.0
-            s_lag_vtau_min_deg = 0.0
+        vtau_mean = float(np.mean(vtau_m)) if len(vtau_m) else 0.0
+        vtau_max = float(np.max(vtau_m)) if len(vtau_m) else 0.0
+        vtau_min = float(np.min(vtau_m)) if len(vtau_m) else 0.0
 
         return {
-            "avg_power_self": float(avg_pow_a),
-            "avg_power_other": float(avg_pow_b),
-            "mean_power_self": float(mean_pow_a),
-            "mean_power_other": float(mean_pow_b),
-            "power_diff_percent": float(power_diff_percent),
-            "best_time_lag": float(best_time_lag),
-            "delta_ft_mean_percent": float(delta_ft_mean_percent),
-            "delta_ft_max_percent": float(delta_ft_max_percent),
-            "delta_ft_min_percent": float(delta_ft_min_percent),
-            "delta_vtau_max_percent": float(delta_vtau_max_percent),
-            "delta_vtau_min_percent": float(delta_vtau_min_percent),
-            "s_lag_vtau_max_deg": float(s_lag_vtau_max_deg),
-            "s_lag_vtau_min_deg": float(s_lag_vtau_min_deg),
+            "energy": float(energy),
+            "avg_power": float(avg_power),
+            "mean_power": float(mean_power),
+            "total_time": float(t_m[-1] - t_m[0]) if len(t_m) > 1 else 0.0,
+            "tension_mean": float(tension_mean),
+            "tension_max": float(tension_max),
+            "tension_min": float(tension_min),
+            "vtau_mean": float(vtau_mean),
+            "vtau_max": float(vtau_max),
+            "vtau_min": float(vtau_min),
+            "phase_start_deg": float(s_m[0]) if len(s_m) else 0.0,
+            "phase_end_deg": float(s_m[-1]) if len(s_m) else 0.0,
         }
 
     def plot_angles_scatter(
@@ -857,8 +771,6 @@ class TimeSeries:
         Returns:
             PathCollection: matplotlib scatter artist.
         """
-        import matplotlib.pyplot as plt
-        import numpy as np
 
         if scatter_kwargs is None:
             scatter_kwargs = {}
@@ -906,8 +818,6 @@ class TimeSeries:
         Returns:
             (fig, axes_dict, scatter): figure, axes mapping, and the scatter artist for this series.
         """
-        import matplotlib.pyplot as plt
-        import numpy as np
 
         if variables is None:
             variables = [

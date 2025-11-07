@@ -257,6 +257,11 @@ class CycleSimple:
         # 1) Run reel-out simulation (numeric)
         try:
             phase_ro, _ = self.reelout.run_simulation()
+            if plotting:
+                # plot reel-out first and obtain axes
+                fig, axes, _ = phase_ro.plot_overview_3d(
+                    x_param="t", variables=self.reelout.variables_to_plot
+                )
         except Exception as exc:
             print("Reel-out simulation failed:", exc)
             return None
@@ -309,52 +314,18 @@ class CycleSimple:
         # After optimization (or even if not optimizing) run reel-in simulation
         try:
             # Initialize phase objects and run numeric simulation similarly to ReelinSimple.run_simulation
-            self.reelin.initialize_ri_phase()
-            reelin_phase = self.reelin._run_parametrized_phase(
-                label_prefix="ri",
-                depower=self.reelin.depower_ri,
-                start_state=self.reelin.start_state_ri,
-                pattern_config=self.reelin.pattern_config_ri,
-                phase_sym=True,
-            )
-
-            # Prepare and run transition (riro) phase using end state of ri
-            elevation_riro = reelin_phase.return_variable("angle_elevation")[-1]
-            t_start = reelin_phase.return_variable("t")[-1]
-            r_start = reelin_phase.return_variable("distance_radial")[-1]
-            self.reelin.pattern_config_riro["path_parameters"][
-                "elevation_start_riro"
-            ] = elevation_riro
-            self.reelin.pattern_config_riro["sim_parameters"][
-                "end_angle"
-            ] = self.reelin.pattern_config["path_parameters"][
-                "elevation_start_riro"
-            ] - self.reelin.pattern_config[
-                "path_parameters"
-            ].get(
-                "elevation_start_ro", 0
-            )
-
-            start_state = self.reelin.start_state_riro.copy()
-            start_state["distance_radial"] = r_start
-            start_state["t"] = t_start
-
-            reelin_phase_ro = self.reelin._run_parametrized_phase(
-                label_prefix="riro",
-                depower=self.reelin.depower_riro,
-                start_state=start_state,
-                pattern_config=self.reelin.pattern_config_riro,
-                phase_sym=True,
+            phase_ri, phase_riro = self.reelin.run_simulation(
+                run_plots=plotting, axes=axes
             )
         except Exception as exc:
             print("Reel-in simulation failed:", exc)
 
         energy_ro = phase_ro.energy
         total_time_ro = phase_ro.total_time
-        energy_ri = reelin_phase.energy
-        total_time_ri = reelin_phase.total_time
-        energy_riro = reelin_phase_ro.energy
-        total_time_riro = reelin_phase_ro.total_time
+        energy_ri = phase_ri.energy
+        total_time_ri = phase_ri.total_time
+        energy_riro = phase_riro.energy
+        total_time_riro = phase_riro.total_time
 
         # Print out the results
         cycle_power = (energy_ro + energy_ri + energy_riro) / (
@@ -369,25 +340,6 @@ class CycleSimple:
             f"  Transition energy: {energy_riro/1000:.2f} kJ, time: {total_time_riro:.2f} s"
         )
         print(f"  Cycle power: {cycle_power/1000:.2f} kW")
-
-        # 4) Plot everything together if requested
-        if plotting:
-            try:
-                # plot reel-out first and obtain axes
-                fig, axes, _ = phase_ro.plot_overview_3d(
-                    x_param="t", variables=self.reelout.variables_to_plot
-                )
-                if reelin_phase is not None:
-                    reelin_phase.plot_overview_3d(
-                        x_param="t", variables=self.reelin.variables_to_plot, axes=axes
-                    )
-                if reelin_phase_ro is not None:
-                    reelin_phase_ro.plot_overview_3d(
-                        x_param="t", variables=self.reelin.variables_to_plot, axes=axes
-                    )
-                # plt.show()
-            except Exception as exc:
-                print("Plotting combined phases failed:", exc)
 
         return {
             "reelout_phase": phase_ro,

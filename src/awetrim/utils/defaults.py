@@ -114,7 +114,7 @@ DEFAULT_OPTI_LIMITS = {
     "rz": (60, 180),  # Range for rz: 0 to 100
     "ky": (0.5, 1),  # Range for ky: 0 to 100
     "kz": (0.5, 1),  # Range for kz: 0 to 100
-    "vr": (-10, 6),  # Range for vr: 0 to 100
+    "vr": (-10, 10),  # Range for vr: 0 to 100
     "az_amp0": (
         np.radians(5),
         np.radians(50),
@@ -125,7 +125,7 @@ DEFAULT_OPTI_LIMITS = {
     ),  # Range for beta amplitude: 5 to 20 degrees
     "beta_coeffs": (-1, 1),  # Range for beta coefficients: -1 to 1
     "az_coeffs": (-1, 1),  # Range for azimuth coefficients: -1 to 1
-    "speed_radial": (-10, 6),
+    "speed_radial": (-10, 10),
     "distance_radial": (100, 360),
     "k_vr": (0.5, 1.5),
     "slope_winch_ro": (2000, 12000),  # Range for slope in winch model

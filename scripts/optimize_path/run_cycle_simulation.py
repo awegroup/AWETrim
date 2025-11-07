@@ -22,7 +22,7 @@ import argparse
 # helper to dynamically import the script modules by path
 WIND_CONFIG = {
     "speed_wind_at_100": 10,
-    "z0": 0.01,
+    "z0": 0.05,
     "model_type": "logarithmic",
 }
 
@@ -101,7 +101,7 @@ def main(run_plots: bool = False):
 
     print("Running cycle simulation: reel-out -> (opt) reel-in -> transition")
     result = cycle.run_cycle_simulation(optimize_reelin=True, plotting=run_plots)
-
+    plt.show()
     cycle.run_cycle_opti(optimization_params=optimization_params)
     print(cycle.reelin.pattern_config)
     result = cycle.run_cycle_simulation(optimize_reelin=False, plotting=run_plots)

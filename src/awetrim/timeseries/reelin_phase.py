@@ -68,7 +68,7 @@ class ReelinSimple:
             "path_parameters": {
                 "elevation_start_ri": np.radians(30),
                 "elevation_start_ro": np.radians(30),
-                "elevation_start_riro": np.radians(120),
+                "elevation_start_riro": np.radians(90),
                 "distance_radial_start": 360,
                 "distance_radial_end": None,  # Must be provided
             },
@@ -101,7 +101,7 @@ class ReelinSimple:
             "elevation_start_ri", np.radians(30)
         )
         elevation_start_riro = self.pattern_config["path_parameters"].get(
-            "elevation_start_riro", np.radians(80)
+            "elevation_start_riro", np.radians(90)
         )
         distance_radial_start = self.pattern_config["path_parameters"].get(
             "distance_radial_start", 360
@@ -114,7 +114,7 @@ class ReelinSimple:
             "input_steering": 0,
             "tension_tether_ground": 1e8,
             "distance_radial": distance_radial_start,
-            "speed_radial": -6,
+            "speed_radial": -3,
         }
         self.pattern_config_ri = {
             "pattern_type": "reel_in_simple",
@@ -125,7 +125,7 @@ class ReelinSimple:
             "radial_parameters": self.radial_parameters_ri,
             "sim_parameters": {
                 "start_angle": 0,
-                "end_angle": elevation_start_riro - elevation_start_ri,
+                "end_angle": 1.0,
                 "n_points": 100,
             },
         }
@@ -138,7 +138,7 @@ class ReelinSimple:
             "elevation_start_ro", np.radians(30)
         )
         elevation_start_riro = self.pattern_config["path_parameters"].get(
-            "elevation_start_riro", np.radians(80)
+            "elevation_start_riro", np.radians(90)
         )
         distance_radial_start = self.pattern_config["path_parameters"].get(
             "distance_radial_start", 360
@@ -161,7 +161,7 @@ class ReelinSimple:
             "radial_parameters": self.radial_parameters_riro,
             "sim_parameters": {
                 "start_angle": 0,
-                "end_angle": elevation_start_riro - elevation_start_ro,
+                "end_angle": 1.0,
                 "n_points": 100,
             },
         }
@@ -183,10 +183,6 @@ class ReelinSimple:
             for entry in ["path_parameters", "radial_parameters", "sim_parameters"]:
                 if var_name in pattern_config_opti.get(entry, {}):
                     pattern_config_opti[entry][var_name] = mx
-            if var_name == "elevation_start_riro":
-                pattern_config_opti["sim_parameters"]["end_angle"] = (
-                    mx - self.pattern_config_ri["path_parameters"]["elevation_start_ri"]
-                )
         self._phase_ri = PhaseParameterized(
             self.system_model,
             quasi_steady=True,
@@ -221,9 +217,6 @@ class ReelinSimple:
                 if var_name in pattern_config_opti.get(entry, {}):
                     pattern_config_opti[entry][var_name] = mx
             if var_name == "elevation_start_riro":
-                pattern_config_opti["sim_parameters"]["end_angle"] = (
-                    mx - self.pattern_config["path_parameters"]["elevation_start_ro"]
-                )
                 pattern_config_opti["path_parameters"]["elevation_start_riro"] = mx
 
         self._phase_riro = PhaseParameterized(
@@ -401,7 +394,7 @@ class ReelinSimple:
             print("Optimization failed:", exc)
             return None
 
-    def run_simulation(self, *, solution=None, run_plots=False):
+    def run_simulation(self, *, solution=None, run_plots=False, axes=None):
         """Execute the reel-in and transition simulations.
 
         Args:
@@ -410,6 +403,8 @@ class ReelinSimple:
                 it relies on the current pattern configuration.
             run_plots: When True, produce overview plots using Matplotlib.
         """
+        self.create_ri_dicts()
+        self.create_riro_dicts()
         phase_ri = self._run_parametrized_phase(
             label_prefix="a",
             depower=self.depower_ri,
@@ -417,23 +412,22 @@ class ReelinSimple:
             pattern_config=self.pattern_config_ri,
             phase_sym=True,
         )
-        fig = axes = None
-        if run_plots:
+
+        if run_plots and axes is None:
             fig, axes, _ = phase_ri.plot_overview_3d(
                 x_param="t",
                 variables=self.variables_to_plot,
+            )
+        elif run_plots and axes is not None:
+            phase_ri.plot_overview_3d(
+                x_param="t",
+                variables=self.variables_to_plot,
+                axes=axes,
             )
 
         elevation_riro = phase_ri.return_variable("angle_elevation")[-1]
         t_start = phase_ri.return_variable("t")[-1]
         r_start = phase_ri.return_variable("distance_radial")[-1]
-        self.pattern_config_riro["path_parameters"][
-            "elevation_start_riro"
-        ] = elevation_riro
-        self.pattern_config_riro["sim_parameters"]["end_angle"] = (
-            self.pattern_config["path_parameters"]["elevation_start_riro"]
-            - self.pattern_config["path_parameters"]["elevation_start_ro"]
-        )
 
         start_state = copy.deepcopy(self.start_state_riro)
         start_state["distance_radial"] = r_start
@@ -451,12 +445,13 @@ class ReelinSimple:
                 variables=self.variables_to_plot,
                 axes=axes,
             )
-        plt.show()
+        # plt.show()
 
         print(
             "final radial distance:",
             phase_riro.return_variable("distance_radial")[-1],
         )
+        return phase_ri, phase_riro
 
     def _run_parametrized_phase(
         self,
