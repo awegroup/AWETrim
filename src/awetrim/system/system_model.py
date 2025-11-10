@@ -40,7 +40,10 @@ class SystemModel(KiteKinematics):
         if self.steering_control not in ["asymmetric", "roll"]:
             raise ValueError("Invalid steering_control. Choose 'asymmetric' or 'roll'.")
 
-        # if quasi_steady:
+        if quasi_steady:
+            self.timeder_speed_tangential = 0
+            #     if neglect_radial_acceleration:
+            self.timeder_speed_radial = 0
         #     self.timeder_angle_roll = 0
         #     self.timeder_angle_pitch = 0
         #     self.timeder_angle_yaw = 0
@@ -48,9 +51,7 @@ class SystemModel(KiteKinematics):
         #     self.acceleration_angle_pitch = 0
         #     self.acceleration_angle_yaw = 0
         self.timeder_length_tether = self.speed_radial
-        #     self.timeder_speed_tangential = 0
-        #     if neglect_radial_acceleration:
-        #         self.timeder_speed_radial = 0
+
         # else:
         #     self.timeder_length_tether = ca.MX.sym("timeder_length_tether")
 
