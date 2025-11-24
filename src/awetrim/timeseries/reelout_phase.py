@@ -84,7 +84,7 @@ class Reelout:
             "speed_tangential",
             "tension_tether_ground",
             "angle_elevation",
-            "speed_radial",
+            "distance_radial",
         ]
         self._opti_params = {}
 

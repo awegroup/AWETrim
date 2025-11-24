@@ -70,13 +70,13 @@ class CycleSimple:
         start_state_ri = self.reelin.start_state_ri.copy()
         start_state_ri["distance_radial"] = vars_ro["distance_radial"][-1]
         # TODO: ADD ELEVATION SYNC
-        # pattern_config_ri = self.reelin.pattern_config_ri.copy()
-        # pattern_config_ri["path_parameters"]["elevation_start_ri"] = obj_ro[
-        #     "angle_elevation_end"
-        # ]
-        # pattern_config_ri["path_parameters"]["elevation_start_ro"] = obj_ro[
-        #     "angle_elevation_start"
-        # ]
+        pattern_config_ri = self.reelin.pattern_config_ri.copy()
+        pattern_config_ri["path_parameters"]["elevation_start_ri"] = obj_ro[
+            "angle_elevation_end"
+        ]
+        pattern_config_ri["path_parameters"]["elevation_start_ro"] = obj_ro[
+            "angle_elevation_start"
+        ]
         opti, vars_ri, obj_ri, params_ri = self.reelin.get_opti_components(
             optimization_dict=optimization_dict,
             opti=opti,

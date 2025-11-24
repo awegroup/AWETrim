@@ -48,7 +48,7 @@ RADIAL_PARAMETERS = {
     "offset_winch_ro": 0,  # m/s
 }
 
-N = 6  # Number of half eight loops
+N = 4  # Number of half eight loops
 SIM_PARAMETERS = {
     "start_time": 0,
     "end_time": 35,

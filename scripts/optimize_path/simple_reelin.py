@@ -38,7 +38,7 @@ RADIAL_PARAMETERS = {
     "softminus": True,
     "softminus_beta": 1e-3,
     "slope_winch_ri": 1000,
-    "offset_winch_ri": -7,
+    "offset_winch_ri": -5,
 }
 
 REELIN_CONFIG = {

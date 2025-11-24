@@ -23,7 +23,7 @@ import argparse
 WIND_CONFIG = {
     "speed_wind_at_100": 10,
     "z0": 0.05,
-    "model_type": "logarithmic",
+    "model_type": "uniform",
 }
 
 
