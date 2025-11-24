@@ -3,7 +3,7 @@ import numpy as np
 DEFAULT_BOUNDS = {
     "tension_tether_ground": [0, 1e12],
     "input_steering": [-3, 3],
-    "s_dot": [-10, 30],
+    "s_dot": [0, 30],
     "s_ddot": [-100, 100],
     "speed_tangential": [0, 400],
     "angle_roll": [-np.pi / 2, np.pi / 2],
@@ -128,10 +128,10 @@ DEFAULT_OPTI_LIMITS = {
     "speed_radial": (-10, 10),
     "distance_radial": (100, 360),
     "k_vr": (0.5, 1.5),
-    "slope_winch_ro": (2000, 20000),  # Range for slope in winch model
+    "slope_winch_ro": (400, 40000),  # Range for slope in winch model
     "offset_winch_ro": (-6, 0),  # Range for offset in winch model
     "slope_winch_ri": (100, 4000),  # Range for slope in winch model
-    "offset_winch_ri": (-10, -3),  # Range for offset in winch model
+    "offset_winch_ri": (-20, -3),  # Range for offset in winch model
     # "max_tether_force": (20000, 50000),  # Range for max tether force in winch model
     "end_angle": (0.6, 10),
     "elevation_start_riro": (np.radians(30), np.radians(120)),

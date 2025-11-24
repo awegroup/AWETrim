@@ -27,6 +27,7 @@ import matplotlib.pyplot as plt
 
 from awetrim.timeseries.reelin_phase import ReelinSimple
 from awetrim.timeseries.reelout_phase import Reelout
+import numpy as np
 
 
 class CycleSimple:
@@ -326,6 +327,19 @@ class CycleSimple:
         total_time_ri = phase_ri.total_time
         energy_riro = phase_riro.energy
         total_time_riro = phase_riro.total_time
+
+        # lift_ro = phase_ro.return_variable("lift_coefficient")
+        # drag_ro = phase_ro.return_variable("drag_coefficient")
+        # print(f"Reel-out average lift coefficient: {np.mean(lift_ro):.3f}")
+        # print(f"Reel-out average drag coefficient: {np.mean(drag_ro):.3f}")
+        # lift_ri = phase_ri.return_variable("lift_coefficient")
+        # drag_ri = phase_ri.return_variable("drag_coefficient")
+        # print(f"Reel-in average lift coefficient: {np.mean(lift_ri):.3f}")
+        # print(f"Reel-in average drag coefficient: {np.mean(drag_ri):.3f}")
+        # lift_riro = phase_riro.return_variable("lift_coefficient")
+        # drag_riro = phase_riro.return_variable("drag_coefficient")
+        # print(f"Transition average lift coefficient: {np.mean(lift_riro):.3f}")
+        # print(f"Transition average drag coefficient: {np.mean(drag_riro):.3f}")
 
         # Print out the results
         cycle_power = (energy_ro + energy_ri + energy_riro) / (

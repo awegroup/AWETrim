@@ -112,7 +112,7 @@ class ReelinSimple:
             "s": 0,
             "s_dot": 0.2,
             "input_steering": 0,
-            "tension_tether_ground": 1e8,
+            "tension_tether_ground": 1e12,
             "distance_radial": distance_radial_start,
             "speed_radial": -3,
         }
@@ -146,11 +146,11 @@ class ReelinSimple:
         self.start_state_riro = {
             "t": 0,
             "s": 0,
-            "s_dot": 0.2,
+            "s_dot": 0.5,
             "input_steering": 0,
-            "tension_tether_ground": 1e8,
+            "tension_tether_ground": 1e12,
             "distance_radial": distance_radial_start,
-            "speed_radial": -6,
+            "speed_radial": -3,
         }
         self.pattern_config_riro = {
             "pattern_type": "transition_simple",
