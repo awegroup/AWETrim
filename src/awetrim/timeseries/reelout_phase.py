@@ -141,7 +141,7 @@ class Reelout:
             "distance_radial": self.pattern_config["path_parameters"][
                 "distance_radial_start"
             ],
-            "speed_radial": 0,  # Positive for reel-out
+            "speed_radial": 1,  # Positive for reel-out
         }
 
         pattern_config_opti = copy.deepcopy(self.pattern_config)
@@ -347,7 +347,7 @@ class Reelout:
         start_state = {
             "t": 0,
             "s": 0,
-            "s_dot": 2,
+            "s_dot": 4,
             "input_steering": 0,
             "tension_tether_ground": 1e10,
             "distance_radial": pattern_config["path_parameters"][

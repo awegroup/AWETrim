@@ -200,8 +200,8 @@ if __name__ == "__main__":
         "reeling_strategy": "force",  # "force" or "constant"
         "force_model": "quadratic",  # "linear" or "quadratic"
         "reeling_speed": 0,  # m/s, only for constant reeling
-        "max_tether_force": 25e3,  # N, only for force reeling
-        "min_tether_force": 4000.0,  # N, only for force reeling
+        "max_tether_force": 15000,  # N, only for force reeling
+        "min_tether_force": 1500.0,  # N, only for force reeling
         "softplus": True,
         "softplus_beta": 1e-4,  # bigger is sharper
         "softminus": True,

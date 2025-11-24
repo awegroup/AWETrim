@@ -99,7 +99,7 @@ DEFAULT_WINCH_CONFIG = {
 # defaults.py (This is your file containing the limits)
 DEFAULT_OPTI_LIMITS = {
     "tension_tether_ground": (1e-2, 1e9),  # Range for tension_tether_ground: 0 to 1e9
-    "input_steering": (-1.1, 1.1),  # Range for input_steering: -pi/2 to pi/2
+    "input_steering": (-1, 1),  # Range for input_steering: -pi/2 to pi/2
     "s_dot": (0.01, 40),  # Range for s_dot: 0 to 30
     "s_ddot": (-100, 100),  # Range for s_ddot: -100 to 100
     "s": (0, 300),  # Range for s: 0 to 10
@@ -107,7 +107,7 @@ DEFAULT_OPTI_LIMITS = {
     # HElix
     "kappa": (0, 1),  # Range for kappa: 0 to 1
     # "vr": (-10, 10),      # Range for vr: 0 to 100
-    "beta0": (np.radians(20), np.radians(50)),  # Range for beta: 20 ot 50 degrees
+    "beta0": (np.radians(10), np.radians(50)),  # Range for beta: 20 ot 50 degrees
     "d0": (40, 500),  # Range for d0: 0 to 100
     # Figure Eight
     "ry": (60, 180),  # Range for ry: 0 to 100
@@ -131,7 +131,7 @@ DEFAULT_OPTI_LIMITS = {
     "slope_winch_ro": (2000, 20000),  # Range for slope in winch model
     "offset_winch_ro": (-6, 0),  # Range for offset in winch model
     "slope_winch_ri": (100, 4000),  # Range for slope in winch model
-    "offset_winch_ri": (-8, 0),  # Range for offset in winch model
+    "offset_winch_ri": (-10, -5),  # Range for offset in winch model
     # "max_tether_force": (20000, 50000),  # Range for max tether force in winch model
     "end_angle": (0.6, 10),
     "elevation_start_riro": (np.radians(30), np.radians(120)),

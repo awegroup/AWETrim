@@ -21,7 +21,7 @@ import argparse
 
 # helper to dynamically import the script modules by path
 WIND_CONFIG = {
-    "speed_wind_at_100": 10,
+    "speed_wind_at_100": 12,
     "z0": 0.05,
     "model_type": "uniform",
 }
@@ -87,7 +87,9 @@ def main(run_plots: bool = False):
         depower=0,
     )
 
-    # reelout.run_simulation_opti(optimization_params=optimization_params, target="power")
+    # reelout.run_simulation_opti(
+    #     optimization_params=optimization_params, target="energy"
+    # )
     reelin = ReelinSimple(
         system_model=system_model,
         pattern_config=reelin_mod.REELIN_CONFIG,

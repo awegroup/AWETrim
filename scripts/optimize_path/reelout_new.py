@@ -13,42 +13,42 @@ from awetrim.timeseries.reelout_phase import Reelout
 # Configuration knobs – tweak these values to experiment with the setup.
 # ---------------------------------------------------------------------------
 PHYSICAL_CONFIG = {
-    "mass_wing": 61,
-    "mass_kcu": 30,
-    "area_wing": 46.85,
-    "tether_diameter": 0.014,
+    "mass_wing": 15,
+    "mass_kcu": 15,
+    "area_wing": 19.75,
+    "tether_diameter": 0.01,
 }
 
 PATH_PARAMETERS = {
-    "r0": 230,
-    "az_amp0": 0.4814306739489051 * 1.1,
-    "beta_amp0": 0.08726645323472254 * 1.1,
+    "r0": 180,
+    "az_amp0": 0.251445,
+    "beta_amp0": 0.0872665,
     "beta_coeffs": np.array(
-        [0.23282922, -1.0000000, 0.07106071, -0.8524058, 0.46303606]
+        [0.36348566, -0.74089438, 0.09136024, -0.39742969, -0.3705854]
     ),
     "az_coeffs": [0, 0, 0, 0, 0],
     "kbeta": 0,
-    "beta0": 0.45090333335903443 * 1.1,
+    "beta0": 0.436688,
     "kappa": 0,
     "downloops": True,
-    "distance_radial_start": 230,
+    "distance_radial_start": 180,
 }
 
 RADIAL_PARAMETERS = {
     "reeling_strategy": "force",  # "force" or "constant"
     "force_model": "quadratic",  # "linear" or "quadratic"
     "reeling_speed": 0.0,  # m/s, only for constant reeling
-    "max_tether_force": 25000,  # N, only for force reeling
-    "min_tether_force": 4000,  # N, only for force reeling
+    "max_tether_force": 15000,  # N, only for force reeling
+    "min_tether_force": 1500,  # N, only for force reeling
     "softplus": True,
     "softplus_beta": 1e-4,
     "softminus": True,
     "softminus_beta": 1e-3,
-    "slope_winch_ro": 8000,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
+    "slope_winch_ro": 10000,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
     "offset_winch_ro": 0,  # m/s
 }
 
-N = 5  # Number of half eight loops
+N = 14  # Number of half eight loops
 SIM_PARAMETERS = {
     "start_time": 0,
     "end_time": 35,
@@ -64,12 +64,12 @@ REELOUT_CONFIG = {
     "sim_parameters": SIM_PARAMETERS,
 }
 
-AERO_INPUT_FILE = Path("data/LEI-V9-KITE/v9_aero_input.json")
+AERO_INPUT_FILE = Path("data/LEI-V3-KITE/v3_aero_input.json")
 
 WIND_CONFIG = {
-    "speed_wind_at_100": 14,
+    "speed_wind_at_100": 10,
     "z0": 0.002,
-    "model_type": "logarithmic",
+    "model_type": "uniform",
 }
 
 
@@ -150,7 +150,7 @@ def main(run_plots=False):
         "az_amp0",
         "beta_amp0",
         "beta0",
-        "slope_winch_ro",
+        # "slope_winch_ro",
         # "offset",
         "beta_coeffs",
         # "kappa",

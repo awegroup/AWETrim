@@ -155,11 +155,11 @@ class CycleSimple:
             {
                 "ipopt": {
                     "bound_relax_factor": 1e-8,
-                    "tol": 1e-6,
+                    "tol": 1e-5,
                     # "acceptable_iter": 3,
-                    "acceptable_tol": 1e-6,
-                    "constr_viol_tol": 1e-6,
-                    "dual_inf_tol": 1e-6,
+                    "acceptable_tol": 1e-5,
+                    "constr_viol_tol": 1e-5,
+                    "dual_inf_tol": 1e-5,
                     "hessian_approximation": "limited-memory",
                     "mu_strategy": "adaptive",
                 }

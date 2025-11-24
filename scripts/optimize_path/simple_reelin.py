@@ -13,32 +13,32 @@ from awetrim.timeseries.reelin_phase import ReelinSimple
 # Configuration knobs – tweak these values to experiment with the setup.
 # ---------------------------------------------------------------------------
 PHYSICAL_CONFIG = {
-    "mass_wing": 61,
-    "mass_kcu": 30,
-    "area_wing": 46.85,
-    "tether_diameter": 0.014,
+    "mass_wing": 15,
+    "mass_kcu": 15,
+    "area_wing": 19.75,
+    "tether_diameter": 0.01,
 }
 
 PATH_PARAMETERS = {
     "elevation_start_ri": np.radians(30),
-    "elevation_start_riro": np.radians(70),
+    "elevation_start_riro": np.radians(80),
     "elevation_start_ro": np.radians(30),
     "distance_radial_start": 360,
-    "distance_radial_end": 230,
+    "distance_radial_end": 180,
 }
 
 RADIAL_PARAMETERS = {
     "reeling_strategy": "force",
     "force_model": "quadratic",
     "reeling_speed": 1.0,
-    "max_tether_force": 25e4,
-    "min_tether_force": 4000.0,
+    "max_tether_force": 15000,
+    "min_tether_force": 1500.0,
     "softplus": False,
     "softplus_beta": 1e-4,
     "softminus": True,
     "softminus_beta": 1e-3,
-    "slope_winch_ri": 1000,
-    "offset_winch_ri": -5,
+    "slope_winch_ri": 562,
+    "offset_winch_ri": -8,
 }
 
 REELIN_CONFIG = {
@@ -49,7 +49,7 @@ REELIN_CONFIG = {
     },
 }
 
-AERO_INPUT_FILE = Path("data/LEI-V9-KITE/v9_aero_input.json")
+AERO_INPUT_FILE = Path("data/LEI-V3-KITE/v3_aero_input.json")
 
 
 def load_aero_input(path: Path = AERO_INPUT_FILE):
@@ -124,7 +124,13 @@ def main(run_plots=False):
 
     reelin.run_simulation(run_plots=run_plots)
     plt.show()
-    solution = reelin.run_simulation_opti()
+    optimization_params = [
+        "elevation_start_riro",
+        # "offset_winch_ri",
+    ]  # , "slope_winch_ri"]
+    solution = reelin.run_simulation_opti(
+        optimization_params=optimization_params, target="zero"
+    )
     reelin.run_simulation(solution=solution, run_plots=run_plots)
     return reelin
 
