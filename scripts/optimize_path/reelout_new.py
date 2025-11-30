@@ -14,22 +14,22 @@ from awetrim.timeseries.reelout_phase import Reelout
 # ---------------------------------------------------------------------------
 PHYSICAL_CONFIG = {
     "mass_wing": 15,
-    "mass_kcu": 15,
+    "mass_kcu": 0,
     "area_wing": 19.75,
     "tether_diameter": 0.006,
 }
 
 PATH_PARAMETERS = {
     "r0": 200,
-    "az_amp0": np.radians(20),
-    "beta_amp0": 0.089,
-    "beta_coeffs": np.array([0, 0, 0, 0, 0]),
-    "az_coeffs": [0, 0, 0, 0, 0],
+    "az_amp0": 0.0956087469720186,
+    "beta_amp0": 0.04317,
+    "beta_coeffs": np.array([0, 0]),
+    "az_coeffs": [-0.48624925, 0, 0, 0, 0],
     "kbeta": 0,
-    "beta0": 0.33105746800957997,
+    "beta0": 0.31,
     "kappa": 0,
-    "downloops": True,
-    "distance_radial_start": 200,
+    # "downloops": True,|
+    # "distance_radial_start": 200,
 }
 
 RADIAL_PARAMETERS = {
@@ -42,7 +42,7 @@ RADIAL_PARAMETERS = {
     "softplus_beta": 1e-4,
     "softminus": True,
     "softminus_beta": 1e-3,
-    "slope_winch_ro": 6000,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
+    "slope_winch_ro": 1500,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
     "offset_winch_ro": 0,  # m/s
 }
 
@@ -50,13 +50,13 @@ N = 2  # Number of half eight loops
 SIM_PARAMETERS = {
     "start_time": 0,
     "end_time": 35,
-    "start_angle": 0,
-    "end_angle": N * np.pi,
-    "n_points": 400,
+    "start_angle": np.pi / 2,
+    "end_angle": N * np.pi + np.pi / 2,
+    "n_points": 200,
 }
 
 REELOUT_CONFIG = {
-    "pattern_type": "cst_lissajous",
+    "pattern_type": "cst_helix",
     "path_parameters": PATH_PARAMETERS,
     "radial_parameters": RADIAL_PARAMETERS,
     "sim_parameters": SIM_PARAMETERS,
@@ -65,9 +65,9 @@ REELOUT_CONFIG = {
 AERO_INPUT_FILE = Path("data/LEI-V3-KITE/v3_aero_input.json")
 
 WIND_CONFIG = {
-    "speed_wind_at_200": 10,
-    "z0": 0.01,
-    "model_type": "uniform",
+    "speed_wind_at_200": 9,
+    "z0": 0.1,
+    "model_type": "logarithmic",
 }
 
 
@@ -148,20 +148,20 @@ def main(run_plots=False):
         "az_amp0",
         "beta_amp0",
         "beta0",
-        # "slope_winch_ro",
+        "slope_winch_ro",
         # "offset",
-        "beta_coeffs",
-        # "kappa",
+        # "beta_coeffs",
+        "az_coeffs",
     ]
     phase, axes = reelout.run_simulation(run_plots=run_plots)
     lift = phase.return_variable("lift_coefficient")
     print("Average lift coefficient:", np.mean(lift))
     drag = phase.return_variable("drag_coefficient")
     print("Average drag coefficient:", np.mean(drag))
-
+    print(phase.energy_metrics())
     solution = reelout.run_simulation_opti(optimization_params=optimization_params)
     phase, _ = reelout.run_simulation(run_plots=run_plots, axes=axes)
-    print(phase.energy_metrics())
+
     # reelout.pattern_config["path_parameters"]["kappa"] = 1
     # phase, _ = reelout.run_simulation(run_plots=run_plots, axes=axes)
     print(phase.energy_metrics())

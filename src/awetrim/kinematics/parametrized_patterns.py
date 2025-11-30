@@ -853,21 +853,21 @@ if __name__ == "__main__":
 class CST_Helix(ParametrizedPatternsAngles):
     def __init__(
         self,
-        omega,
         r0,
         az_amp0,
         beta_amp0,
         beta0,
         beta_coeffs,
         az_coeffs,
+        omega=1.0,
         kappa=0.0,
         kbeta=0.0,
         width_phi=0.5,
         width_beta=0.5,
         left_first=True,
         normalize_bumps=False,
-        repeat_phi=False,
-        repeat_beta=False,
+        repeat_phi=True,
+        repeat_beta=True,
         k_vr=6300,
     ):  # <- only flags
         super().__init__(
