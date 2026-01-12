@@ -2,8 +2,8 @@ import numpy as np
 
 DEFAULT_BOUNDS = {
     "tension_tether_ground": [0, 1e12],
-    "input_steering": [-3, 3],
-    "s_dot": [0, 30],
+    "input_steering": [-1.3, 1.3],
+    "s_dot": [1e-4, 30],
     "s_ddot": [-100, 100],
     "speed_tangential": [0, 400],
     "angle_roll": [-np.pi / 2, np.pi / 2],
@@ -11,9 +11,10 @@ DEFAULT_BOUNDS = {
     "angle_pitch": [-np.pi / 4, np.pi / 4],
     "angle_yaw": [-np.pi / 4, np.pi / 4],
     "angle_elevation": [-np.pi, np.pi],
-    "speed_radial": [-10, 10],
+    "speed_radial": [-10, 20],
     "length_tether": [0, 1000],
-    "distance_radial": [0, 1000],
+    "distance_radial": [0, 2000],
+    "speed_friction": [0, 5],
 }
 
 PLOT_LABELS = {
@@ -98,16 +99,18 @@ DEFAULT_WINCH_CONFIG = {
 
 # defaults.py (This is your file containing the limits)
 DEFAULT_OPTI_LIMITS = {
-    "tension_tether_ground": (1e-2, 1e9),  # Range for tension_tether_ground: 0 to 1e9
+    "tension_tether_ground": (300, 1e9),  # Range for tension_tether_ground: 0 to 1e9
     "input_steering": (-1, 1),  # Range for input_steering: -pi/2 to pi/2
     "s_dot": (0.0, 40),  # Range for s_dot: 0 to 30
     "s_ddot": (-100, 100),  # Range for s_ddot: -100 to 100
     "s": (0, 300),  # Range for s: 0 to 10
-    "angle_elevation": (0.0, np.radians(120)),  # Range for angle_elevation: 0 to pi
+    "angle_elevation": (0.0, np.radians(160)),  # Range for angle_elevation: 0 to pi
     # HElix
     "kappa": (0, 1),  # Range for kappa: 0 to 1
+    "kbeta": (0, 1),  # Range for kbeta: 0 to 2
     # "vr": (-10, 10),      # Range for vr: 0 to 100
-    "beta0": (np.radians(10), np.radians(50)),  # Range for beta: 20 ot 50 degrees
+    "beta0": (np.radians(12), np.radians(50)),  # Range for beta: 20 ot 50 degrees
+    "phi0": (np.radians(-5), np.radians(5)),  # Range for phi0: 0 to 360 degrees
     "d0": (40, 500),  # Range for d0: 0 to 100
     # Figure Eight
     "ry": (60, 180),  # Range for ry: 0 to 100
@@ -117,24 +120,30 @@ DEFAULT_OPTI_LIMITS = {
     "vr": (-10, 10),  # Range for vr: 0 to 100
     "az_amp0": (
         np.radians(5),
-        np.radians(50),
+        np.radians(40),
     ),  # Range for azimuth amplitude: 10 to 30 degrees
     "beta_amp0": (
         np.radians(2),
-        np.radians(30),
+        np.radians(20),
     ),  # Range for beta amplitude: 5 to 20 degrees
     "beta_coeffs": (-1, 1),  # Range for beta coefficients: -1 to 1
     "az_coeffs": (-1, 1),  # Range for azimuth coefficients: -1 to 1
     "speed_radial": (-10, 10),
-    "distance_radial": (100, 360),
+    "distance_radial": (100, 2000),
     "k_vr": (0.5, 1.5),
-    "slope_winch_ro": (400, 10000),  # Range for slope in winch model
+    "slope_winch_ro": (200, 10000),  # Range for slope in winch model
     "offset_winch_ro": (-6, 0),  # Range for offset in winch model
-    "slope_winch_ri": (100, 4000),  # Range for slope in winch model
-    "offset_winch_ri": (-12, -3),  # Range for offset in winch model
+    "slope_winch_ri": (100, 8000),  # Range for slope in winch model
+    "offset_winch_ri": (-16, 0),  # Range for offset in winch model
     # "max_tether_force": (20000, 50000),  # Range for max tether force in winch model
     "end_angle": (0.6, 30),
-    "elevation_start_riro": (np.radians(30), np.radians(120)),
+    "elevation_start_riro": (np.radians(30), np.radians(160)),
+    "height": (50, 400),
+    "r0": (180, 300),
+    "steering_rate": (-0.5, 0.5),
+    "input_depower": (-1, 1.0),
+    "speed_tangential": (10, 400),
+    "angle_of_attack": (np.radians(0), np.radians(14)),
 }
 
 
