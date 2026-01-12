@@ -73,7 +73,7 @@ class Wing:
                         if coeff_key == "CL":
                             C_L += coef * value
                         elif coeff_key == "CD":
-                            C_D += coef * ca.fabs(value)
+                            C_D += coef * ca.sqrt((value) ** 2 + 1e-10)
                         elif coeff_key == "CS":
                             C_S += coef * value
             return C_L, C_D
@@ -104,14 +104,26 @@ class Wing:
 
     @property
     def pitch_bridle(self):
-        force_bridle = (
+        tow_line = (
             transformation_C_from_A(
                 self.angle_pitch_aerodynamic, self.angle_yaw_aerodynamic, 0
             ).T
             @ self.force_tether_at_kite
         )
-        tow_line = project_onto_plane(force_bridle, ca.vertcat(0, 1, 0))
+        # tow_line = project_onto_plane(force_bridle, ca.vertcat(0, 1, 0))
         angle_bridle = ca.atan2(tow_line[0], -tow_line[2] + 1e-6)
+        return angle_bridle
+
+    @property
+    def roll_bridle(self):
+        tow_line = (
+            transformation_C_from_A(
+                self.angle_pitch_aerodynamic, self.angle_yaw_aerodynamic, 0
+            ).T
+            @ self.force_tether_at_kite
+        )
+        # tow_line = project_onto_plane(force_bridle, ca.vertcat(1, 0, 0))
+        angle_bridle = ca.atan2(-tow_line[1], -tow_line[2] + 1e-6)
         return angle_bridle
 
     @property
@@ -120,11 +132,11 @@ class Wing:
         Compute the angle of attack based on the air velocity vector and tether angle.
         """
 
-        if self._angle_of_attack is None:
+        # if self._angle_of_attack is None:
 
-            self._angle_of_attack = (
-                self.angle_pitch_aerodynamic + self.angle_pitch_depower
-            )
+        #     self._angle_of_attack = (
+        #         self.angle_pitch_aerodynamic + self.angle_pitch_depower
+        #     )
 
         self._angle_of_attack = self.pitch_bridle + self.angle_pitch_depower
 
@@ -173,11 +185,15 @@ class Wing:
 
         va_tau = ca.sqrt(vec_va[0] ** 2 + vec_va[1] ** 2)
         lift_direction = ca.vertcat(
-            va * vec_va[1] * ca.sin(self.angle_roll_aerodynamic)
-            - vec_va[2] * vec_va[0] * ca.cos(self.angle_roll_aerodynamic),
-            -va * vec_va[0] * ca.sin(self.angle_roll_aerodynamic)
-            - vec_va[2] * vec_va[1] * ca.cos(self.angle_roll_aerodynamic),
-            va_tau**2 * ca.cos(self.angle_roll_aerodynamic),
+            va * vec_va[1] * ca.sin(self.angle_roll_aerodynamic + self.roll_bridle)
+            - vec_va[2]
+            * vec_va[0]
+            * ca.cos(self.angle_roll_aerodynamic + self.roll_bridle),
+            -va * vec_va[0] * ca.sin(self.angle_roll_aerodynamic + self.roll_bridle)
+            - vec_va[2]
+            * vec_va[1]
+            * ca.cos(self.angle_roll_aerodynamic + self.roll_bridle),
+            va_tau**2 * ca.cos(self.angle_roll_aerodynamic + self.roll_bridle),
         ) / (va * va_tau + 1e-10)
         drag_direction = vec_va / (va + 1e-10)
         # Aerodynamic forces
@@ -350,12 +366,12 @@ class Kite(Wing):
     def acceleration_external(self):
         acc = self.force_external / (self.mass_wing + self.mass_kcu)
         vtau = self.speed_tangential
-
-        acc[1] = ca.if_else(
-            vtau > 1e-3,
-            -acc[1] / vtau,
-            -ca.sign(acc[1] + 1e-6) * 1,
-        )
+        acc[1] = -acc[1] / (vtau + 1e-6)
+        # acc[1] = ca.if_else(
+        #     vtau > 1e-3,
+        #     -acc[1] / vtau,
+        #     -ca.sign(acc[1] + 1e-6) * 1,
+        # )
         return acc
 
     @property
