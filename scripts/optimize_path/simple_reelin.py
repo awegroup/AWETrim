@@ -8,6 +8,7 @@ from awetrim.environment.Wind import Wind
 from awetrim.system.kite import Kite
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.timeseries.reelin_phase import ReelinSimple
+from awetrim.system.system_model import create_system_model_from_yaml
 
 # ---------------------------------------------------------------------------
 # Configuration knobs – tweak these values to experiment with the setup.
@@ -70,50 +71,16 @@ def build_wind_model(speed_wind_at_100=6, z0=0.0002, model_type="uniform"):
     return wind_model
 
 
-def define_system(
-    tether_diameter,
-    mass_wing,
-    mass_kcu,
-    area_wing,
-    aero_input,
-    wind_model,
-):
-    """Instantiate a SystemModel with the supplied components."""
-
-    tether = RigidLumpedTether(diameter=tether_diameter)
-    kite = Kite(
-        mass_wing=mass_wing,
-        mass_kcu=mass_kcu,
-        area_wing=area_wing,
-        aero_input=aero_input,
-        steering_control="asymmetric",
-    )
-
-    model = SystemModel(
-        dof=3,
-        kite=kite,
-        tether=tether,
-        wind_model=wind_model,
-    )
-    return model
-
-
-def create_system_model():
-    """Assemble the system model using the configuration dictionaries above."""
-    aero_input = load_aero_input()
-    wind_model = build_wind_model()
-    return define_system(
-        tether_diameter=PHYSICAL_CONFIG["tether_diameter"],
-        mass_wing=PHYSICAL_CONFIG["mass_wing"],
-        mass_kcu=PHYSICAL_CONFIG["mass_kcu"],
-        area_wing=PHYSICAL_CONFIG["area_wing"],
-        aero_input=aero_input,
-        wind_model=wind_model,
-    )
-
-
 def main(run_plots=False):
-    system_model = create_system_model()
+    system_model = create_system_model_from_yaml(
+        yaml_path=Path("data/LEI-V3-KITE/v3_kite_input.yaml"),
+    )
+    wind_model = build_wind_model(
+        speed_wind_at_100=8,
+        z0=0.01,
+        model_type="logarithmic",
+    )
+    system_model.wind = wind_model
     reelin = ReelinSimple(
         system_model=system_model,
         pattern_config=REELIN_CONFIG,
