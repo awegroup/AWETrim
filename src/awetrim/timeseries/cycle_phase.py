@@ -60,11 +60,11 @@ class CycleSimple:
         if optimization_params:
             for var in optimization_params:
                 optimization_dict[var] = opti.variable()
-            if "coeffs" in var:
-                num_coeffs = len(
-                    self.reelout.pattern_config["path_parameters"].get(var, [])
-                )
-                optimization_dict[var] = opti.variable(num_coeffs)
+                if "coeffs" in var:
+                    num_coeffs = len(
+                        self.reelout.pattern_config["path_parameters"].get(var, [])
+                    )
+                    optimization_dict[var] = opti.variable(num_coeffs)
         opti, vars_ro, obj_ro, params_ro = self.reelout.get_opti_components(
             optimization_dict=optimization_dict, opti=opti
         )
@@ -88,7 +88,7 @@ class CycleSimple:
         # raise RuntimeError("rasi")
         opti.subject_to(
             vars_ri["distance_radial"][1][-1]
-            == self.reelout.pattern_config["path_parameters"]["distance_radial_start"]
+            == self.reelout.pattern_config["path_parameters"]["r0"]
         )
         # Merge dictionaries using reelin's helper (robust merging rules)
 
@@ -152,11 +152,11 @@ class CycleSimple:
             {
                 "ipopt": {
                     "bound_relax_factor": 1e-8,
-                    "tol": 1e-6,
+                    "tol": 1e-5,
                     # "acceptable_iter": 3,
-                    "acceptable_tol": 1e-6,
-                    "constr_viol_tol": 1e-6,
-                    "dual_inf_tol": 1e-6,
+                    "acceptable_tol": 1e-5,
+                    "constr_viol_tol": 1e-5,
+                    "dual_inf_tol": 1e-5,
                     "hessian_approximation": "limited-memory",
                     "mu_strategy": "adaptive",
                 }
@@ -272,6 +272,8 @@ class CycleSimple:
             distance_radial_start_ro = phase_ro.return_variable("distance_radial")[0]
             elevation_end_ro = phase_ro.return_variable("angle_elevation")[-1]
             elevation_start_ro = phase_ro.return_variable("angle_elevation")[0]
+            azimuth_end_ro = phase_ro.return_variable("angle_azimuth")[-1]
+            azimuth_start_ro = phase_ro.return_variable("angle_azimuth")[0]
             t_end_ro = phase_ro.return_variable("t")[-1]
         except Exception as exc:
             print("Failed to read final radial distance from reel-out phase:", exc)
@@ -291,6 +293,10 @@ class CycleSimple:
         self.reelin.pattern_config["path_parameters"][
             "elevation_start_ro"
         ] = elevation_start_ro
+        self.reelin.pattern_config["path_parameters"]["azimuth_start_riro"] = 0
+        self.reelin.pattern_config["path_parameters"][
+            "azimuth_start_ro"
+        ] = azimuth_start_ro
         self.reelin.pattern_config["sim_parameters"]["start_time"] = t_end_ro
         # 3) Optimize (only) the reel-in if requested
         reelin_phase = None
@@ -302,10 +308,10 @@ class CycleSimple:
             optimization_result = self.reelin.run_simulation_opti(
                 optimization_params=[
                     "elevation_start_riro",
-                    # "offset_winch_ri",
+                    "offset_winch_ri",
                     # "slope_winch_ri",
                 ],
-                target="zero",
+                target="energy",
             )
             # except Exception as exc:
             #     print("Reel-in optimization failed:", exc)
