@@ -71,7 +71,12 @@ def extract_coefficients(aero_input: dict) -> tuple:
     return alpha_range, cl_values, cd_values
 
 
-def find_optimal_aoa(alpha_range: np.ndarray, cl_values: np.ndarray, cd_values: np.ndarray, cd_tether: float = 0.0) -> dict:
+def find_optimal_aoa(
+    alpha_range: np.ndarray,
+    cl_values: np.ndarray,
+    cd_values: np.ndarray,
+    cd_tether: float = 0.0,
+) -> dict:
     """Find angle of attack for maximum CL/CD and CL³/CD².
 
     Parameters
@@ -92,22 +97,22 @@ def find_optimal_aoa(alpha_range: np.ndarray, cl_values: np.ndarray, cd_values: 
     """
     # Add tether drag to total drag
     cd_total = cd_values + cd_tether
-    
+
     # Avoid division by zero
     cd_safe = np.where(cd_total > 1e-6, cd_total, 1e-6)
-    
+
     # CL/CD (glide ratio)
     cl_cd = cl_values / cd_safe
     idx_max_cl_cd = np.argmax(cl_cd)
     aoa_max_cl_cd = alpha_range[idx_max_cl_cd]
     max_cl_cd = cl_cd[idx_max_cl_cd]
-    
+
     # CL³/CD² (power metric for crosswind kites)
     cl3_cd2 = (cl_values**3) / (cd_safe**2)
     idx_max_cl3_cd2 = np.argmax(cl3_cd2)
     aoa_max_cl3_cd2 = alpha_range[idx_max_cl3_cd2]
     max_cl3_cd2 = cl3_cd2[idx_max_cl3_cd2]
-    
+
     return {
         "aoa_max_cl_cd_rad": aoa_max_cl_cd,
         "aoa_max_cl_cd_deg": np.degrees(aoa_max_cl_cd),
@@ -139,46 +144,56 @@ def plot_polars(aero_input: dict, save_path: Path = None) -> None:
 
     # Find optimal angles without tether drag
     optimal = find_optimal_aoa(alpha_range, cl_values, cd_values, cd_tether=0.0)
-    
+
     # Find optimal angles with tether drag
     cd_tether = 0.03
-    optimal_with_tether = find_optimal_aoa(alpha_range, cl_values, cd_values, cd_tether=cd_tether)
-    
-    print("\n" + "="*70)
+    optimal_with_tether = find_optimal_aoa(
+        alpha_range, cl_values, cd_values, cd_tether=cd_tether
+    )
+
+    print("\n" + "=" * 70)
     print("OPTIMAL ANGLE OF ATTACK ANALYSIS")
-    print("="*70)
-    
+    print("=" * 70)
+
     print(f"\n{'WITHOUT TETHER DRAG (CD_tether = 0)':^70}")
-    print("-"*70)
+    print("-" * 70)
     print(f"\nMaximum CL/CD (glide ratio):")
-    print(f"  AoA: {optimal['aoa_max_cl_cd_deg']:.2f}° ({optimal['aoa_max_cl_cd_rad']:.4f} rad)")
+    print(
+        f"  AoA: {optimal['aoa_max_cl_cd_deg']:.2f}° ({optimal['aoa_max_cl_cd_rad']:.4f} rad)"
+    )
     print(f"  CL/CD: {optimal['max_cl_cd']:.2f}")
     print(f"  CL: {optimal['cl_at_max_cl_cd']:.3f}")
     print(f"  CD: {optimal['cd_at_max_cl_cd']:.3f}")
-    
+
     print(f"\nMaximum CL³/CD² (power metric):")
-    print(f"  AoA: {optimal['aoa_max_cl3_cd2_deg']:.2f}° ({optimal['aoa_max_cl3_cd2_rad']:.4f} rad)")
+    print(
+        f"  AoA: {optimal['aoa_max_cl3_cd2_deg']:.2f}° ({optimal['aoa_max_cl3_cd2_rad']:.4f} rad)"
+    )
     print(f"  CL³/CD²: {optimal['max_cl3_cd2']:.2f}")
     print(f"  CL: {optimal['cl_at_max_cl3_cd2']:.3f}")
     print(f"  CD: {optimal['cd_at_max_cl3_cd2']:.3f}")
-    
+
     print(f"\n{'WITH TETHER DRAG (CD_tether = 0.03)':^70}")
-    print("-"*70)
+    print("-" * 70)
     print(f"\nMaximum CL/CD (glide ratio):")
-    print(f"  AoA: {optimal_with_tether['aoa_max_cl_cd_deg']:.2f}° ({optimal_with_tether['aoa_max_cl_cd_rad']:.4f} rad)")
+    print(
+        f"  AoA: {optimal_with_tether['aoa_max_cl_cd_deg']:.2f}° ({optimal_with_tether['aoa_max_cl_cd_rad']:.4f} rad)"
+    )
     print(f"  CL/CD: {optimal_with_tether['max_cl_cd']:.2f}")
     print(f"  CL: {optimal_with_tether['cl_at_max_cl_cd']:.3f}")
     print(f"  CD_wing: {optimal_with_tether['cd_at_max_cl_cd']:.3f}")
     print(f"  CD_total: {optimal_with_tether['cd_total_at_max_cl_cd']:.3f}")
-    
+
     print(f"\nMaximum CL³/CD² (power metric):")
-    print(f"  AoA: {optimal_with_tether['aoa_max_cl3_cd2_deg']:.2f}° ({optimal_with_tether['aoa_max_cl3_cd2_rad']:.4f} rad)")
+    print(
+        f"  AoA: {optimal_with_tether['aoa_max_cl3_cd2_deg']:.2f}° ({optimal_with_tether['aoa_max_cl3_cd2_rad']:.4f} rad)"
+    )
     print(f"  CL³/CD²: {optimal_with_tether['max_cl3_cd2']:.2f}")
     print(f"  CL: {optimal_with_tether['cl_at_max_cl3_cd2']:.3f}")
     print(f"  CD_wing: {optimal_with_tether['cd_at_max_cl3_cd2']:.3f}")
     print(f"  CD_total: {optimal_with_tether['cd_total_at_max_cl3_cd2']:.3f}")
-    
-    print("="*70 + "\n")
+
+    print("=" * 70 + "\n")
 
     # Convert to degrees for plotting
     alpha_deg = np.degrees(alpha_range)
@@ -187,8 +202,20 @@ def plot_polars(aero_input: dict, save_path: Path = None) -> None:
 
     # Plot CL
     axes[0, 0].plot(alpha_deg, cl_values, "b-", linewidth=2, label="CL")
-    axes[0, 0].axvline(x=optimal['aoa_max_cl_cd_deg'], color='orange', linestyle='--', alpha=0.7, label=f'Max CL/CD ({optimal["aoa_max_cl_cd_deg"]:.1f}°)')
-    axes[0, 0].axvline(x=optimal['aoa_max_cl3_cd2_deg'], color='red', linestyle='--', alpha=0.7, label=f'Max CL³/CD² ({optimal["aoa_max_cl3_cd2_deg"]:.1f}°)')
+    axes[0, 0].axvline(
+        x=optimal["aoa_max_cl_cd_deg"],
+        color="orange",
+        linestyle="--",
+        alpha=0.7,
+        label=f'Max CL/CD ({optimal["aoa_max_cl_cd_deg"]:.1f}°)',
+    )
+    axes[0, 0].axvline(
+        x=optimal["aoa_max_cl3_cd2_deg"],
+        color="red",
+        linestyle="--",
+        alpha=0.7,
+        label=f'Max CL³/CD² ({optimal["aoa_max_cl3_cd2_deg"]:.1f}°)',
+    )
     axes[0, 0].axhline(y=0, color="k", linestyle="--", alpha=0.3)
     axes[0, 0].axvline(x=0, color="k", linestyle="--", alpha=0.3)
     axes[0, 0].grid(True, alpha=0.3)
@@ -199,8 +226,20 @@ def plot_polars(aero_input: dict, save_path: Path = None) -> None:
 
     # Plot CD
     axes[0, 1].plot(alpha_deg, cd_values, "r-", linewidth=2, label="CD")
-    axes[0, 1].axvline(x=optimal['aoa_max_cl_cd_deg'], color='orange', linestyle='--', alpha=0.7, label=f'Max CL/CD ({optimal["aoa_max_cl_cd_deg"]:.1f}°)')
-    axes[0, 1].axvline(x=optimal['aoa_max_cl3_cd2_deg'], color='red', linestyle='--', alpha=0.7, label=f'Max CL³/CD² ({optimal["aoa_max_cl3_cd2_deg"]:.1f}°)')
+    axes[0, 1].axvline(
+        x=optimal["aoa_max_cl_cd_deg"],
+        color="orange",
+        linestyle="--",
+        alpha=0.7,
+        label=f'Max CL/CD ({optimal["aoa_max_cl_cd_deg"]:.1f}°)',
+    )
+    axes[0, 1].axvline(
+        x=optimal["aoa_max_cl3_cd2_deg"],
+        color="red",
+        linestyle="--",
+        alpha=0.7,
+        label=f'Max CL³/CD² ({optimal["aoa_max_cl3_cd2_deg"]:.1f}°)',
+    )
     axes[0, 1].axhline(y=0, color="k", linestyle="--", alpha=0.3)
     axes[0, 1].axvline(x=0, color="k", linestyle="--", alpha=0.3)
     axes[0, 1].grid(True, alpha=0.3)
@@ -213,8 +252,20 @@ def plot_polars(aero_input: dict, save_path: Path = None) -> None:
     cd_safe = np.where(cd_values > 1e-6, cd_values, 1e-6)
     cl_cd = cl_values / cd_safe
     axes[1, 0].plot(alpha_deg, cl_cd, "g-", linewidth=2, label="CL/CD")
-    axes[1, 0].axvline(x=optimal['aoa_max_cl_cd_deg'], color='orange', linestyle='--', alpha=0.7, label=f'Max at {optimal["aoa_max_cl_cd_deg"]:.1f}°')
-    axes[1, 0].scatter([optimal['aoa_max_cl_cd_deg']], [optimal['max_cl_cd']], color='orange', s=100, zorder=5)
+    axes[1, 0].axvline(
+        x=optimal["aoa_max_cl_cd_deg"],
+        color="orange",
+        linestyle="--",
+        alpha=0.7,
+        label=f'Max at {optimal["aoa_max_cl_cd_deg"]:.1f}°',
+    )
+    axes[1, 0].scatter(
+        [optimal["aoa_max_cl_cd_deg"]],
+        [optimal["max_cl_cd"]],
+        color="orange",
+        s=100,
+        zorder=5,
+    )
     axes[1, 0].axhline(y=0, color="k", linestyle="--", alpha=0.3)
     axes[1, 0].axvline(x=0, color="k", linestyle="--", alpha=0.3)
     axes[1, 0].grid(True, alpha=0.3)
@@ -226,8 +277,20 @@ def plot_polars(aero_input: dict, save_path: Path = None) -> None:
     # Plot CL³/CD²
     cl3_cd2 = (cl_values**3) / (cd_safe**2)
     axes[1, 1].plot(alpha_deg, cl3_cd2, "purple", linewidth=2, label="CL³/CD²")
-    axes[1, 1].axvline(x=optimal['aoa_max_cl3_cd2_deg'], color='red', linestyle='--', alpha=0.7, label=f'Max at {optimal["aoa_max_cl3_cd2_deg"]:.1f}°')
-    axes[1, 1].scatter([optimal['aoa_max_cl3_cd2_deg']], [optimal['max_cl3_cd2']], color='red', s=100, zorder=5)
+    axes[1, 1].axvline(
+        x=optimal["aoa_max_cl3_cd2_deg"],
+        color="red",
+        linestyle="--",
+        alpha=0.7,
+        label=f'Max at {optimal["aoa_max_cl3_cd2_deg"]:.1f}°',
+    )
+    axes[1, 1].scatter(
+        [optimal["aoa_max_cl3_cd2_deg"]],
+        [optimal["max_cl3_cd2"]],
+        color="red",
+        s=100,
+        zorder=5,
+    )
     axes[1, 1].axhline(y=0, color="k", linestyle="--", alpha=0.3)
     axes[1, 1].axvline(x=0, color="k", linestyle="--", alpha=0.3)
     axes[1, 1].grid(True, alpha=0.3)
