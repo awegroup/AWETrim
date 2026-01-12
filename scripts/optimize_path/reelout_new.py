@@ -1,6 +1,7 @@
 import json
 from pathlib import Path
 
+from awetrim.utils.utils import load_cycle_config_from_yaml
 import numpy as np
 
 from awetrim import SystemModel
@@ -8,6 +9,7 @@ from awetrim.environment.Wind import Wind
 from awetrim.system.kite import Kite
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.timeseries.reelout_phase import Reelout
+from awetrim.system.system_model import create_system_model_from_yaml
 
 # ---------------------------------------------------------------------------
 # Configuration knobs – tweak these values to experiment with the setup.
@@ -21,13 +23,14 @@ PHYSICAL_CONFIG = {
 
 PATH_PARAMETERS = {
     "r0": 200,
-    "az_amp0": 0.0956087469720186,
-    "beta_amp0": 0.04317,
-    "beta_coeffs": np.array([0, 0]),
-    "az_coeffs": [-0.48624925, 0, 0, 0, 0],
+    "az_amp0": 0.25,
+    "beta_amp0": 0.1,
+    "beta_coeffs": np.array([0, 0, 0, 0, 0]),
+    "az_coeffs": [0, 0, 0, 0, 0],
     "kbeta": 0,
-    "beta0": 0.31,
+    "beta0": 0.55,
     "kappa": 0,
+    "phi0": 0,
     # "downloops": True,|
     # "distance_radial_start": 200,
 }
@@ -37,26 +40,31 @@ RADIAL_PARAMETERS = {
     "force_model": "quadratic",  # "linear" or "quadratic"
     "reeling_speed": 0.0,  # m/s, only for constant reeling
     "max_tether_force": 8400,  # N, only for force reeling
-    "min_tether_force": 1500,  # N, only for force reeling
+    "min_tether_force": 1000,  # N, only for force reeling
     "softplus": True,
-    "softplus_beta": 1e-4,
+    "softplus_beta": 1e-3,
     "softminus": True,
     "softminus_beta": 1e-3,
-    "slope_winch_ro": 1500,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
+    "slope_winch_ro": 800,  # N/(m/s)^2 for quadratic, N/(m/s) for linear
     "offset_winch_ro": 0,  # m/s
 }
 
-N = 2  # Number of half eight loops
+N = 6  # Number of half eight loops
 SIM_PARAMETERS = {
     "start_time": 0,
     "end_time": 35,
     "start_angle": np.pi / 2,
     "end_angle": N * np.pi + np.pi / 2,
-    "n_points": 200,
+    "n_points": 400,
 }
+CYCLE_CONFIG_PATH = Path("data/LEI-V3-KITE/v3_downloop_config_example.yaml")
+# CYCLE_CONFIG_PATH = Path("data/LEI-V3-KITE/v3_uploop_config_example.yaml")
+# CYCLE_CONFIG_PATH = Path("data/LEI-V3-KITE/v3_optimized_config.yaml")
 
+# Load configurations from YAML
+# REELOUT_CONFIG, _ = load_cycle_config_from_yaml(CYCLE_CONFIG_PATH)
 REELOUT_CONFIG = {
-    "pattern_type": "cst_helix",
+    "pattern_type": "cst_lissajous",
     "path_parameters": PATH_PARAMETERS,
     "radial_parameters": RADIAL_PARAMETERS,
     "sim_parameters": SIM_PARAMETERS,
@@ -65,16 +73,10 @@ REELOUT_CONFIG = {
 AERO_INPUT_FILE = Path("data/LEI-V3-KITE/v3_aero_input.json")
 
 WIND_CONFIG = {
-    "speed_wind_at_200": 9,
+    "speed_wind_at_200": 10,
     "z0": 0.1,
-    "model_type": "logarithmic",
+    "model_type": "uniform",
 }
-
-
-def load_aero_input(path: Path = AERO_INPUT_FILE):
-    """Load aerodynamic input data from disk."""
-    with path.open("r") as file:
-        return json.load(file)
 
 
 def build_wind_model(speed_wind_at_200=8, z0=0.01, model_type="uniform"):
@@ -91,66 +93,30 @@ def build_wind_model(speed_wind_at_200=8, z0=0.01, model_type="uniform"):
     return wind_model
 
 
-def define_system(
-    tether_diameter,
-    mass_wing,
-    mass_kcu,
-    area_wing,
-    aero_input,
-    wind_model,
-):
-    """Instantiate a SystemModel with the supplied components."""
+def main(run_plots=False):
 
-    tether = RigidLumpedTether(diameter=tether_diameter)
-    kite = Kite(
-        mass_wing=mass_wing,
-        mass_kcu=mass_kcu,
-        area_wing=area_wing,
-        aero_input=aero_input,
-        steering_control="asymmetric",
+    system_model = create_system_model_from_yaml(
+        yaml_path=Path("data/LEI-V3-KITE/v3_kite_input.yaml"),
     )
 
-    model = SystemModel(
-        dof=3,
-        kite=kite,
-        tether=tether,
-        wind_model=wind_model,
-    )
-    return model
-
-
-def create_system_model():
-    """Assemble the system model using the configuration dictionaries above."""
-    aero_input = load_aero_input()
     wind_model = build_wind_model(
         speed_wind_at_200=WIND_CONFIG["speed_wind_at_200"],
         z0=WIND_CONFIG["z0"],
         model_type=WIND_CONFIG["model_type"],
     )
-    return define_system(
-        tether_diameter=PHYSICAL_CONFIG["tether_diameter"],
-        mass_wing=PHYSICAL_CONFIG["mass_wing"],
-        mass_kcu=PHYSICAL_CONFIG["mass_kcu"],
-        area_wing=PHYSICAL_CONFIG["area_wing"],
-        aero_input=aero_input,
-        wind_model=wind_model,
-    )
-
-
-def main(run_plots=False):
-    system_model = create_system_model()
+    system_model.wind = wind_model
     reelout = Reelout(
         system_model=system_model,
         pattern_config=REELOUT_CONFIG,
         depower=0,
     )
     optimization_params = [
-        "az_amp0",
-        "beta_amp0",
+        # "az_amp0",
+        # "beta_amp0",
         "beta0",
         "slope_winch_ro",
         # "offset",
-        # "beta_coeffs",
+        "beta_coeffs",
         "az_coeffs",
     ]
     phase, axes = reelout.run_simulation(run_plots=run_plots)
