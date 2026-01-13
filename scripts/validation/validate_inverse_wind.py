@@ -12,7 +12,8 @@ from awetrim.system.tether import RigidLumpedTether
 from awetrim.environment.Wind import Wind
 import casadi as ca
 import time
-import json
+import yaml
+import time
 
 
 def read_results(year, month, day, kite_model, addition="", path_to_main=""):
@@ -190,17 +191,24 @@ def run_inverse_validation(cycle_num=65):
         flight_data["up"].max() - flight_data["up"].min()
     )
 
-    # Setup system
-    with open("./data/LEI-V3-KITE/v3_aero_input.json", "r") as file:
-        aero_input = json.load(file)
+    # Setup system from YAML config (avoids missing JSON file)
+    with open("./data/LEI-V3-KITE/v3_kite_input.yaml", "r") as file:
+        kite_cfg = yaml.safe_load(file)
 
-    tether = RigidLumpedTether(diameter=0.01)
+    aero_input = kite_cfg["wing"]["aerodynamics"]
+    mass_wing = kite_cfg["wing"].get("mass", 14)
+    area_wing = kite_cfg["wing"].get("area", 20)
+    mass_kcu = kite_cfg.get("kcu", {}).get("mass", 16)
+    mass_kcu = 8.4
+    tether_diameter = kite_cfg.get("tether", {}).get("diameter", 0.01)
+
+    tether = RigidLumpedTether(diameter=tether_diameter)
     wind_model = Wind(wind_model="logarithmic", z0=0.1)
     kite = Kite(
-        mass_wing=14,
-        area_wing=20,
+        mass_wing=mass_wing,
+        area_wing=area_wing,
         aero_input=aero_input,
-        mass_kcu=16,
+        mass_kcu=mass_kcu,
         steering_control="asymmetric",
     )
     kite_model = SystemModel(
@@ -225,20 +233,29 @@ def run_inverse_validation(cycle_num=65):
 
     # Run inverse solver
     solutions_inverse = []
+    loop_start = time.time()
+    last_print_idx = -600  # force a print on first iteration
+    last_print_wall = time.time()
 
     for i, row in flight_data.iterrows():
-        # if i > 600:
+        # if i > 100:
         #     break
-        print(f"\n{'='*60}")
-        print(f"Processing row {i + 1}/{len(flight_data)}")
-        print(f"{'='*60}")
-
         # Measured values (to be used as initial conditions or prescribed values)
         measured_wind_speed = uf[i]
         measured_force = float(flight_data.ground_tether_force[i])
 
-        print(f"Measured wind speed (speed_friction): {measured_wind_speed:.2f} m/s")
-        print(f"Measured tether force: {measured_force:.2f} N")
+        # Print progress every ~600 iterations (~1 minute at 0.1 s sampling)
+        if (i - last_print_idx) >= 600:
+            wall_elapsed = time.time() - last_print_wall
+            print(f"\n{'='*60}")
+            print(
+                f"Row {i + 1}/{len(flight_data)} at t={row.time:.1f}s | "
+                f"Measured wind (speed_friction)={measured_wind_speed:.2f} m/s, "
+                f"Measured tether force={measured_force:.2f} N | "
+                f"Chunk time: {wall_elapsed:.2f}s"
+            )
+            last_print_idx = i
+            last_print_wall = time.time()
 
         # Define current state (all known quantities)
         current_state = {
@@ -270,15 +287,15 @@ def run_inverse_validation(cycle_num=65):
             solved_steering = float(sol["x"][1])
             solved_wind_speed = float(sol["x"][2])
 
-            print(f"\nInverse solve successful!")
-            print(f"  Prescribed force: {prescribed_force:.2f} N")
-            print(f"  Solved speed tangential: {solved_vtau:.2f} m/s")
-            print(f"  Measured wind speed: {measured_wind_speed:.2f} m/s")
-            print(f"  Solved wind speed: {solved_wind_speed:.2f} m/s")
-            print(
-                f"  Wind speed change: {(solved_wind_speed - measured_wind_speed):.2f} m/s"
-            )
-            print(f"  Constraint violation: {np.linalg.norm(sol['g']):.2e}")
+            # print(f"\nInverse solve successful!")
+            # print(f"  Prescribed force: {prescribed_force:.2f} N")
+            # print(f"  Solved speed tangential: {solved_vtau:.2f} m/s")
+            # print(f"  Measured wind speed: {measured_wind_speed:.2f} m/s")
+            # print(f"  Solved wind speed: {solved_wind_speed:.2f} m/s")
+            # print(
+            #     f"  Wind speed change: {(solved_wind_speed - measured_wind_speed):.2f} m/s"
+            # )
+            # print(f"  Constraint violation: {np.linalg.norm(sol['g']):.2e}")
 
             # Update current_state with solved values
             current_state["speed_tangential"] = solved_vtau
@@ -304,6 +321,7 @@ def run_inverse_validation(cycle_num=65):
             state_combined["aoa"] = float(
                 aoa_func(*[state_combined[name] for name in aoa_func.name_in()])
             )
+            state_combined["tension_tether_ground"] = prescribed_force
             state_combined["time"] = row.time
             state_combined["index"] = i
             state_combined["measured_wind_speed"] = (
@@ -311,23 +329,43 @@ def run_inverse_validation(cycle_num=65):
                 * np.log(row.kite_elevation * distance_radial[i] / kite_model.wind.z0)
             ) / kite_model.wind.kappa
             state_combined["measured_force"] = measured_force
+            state_combined["measured_speed_tangential"] = speed_tangential[i]
 
             solutions_inverse.append(state_combined)
 
-        else:
-            print(
-                f"Inverse solve FAILED! Constraint violation: {np.linalg.norm(sol['g']):.2e}"
-            )
+        # else:
+        #     print(
+        #         f"Inverse solve FAILED! Constraint violation: {np.linalg.norm(sol['g']):.2e}"
+        #     )
 
-    return solutions_inverse, flight_data
+    elapsed_loop = time.time() - loop_start
+    return solutions_inverse, flight_data, speed_tangential, elapsed_loop
 
 
 if __name__ == "__main__":
     print("Running inverse wind speed solver...")
-    solutions_inverse, flight_data = run_inverse_validation(cycle_num=[62, 63, 64, 65])
+    solutions_inverse, flight_data, speed_tangential, elapsed_loop = (
+        run_inverse_validation(cycle_num=list(range(5, 71)))
+    )
 
     # Convert to DataFrame for easier analysis
     df_inverse = pd.DataFrame(solutions_inverse)
+
+    # Attach measured signals by time alignment (handles skipped inverse rows)
+    df_inverse = df_inverse.drop(
+        columns=["measured_speed_tangential", "measured_tether_force"],
+        errors="ignore",
+    )
+
+    meas_df = pd.DataFrame(
+        {
+            "time": flight_data["time"].to_numpy(),
+            "measured_tether_force": flight_data["ground_tether_force"].to_numpy(),
+            "measured_speed_tangential": speed_tangential,
+        }
+    )
+    df_inverse = df_inverse.merge(meas_df, on="time", how="left")
+    df_inverse["aoa_deg"] = np.rad2deg(df_inverse["aoa"])
 
     # Convert wind speeds from reference height (100m) to kite height
     z0 = 0.1  # roughness length
@@ -360,6 +398,7 @@ if __name__ == "__main__":
             ]
         ]
     )
+    print(f"\nInverse solve loop time: {elapsed_loop:.2f} s")
 
     # Plot measured vs solved wind speed
     import matplotlib.pyplot as plt
@@ -373,9 +412,12 @@ if __name__ == "__main__":
         time,
         df_inverse["measured_wind_speed"],
     )
+
+    from scipy.ndimage import gaussian_filter1d
+
     axes[0].plot(
         time,
-        df_inverse["speed_wind"],
+        gaussian_filter1d(df_inverse["speed_wind"], sigma=3),
         label="Solved wind at kite height",
     )
     axes[0].set_ylabel("Wind Speed [m/s]", fontsize=12)
@@ -401,6 +443,52 @@ if __name__ == "__main__":
         "results/inverse_wind_speed_comparison.png", dpi=150, bbox_inches="tight"
     )
     print("\nPlot saved to results/inverse_wind_speed_comparison.png")
+    plt.show()
+
+    # Additional comparisons: tether force, tangential speed, AoA/CL/CD
+    fig2, axes2 = plt.subplots(4, 1, figsize=(12, 12))
+
+    # Tether force
+    axes2[0].plot(time, df_inverse["measured_tether_force"], label="Measured")
+    axes2[0].plot(time, df_inverse["tension_tether_ground"], label="Solved")
+    axes2[0].set_ylabel("Tether Force [N]", fontsize=12)
+    axes2[0].set_title(
+        "Tether Force: Measured vs Solved", fontsize=13, fontweight="bold"
+    )
+    axes2[0].grid(True, alpha=0.3)
+    axes2[0].legend(fontsize=11)
+
+    # Tangential speed
+    axes2[1].plot(time, df_inverse["measured_speed_tangential"], label="Measured")
+    axes2[1].plot(time, df_inverse["speed_tangential"], label="Solved")
+    axes2[1].set_ylabel("Tangential Speed [m/s]", fontsize=12)
+    axes2[1].set_title(
+        "Tangential Speed: Measured vs Solved", fontsize=13, fontweight="bold"
+    )
+    axes2[1].grid(True, alpha=0.3)
+    axes2[1].legend(fontsize=11)
+
+    # AoA (deg)
+    axes2[2].plot(time, df_inverse["aoa_deg"], label="AoA [deg]")
+    axes2[2].set_ylabel("AoA [deg]", fontsize=12)
+    axes2[2].set_title("Angle of Attack (model)", fontsize=13, fontweight="bold")
+    axes2[2].grid(True, alpha=0.3)
+    axes2[2].legend(fontsize=11)
+
+    # CL/CD (model outputs)
+    axes2[3].plot(time, df_inverse["cl"], label="CL")
+    axes2[3].plot(time, df_inverse["cd"], label="CD")
+    axes2[3].set_xlabel("Time [s]", fontsize=12)
+    axes2[3].set_ylabel("Coefficient", fontsize=12)
+    axes2[3].set_title(
+        "Aerodynamic Coefficients (model)", fontsize=13, fontweight="bold"
+    )
+    axes2[3].grid(True, alpha=0.3)
+    axes2[3].legend(fontsize=11)
+
+    plt.tight_layout()
+    plt.savefig("results/inverse_extra_comparisons.png", dpi=150, bbox_inches="tight")
+    print("Plot saved to results/inverse_extra_comparisons.png")
     plt.show()
 
     # Save results
