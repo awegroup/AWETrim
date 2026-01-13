@@ -26,10 +26,24 @@ class Wing:
         )
         # self.aerodynamic_coeffs_function(aero_input)
         self.aero_input = aero_input
+        # Cached drag parameters for easy external tuning
+        self._cd0_param = aero_input["params"].get("CD0", 0)
+        self._cd_us_param = None  # optional override for u_s drag term
         self._velocity_apparent_wind_wing = None
         self._angle_of_attack = None
         self._lift_coefficient = None
         self._drag_coefficient = None
+
+    def set_drag_params(self, cd0=None, cd_us=None):
+        """Optionally override CD0 and the u_s drag coefficient for tuning."""
+        if cd0 is not None:
+            self._cd0_param = cd0
+        if cd_us is not None:
+            self._cd_us_param = cd_us
+
+    @property
+    def drag_params(self):
+        return {"CD0": self._cd0_param, "CD_us": self._cd_us_param}
 
     @property
     def aerodynamic_force_coefficients(self):
@@ -59,7 +73,7 @@ class Wing:
         # Coeff-based model
         elif aero_input["model"] == "coeffs":
             C_L = aero_input["params"].get("CL0", 0)
-            C_D = aero_input["params"].get("CD0", 0)
+            C_D = self._cd0_param
             C_S = aero_input["params"].get("CS0", 0)
 
             # Loop over defined terms per coefficient
@@ -68,6 +82,12 @@ class Wing:
                     var = term["var"]
                     power = term.get("power", 1)
                     coef = term["coef"]
+                    if (
+                        coeff_key == "CD"
+                        and var == "u_s"
+                        and self._cd_us_param is not None
+                    ):
+                        coef = self._cd_us_param
                     if var in variables:
                         value = variables[var] ** power
                         if coeff_key == "CL":
