@@ -183,7 +183,7 @@ class ParametrizedKinematics:
         return self.pattern.azimuth(self.r, self.s)
 
     @property
-    def dtheta_ds(self):
+    def dphi_ds(self):
         return (
             ca.gradient(self.phi, self.s)
             + ca.gradient(self.phi, self.r) * self.vr / self.s_dot
@@ -208,7 +208,7 @@ class ParametrizedKinematics:
     @property
     def dR_ds(self):
         return ca.vertcat(
-            self.r * self.dtheta_ds * ca.cos(self.beta),
+            self.r * self.dphi_ds * ca.cos(self.beta),
             self.r * self.dbeta_ds,
             self.dr_ds,
         )
@@ -240,16 +240,16 @@ class ParametrizedKinematics:
         )
 
     @property
-    def dtheta_ds2(self):
+    def dphi_ds2(self):
         return (
-            ca.gradient(self.dtheta_ds, self.s)
-            + ca.gradient(self.dtheta_ds, self.r) * self.vr / self.s_dot
+            ca.gradient(self.dphi_ds, self.s)
+            + ca.gradient(self.dphi_ds, self.r) * self.vr / self.s_dot
         )
 
     @property
     def chi(self):
         return ca.atan2(
-            self.dtheta_ds * ca.cos(self.beta),
+            self.dphi_ds * ca.cos(self.beta),
             self.dbeta_ds,
         )
 
@@ -271,8 +271,8 @@ class ParametrizedKinematics:
             * self.s_dot
             * (
                 self.dbeta_ds * self.dbeta_ds2
-                + self.dtheta_ds * self.dtheta_ds2 * ca.cos(self.beta) ** 2
-                - self.dtheta_ds**2
+                + self.dphi_ds * self.dphi_ds2 * ca.cos(self.beta) ** 2
+                - self.dphi_ds**2
                 * self.dbeta_ds
                 * ca.sin(self.beta)
                 * ca.cos(self.beta)
