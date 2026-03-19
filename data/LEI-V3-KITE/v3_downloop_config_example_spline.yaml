@@ -1,0 +1,61 @@
+# V3 Pumping Cycle Configuration
+# Defines the complete pumping cycle including reelout, reel-in, wind conditions, and transitions
+
+# Reelout Phase Configuration
+reelout:
+  pattern_type: spline_periodic
+  path_parameters:
+    r0: 230
+    M: 10
+    C_phi: [0.341834, 0.276554, 0.105633, -0.105633, -0.276553, -0.341837, -0.276553, -0.105633, 0.105633, 0.276554]
+    C_beta: [0.35, 0.225822, 0.273254, 0.426746, 0.474178, 0.35, 0.225822, 0.273254, 0.426746, 0.474178]
+    s_init: 1.5707963267948966
+    s_final: 7.853981633974483
+  radial_parameters:
+    reeling_strategy: force
+    force_model: linear
+    reeling_speed: 0.0
+    max_tether_force: 8400
+    min_tether_force: 1500
+    softplus: true
+    softplus_beta: 0.001
+    softminus: true
+    softminus_beta: 0.001
+    slope_winch_ro: 5555.55
+    offset_winch_ro: 0.58
+  sim_parameters:
+    start_time: 0
+    end_time: 20
+    start_angle: 1.5707963267948966
+    end_angle: 7.853981633974483
+    n_points: 100
+    input_depower: 0.0
+
+
+# Reel-in Phase Configuration
+reelin:
+  # Path Parameters
+  path_parameters:
+    elevation_start_ri: 0.5235987755982988    # 30 degrees in radians
+    elevation_start_riro: 1.417304763960306  # 70 degrees in radians
+    elevation_start_ro: 0.5235987755982988    # 30 degrees in radians
+    distance_radial_start: 430                # Starting radial distance in m
+    distance_radial_end: 230                  # Ending radial distance in m
+  
+  # Radial Control Parameters
+  radial_parameters:
+    reeling_strategy: force     # 'force' or 'constant'
+    force_model: linear      # 'linear' or 'quadratic' (only for force strategy)
+    reeling_speed: 1.0          # m/s (only for constant strategy)
+    max_tether_force: 8400.0    # N (only for force strategy)
+    min_tether_force: 1500.0    # N (only for force strategy)
+    softplus: true
+    softplus_beta: 1.0e-3
+    softminus: true
+    softminus_beta: 1.0e-3
+    slope_winch_ri: 1000         # N/(m/s)^2 for quadratic, N/(m/s) for linear
+    offset_winch_ri: -3         # m/s
+  
+  # Simulation Parameters
+  sim_parameters:
+    start_time: 0               # Start time in s

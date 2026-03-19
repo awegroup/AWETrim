@@ -11,12 +11,11 @@ DEFAULT_BOUNDS = {
     "angle_pitch": [-np.pi / 4, np.pi / 4],
     "angle_yaw": [-np.pi / 4, np.pi / 4],
     "angle_elevation": [-np.pi, np.pi],
-    "speed_radial": [-10, 20],
+    "speed_radial": [-10, 15],
     "length_tether": [0, 1000],
     "distance_radial": [0, 2000],
     "speed_friction": [0, 5],
-    "direction_wind": [-np.pi / 4, np.pi / 4],
-    "angle_of_attack": [np.radians(-1), np.radians(15)],
+    "angle_of_attack": [np.radians(-2), np.radians(18)],
 }
 
 PLOT_LABELS = {
@@ -146,6 +145,8 @@ DEFAULT_OPTI_LIMITS = {
     "input_depower": (-1, 1.0),
     "speed_tangential": (10, 400),
     "angle_of_attack": (np.radians(0), np.radians(14)),
+    "C_phi": (-0.8, 0.8),  # Range for C_phi in Fourier pattern
+    "C_beta": (0.01, 0.9),  # Range for C_beta in Fourier pattern
 }
 
 

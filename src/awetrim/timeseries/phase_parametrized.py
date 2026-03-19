@@ -239,6 +239,8 @@ class PhaseParameterized(TimeSeries):
             x = ca.vertcat(s_grid[0], state_obj.s_dot, state_obj.distance_radial)
 
         lbx, ubx, lbg, ubg = self.get_boundaries(state_obj, unknown_vars, km_copy)
+        # lbg = ca.vertcat(lbg, DEFAULT_OPTI_LIMITS["speed_radial"][0])
+        # ubg = ca.vertcat(ubg, DEFAULT_OPTI_LIMITS["speed_radial"][1])
         t = float(state_obj.t)
 
         # --- helper: stable Δt from ds, v, a  (ds = v*dt + 0.5*a*dt^2)
@@ -419,6 +421,14 @@ class PhaseParameterized(TimeSeries):
         if not opti:
             opti = ca.Opti()
         self.run_simulation_phase(start_state)
+        chi_start = self.return_variable("angle_course")[
+            0
+        ]  # initial course angle from simulation
+        chi_end = self.return_variable("angle_course")[
+            -1
+        ]  # final course angle from simulation
+        print(f"Initial course angle (chi) from simulation: {chi_start:.2f} rad")
+        print(f"Final course angle (chi) from simulation: {chi_end:.2f} rad")
         self.kite_model.reset_solver()
 
         if start_state_opti:
@@ -551,10 +561,38 @@ class PhaseParameterized(TimeSeries):
             + flat_syms,
             [km_copy.angle_of_attack],
         )
+        chi_eq = ca.Function(
+            "chi_eq",
+            [
+                self.s,
+                # self.s_dot,
+            ]
+            + flat_syms,
+            [km_copy.angle_course],
+        )
         # --- Safety / geometry constraint
         height = pattern.z(opti_vars["distance_radial"], s_grid[:-1])  # N entries
         opti.subject_to(height >= DEFAULT_OPTI_LIMITS["height"][0])
         opti.subject_to(height <= DEFAULT_OPTI_LIMITS["height"][1])
+
+        # Constraint init and end azimuth
+        # azimuth = pattern.azimuth(opti_vars["distance_radial"], s_grid[:-1])
+        # opti.subject_to(azimuth[0] == 0)
+        # opti.subject_to(azimuth[-1] == 0)
+
+        # Constraint init course angle (chi)
+        # chi_init = chi_eq(
+        #     s_grid[0],
+        #     # opti_vars["s_dot"][0],
+        #     *flat_syms,
+        # )
+        # opti.subject_to(chi_init == np.pi)  # start flying straight downwind
+        # chi_final = chi_eq(
+        #     s_grid[-2],
+        #     # opti_vars["s_dot"][-1],
+        #     *flat_syms,
+        # )
+        # opti.subject_to(chi_final == np.pi)  # end flying straight upwind
 
         # --- Power scale based on the simulated trajectory (LEFT RULE, consistent)
         t_hist = self.return_variable("t")  # length N (QS) or N+1
@@ -704,6 +742,7 @@ class PhaseParameterized(TimeSeries):
                 lb, ub = DEFAULT_OPTI_LIMITS[var]
                 opti.subject_to(mx >= lb)
                 opti.subject_to(mx <= ub)
+
             elif var in self.pattern_config["radial_parameters"]:
                 init_val = self.pattern_config["radial_parameters"][var]
                 opti.set_initial(mx, init_val)
@@ -943,12 +982,14 @@ class PhaseParameterized(TimeSeries):
             )
 
         alg = km_copy.residual
+        # aoa = km_copy.angle_of_attack
         alg = ca.vertcat(
             alg,
             self.winch_model.radial_equation(
                 tension_tether_ground=km_copy.tension_tether_ground,
                 speed_radial=km_copy.speed_radial,
             ),
+            # km_copy.speed_radial,
         )
         z = ca.vertcat(z, km_copy.speed_radial)
         nlp = {
@@ -960,8 +1001,9 @@ class PhaseParameterized(TimeSeries):
         solver_options = {
             "ipopt": {
                 "print_level": 0,  # Suppresses IPOPT output
-                "max_iter": 200,  # Maximum number of iterations
+                # "max_iter": 200,  # Maximum number of iterations
                 "sb": "yes",  # Suppresses more detailed solver information
+                "bound_relax_factor": 0,
             },
             "print_time": False,  # Disables CasADi's internal timing output
         }

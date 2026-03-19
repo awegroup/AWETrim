@@ -1,0 +1,61 @@
+# V3 Pumping Cycle Configuration
+# Defines the complete pumping cycle including reelout, reel-in, wind conditions, and transitions
+
+# Reelout Phase Configuration
+reelout:
+  pattern_type: spline_figure_eight
+  path_parameters:
+    r0: 230
+    M: 10
+    C_phi: [-2.57477e-14, -0.200927, -0.325107, -0.325107, -0.200927, 3.44946e-15, 0.200927, 0.325107, 0.325107, 0.200927]
+    C_beta: [0.3, 0.237911, 0.261627, 0.338373, 0.362089, 0.3, 0.237911, 0.261627, 0.338373, 0.362089]
+    s_init: 0
+    s_final: 6.283185307179586
+  radial_parameters:
+    reeling_strategy: force
+    force_model: linear
+    reeling_speed: 0.0
+    max_tether_force: 8400
+    min_tether_force: 1500
+    softplus: true
+    softplus_beta: 0.001
+    softminus: true
+    softminus_beta: 0.001
+    slope_winch_ro: 5555.55
+    offset_winch_ro: 0.58
+  sim_parameters:
+    start_time: 0
+    end_time: 20
+    start_angle: 0
+    end_angle: 6.283185307179586
+    n_points: 100
+    input_depower: 0.0
+
+
+# Reel-in Phase Configuration
+reelin:
+  # Path Parameters
+  path_parameters:
+    elevation_start_ri: 0.5235987755982988    # 30 degrees in radians
+    elevation_start_riro: 1.417304763960306  # 70 degrees in radians
+    elevation_start_ro: 0.5235987755982988    # 30 degrees in radians
+    distance_radial_start: 430                # Starting radial distance in m
+    distance_radial_end: 230                  # Ending radial distance in m
+  
+  # Radial Control Parameters
+  radial_parameters:
+    reeling_strategy: force     # 'force' or 'constant'
+    force_model: linear      # 'linear' or 'quadratic' (only for force strategy)
+    reeling_speed: 1.0          # m/s (only for constant strategy)
+    max_tether_force: 8400.0    # N (only for force strategy)
+    min_tether_force: 1500.0    # N (only for force strategy)
+    softplus: true
+    softplus_beta: 1.0e-3
+    softminus: true
+    softminus_beta: 1.0e-3
+    slope_winch_ri: 1000         # N/(m/s)^2 for quadratic, N/(m/s) for linear
+    offset_winch_ri: -3         # m/s
+  
+  # Simulation Parameters
+  sim_parameters:
+    start_time: 0               # Start time in s

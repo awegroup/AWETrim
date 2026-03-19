@@ -4,6 +4,7 @@ This module provides the ReeloutSimple class for optimizing and simulating
 reel-out maneuvers for airborne wind energy systems.
 """
 
+from tracemalloc import start
 from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,9 +22,9 @@ from awetrim.utils.defaults import DEFAULT_RADIAL_PARAMETERS
 START_STATE_REELOUT = {
     "t": 0,
     "s": 0,
-    "s_dot": 1.5,
+    "s_dot": 2,
     "input_steering": 0,
-    "tension_tether_ground": 8.4e7,
+    "tension_tether_ground": 8.4e4,  # Initial guess for tension (N)
     "speed_radial": 0,  # Positive for reel-out
 }
 
@@ -127,6 +128,7 @@ class Reelout:
         system_model: Any,  # Should be SystemModel but avoiding circular import
         pattern_config: Optional[Dict[str, Any]] = None,
         depower: float = None,
+        start_state: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Initialize ReeloutSimple instance.
 
@@ -155,6 +157,7 @@ class Reelout:
             "speed_radial",
         ]
         self._opti_params = {}
+        self.start_state = start_state or START_STATE_REELOUT.copy()
 
     # def _validate_config(self) -> None:
     #     """Validate the pattern configuration and warn about missing required parameters."""
@@ -199,8 +202,8 @@ class Reelout:
         """Initialize and prepare the optimization phase."""
 
         pattern_config_opti = copy.deepcopy(self.pattern_config)
-        start_state = START_STATE_REELOUT
-        start_state["distance_radial"] = self.pattern_config["path_parameters"]["r0"]
+        start_state = self.start_state
+        # start_state["distance_radial"] = self.pattern_config["path_parameters"]["r0"]
 
         pattern_config_opti = copy.deepcopy(self.pattern_config)
         start_state_opti = copy.deepcopy(start_state)
@@ -254,10 +257,18 @@ class Reelout:
 
         if optimization_params:
             for var in optimization_params:
-                if "coeffs" in var:
-                    num_coeffs = len(
-                        self.pattern_config["path_parameters"].get(var, [])
-                    )
+                val = self.pattern_config["path_parameters"].get(var, None)
+
+                if isinstance(val, ca.DM):
+                    num_coeffs = int(val.numel())
+                elif isinstance(val, (list, tuple, np.ndarray)):
+                    num_coeffs = len(val)
+                elif val is None:
+                    num_coeffs = 1
+                else:
+                    num_coeffs = 1
+
+                if num_coeffs > 1:
                     self._opti_params[var] = opti.variable(num_coeffs)
                 else:
                     self._opti_params[var] = opti.variable()
@@ -272,7 +283,7 @@ class Reelout:
         self,
         optimization_params: List[str] = None,
         target: str = "power",
-        s_dot: Optional[float] = None,
+        start_state: Optional[Dict[str, Any]] = None,
     ) -> Optional[SimulationResult]:
         """Run optimization and return results.
 
@@ -328,16 +339,21 @@ class Reelout:
                 "ipopt": {
                     # "bound_relax_factor": 1e-8,
                     "tol": 1e-6,
-                    "acceptable_iter": 3,
-                    "acceptable_tol": 1e-5,
+                    "acceptable_iter": 10,
+                    "acceptable_tol": 2e-4,
                     # "constr_viol_tol": 1e-6,
                     "dual_inf_tol": 1e-4,
                     "hessian_approximation": "limited-memory",
-                    # "mu_strategy": "adaptive",
-                    # "nlp_scaling_method": "gradient-based",
-                    # "limited_memory_max_history": 40,  # try 20–50
+                    "mu_strategy": "adaptive",
+                    "nlp_scaling_method": "gradient-based",
+                    "linear_solver": "mumps",
+                    "limited_memory_max_history": 60,  # try 20–50
                     # "limited_memory_update_type": "bfgs",  # (if supported)
-                    "mu_target": 1e-8,
+                    "mu_min": 1e-8,
+                    "warm_start_init_point": "yes",
+                    # "warm_start_bound_push": 1e-6,
+                    # "warm_start_mult_bound_push": 1e-6,
+                    # "warm_start_slack_bound_push": 1e-6,
                 }
             },
         )
@@ -375,8 +391,8 @@ class Reelout:
         run_plots: bool = False,
         axes: Any = None,
         phase_sim: bool = True,
-        s_dot: Optional[float] = None,
-        speed_radial: Optional[float] = None,
+        start_state: Optional[Dict[str, Any]] = None,
+        return_start_state: bool = False,
     ) -> None:
         """Execute the reel-out simulation.
 
@@ -386,6 +402,12 @@ class Reelout:
             phase_sim: Whether to run in phase mode
             s_dot: Optional override for initial tangential speed (default: 4)
             speed_radial: Optional override for initial radial speed (default: -1)
+            start_state: Optional explicit initial state. If provided, it is used
+                as-is for the first simulation call; later calls can reuse the
+                returned final_state to continue from where the previous
+                simulation ended.
+            return_final_state: When True, also return a compact final_state
+                dictionary suitable for warm-starting subsequent runs.
         """
 
         # self.system_model.input_depower = self.depower
@@ -395,8 +417,7 @@ class Reelout:
             label_prefix="a",
             pattern_config=self.pattern_config,
             phase_sym=phase_sim,
-            s_dot=s_dot,
-            speed_radial=speed_radial,
+            start_state=start_state,
         )
 
         if run_plots:
@@ -415,6 +436,27 @@ class Reelout:
             "final radial distance:",
             phase.return_variable("distance_radial")[-1],
         )
+        if return_start_state:
+            # Collect a compact final-state snapshot for warm-starting follow-on runs
+            start_state: Dict[str, Any] = {}
+            for var in [
+                "t",
+                "s",
+                "s_dot",
+                "speed_radial",
+                "distance_radial",
+                "input_steering",
+                "tension_tether_ground",
+            ]:
+                try:
+                    series = phase.return_variable(var)
+                    start_state[var] = float(series[0])
+                except Exception:
+                    # If a variable is not recorded, skip it
+                    continue
+            self._last_start_state = start_state
+            return phase, axes or None, start_state
+
         return phase, axes or None
 
     def _run_parametrized_phase(
@@ -422,8 +464,7 @@ class Reelout:
         label_prefix: str,
         pattern_config: Dict[str, Any],
         phase_sym: bool = False,
-        s_dot: Optional[float] = None,
-        speed_radial: Optional[float] = None,
+        start_state: Optional[Dict[str, Any]] = None,
     ) -> PhaseParameterized:
         """Run a parametrized phase simulation.
 
@@ -433,6 +474,7 @@ class Reelout:
             phase_sym: Whether to run in symbolic mode
             s_dot: Optional override for initial tangential speed
             speed_radial: Optional override for initial radial speed
+            start_state: Optional explicit initial state (used directly if set)
 
         Returns:
             PhaseParameterized object with simulation results
@@ -440,16 +482,16 @@ class Reelout:
         sim_type = "quasi steady"
         print(f"Running simulation for {sim_type} with label: {label_prefix}")
 
-        start_state = START_STATE_REELOUT.copy()
-        start_state["distance_radial"] = pattern_config["path_parameters"]["r0"]
-
-        # Override initial conditions if provided
-        if s_dot is not None:
-            start_state["s_dot"] = s_dot
-            print(f"  Using s_dot={s_dot}")
-        if speed_radial is not None:
-            start_state["speed_radial"] = speed_radial
-            print(f"  Using speed_radial={speed_radial}")
+        # Use caller-provided start_state when given; otherwise fall back to
+        # defaults for the first run.
+        if start_state is not None:
+            start_state = copy.deepcopy(start_state)
+            start_state["s_dot"] += 0.5
+            start_state["tension_tether_ground"] = 8.3e4
+            start_state["input_steering"] += 0
+            start_state["distance_radial"] = pattern_config["path_parameters"]["r0"]
+        else:
+            start_state = self.start_state
 
         phase = PhaseParameterized(
             self.system_model,

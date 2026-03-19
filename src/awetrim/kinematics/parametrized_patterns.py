@@ -416,6 +416,7 @@ def create_pattern_from_dict(
             "azimuth_start_riro",
             "azimuth_start_ro",
         ],
+        "spline_periodic": ["M", "C_phi", "C_beta", "s_init", "s_final"],
     }
 
     if pattern_type not in required_params:
@@ -441,6 +442,7 @@ def create_pattern_from_dict(
         "cst_helix": CST_Helix,
         "reel_in_simple": Reelin_Simple,
         "transition_simple": Transition_Simple,
+        "spline_periodic": PeriodicBSpline,
     }
 
     return pattern_classes[pattern_type](**parameters)
@@ -456,8 +458,8 @@ class CST_Lissajous(ParametrizedPatternsAngles):
         az_coeffs,
         kappa=0.0,
         kbeta=0.0,
-        width_phi=0.5,
-        width_beta=0.5,
+        width_phi=0.45,
+        width_beta=0.45,
         left_first=True,
         normalize_bumps=False,
         repeat_phi=True,
@@ -531,6 +533,8 @@ class CST_Lissajous(ParametrizedPatternsAngles):
         pleft = self._gate01(x_left) * self._p(x_left)
 
         bump = pright + pleft
+        # mean_bump = ca.sum1(bump) / bump.numel()
+        # bump = bump - mean_bump  # zero-mean on the [0,1] period for any s0
         return bump / width if normalize else bump
 
     def _build_shape_repeat(self, u, K, width, base_vec):
@@ -704,6 +708,29 @@ class Bspline(ParametrizedPatternsAngles):
     def elevation(self, r, s):
         res = self.evaluate_spline(r, s)
         return res["S"][1]
+
+    # Convenience evaluators that do not require the caller to supply r or a prebuilt s-grid
+    def _normalize_s(self, s, s_in_radians):
+        if s_in_radians:
+            if isinstance(s, (ca.MX, ca.SX, ca.DM)):
+                u = s / (2.0 * ca.pi)
+                return u - ca.floor(u)  # wrap to [0,1)
+            s_arr = np.asarray(s)
+            u = (s_arr / (2.0 * np.pi)) % 1.0
+            return float(u) if np.ndim(u) == 0 else u
+        return s
+
+    def azimuth_at(self, s, s_in_radians=False):
+        u = self._normalize_s(s, s_in_radians)
+        res = self.spline_func(C=self.C, u=u, U=self.U)
+        vals = res["S"][0]
+        return float(vals) if vals.numel() == 1 else vals
+
+    def elevation_at(self, s, s_in_radians=False):
+        u = self._normalize_s(s, s_in_radians)
+        res = self.spline_func(C=self.C, u=u, U=self.U)
+        vals = res["S"][1]
+        return float(vals) if vals.numel() == 1 else vals
 
     def azimuth_derivative(self, r, s):
         res = self.evaluate_spline(r, s)
@@ -1065,3 +1092,204 @@ class Transition_Simple(ParametrizedPatternsAngles):
         return self.azimuth_start_riro + s * (
             self.azimuth_start_ro - self.azimuth_start_riro
         )
+
+
+def _tp3(x):
+    """truncated power (x_+)^3 using fmax; works for MX/SX."""
+    return ca.fmax(x, 0.0) ** 3
+
+
+def cubic_cardinal_B3(t):
+    """
+    Cardinal cubic B-spline basis kernel with support [-2,2].
+    Using truncated power representation:
+    B3(t) = ( (t+2)_+^3 -4(t+1)_+^3 +6(t)_+^3 -4(t-1)_+^3 + (t-2)_+^3 ) / 6
+    """
+    return (
+        _tp3(t + 2) - 4 * _tp3(t + 1) + 6 * _tp3(t) - 4 * _tp3(t - 1) + _tp3(t - 2)
+    ) / 6.0
+
+
+def open_uniform_knots(M, p=3):
+    """Open-uniform (clamped) knot vector on [0,1] for M control points, degree p."""
+    if M < p + 1:
+        raise ValueError(f"Need M >= p+1. Got M={M}, p={p}.")
+    n_knots = M + p + 1
+    n_int = n_knots - 2 * (p + 1)  # number of interior knots
+    if n_int > 0:
+        interior = np.linspace(0.0, 1.0, n_int + 2)[1:-1]
+        T = np.r_[np.zeros(p + 1), interior, np.ones(p + 1)]
+    else:
+        T = np.r_[np.zeros(p + 1), np.ones(p + 1)]
+    return T
+
+
+def build_open_cubic_bspline_function(M, dim=1, name="open_bspline", p=3):
+    """
+    Open (non-periodic) clamped cubic B-spline S = spline(C,u)
+    - C: (M, dim)
+    - u in [0,1]
+    Returns: S (1,dim)
+    """
+    T_np = open_uniform_knots(M, p=p)
+    T = ca.DM(T_np)  # constants inside CasADi graph
+
+    C = ca.MX.sym("C", M, dim)
+    u = ca.MX.sym("u")
+
+    # clamp u to [0,1] and handle u==1 safely for half-open intervals
+    u0 = ca.fmin(ca.fmax(u, 0.0), 1.0)
+    u_eval = ca.if_else(u0 == 1.0, ca.DM(1.0 - 1e-12), u0)
+
+    # degree-0 basis N_i,0(u)
+    N = [None] * M
+    for i in range(M):
+        left = T[i]
+        right = T[i + 1]
+        N[i] = ca.if_else(ca.logic_and(u_eval >= left, u_eval < right), 1.0, 0.0)
+
+    # Cox–de Boor recursion up to degree p
+    for k in range(1, p + 1):
+        Nk = [0] * M
+        for i in range(M):
+            # left term
+            den1 = T[i + k] - T[i]
+            term1 = ca.if_else(den1 != 0, (u_eval - T[i]) / den1 * N[i], 0.0)
+
+            # right term uses N[i+1]
+            if i + 1 < M:
+                den2 = T[i + k + 1] - T[i + 1]
+                term2 = ca.if_else(
+                    den2 != 0, (T[i + k + 1] - u_eval) / den2 * N[i + 1], 0.0
+                )
+            else:
+                term2 = 0.0
+
+            Nk[i] = term1 + term2
+        N = Nk
+
+    # Evaluate spline
+    S = ca.MX.zeros(1, dim)
+    for i in range(M):
+        S += N[i] * C[i, :].T
+
+    # enforce exact endpoint at u==1: S(1)=last control point (clamped convention)
+    S = ca.if_else(u0 == 1.0, C[M - 1, :].T, S)
+
+    return ca.Function(name, [C, u], [S], ["C", "u"], ["S"])
+
+
+def bspline_open_basis_matrix(u_grid, M, p=3):
+    u = np.asarray(u_grid).ravel()
+    Np = u.size
+    T = open_uniform_knots(M, p=p)
+
+    u0 = np.clip(u, 0.0, 1.0)
+    u_eval = np.where(u0 == 1.0, np.nextafter(1.0, 0.0), u0)
+
+    # degree-0
+    B = np.zeros((Np, M))
+    for i in range(M):
+        B[:, i] = ((T[i] <= u_eval) & (u_eval < T[i + 1])).astype(float)
+
+    # recursion
+    for k in range(1, p + 1):
+        Bk = np.zeros_like(B)
+        for i in range(M):
+            den1 = T[i + k] - T[i]
+            if den1 != 0:
+                Bk[:, i] += (u_eval - T[i]) / den1 * B[:, i]
+            if i + 1 < M:
+                den2 = T[i + k + 1] - T[i + 1]
+                if den2 != 0:
+                    Bk[:, i] += (T[i + k + 1] - u_eval) / den2 * B[:, i + 1]
+        B = Bk
+
+    # exact endpoint
+    at_one = u0 == 1.0
+    if np.any(at_one):
+        B[at_one, :] = 0.0
+        B[at_one, -1] = 1.0
+
+    return B
+
+
+def build_periodic_cubic_bspline_function(M, dim=1, name="per_bspline"):
+    """
+    Build a CasADi function S = spline(C, u) for a uniform periodic cubic B-spline.
+
+    - M: number of control points (periodic)
+    - dim: output dimension (1 for scalar, 2 for [phi,beta] etc.)
+    - C: (M, dim)
+    - u: scalar in [0,1] (you map s -> u outside)
+
+    Returns:
+      spline_fun(C, u) -> S (1, dim)
+    """
+    C = ca.MX.sym("C", M, dim)
+    u = ca.MX.sym("u")  # assumed in [0,1]
+
+    x = u * M  # in [0, M]
+
+    S = ca.MX.zeros(1, dim)
+
+    # Sum from i=-2..M+1; wrap coefficient index with python int modulo
+    for i in range(-2, M + 2):
+        idx = i % M  # integer, safe for MX indexing
+        t = x - i
+        w = cubic_cardinal_B3(t)  # scalar
+        S += w * C[idx, :].T  # (1,dim) += scalar*(1,dim)
+
+    return ca.Function(name, [C, u], [S], ["C", "u"], ["S"])
+
+
+class PeriodicBSpline(ParametrizedPatternsAngles):
+
+    def __init__(self, r0, M, C_phi, C_beta, s_init, s_final, downloops=True):
+        super().__init__(
+            r0=r0, M=M, C_phi=C_phi, C_beta=C_beta, s_init=s_init, s_final=s_final
+        )
+
+        self.M = int(M)
+        self.s_init = float(s_init)
+        self.s_final = float(s_final)
+        self.omega = 1.0 if downloops else -1.0
+
+        self.spline = build_periodic_cubic_bspline_function(M, dim=1, name="spl")
+
+        self.C_phi = C_phi
+        self.C_beta = C_beta
+
+    def _u(self, s):
+        return self.omega * (s - self.s_init) / (self.s_final - self.s_init)
+        # return s
+
+    def _eval_spline_vec(self, C, u):
+        """
+        Evaluate spline for scalar u or vector u (column/row).
+        Returns:
+        - scalar (1x1) if u scalar
+        - column (N x 1) if u vector length N
+        """
+        # If u is scalar -> normal call
+        if u.is_scalar():
+            return self.spline(C, u)[0]
+
+        # Ensure u is a column vector (N x 1)
+        u_col = ca.reshape(u, u.numel(), 1)
+
+        # Map the scalar spline over N points
+        N = int(u_col.numel())
+        spl_map = self.spline.map(N)  # maps over repeated calls
+        S = spl_map(C, u_col)  # shape: (1, N) because output is (1,1) stacked
+
+        # Convert to (N x 1)
+        return S.T
+
+    def azimuth(self, r, s):
+        u = self._u(s)
+        return self._eval_spline_vec(self.C_phi, u)
+
+    def elevation(self, r, s):
+        u = self._u(s)
+        return self._eval_spline_vec(self.C_beta, u)
