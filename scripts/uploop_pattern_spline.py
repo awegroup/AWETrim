@@ -35,10 +35,6 @@ CYCLE_CONFIG_PATH = Path(
 
 # Load configurations from YAML
 REELOUT_CONFIG, REELIN_CONFIG = load_cycle_config_from_yaml(CYCLE_CONFIG_PATH)
-# REELOUT_CONFIG["path_parameters"]["C_phi"] = [
-#     REELOUT_CONFIG["path_parameters"]["C_phi"][i] - 0.05
-#     for i in range(len(REELOUT_CONFIG["path_parameters"]["C_phi"]))
-# ]
 REELOUT_CONFIG["sim_parameters"]["input_depower"] += 0.1
 WIND_CONFIG = {
     "speed_wind_at_100": 5,

@@ -9,14 +9,14 @@ reelout:
     M: 10
     C_phi: [0.341834, 0.276554, 0.105633, -0.105633, -0.276553, -0.341837, -0.276553, -0.105633, 0.105633, 0.276554]
     C_beta: [0.35, 0.225822, 0.273254, 0.426746, 0.474178, 0.35, 0.225822, 0.273254, 0.426746, 0.474178]
-    s_init: 1.5707963267948966
-    s_final: 7.853981633974483
+    s_init: 0
+    s_final: 1
   radial_parameters:
     reeling_strategy: force
     force_model: linear
     reeling_speed: 0.0
     max_tether_force: 8400
-    min_tether_force: 1500
+    min_tether_force: 1000
     softplus: true
     softplus_beta: 0.001
     softminus: true
@@ -26,8 +26,8 @@ reelout:
   sim_parameters:
     start_time: 0
     end_time: 20
-    start_angle: 1.5707963267948966
-    end_angle: 7.853981633974483
+    start_angle: 0
+    end_angle: 1
     n_points: 100
     input_depower: 0.0
 

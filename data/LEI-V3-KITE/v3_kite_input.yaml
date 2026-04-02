@@ -51,7 +51,7 @@ wing:
 
 # KCU (Kite Control Unit) Properties
 kcu:
-  mass: 8.4                     # Mass of the KCU in kg
+  mass: 10                     # Mass of the KCU in kg
 
 tether:
   diameter: 0.01                # Diameter of the tether in m

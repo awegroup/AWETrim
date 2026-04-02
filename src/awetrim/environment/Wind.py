@@ -1,4 +1,6 @@
 import casadi as ca
+import numpy as np
+import matplotlib.pyplot as plt
 from awetrim.utils.reference_frames import transformation_C_from_W
 
 
@@ -10,8 +12,12 @@ class Wind:
         tabulated_heights=None,
         tabulated_speeds=None,
         direction_wind=None,
+        speed_wind_ref=None,
     ):
-        self._speed_wind_ref = ca.MX.sym("speed_wind_ref")
+        if speed_wind_ref is None:
+            self._speed_wind_ref = ca.MX.sym("speed_wind_ref")
+        else:
+            self._speed_wind_ref = speed_wind_ref
         self._speed_friction = ca.MX.sym("speed_friction")
         if direction_wind is None:
             self._direction_wind = ca.MX.sym(
@@ -118,3 +124,44 @@ class Wind:
             state.angle_azimuth, state.angle_elevation, state.angle_course
         )
         return T_C_from_W @ self.velocity_wind_at_height_W(height)
+
+    # ------------------------------------------------------------------
+    # Visualization helper
+    # ------------------------------------------------------------------
+    def plot_profile(self, z_min=5.0, z_max=200.0, num=100, show=True):
+        """Plot wind speed vs height for the configured model."""
+        if z_max <= z_min:
+            raise ValueError("z_max must be greater than z_min")
+
+        z_samples = np.linspace(z_min, z_max, num)
+
+        if self.wind_model == "uniform":
+            speeds = np.full_like(z_samples, float(self.speed_wind_ref))
+        elif self.wind_model == "logarithmic":
+            speeds = (float(self.speed_friction) / self.kappa) * np.log(
+                z_samples / self.z0
+            )
+        elif self.wind_model == "tabulated":
+            if self.tabulated_heights is None or self.tabulated_speeds is None:
+                raise ValueError("Tabulated wind model requires heights and speeds.")
+            z_sorted = np.array(self.tabulated_heights, dtype=float)
+            w_sorted = np.array(self.tabulated_speeds, dtype=float)
+            order = np.argsort(z_sorted)
+            z_sorted = z_sorted[order]
+            w_sorted = w_sorted[order]
+            speeds = np.interp(z_samples, z_sorted, w_sorted)
+        else:
+            raise ValueError(f"Unknown wind model: {self.wind_model}")
+
+        plt.figure(figsize=(4, 4))
+        plt.plot(speeds, z_samples, label=self.wind_model)
+        if self.wind_model == "tabulated":
+            plt.plot(self.tabulated_speeds, self.tabulated_heights, "o", label="data")
+        plt.xlabel("Wind speed (m/s)")
+        plt.ylabel("Height (m)")
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        if show:
+            plt.show()
+        return z_samples, speeds

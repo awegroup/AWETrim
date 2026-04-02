@@ -19,7 +19,7 @@ from awetrim.timeseries.phase_parametrized import PhaseParameterized
 from awetrim.utils.defaults import DEFAULT_RADIAL_PARAMETERS
 
 
-START_STATE_REELOUT = {
+START_STATE = {
     "t": 0,
     "s": 0,
     "s_dot": 2,
@@ -97,7 +97,7 @@ class SimulationResult:
         return yaml_config
 
 
-class Reelout:
+class Phase:
     """Handles single-phase reel-out optimization and simulation.
 
     This class manages the optimization and simulation of a reel-out maneuver
@@ -159,7 +159,7 @@ class Reelout:
             "speed_radial",
         ]
         self._opti_params = {}
-        self.start_state = start_state or START_STATE_REELOUT.copy()
+        self.start_state = start_state or START_STATE.copy()
 
     # def _validate_config(self) -> None:
     #     """Validate the pattern configuration and warn about missing required parameters."""
