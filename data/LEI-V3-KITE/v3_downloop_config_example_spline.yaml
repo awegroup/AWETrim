@@ -29,7 +29,7 @@ reelout:
     start_angle: 1.5707963267948966
     end_angle: 7.853981633974483
     n_points: 100
-    input_depower: 0.0
+    input_depower: -0.5
 
 
 # Reel-in Phase Configuration

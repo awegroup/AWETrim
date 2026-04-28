@@ -284,15 +284,22 @@ class Reelout:
         optimization_params: List[str] = None,
         target: str = "power",
         start_state: Optional[Dict[str, Any]] = None,
+        warm_start_init_point: Optional[bool] = None,
     ) -> Optional[SimulationResult]:
         """Run optimization and return results.
 
         Args:
             optimization_params: List of parameters to optimize
+            warm_start_init_point: Enable/disable IPOPT warm start initialization
 
         Returns:
             SimulationResult object or None if optimization failed
         """
+        if warm_start_init_point is not None:
+            self.pattern_config.setdefault("sim_parameters", {})[
+                "warm_start_init_point"
+            ] = warm_start_init_point
+
         opti, opti_vars, objective_dict, self._opti_params = self.get_opti_components(
             optimization_params=optimization_params
         )
@@ -333,29 +340,36 @@ class Reelout:
             Solution object or None if optimization failed
         """
         opti.minimize(objective)
+        sim_parameters = self.pattern_config.get("sim_parameters", {})
+
+        warm_start_init_point = sim_parameters.get("warm_start_init_point")
+        if isinstance(warm_start_init_point, bool):
+            warm_start_init_point = "yes" if warm_start_init_point else "no"
+
+        ipopt_options = {
+            # "bound_relax_factor": 1e-8,
+            "tol": 1e-6,
+            "acceptable_iter": 10,
+            "acceptable_tol": 2e-4,
+            # "constr_viol_tol": 1e-6,
+            "dual_inf_tol": 1e-4,
+            "hessian_approximation": "limited-memory",
+            "mu_strategy": "adaptive",
+            "nlp_scaling_method": "gradient-based",
+            "linear_solver": "mumps",
+            "limited_memory_max_history": 60,  # try 20–50
+            # "limited_memory_update_type": "bfgs",  # (if supported)
+            "mu_min": 1e-8,
+            # "warm_start_bound_push": 1e-6,
+            # "warm_start_mult_bound_push": 1e-6,
+            # "warm_start_slack_bound_push": 1e-6,
+        }
+        if warm_start_init_point is not None:
+            ipopt_options["warm_start_init_point"] = warm_start_init_point
+
         opti.solver(
             "ipopt",
-            {
-                "ipopt": {
-                    # "bound_relax_factor": 1e-8,
-                    "tol": 1e-6,
-                    "acceptable_iter": 10,
-                    "acceptable_tol": 2e-4,
-                    # "constr_viol_tol": 1e-6,
-                    "dual_inf_tol": 1e-4,
-                    "hessian_approximation": "limited-memory",
-                    "mu_strategy": "adaptive",
-                    "nlp_scaling_method": "gradient-based",
-                    "linear_solver": "mumps",
-                    "limited_memory_max_history": 60,  # try 20–50
-                    # "limited_memory_update_type": "bfgs",  # (if supported)
-                    "mu_min": 1e-8,
-                    "warm_start_init_point": "yes",
-                    # "warm_start_bound_push": 1e-6,
-                    # "warm_start_mult_bound_push": 1e-6,
-                    # "warm_start_slack_bound_push": 1e-6,
-                }
-            },
+            {"ipopt": ipopt_options},
         )
 
         try:

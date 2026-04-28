@@ -29,9 +29,9 @@ To modify parameters:
 KITE_CONFIG_PATH = Path("data/LEI-V3-KITE/v3_kite_input.yaml")
 # CYCLE_CONFIG_PATH = Path("data/LEI-V3-KITE/v3_helix_config_example.yaml")
 CYCLE_CONFIG_PATH = Path("data/LEI-V3-KITE/v3_uploop_config_example_spline.yaml")
-CYCLE_CONFIG_PATH = Path(
-    "results/optimized_configs/uploops/depower_uploop_optimized_config_wind_6_z0_0.03_logarithmic_spline.yaml"
-)
+# CYCLE_CONFIG_PATH = Path(
+#     "results/optimized_configs/uploops/depower_uploop_optimized_config_wind_6_z0_0.03_logarithmic_spline.yaml"
+# )
 
 # Load configurations from YAML
 REELOUT_CONFIG, REELIN_CONFIG = load_cycle_config_from_yaml(CYCLE_CONFIG_PATH)
@@ -41,7 +41,7 @@ REELOUT_CONFIG, REELIN_CONFIG = load_cycle_config_from_yaml(CYCLE_CONFIG_PATH)
 # ]
 REELOUT_CONFIG["sim_parameters"]["input_depower"] += 0.1
 WIND_CONFIG = {
-    "speed_wind_at_100": 5,
+    "speed_wind_at_100": 10,
     "z0": 0.03,
     "model_type": "logarithmic",
 }

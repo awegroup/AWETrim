@@ -29,9 +29,9 @@ To modify parameters:
 KITE_CONFIG_PATH = Path("data/LEI-V3-KITE/v3_kite_input.yaml")
 # CYCLE_CONFIG_PATH = Path("data/LEI-V3-KITE/v3_helix_config_example.yaml")
 CYCLE_CONFIG_PATH = Path("data/LEI-V3-KITE/v3_helix_config_example_spline.yaml")
-CYCLE_CONFIG_PATH = Path(
-    "results/optimized_configs/helix/depower_helix_optimized_config_wind_6_z0_0.03_logarithmic_spline.yaml"
-)
+# CYCLE_CONFIG_PATH = Path(
+#     "results/optimized_configs/helix/depower_helix_optimized_config_wind_10_z0_0.03_logarithmic_spline.yaml"
+# )
 
 # Load configurations from YAML
 REELOUT_CONFIG, REELIN_CONFIG = load_cycle_config_from_yaml(CYCLE_CONFIG_PATH)
@@ -40,18 +40,18 @@ REELOUT_CONFIG, REELIN_CONFIG = load_cycle_config_from_yaml(CYCLE_CONFIG_PATH)
 # REELOUT_CONFIG["path_parameters"]["az_amp0"] = 0.3536
 # # REELOUT_CONFIG["path_parameters"]["kappa"] = 1
 # REELOUT_CONFIG["path_parameters"]["kbeta"] = 0
-REELOUT_CONFIG["sim_parameters"]["input_depower"] += 0.05
+# REELOUT_CONFIG["sim_parameters"]["input_depower"] += 0.05
 WIND_CONFIG = {
-    "speed_wind_at_100": 5,
+    "speed_wind_at_100": 10,
     "z0": 0.03,
     "model_type": "logarithmic",
 }
 START_STATE = {
     "t": 0,
     "s": 0,
-    "s_dot": 2,
+    "s_dot": 3,
     "input_steering": 0,
-    "tension_tether_ground": 8.4e3,  # Initial guess for tension (N)
+    "tension_tether_ground": 8.4e5,  # Initial guess for tension (N)
     "speed_radial": 0,  # Positive for reel-out
     "distance_radial": REELOUT_CONFIG["path_parameters"][
         "r0"
