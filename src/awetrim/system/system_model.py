@@ -120,7 +120,7 @@ class SystemModel(KiteKinematics):
 
     def define_wind_model(self, wind_model):
         if wind_model is None:
-            self.wind = Wind("uniform")
+            self.wind = Wind("uniform", direction_wind=0)
         else:
             self.wind = wind_model
 
@@ -605,6 +605,7 @@ class SystemModel(KiteKinematics):
         self._qs_vars = None
         self._qs_inputs = None
         self._derived_functions = None
+
 
 def safe_value(val):
     return 0.0 if val is None else val
