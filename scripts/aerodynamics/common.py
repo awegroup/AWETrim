@@ -14,11 +14,7 @@ if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
 DEFAULT_VSM_SRC = PROJECT_DIR.parent / "Vortex-Step-Method" / "src"
-DEFAULT_POWERED_GEOMETRY_DIR = (
-    PROJECT_DIR / "data" / "LEI-V3-KITE" / "kite_geometries" / "powered_geometry"
-)
-DEFAULT_GEOMETRY_YAML = DEFAULT_POWERED_GEOMETRY_DIR / "aero_geometry.yaml"
-DEFAULT_BRIDLE_PATH = DEFAULT_POWERED_GEOMETRY_DIR / "struc_geometry.yaml"
+DEFAULT_CONFIG_FOLDER = PROJECT_DIR / "data" / "LEI-V3-KITE"
 DEFAULT_OUTPUT_ROOT = PROJECT_DIR / "results" / "aerodynamics"
 
 
@@ -43,30 +39,53 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
         help="Optional path to VSM/src.",
     )
     parser.add_argument(
-        "--geometry-yaml",
-        default=str(DEFAULT_GEOMETRY_YAML),
-        help="VSM aero geometry YAML.",
+        "--config-folder",
+        default=str(DEFAULT_CONFIG_FOLDER),
+        help="Config folder containing system.yaml, aero_geometry.yaml, and optional struc_geometry.yaml (default: data/LEI-V3-KITE).",
     )
     parser.add_argument(
-        "--bridle-path",
-        default=str(DEFAULT_BRIDLE_PATH) if DEFAULT_BRIDLE_PATH.exists() else None,
-        help="Optional VSM bridle YAML.",
+        "--no-struc-geometry",
+        action="store_true",
+        help="Ignore any structural geometry file and run aero-only.",
     )
     parser.add_argument("--n-panels", type=int, default=18)
     parser.add_argument("--spanwise-panel-distribution", default="uniform")
     parser.add_argument("--reference-point", default="0,0,0")
     parser.add_argument("--center-of-gravity", default="0.5,0,5")
-    parser.add_argument("--mass-wing", type=float, default=30.0)
-    parser.add_argument("--tether-diameter", type=float, default=0.01)
-    parser.add_argument("--wind-speed", type=float, default=6.0)
+    parser.add_argument(
+        "--mass-wing",
+        type=float,
+        default=None,
+        help="Wing mass in kg (default: from system.yaml)",
+    )
+    parser.add_argument("--tether-diameter", type=float, default=0.0)
+    parser.add_argument("--wind-speed", type=float, default=5.0)
     parser.add_argument("--elevation-deg", type=float, default=0.0)
     parser.add_argument("--azimuth-deg", type=float, default=0.0)
-    parser.add_argument("--course-deg", type=float, default=0.0)
+    parser.add_argument("--course-deg", type=float, default=90.0)
     parser.add_argument("--radial-speed", type=float, default=0.0)
     parser.add_argument("--distance-radial", type=float, default=200.0)
     parser.add_argument("--x-guess", default="25,0,0,0,0")
     parser.add_argument("--bounds-lower", default="2,-15,-15,-15,-5")
     parser.add_argument("--bounds-upper", default="80,15,15,15,5")
+    parser.add_argument(
+        "--inertia-xx",
+        type=float,
+        default=None,
+        help="Ixx in kg·m² (default: from system.yaml)",
+    )
+    parser.add_argument(
+        "--inertia-yy",
+        type=float,
+        default=None,
+        help="Iyy in kg·m² (default: from system.yaml)",
+    )
+    parser.add_argument(
+        "--inertia-zz",
+        type=float,
+        default=None,
+        help="Izz in kg·m² (default: from system.yaml)",
+    )
     parser.add_argument("--moment-tolerance", type=float, default=1e-3)
     parser.add_argument("--include-gravity", action="store_true")
     parser.add_argument("--max-nfev", type=int, default=None)
@@ -116,25 +135,223 @@ def parsed_common(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def build_body(args: argparse.Namespace):
+def _resolve_csv_paths(config: dict, config_folder: Path) -> dict:
+    """Resolve relative CSV file paths in config to absolute paths.
+
+    Updates wing_airfoils data in-place to use absolute paths so they work
+    when the config is written to a temporary file elsewhere.
+    """
+    if "wing_airfoils" not in config or "data" not in config["wing_airfoils"]:
+        return config
+
+    config_folder = Path(config_folder).resolve()
+    for row in config["wing_airfoils"]["data"]:
+        if len(row) >= 3 and isinstance(row[2], dict) and "csv_file_path" in row[2]:
+            csv_path = row[2]["csv_file_path"]
+            # Only resolve if it's a relative path
+            if not Path(csv_path).is_absolute():
+                abs_csv_path = (config_folder / csv_path).resolve()
+                row[2]["csv_file_path"] = str(abs_csv_path)
+
+    return config
+
+
+def _merge_aero_and_structural_geometry(
+    aero_geometry_path: Path, struc_geometry_path: Path
+) -> dict:
+    """Load profiles from aero_geometry.yaml and geometry from struc_geometry.yaml.
+
+    Returns a config dict suitable for VSM's BodyAerodynamics.instantiate with:
+    - wing_airfoils from aero_geometry.yaml (profiles/polars)
+    - wing_sections from aero_geometry.yaml (wing definition stays aerodynamic)
+
+    The structural file is still used separately via `bridle_path` and for
+    physical properties in `load_config_from_folder`.
+    """
+    import yaml
+
+    # Load aero geometry (profiles)
+    with open(aero_geometry_path, "r") as f:
+        aero_config = yaml.safe_load(f)
+
+    # Structural geometry is intentionally not merged into wing_sections here.
+    # The VSM body already receives the structural file via `bridle_path`.
+    merged_config = dict(aero_config)
+
+    # Resolve CSV file paths to absolute paths
+    _resolve_csv_paths(merged_config, aero_geometry_path.parent)
+
+    return merged_config
+
+
+def load_config_from_folder(
+    config_folder: Path | str,
+    *,
+    use_struc_geometry: bool = True,
+) -> dict[str, Any]:
+    """Load aerodynamic and physical properties from a config folder.
+
+    Expected files:
+    - system.yaml        (or system.yml) — contains physical properties (mass, inertia, CoG)
+    - aero_geometry.yaml — VSM aerodynamic geometry (profiles, wing sections)
+    - struc_geometry.yaml (optional) — structural geometry (LE/TE nodes, bridles)
+
+    Property source selection:
+    - If struc_geometry.yaml EXISTS: extract from components.kite (aggregate: wing+bridle+KCU)
+    - If struc_geometry.yaml NOT FOUND: extract from components.kite.structure (wing only)
+
+    Returns a dict with:
+    - 'body_config': dict ready for VSM BodyAerodynamics.instantiate
+    - 'mass': mass from system.yaml (kite if struc exists, wing structure else)
+    - 'inertia': inertia tensor from system.yaml (kite if struc exists, wing structure else)
+    - 'center_of_mass': CoG from system.yaml (kite if struc exists, wing structure else)
+    - 'aero_geometry_path': path to aero_geometry.yaml
+    - 'struc_geometry_path': path to struc_geometry.yaml (or None if not found)
+    """
+    import yaml
+
+    config_folder = Path(config_folder).expanduser().resolve()
+
+    # Load system.yaml (physical properties)
+    system_yml = config_folder / "system.yaml"
+    if not system_yml.exists():
+        system_yml = config_folder / "system.yml"
+    if not system_yml.exists():
+        raise FileNotFoundError(f"system.yaml not found in {config_folder}")
+
+    with open(system_yml, "r") as f:
+        system_config = yaml.safe_load(f)
+
+    # Load aero_geometry.yaml
+    aero_geometry_path = config_folder / "aero_geometry.yaml"
+    if not aero_geometry_path.exists():
+        raise FileNotFoundError(f"aero_geometry.yaml not found in {config_folder}")
+
+    with open(aero_geometry_path, "r") as f:
+        aero_config = yaml.safe_load(f)
+
+    # Check for an optional structural geometry file.
+    # Prefer the exact canonical name first, then any YAML containing "struc_geometry".
+    struc_geometry_path = None
+    if use_struc_geometry:
+        candidate_paths = [
+            config_folder / "struc_geometry.yaml",
+            *sorted(config_folder.glob("*struc_geometry*.yaml")),
+        ]
+        for candidate_path in candidate_paths:
+            if candidate_path.exists():
+                struc_geometry_path = candidate_path
+                break
+
+    # Select property source based on whether struc_geometry exists
+    kite_node = system_config.get("components", {}).get("kite", {})
+
+    if struc_geometry_path:
+        # Using bridles/KCU: extract aggregate properties from kite root
+        properties = {
+            "mass": float(kite_node.get("mass", 0.0)),
+            "inertia": kite_node.get(
+                "inertia_tensor", [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+            ),
+            "center_of_mass": kite_node.get("center_of_mass", [0.0, 0.0, 0.0]),
+        }
+    else:
+        # No bridles/KCU: extract wing structure properties only
+        wing_struct = kite_node.get("wing", {}).get("structure", {})
+        properties = {
+            "mass": float(wing_struct.get("mass", 0.0)),
+            "inertia": wing_struct.get(
+                "inertia_tensor", [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
+            ),
+            "center_of_mass": wing_struct.get("center_of_mass", [0.0, 0.0, 0.0]),
+        }
+
+    # Build body config: merge aero + struc if available, else use aero alone
+    if struc_geometry_path:
+        body_config = _merge_aero_and_structural_geometry(
+            aero_geometry_path, struc_geometry_path
+        )
+    else:
+        body_config = aero_config
+        # Resolve CSV paths to absolute even when not merging
+        _resolve_csv_paths(body_config, config_folder)
+
+    return {
+        "body_config": body_config,
+        "mass": properties["mass"],
+        "inertia": properties["inertia"],
+        "center_of_mass": properties["center_of_mass"],
+        "aero_geometry_path": str(aero_geometry_path),
+        "struc_geometry_path": (
+            str(struc_geometry_path) if struc_geometry_path else None
+        ),
+    }
+
+
+def build_body(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
+    """Load VSM body and physical properties from config folder.
+
+    Returns:
+        (body, properties) where:
+        - body: VSM BodyAerodynamics instance
+        - properties: dict with mass, inertia, center_of_mass, geometry paths
+    """
     add_vsm_path(args.vsm_src)
     from VSM.core.BodyAerodynamics import BodyAerodynamics
+    import tempfile
+    import yaml
 
-    return BodyAerodynamics.instantiate(
-        n_panels=args.n_panels,
-        file_path=Path(args.geometry_yaml),
-        spanwise_panel_distribution=args.spanwise_panel_distribution,
-        bridle_path=Path(args.bridle_path) if args.bridle_path else None,
+    # Load config from folder
+    config = load_config_from_folder(
+        args.config_folder,
+        use_struc_geometry=not getattr(args, "no_struc_geometry", False),
     )
+    body_config = config["body_config"]
+
+    # Write body config to temporary file for VSM to read
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
+        yaml.dump(body_config, tmp)
+        tmp_path = tmp.name
+
+    try:
+        body = BodyAerodynamics.instantiate(
+            n_panels=args.n_panels,
+            file_path=tmp_path,
+            spanwise_panel_distribution=args.spanwise_panel_distribution,
+            bridle_path=(
+                config["struc_geometry_path"] if config["struc_geometry_path"] else None
+            ),
+        )
+    finally:
+        # Clean up temporary file
+        Path(tmp_path).unlink()
+
+    # Return both body and properties for use in scripts
+    properties = {
+        "mass": config["mass"],
+        "inertia": config["inertia"],
+        "center_of_mass": config["center_of_mass"],
+        "aero_geometry_path": config["aero_geometry_path"],
+        "struc_geometry_path": config["struc_geometry_path"],
+    }
+
+    return body, properties
 
 
-def build_system_model(args: argparse.Namespace):
+def build_system_model(args: argparse.Namespace, mass_wing: float | None = None):
     from awetrim.system.system_model import SystemModel
     from awetrim.system.tether import RigidLumpedTether
 
+    # Use provided mass_wing or extract from args (fallback to 30.0)
+    mass = (
+        mass_wing
+        if mass_wing is not None
+        else (args.mass_wing if args.mass_wing is not None else 30.0)
+    )
+
     system = SystemModel(tether=RigidLumpedTether(diameter=args.tether_diameter))
-    system.mass_wing = args.mass_wing
-    system.kite.mass_wing = args.mass_wing
+    system.mass_wing = mass
+    system.kite.mass_wing = mass
     system.angle_elevation = np.deg2rad(args.elevation_deg)
     system.angle_azimuth = np.deg2rad(args.azimuth_deg)
     system.angle_course = np.deg2rad(args.course_deg)
