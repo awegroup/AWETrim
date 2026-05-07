@@ -16,7 +16,6 @@ from awetrim.environment.Wind import Wind
 from awetrim.system.factory import create_system_model_from_yaml
 from awetrim.timeseries.phase import Phase
 
-
 set_plot_style()
 
 
@@ -415,6 +414,9 @@ def simulate_cycle(
         radial_params = phase_yaml.get("radial_parameters", {})
         sim_params = phase_yaml.get("sim_parameters", {}).copy()
         sim_params["n_points"] = n_points
+        # Spline is fitted on [0, 1]; force the sim grid to match regardless of yaml
+        sim_params["start_angle"] = 0.0
+        sim_params["end_angle"] = 1.0
 
         # Wind: default to EKF-derived profile averaged over ±2.5 s, resampled to sim s-grid
         wind_col = "wind_speed_horizontal"
@@ -445,7 +447,7 @@ def simulate_cycle(
 
         wind_model = Wind(
             wind_model="uniform",
-            # speed_wind_ref=wind_ref,
+            speed_wind_ref=wind_ref,
             direction_wind=0,
         )
 
