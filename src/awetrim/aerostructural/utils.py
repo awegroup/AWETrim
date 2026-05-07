@@ -1,8 +1,6 @@
 import yaml
 from pathlib import Path
 import numpy as np
-import pandas as pd
-from scipy.spatial import ConvexHull
 import h5py
 
 
@@ -18,35 +16,6 @@ def load_yaml(path: Path) -> dict:
     """
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f)
-
-
-def load_and_save_config_files(
-    config_path, struc_geometry_path, aero_geometry_path, results_dir
-):
-    """
-    Load configuration files and save copies to a timestamped results directory.
-
-    Args:
-        PROJECT_DIR (Path): The project directory.
-
-    Returns:
-        config (dict): The loaded main configuration.
-        config_kite (dict): The loaded kite configuration.
-        results_dir (Path): Path to the results directory where configs are saved.
-    """
-    config = load_yaml(config_path)
-    struc_geometry = load_yaml(struc_geometry_path)
-    aero_geometry = load_yaml(aero_geometry_path)
-
-    results_dir.mkdir(parents=True, exist_ok=True)
-    with open(results_dir / "config.yaml", "w") as f:
-        yaml.dump(config, f, sort_keys=False)
-    with open(results_dir / "struc_geometry.yaml", "w") as f:
-        yaml.dump(struc_geometry, f, sort_keys=False)
-    with open(results_dir / "aero_geometry.yaml", "w") as f:
-        yaml.dump(aero_geometry, f, sort_keys=False)
-
-    return config, struc_geometry, aero_geometry, results_dir
 
 
 def save_results(tracking, meta, filename):
@@ -100,31 +69,6 @@ def load_sim_output(h5_path):
                 track[name] = item[()]  # read the full array into memory
 
     return metadata, track
-
-
-# TODO: at this moment unused
-def calculate_projected_area(points):
-    """
-    Calculate the projected area of a set of 3D points onto the XY plane using the convex hull.
-
-    Args:
-        points (np.ndarray): Array of 3D points (n_points, 3).
-
-    Returns:
-        float: Projected area on the XY plane.
-    """
-    # Project points onto the x,y plane
-    xy_points = points[:, :2]
-
-    # Find the convex hull
-    hull = ConvexHull(xy_points)
-    hull_points = xy_points[hull.vertices]
-
-    # Using the shoelace formula
-    x = hull_points[:, 0]
-    y = hull_points[:, 1]
-
-    return 0.5 * np.abs(np.dot(x, np.roll(y, 1)) - np.dot(y, np.roll(x, 1)))
 
 
 def printing_rest_lengths(tracking_data, struc_geometry):
@@ -406,7 +350,6 @@ def calculate_inertia(nodes, desired_point=(0.0, 0.0, 0.0)):
         inertia_tensor[0, 2] -= mass * r_x * r_z  # Ixz
         inertia_tensor[1, 2] -= mass * r_y * r_z  # Iyz
 
-    # Fill the symmetric entries.
     inertia_tensor[1, 0] = inertia_tensor[0, 1]
     inertia_tensor[2, 0] = inertia_tensor[0, 2]
     inertia_tensor[2, 1] = inertia_tensor[1, 2]

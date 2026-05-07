@@ -129,7 +129,7 @@ aero_structural_solver:
 
 ## Result Storage
 
-Output goes to `results/<kite_name>/<case_folder>/sim_output.h5` (absolute path from project root, never CWD-relative). Use `results.save_sim_output()` and `results.aerostructural_results_root()`.
+Output goes to `results/aerostructural/<kite_name>/<case_folder>/sim_output.h5` (absolute path from project root, never CWD-relative). Use `results.save_sim_output()` and `results.aerostructural_results_root()`.
 
 ## Required Developer Checks
 

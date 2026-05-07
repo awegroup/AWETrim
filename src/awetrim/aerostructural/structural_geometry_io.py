@@ -3,9 +3,161 @@
 import numpy as np
 import logging
 
+from awetrim.aerostructural.utils import calculate_cg, calculate_inertia
 
-def _resolve_kcu_mass(struc_geometry, config=None):
-    """Resolve KCU mass with config override and geometry fallback."""
+
+def compute_wing_stats_from_pss(struc_geometry):
+    """Compute wing mass, center of mass, and inertia tensor from a PSS struc_geometry dict.
+
+    Mass is distributed to nodes by splitting each element's m value equally between
+    its two endpoints, mirroring initialize_wing_structure. The inertia tensor is the
+    full 3x3 computed about the center of mass in the struc_geometry frame.
+
+    Returns a dict with keys: mass, center_of_mass, inertia_tensor.
+    """
+    node_positions = {
+        int(row[0]): np.array(row[1:4], dtype=float)
+        for row in struc_geometry["wing_particles"]["data"]
+    }
+    wing_elements = {
+        row[0]: dict(zip(struc_geometry["wing_elements"]["headers"][1:], row[1:]))
+        for row in struc_geometry["wing_elements"]["data"]
+    }
+
+    node_mass = {nid: 0.0 for nid in node_positions}
+    for conn_name, ci, cj in struc_geometry["wing_connections"]["data"]:
+        m = wing_elements[conn_name]["m"]
+        node_mass[ci] += m / 2
+        node_mass[cj] += m / 2
+
+    node_ids = sorted(node_positions.keys())
+    struc_nodes = np.array([node_positions[nid] for nid in node_ids])
+    m_arr = np.array([node_mass[nid] for nid in node_ids])
+
+    total_mass = float(np.sum(m_arr))
+    cg = calculate_cg(struc_nodes, m_arr)
+    I = calculate_inertia(
+        [(struc_nodes[i], m_arr[i]) for i in range(len(node_ids))], desired_point=cg
+    )
+
+    # Attempt to compute geometric properties (span, projected area) from
+    # structural LE/TE node coordinates. Prefer VSM's Wing geometry utilities
+    # when available; otherwise fall back to simple triangulation/projection.
+    node_positions = {
+        int(row[0]): np.array(row[1:4], dtype=float)
+        for row in struc_geometry["wing_particles"]["data"]
+    }
+    le_ids = sorted([nid for nid in node_positions if nid % 2 != 0])
+    te_ids = sorted([nid for nid in node_positions if nid % 2 == 0])
+
+    le_pts = (
+        np.array([node_positions[n] for n in le_ids]) if le_ids else np.empty((0, 3))
+    )
+    te_pts = (
+        np.array([node_positions[n] for n in te_ids]) if te_ids else np.empty((0, 3))
+    )
+
+    span_val = None
+    projected_area_val = None
+    side_area_val = None
+    flat_area_val = None
+
+    try:
+        from VSM.core.WingGeometry import Wing
+
+        polar_list = [np.zeros((0, 4)) for _ in range(len(le_pts))]
+        n_panels = max(1, len(le_pts) - 1)
+        wing_geo = Wing(n_panels=n_panels)
+        if len(le_pts) and len(te_pts) and len(le_pts) == len(te_pts):
+            wing_geo.update_wing_from_points(
+                le_pts, te_pts, "reuse_initial_polar_data", polar_list
+            )
+            span_val = float(wing_geo.span)
+            # projected onto XY (default)
+            projected_area_val = float(wing_geo.compute_projected_area())
+            # side projection onto YZ (normal = x-axis)
+            side_area_val = float(
+                wing_geo.compute_projected_area(np.array([1.0, 0.0, 0.0]))
+            )
+            # flat / planform surface area (VSM may provide compute_flat_area)
+            if hasattr(wing_geo, "compute_flat_area"):
+                try:
+                    flat_area_val = float(wing_geo.compute_flat_area())
+                except Exception:
+                    flat_area_val = None
+    except Exception:
+        # Fallback: compute flat and projected areas by triangulating successive LE/TE quads
+        def tri_area(a, b, c):
+            return 0.5 * np.linalg.norm(np.cross(b - a, c - a))
+
+        if len(le_pts) and len(te_pts) and len(le_pts) == len(te_pts):
+            # span: y-extent of all LE/TE points
+            all_y = np.concatenate([le_pts[:, 1], te_pts[:, 1]])
+            span_val = float(np.max(all_y) - np.min(all_y))
+
+            S_flat = 0.0
+            S_proj_xy = 0.0
+            S_side = 0.0
+            for i in range(len(le_pts) - 1):
+                A = le_pts[i]
+                B = te_pts[i]
+                C = te_pts[i + 1]
+                D = le_pts[i + 1]
+                # flat surface area (3D) triangles
+                S_flat += tri_area(A, B, C) + tri_area(A, C, D)
+
+                def tri_area_proj(a, b, c, drop_axis=2):
+                    a2, b2, c2 = [np.delete(v, drop_axis) for v in [a, b, c]]
+                    return 0.5 * abs(np.cross(b2 - a2, c2 - a2))
+
+                # projected onto XY (drop z)
+                S_proj_xy += tri_area_proj(A, B, C, drop_axis=2) + tri_area_proj(
+                    A, C, D, drop_axis=2
+                )
+                # projected onto YZ (drop x)
+                S_side += tri_area_proj(A, B, C, drop_axis=0) + tri_area_proj(
+                    A, C, D, drop_axis=0
+                )
+
+            projected_area_val = float(S_proj_xy)
+            side_area_val = float(S_side)
+            flat_area_val = float(S_flat)
+
+    result = {
+        "mass": round(total_mass, 4),
+        "center_of_mass": [round(float(v), 4) for v in cg],
+        "inertia_tensor": [[round(float(v), 4) for v in row] for row in I],
+    }
+
+    # Include computed geometric fields when available
+    if span_val is not None:
+        result["span"] = round(float(span_val), 4)
+    if projected_area_val is not None:
+        result["projected_surface_area"] = round(float(projected_area_val), 4)
+    if flat_area_val is not None:
+        result["planform_surface_area"] = round(float(flat_area_val), 4)
+    if side_area_val is not None:
+        result["side_projected_area"] = round(float(side_area_val), 4)
+
+    return result
+
+
+def _resolve_kcu_mass(struc_geometry, config=None, system_config=None):
+    """Resolve KCU mass.
+
+    Priority:
+      1. system_config (awesIO format): components.control_system.structure.mass
+      2. config (aerostructural YAML): kcu.mass or kcu_mass
+      3. struc_geometry fallback (legacy)
+    """
+    if isinstance(system_config, dict):
+        kite = system_config.get("components", {}).get(
+            "kite", system_config.get("components", {})
+        )
+        cs_struct = kite.get("control_system", {}).get("structure", {})
+        if "mass" in cs_struct:
+            return float(cs_struct["mass"])
+
     if isinstance(config, dict):
         kcu_cfg = config.get("kcu", {})
         if isinstance(kcu_cfg, dict) and "mass" in kcu_cfg:
@@ -17,7 +169,7 @@ def _resolve_kcu_mass(struc_geometry, config=None):
         return float(struc_geometry["kcu_mass"])
 
     logging.warning(
-        "KCU mass not found in config or structural geometry; defaulting to 0.0 kg."
+        "KCU mass not found in system_config, config, or structural geometry; defaulting to 0.0 kg."
     )
     return 0.0
 
@@ -311,13 +463,66 @@ def initialize_bridle_line_system(
     )
 
 
-def main(struc_geometry, config=None):
+def compute_bridle_stats_from_pss(struc_geometry):
+    """Compute bridle summary statistics from a PSS struc_geometry dict.
+
+    Returns a dict with:
+      total_nominal_line_length  — sum of unique bridle_line l0 values (m)
+      avg_line_diameter          — connection-length-weighted average diameter (m)
+      bridle_line_count          — number of unique line definitions
+      bridle_particle_count      — number of bridle particles (excluding KCU node)
+      bridle_connection_count    — number of connection entries
+      pulley_count               — number of 3-node (pulley) connections
+      mass                       — total bridle mass: lines + pulleys (kg)
+    """
+    bridle_lines_dict = {
+        row[0]: dict(zip(struc_geometry["bridle_lines"]["headers"][1:], row[1:]))
+        for row in struc_geometry["bridle_lines"]["data"]
+    }
+
+    total_nominal_line_length = sum(p["l0"] for p in bridle_lines_dict.values())
+
+    mass_lines = 0.0
+    weighted_d_sum = 0.0
+    total_conn_length = 0.0
+    pulley_count = 0
+
+    for conn_data in struc_geometry["bridle_connections"]["data"]:
+        name = conn_data[0]
+        line = bridle_lines_dict[name]
+        l0, d, material = line["l0"], line["d"], line["material"]
+        area = np.pi * (d / 2) ** 2
+        density = struc_geometry[material]["density"]
+        mass_lines += density * area * l0
+        weighted_d_sum += d * l0
+        total_conn_length += l0
+        if len(conn_data[1:]) == 3:
+            pulley_count += 1
+
+    avg_line_diameter = weighted_d_sum / total_conn_length
+    pulley_mass_per = struc_geometry.get("pulley_mass", 0.0)
+    mass_total = mass_lines + pulley_count * pulley_mass_per
+
+    return {
+        "total_nominal_line_length": round(total_nominal_line_length, 5),
+        "avg_line_diameter": round(avg_line_diameter, 5),
+        "bridle_line_count": len(bridle_lines_dict),
+        "bridle_particle_count": len(struc_geometry["bridle_particles"]["data"]),
+        "bridle_connection_count": len(struc_geometry["bridle_connections"]["data"]),
+        "pulley_count": pulley_count,
+        "mass": round(mass_total, 4),
+    }
+
+
+def main(struc_geometry, config=None, system_config=None):
 
     ### First append the bridle_point_node, as this node (KCU) should have index 0
     struc_nodes = []
     m_arr = []
     struc_nodes.append(np.array(struc_geometry["bridle_point_node"]))
-    m_arr.append(_resolve_kcu_mass(struc_geometry, config=config))
+    m_arr.append(
+        _resolve_kcu_mass(struc_geometry, config=config, system_config=system_config)
+    )
 
     # initialize element level lists
     kite_connectivity_arr = []
