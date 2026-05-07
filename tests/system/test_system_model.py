@@ -25,6 +25,7 @@ import yaml
 from awetrim.system.system_model import SystemModel
 from awetrim.system.kite import Kite
 from awetrim.system.tether import RigidLumpedTether, FlexibleLinkTether
+from awetrim.system.factory import load_aero_input_from_system_config
 from awetrim.environment.Wind import Wind
 from awetrim.utils.config_paths import LEI_V3_SYSTEM_CONFIG
 
@@ -45,19 +46,36 @@ def v3_config():
     return load_v3_system_config()
 
 
+def _extract_kite_params(cfg: dict) -> tuple:
+    """Extract kite parameters from awesIO or legacy system config format."""
+    if "components" in cfg:
+        kite = cfg["components"].get("kite", cfg["components"])
+        wing_struct = kite["wing"]["structure"]
+        cs_struct = kite.get("control_system", {}).get("structure", {})
+        return (
+            load_aero_input_from_system_config(cfg, config_path=LEI_V3_SYSTEM_CONFIG),
+            wing_struct.get("mass", 15),
+            wing_struct.get("projected_surface_area", 19.75),
+            cs_struct.get("mass", 8.4),
+        )
+    wing = cfg.get("wing", {})
+    return (
+        wing.get("aerodynamics", {}),
+        wing.get("mass", 15),
+        wing.get("area", 19.75),
+        cfg.get("kcu", {}).get("mass", 8.4),
+    )
+
+
 @pytest.fixture
 def v3_kite(v3_config):
     """Fixture: V3 Kite instance."""
-    cfg = v3_config
-    aero_input = cfg["wing"]["aerodynamics"]
-    mass_wing = cfg["wing"].get("mass", 15)
-    area_wing = cfg["wing"].get("area", 19.75)
-
+    aero_input, mass_wing, area_wing, mass_kcu = _extract_kite_params(v3_config)
     return Kite(
         mass_wing=mass_wing,
         area_wing=area_wing,
         aero_input=aero_input,
-        mass_kcu=16.0,
+        mass_kcu=mass_kcu,
         steering_control="asymmetric",
     )
 
@@ -516,14 +534,14 @@ class TestSystemModelFullWorkflow:
 
     def test_complete_system_initialization_with_all_models(self, v3_config):
         """Full workflow: load config → create models → create system."""
-        cfg = v3_config
+        aero_input, mass_wing, area_wing, mass_kcu = _extract_kite_params(v3_config)
 
         # Load components
         kite = Kite(
-            mass_wing=cfg["wing"]["mass"],
-            area_wing=cfg["wing"]["area"],
-            aero_input=cfg["wing"]["aerodynamics"],
-            mass_kcu=16.0,
+            mass_wing=mass_wing,
+            area_wing=area_wing,
+            aero_input=aero_input,
+            mass_kcu=mass_kcu,
             steering_control="asymmetric",
         )
         tether = RigidLumpedTether(diameter=0.01)
