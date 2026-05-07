@@ -23,7 +23,6 @@ from awetrim.aerodynamics.vsm_quasi_steady import (
     solve_vsm_quasi_steady_trim,
 )
 
-
 # ---------------------------------------------------------------------------
 # Animation helpers
 # ---------------------------------------------------------------------------
@@ -44,7 +43,9 @@ def _rot_rad(axis: np.ndarray, angle_rad: float) -> np.ndarray:
     ax = ax / np.linalg.norm(ax)
     kx, ky, kz = ax
     skew = np.array([[0, -kz, ky], [kz, 0, -kx], [-ky, kx, 0]], dtype=float)
-    return np.eye(3) + np.sin(angle_rad) * skew + (1 - np.cos(angle_rad)) * (skew @ skew)
+    return (
+        np.eye(3) + np.sin(angle_rad) * skew + (1 - np.cos(angle_rad)) * (skew @ skew)
+    )
 
 
 def _rotate_pts(pts: np.ndarray, R: np.ndarray, origin: np.ndarray) -> np.ndarray:
@@ -89,6 +90,7 @@ def load_bridle_geometry(bridle_yaml_path) -> dict | None:
     if bridle_yaml_path is None:
         return None
     from pathlib import Path
+
     path = Path(bridle_yaml_path)
     if not path.exists():
         return None
@@ -135,8 +137,9 @@ def load_bridle_geometry(bridle_yaml_path) -> dict | None:
     }
 
 
-def _build_mode_figure(panel_corners, origin, eig, label, block_title, mode_index,
-                       bridle_geom=None):
+def _build_mode_figure(
+    panel_corners, origin, eig, label, block_title, mode_index, bridle_geom=None
+):
     """Create the figure skeleton shared by both animation functions."""
     fig = plt.figure(figsize=(12, 8))
     ax3d = fig.add_subplot(121, projection="3d")
@@ -174,21 +177,41 @@ def _build_mode_figure(panel_corners, origin, eig, label, block_title, mode_inde
             (ln,) = ax3d.plot([], [], [], color="0.55", linewidth=0.7, zorder=1)
             wing_struct_lines.append(ln)
         for _ in bridle_geom["bridle_edges"]:
-            (ln,) = ax3d.plot([], [], [], color="tab:orange", linewidth=0.6,
-                              linestyle="--", zorder=1)
+            (ln,) = ax3d.plot(
+                [], [], [], color="tab:orange", linewidth=0.6, linestyle="--", zorder=1
+            )
             bridle_lines.append(ln)
         kcu_pt = bridle_geom["kcu_point"]
         (kcu_marker,) = ax3d.plot(
-            [kcu_pt[0]], [kcu_pt[1]], [kcu_pt[2]],
-            "D", color="tab:red", markersize=5, zorder=6,
+            [kcu_pt[0]],
+            [kcu_pt[1]],
+            [kcu_pt[2]],
+            "D",
+            color="tab:red",
+            markersize=5,
+            zorder=6,
         )
 
     status_txt = ax3d.text2D(0.02, 0.96, "", transform=ax3d.transAxes, fontsize=8)
-    return fig, ax3d, panel_lines, wing_struct_lines, bridle_lines, kcu_marker, status_txt
+    return (
+        fig,
+        ax3d,
+        panel_lines,
+        wing_struct_lines,
+        bridle_lines,
+        kcu_marker,
+        status_txt,
+    )
 
 
-def _update_bridle_lines(bridle_geom, wing_struct_lines, bridle_lines, kcu_marker,
-                         R: np.ndarray, origin: np.ndarray) -> None:
+def _update_bridle_lines(
+    bridle_geom,
+    wing_struct_lines,
+    bridle_lines,
+    kcu_marker,
+    R: np.ndarray,
+    origin: np.ndarray,
+) -> None:
     """Rotate and redraw all bridle geometry objects for one animation frame."""
     if bridle_geom is None:
         return
@@ -260,8 +283,15 @@ def animate_longitudinal_mode(
     )
 
     fig, ax3d, panel_lines, wing_struct_lines, bridle_lines, kcu_marker, status_txt = (
-        _build_mode_figure(panel_corners, origin, eig, "θ", "Longitudinal", mode_index,
-                           bridle_geom=bridle_geom)
+        _build_mode_figure(
+            panel_corners,
+            origin,
+            eig,
+            "θ",
+            "Longitudinal",
+            mode_index,
+            bridle_geom=bridle_geom,
+        )
     )
 
     ax_u = fig.add_subplot(222)
@@ -300,7 +330,15 @@ def animate_longitudinal_mode(
         u_marker.set_data([], [])
         theta_line.set_data([], [])
         theta_marker.set_data([], [])
-        return [*panel_lines, *extra, status_txt, u_line, u_marker, theta_line, theta_marker]
+        return [
+            *panel_lines,
+            *extra,
+            status_txt,
+            u_line,
+            u_marker,
+            theta_line,
+            theta_marker,
+        ]
 
     def update(fi: int):
         theta_t = trim_pitch_rad + float(theta_perturb[fi])
@@ -310,8 +348,9 @@ def animate_longitudinal_mode(
             c = np.vstack([rot[idx], rot[idx][0]])
             ln.set_data(c[:, 0], c[:, 1])
             ln.set_3d_properties(c[:, 2])
-        _update_bridle_lines(bridle_geom, wing_struct_lines, bridle_lines, kcu_marker,
-                             R, origin)
+        _update_bridle_lines(
+            bridle_geom, wing_struct_lines, bridle_lines, kcu_marker, R, origin
+        )
         u_t = trim_speed + float(u_perturb[fi])
         status_txt.set_text(
             f"t={t_phys[fi]:.4f} s  |  u={u_t:+.2f} m/s  θ={np.rad2deg(theta_t):+.2f}°"
@@ -320,7 +359,15 @@ def animate_longitudinal_mode(
         u_marker.set_data([t_phys[fi]], [u_total[fi]])
         theta_line.set_data(t_phys[: fi + 1], theta_total_deg[: fi + 1])
         theta_marker.set_data([t_phys[fi]], [theta_total_deg[fi]])
-        return [*panel_lines, *extra, status_txt, u_line, u_marker, theta_line, theta_marker]
+        return [
+            *panel_lines,
+            *extra,
+            status_txt,
+            u_line,
+            u_marker,
+            theta_line,
+            theta_marker,
+        ]
 
     anim = FuncAnimation(
         fig, update, init_func=init, frames=n_frames, interval=1000.0 / fps, blit=False
@@ -378,8 +425,15 @@ def animate_lateral_mode(
     )
 
     fig, ax3d, panel_lines, wing_struct_lines, bridle_lines, kcu_marker, status_txt = (
-        _build_mode_figure(panel_corners, origin, eig, "φ/ψ", "Lateral", mode_index,
-                           bridle_geom=bridle_geom)
+        _build_mode_figure(
+            panel_corners,
+            origin,
+            eig,
+            "φ/ψ",
+            "Lateral",
+            mode_index,
+            bridle_geom=bridle_geom,
+        )
     )
 
     ax_phi = fig.add_subplot(222)
@@ -418,7 +472,15 @@ def animate_lateral_mode(
         phi_marker.set_data([], [])
         psi_line.set_data([], [])
         psi_marker.set_data([], [])
-        return [*panel_lines, *extra, status_txt, phi_line, phi_marker, psi_line, psi_marker]
+        return [
+            *panel_lines,
+            *extra,
+            status_txt,
+            phi_line,
+            phi_marker,
+            psi_line,
+            psi_marker,
+        ]
 
     def update(fi: int):
         phi_t = trim_roll_rad + float(phi_perturb[fi])
@@ -429,8 +491,9 @@ def animate_lateral_mode(
             c = np.vstack([rot[idx], rot[idx][0]])
             ln.set_data(c[:, 0], c[:, 1])
             ln.set_3d_properties(c[:, 2])
-        _update_bridle_lines(bridle_geom, wing_struct_lines, bridle_lines, kcu_marker,
-                             R, origin)
+        _update_bridle_lines(
+            bridle_geom, wing_struct_lines, bridle_lines, kcu_marker, R, origin
+        )
         status_txt.set_text(
             f"t={t_phys[fi]:.4f} s  |  φ={np.rad2deg(phi_t):+.2f}°  ψ={np.rad2deg(psi_t):+.2f}°"
         )
@@ -438,7 +501,15 @@ def animate_lateral_mode(
         phi_marker.set_data([t_phys[fi]], [phi_total_deg[fi]])
         psi_line.set_data(t_phys[: fi + 1], psi_total_deg[: fi + 1])
         psi_marker.set_data([t_phys[fi]], [psi_total_deg[fi]])
-        return [*panel_lines, *extra, status_txt, phi_line, phi_marker, psi_line, psi_marker]
+        return [
+            *panel_lines,
+            *extra,
+            status_txt,
+            phi_line,
+            phi_marker,
+            psi_line,
+            psi_marker,
+        ]
 
     anim = FuncAnimation(
         fig, update, init_func=init, frames=n_frames, interval=1000.0 / fps, blit=False
@@ -458,9 +529,6 @@ def main() -> None:
         description="Solve VSM aerodynamic trim and compute stability derivatives."
     )
     add_common_arguments(parser)
-    parser.add_argument("--inertia-xx", type=float, default=100.0)
-    parser.add_argument("--inertia-yy", type=float, default=20.0)
-    parser.add_argument("--inertia-zz", type=float, default=100.0)
     parser.add_argument("--eps-vel", type=float, default=0.1)
     parser.add_argument("--eps-angle-deg", type=float, default=0.5)
     parser.add_argument("--eps-rate", type=float, default=0.01)
@@ -475,24 +543,65 @@ def main() -> None:
         default="gif",
         help="Animation output format (default: gif; mp4 requires ffmpeg).",
     )
-    parser.add_argument("--animation-fps", type=int, default=8,
-                        help="Frames per second for saved animations (default: 8).")
-    parser.add_argument("--animation-frames", type=int, default=60,
-                        help="Fixed number of frames per animation (default: 60).")
-    parser.add_argument("--animation-amplitude-deg", type=float, default=5.0,
-                        help="Initial perturbation amplitude in degrees.")
-    parser.add_argument("--animation-max-physics-s", type=float, default=30.0,
-                        help="Cap on real physics time shown per animation (default: 30 s).")
+    parser.add_argument(
+        "--animation-fps",
+        type=int,
+        default=8,
+        help="Frames per second for saved animations (default: 8).",
+    )
+    parser.add_argument(
+        "--animation-frames",
+        type=int,
+        default=60,
+        help="Fixed number of frames per animation (default: 60).",
+    )
+    parser.add_argument(
+        "--animation-amplitude-deg",
+        type=float,
+        default=5.0,
+        help="Initial perturbation amplitude in degrees.",
+    )
+    parser.add_argument(
+        "--animation-max-physics-s",
+        type=float,
+        default=30.0,
+        help="Cap on real physics time shown per animation (default: 30 s).",
+    )
     args = parser.parse_args()
     values = parsed_common(args)
     out_dir = output_dir(args, "stability_derivatives")
 
-    body = build_body(args)
+    # Load body and properties from config folder
+    body, props = build_body(args)
+
+    # DEBUG: Check what props contains
+    # Use properties from system.yaml if not explicitly overridden via args
+    mass_wing = (
+        args.mass_wing if args.mass_wing is not None else props.get("mass", 30.0)
+    )
+
+    # Inertia: use from system.yaml unless explicitly overridden
+    inertia_tensor = props.get("inertia", [[100, 0, 0], [0, 20, 0], [0, 0, 100]])
+    try:
+        inertia_xx = (
+            float(inertia_tensor[0][0]) if args.inertia_xx is None else args.inertia_xx
+        )
+        inertia_yy = (
+            float(inertia_tensor[1][1]) if args.inertia_yy is None else args.inertia_yy
+        )
+        inertia_zz = (
+            float(inertia_tensor[2][2]) if args.inertia_zz is None else args.inertia_zz
+        )
+    except (IndexError, TypeError):
+        inertia_xx = args.inertia_xx if args.inertia_xx is not None else 100.0
+        inertia_yy = args.inertia_yy if args.inertia_yy is not None else 20.0
+        inertia_zz = args.inertia_zz if args.inertia_zz is not None else 100.0
+
     result, solved_body = solve_vsm_quasi_steady_trim(
         body_aero=body,
         center_of_gravity=values["center_of_gravity"],
         reference_point=values["reference_point"],
-        system_model=build_system_model(args),
+        system_model=build_system_model(args, mass_wing=mass_wing),
         x_guess=values["x_guess"],
         bounds_lower=values["bounds_lower"],
         bounds_upper=values["bounds_upper"],
@@ -502,16 +611,17 @@ def main() -> None:
         max_nfev=args.max_nfev,
     )
     print_trim_summary(result)
+
     stability = compute_vsm_trim_stability_derivatives(
         body_aero=solved_body,
         center_of_gravity=values["center_of_gravity"],
         reference_point=values["reference_point"],
         x_trim=np.asarray(result["opt_x"], dtype=float),
         trim_result=result,
-        mass=args.mass_wing,
-        inertia_xx=args.inertia_xx,
-        inertia_yy=args.inertia_yy,
-        inertia_zz=args.inertia_zz,
+        mass=mass_wing,
+        inertia_xx=inertia_xx,
+        inertia_yy=inertia_yy,
+        inertia_zz=inertia_zz,
         distance_radial=args.distance_radial,
         eps_vel=args.eps_vel,
         eps_angle_deg=args.eps_angle_deg,
@@ -532,11 +642,12 @@ def main() -> None:
             "trim_result": result,
             "stability": stability,
             "inertia": {
-                "mass": args.mass_wing,
-                "inertia_xx": args.inertia_xx,
-                "inertia_yy": args.inertia_yy,
-                "inertia_zz": args.inertia_zz,
+                "mass": mass_wing,
+                "inertia_xx": inertia_xx,
+                "inertia_yy": inertia_yy,
+                "inertia_zz": inertia_zz,
             },
+            "properties": props,
         },
     )
 
@@ -579,8 +690,8 @@ def main() -> None:
         fmt = args.animation_format
         ext = f".{fmt}"
         amplitude_rad = np.deg2rad(args.animation_amplitude_deg)
-        anim_body = build_body(args)  # fresh baseline geometry for animation
-        bridle_geom = load_bridle_geometry(getattr(args, "bridle_path", None))
+        anim_body, _ = build_body(args)  # fresh baseline geometry for animation
+        bridle_geom = load_bridle_geometry(props.get("struc_geometry_path"))
 
         n_long = len(stability["eig_long"])
         for i in range(n_long):
