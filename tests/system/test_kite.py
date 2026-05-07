@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 import yaml
 
+from awetrim.system.factory import load_aero_input_from_system_config
 from awetrim.utils.config_paths import LEI_V3_SYSTEM_CONFIG
 
 from awetrim.system.kite import Kite
@@ -33,19 +34,36 @@ def v3_kite_config():
     return load_v3_kite_config()
 
 
+def _extract_from_config(cfg: dict) -> tuple:
+    """Extract kite parameters from awesIO or legacy system config format."""
+    if "components" in cfg:
+        kite = cfg["components"].get("kite", cfg["components"])
+        wing_struct = kite["wing"]["structure"]
+        cs_struct = kite.get("control_system", {}).get("structure", {})
+        return (
+            load_aero_input_from_system_config(cfg, config_path=LEI_V3_SYSTEM_CONFIG),
+            wing_struct.get("mass", 15),
+            wing_struct.get("projected_surface_area", 19.75),
+            cs_struct.get("mass", 0.0),
+        )
+    wing = cfg.get("wing", {})
+    return (
+        wing.get("aerodynamics", {}),
+        wing.get("mass", 15),
+        wing.get("area", 19.75),
+        cfg.get("kcu", {}).get("mass", 0.0),
+    )
+
+
 @pytest.fixture
 def v3_kite(v3_kite_config):
     """Fixture providing initialized V3 Kite instance."""
-    cfg = v3_kite_config
-    aero_input = cfg["wing"]["aerodynamics"]
-    mass_wing = cfg["wing"].get("mass", 15)
-    area_wing = cfg["wing"].get("area", 19.75)
-
+    aero_input, mass_wing, area_wing, _ = _extract_from_config(v3_kite_config)
     return Kite(
         mass_wing=mass_wing,
         area_wing=area_wing,
         aero_input=aero_input,
-        mass_kcu=16.0,  # Standard KCU mass for V3
+        mass_kcu=8.4,
         steering_control="asymmetric",
     )
 
@@ -89,8 +107,7 @@ class TestV3AerodynamicModel:
 
     def test_v3_aerodynamic_config_loads(self, v3_kite_config):
         """Verify V3 kite configuration loads with expected aerodynamic coefficients."""
-        cfg = v3_kite_config
-        aero = cfg["wing"]["aerodynamics"]
+        aero, _, _, _ = _extract_from_config(v3_kite_config)
 
         # Verify model type
         assert aero["model"] == "coeffs", "V3 should use coefficient-based model"
@@ -116,9 +133,9 @@ class TestV3AerodynamicModel:
 
     def test_v3_kite_initialization(self, v3_kite):
         """Verify V3 kite initializes with correct parameters."""
-        assert v3_kite.mass_wing == 15.0, "V3 wing mass should be 15 kg"
+        assert v3_kite.mass_wing == pytest.approx(11.4746), "V3 wing mass from PSS model"
         assert v3_kite.area_wing == 19.75, "V3 wing area should be 19.75 m²"
-        assert v3_kite.mass_kcu == 16.0, "V3 KCU mass should be 16 kg"
+        assert v3_kite.mass_kcu == 8.4, "V3 KCU mass should be 8.4 kg"
         assert v3_kite.rho == 1.225, "Air density should be standard"
 
 
