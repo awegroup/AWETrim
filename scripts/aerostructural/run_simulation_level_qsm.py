@@ -9,13 +9,16 @@ import numpy as np
 
 from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
 from awetrim.aerostructural.mapping import BilinearAeroToStructuralLoadMapper
+from awetrim.aerostructural.results import (
+    aerostructural_results_root,
+    save_input_snapshot,
+    save_sim_output,
+)
 from awetrim.aerostructural.utils import (
-    load_and_save_config_files,
     load_sim_output,
     load_yaml,
     printing_rest_lengths,
     rotate_geometry,
-    save_results,
 )
 from awetrim.aerostructural import (
     aerodynamic_vsm,
@@ -27,10 +30,13 @@ from awetrim.system.system_model import SystemModel
 from awetrim.system.tether import RigidLumpedTether
 from common import (
     CONFIG_DEFAULTS,
+    DEFAULT_KITE_NAME,
     build_actuation_case_folder,
     configure_system_model_from_config,
     resolve_initial_geometry_rotation_kwargs,
+    resolve_kite_paths,
 )
+from awesio.validator import validate as awesio_validate
 
 
 def _build_arg_parser() -> argparse.ArgumentParser:
@@ -316,16 +322,38 @@ def _build_qsm_csv_row(
     row = {
         "case_folder": case_folder,
         "results_dir": str(results_dir),
-        "is_with_gravity": bool(config.get("is_with_gravity", CONFIG_DEFAULTS["is_with_gravity"])),
-        "is_with_aero_bridle": bool(config.get("is_with_aero_bridle", CONFIG_DEFAULTS["is_with_aero_bridle"])),
-        "angle_elevation_deg": float(config.get("angle_elevation_deg", CONFIG_DEFAULTS["angle_elevation_deg"])),
-        "angle_azimuth_deg": float(config.get("angle_azimuth_deg", CONFIG_DEFAULTS["angle_azimuth_deg"])),
-        "angle_course_deg": float(config.get("angle_course_deg", CONFIG_DEFAULTS["angle_course_deg"])),
-        "speed_radial": float(config.get("speed_radial", CONFIG_DEFAULTS["speed_radial"])),
-        "distance_radial": float(config.get("distance_radial", CONFIG_DEFAULTS["distance_radial"])),
-        "wind_speed_wind_ref": float(config.get("wind_speed_wind_ref", CONFIG_DEFAULTS["wind_speed_wind_ref"])),
-        "timeder_speed_tangential": float(config.get("timeder_speed_tangential", CONFIG_DEFAULTS["timeder_speed_tangential"])),
-        "timeder_speed_radial": float(config.get("timeder_speed_radial", CONFIG_DEFAULTS["timeder_speed_radial"])),
+        "is_with_gravity": bool(
+            config.get("is_with_gravity", CONFIG_DEFAULTS["is_with_gravity"])
+        ),
+        "is_with_aero_bridle": bool(
+            config.get("is_with_aero_bridle", CONFIG_DEFAULTS["is_with_aero_bridle"])
+        ),
+        "angle_elevation_deg": float(
+            config.get("angle_elevation_deg", CONFIG_DEFAULTS["angle_elevation_deg"])
+        ),
+        "angle_azimuth_deg": float(
+            config.get("angle_azimuth_deg", CONFIG_DEFAULTS["angle_azimuth_deg"])
+        ),
+        "angle_course_deg": float(
+            config.get("angle_course_deg", CONFIG_DEFAULTS["angle_course_deg"])
+        ),
+        "speed_radial": float(
+            config.get("speed_radial", CONFIG_DEFAULTS["speed_radial"])
+        ),
+        "distance_radial": float(
+            config.get("distance_radial", CONFIG_DEFAULTS["distance_radial"])
+        ),
+        "wind_speed_wind_ref": float(
+            config.get("wind_speed_wind_ref", CONFIG_DEFAULTS["wind_speed_wind_ref"])
+        ),
+        "timeder_speed_tangential": float(
+            config.get(
+                "timeder_speed_tangential", CONFIG_DEFAULTS["timeder_speed_tangential"]
+            )
+        ),
+        "timeder_speed_radial": float(
+            config.get("timeder_speed_radial", CONFIG_DEFAULTS["timeder_speed_radial"])
+        ),
         "aero_roll_deg": float(results.get("aero_roll_deg", np.nan)),
         "aoa_deg": float(results.get("aoa_deg", np.nan)),
         "side_slip_deg": float(results.get("side_slip_deg", np.nan)),
@@ -392,44 +420,35 @@ def main():
         return
 
     PROJECT_DIR = Path(__file__).resolve().parents[2]
-    kite_name = "LEI-V3-KITE"  # the dir name with the relevant .yaml files
-    # kite_name = "3plate_kite"  # the dir name with the relevant .yaml files
-    # load config.yaml & geometry.yaml, save both, and return them as dicts
-    config_path = (
-        Path(PROJECT_DIR)
-        / "data"
-        / f"{kite_name}"
-        / "aerostructural_configs"
-        / "config.yaml"
-    )
-    struc_geometry_path = (
-        Path(PROJECT_DIR)
-        / "data"
-        / f"{kite_name}"
-        / "kite_geometries"
-        / "powered_geometry"
-        # / "struc_geometry_level_1_manual.yaml"
-        / "struc_geometry_level_1_manual_JULIA.yaml"
-        # / "struc_geometry_level_1_converged.yaml"
-    )
-    aero_geometry_path = (
-        Path(PROJECT_DIR)
-        / "data"
-        / f"{kite_name}"
-        / "kite_geometries"
-        / "powered_geometry"
-        / "aero_geometry.yaml"
+    kite_name = DEFAULT_KITE_NAME
+
+    # Resolve standard kite paths (config, aero_geometry, struc_geometry)
+    config_path, aero_geometry_path, struc_geometry_path = resolve_kite_paths(
+        PROJECT_DIR, kite_name
     )
 
+    # Load and validate the awesIO system config (single source of truth for physical params)
+    system_config_path = Path(PROJECT_DIR) / "data" / kite_name / "system.yaml"
+    import yaml as _yaml
+
+    with system_config_path.open("r", encoding="utf-8") as _f:
+        system_config = _yaml.safe_load(_f)
+    awesio_validate(system_config, restrictive=False)
+
+    # Load config.yaml & geometry files
     config = load_yaml(config_path)
     if args.steering_final_extension is not None:
         config["steering_tape_final_extension"] = float(args.steering_final_extension)
 
     case_folder = build_actuation_case_folder(config)
-    case_dir = Path(PROJECT_DIR) / "results" / f"{kite_name}" / case_folder
-    results_dir = case_dir
-    _, struc_geometry, _, results_dir = load_and_save_config_files(
-        config_path, struc_geometry_path, aero_geometry_path, results_dir
+    results_root = aerostructural_results_root(PROJECT_DIR, kite_name)
+    results_dir = results_root / case_folder
+    struc_geometry = load_yaml(struc_geometry_path)
+    results_dir = save_input_snapshot(
+        config=config,
+        struc_geometry_path=struc_geometry_path,
+        aero_geometry_path=aero_geometry_path,
+        results_dir=results_dir,
     )
 
     logging.info(f"config files saved in {results_dir}\n")
@@ -474,7 +493,9 @@ def main():
         linktype_arr,
         pulley_line_indices,
         pulley_line_to_other_node_pair_dict,
-    ) = structural_geometry_io.main(struc_geometry, config=config)
+    ) = structural_geometry_io.main(
+        struc_geometry, config=config, system_config=system_config
+    )
 
     #####################################################
     ### rotating the initial geometry by some angle,
@@ -536,12 +557,16 @@ def main():
     ##################
     ### AERO2STRUC ###
     ##################
-    aero2struc_mapping = BilinearAeroToStructuralLoadMapper().initialize(
-        body_aero.panels,
-        struc_nodes,
-        struc_node_le_indices,
-        struc_node_te_indices,
-    ).panel_corner_map
+    aero2struc_mapping = (
+        BilinearAeroToStructuralLoadMapper()
+        .initialize(
+            body_aero.panels,
+            struc_nodes,
+            struc_node_le_indices,
+            struc_node_te_indices,
+        )
+        .panel_corner_map
+    )
 
     #################
     ### ACTUATION ###
@@ -574,7 +599,11 @@ def main():
     ########################################
     # AWETRIM SYSTEM MODEL
     ########################################
-    tether = RigidLumpedTether(diameter=config["tether"]["diameter"])
+    tether_struct = system_config["components"]["tether"]["structure"]
+    tether = RigidLumpedTether(
+        diameter=tether_struct["diameter"],
+        density=tether_struct.get("density", 970.0),
+    )
     system_model = SystemModel(tether=tether)
     system_model.mass_wing = float(np.sum(m_arr))
     print(
@@ -623,11 +652,10 @@ def main():
     )
 
     # Save results
-    h5_path = Path(results_dir) / "sim_output.h5"
-    save_results(tracking_data, meta, h5_path)
+    h5_path = save_sim_output(tracking_data, meta, results_dir)
 
     summary_csv_name = config.get("qsm_summary_csv_name", "qsm_summary.csv")
-    summary_csv_path = Path(PROJECT_DIR) / "results" / kite_name / summary_csv_name
+    summary_csv_path = results_root / summary_csv_name
     summary_row = _build_qsm_csv_row(
         config=config,
         results=meta,

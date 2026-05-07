@@ -52,11 +52,14 @@ from awetrim.aerostructural import (
 )
 from awetrim.system.system_model import SystemModel
 from awetrim.system.tether import RigidLumpedTether
+from awesio.validator import validate as awesio_validate
 from common import (
     CONFIG_DEFAULTS,
+    DEFAULT_KITE_NAME,
     build_actuation_case_folder,
     configure_system_model_from_config,
     resolve_initial_geometry_rotation_kwargs,
+    resolve_kite_paths,
     resolve_starting_rest_lengths,
     resolve_starting_struc_nodes,
 )
@@ -65,8 +68,8 @@ from common import (
 # Wind speed is taken from config file (wind_speed_wind_ref)
 
 STEERING_START_M: float = 0.0  # m
-STEERING_END_M: float = 0.25  # m
-STEERING_N_VALUES: int | None = 6  # inclusive count from START to END
+STEERING_END_M: float = 0.4  # m
+STEERING_N_VALUES: int | None = 9  # inclusive count from START to END
 STEERING_STEP_M: float = 0.05  # used only when STEERING_N_VALUES is None
 
 # Depower tape extension applied to every run in the sweep.
@@ -104,33 +107,11 @@ def _parse_steering_from_case_folder(case_dir_or_name: str) -> float:
 
 def main() -> None:
     PROJECT_DIR = Path(__file__).resolve().parents[2]
-    kite_name = "LEI-V3-KITE"  # the dir name with the relevant .yaml files
-    # kite_name = "3plate_kite"  # the dir name with the relevant .yaml files
-    # load config.yaml & geometry.yaml, save both, and return them as dicts
-    config_path = (
-        Path(PROJECT_DIR)
-        / "data"
-        / f"{kite_name}"
-        / "aerostructural_configs"
-        / "config.yaml"
-    )
-    struc_geometry_path = (
-        Path(PROJECT_DIR)
-        / "data"
-        / f"{kite_name}"
-        / "kite_geometries"
-        / "powered_geometry"
-        # / "struc_geometry_level_1_manual.yaml"
-        / "struc_geometry_level_1_manual_JULIA.yaml"
-        # / "struc_geometry_level_1_converged.yaml"
-    )
-    aero_geometry_path = (
-        Path(PROJECT_DIR)
-        / "data"
-        / f"{kite_name}"
-        / "kite_geometries"
-        / "powered_geometry"
-        / "aero_geometry.yaml"
+    kite_name = DEFAULT_KITE_NAME
+
+    # Resolve standard kite paths (config, aero_geometry, struc_geometry)
+    config_path, aero_geometry_path, struc_geometry_path = resolve_kite_paths(
+        PROJECT_DIR, kite_name
     )
 
     # Build steering values
@@ -148,6 +129,13 @@ def main() -> None:
     run_idx = 0
 
     # ── One-time: load base config and geometry ───────────────────────────────
+    system_config_path = Path(PROJECT_DIR) / "data" / kite_name / "system.yaml"
+    import yaml as _yaml
+
+    with system_config_path.open("r", encoding="utf-8") as _f:
+        system_config = _yaml.safe_load(_f)
+    awesio_validate(system_config, restrictive=False)
+
     base_config = load_yaml(config_path)
     struc_geometry = load_yaml(struc_geometry_path)
 
@@ -170,7 +158,9 @@ def main() -> None:
         linktype_arr,
         pulley_line_indices,
         pulley_line_to_other_node_pair_dict,
-    ) = structural_geometry_io.main(struc_geometry, config=base_config)
+    ) = structural_geometry_io.main(
+        struc_geometry, config=base_config, system_config=system_config
+    )
 
     # Apply initial geometry rotation once
     struc_nodes_base = rotate_geometry(
@@ -330,18 +320,26 @@ def main() -> None:
         )
 
         # ── SystemModel ───────────────────────────────────────────────────
-        tether = RigidLumpedTether(diameter=cfg["tether"]["diameter"])
+        tether_struct = system_config["components"]["tether"]["structure"]
+        tether = RigidLumpedTether(
+            diameter=tether_struct["diameter"],
+            density=tether_struct.get("density", 970.0),
+        )
         system_model = SystemModel(tether=tether)
         system_model.mass_wing = float(np.sum(m_arr))
         configure_system_model_from_config(system_model, cfg)
 
         # ── Aero–structure mapping (created per-run with current geometry) ────────
-        aero2struc_mapping = BilinearAeroToStructuralLoadMapper().initialize(
-            body_aero_init.panels,
-            struc_nodes,  # Use current struc_nodes (may be recovered)
-            struc_node_le_indices,
-            struc_node_te_indices,
-        ).panel_corner_map
+        aero2struc_mapping = (
+            BilinearAeroToStructuralLoadMapper()
+            .initialize(
+                body_aero_init.panels,
+                struc_nodes,  # Use current struc_nodes (may be recovered)
+                struc_node_le_indices,
+                struc_node_te_indices,
+            )
+            .panel_corner_map
+        )
 
         # ── Run coupled solver ────────────────────────────────────────────
         # Deepcopy aero objects so each run starts from a clean initial state.
