@@ -25,6 +25,7 @@ import pytest
 import yaml
 
 from awetrim.system.kite import Kite, Wing
+from awetrim.system.factory import load_aero_input_from_system_config
 from awetrim.environment.Wind import Wind
 from awetrim.utils.config_paths import LEI_V3_SYSTEM_CONFIG
 
@@ -49,15 +50,27 @@ def v3_config():
 def v3_kite(v3_config):
     """Fixture: V3 Kite with coefficient-based aerodynamic model."""
     cfg = v3_config
-    aero_input = cfg["wing"]["aerodynamics"]
-    mass_wing = cfg["wing"].get("mass", 15)
-    area_wing = cfg["wing"].get("area", 19.75)
+    if "components" in cfg:
+        kite = cfg["components"].get("kite", cfg["components"])
+        wing_struct = kite["wing"]["structure"]
+        cs_struct = kite.get("control_system", {}).get("structure", {})
+        aero_input = load_aero_input_from_system_config(
+            cfg, config_path=LEI_V3_SYSTEM_CONFIG
+        )
+        mass_wing = wing_struct.get("mass", 15)
+        area_wing = wing_struct.get("projected_surface_area", 19.75)
+        mass_kcu = cs_struct.get("mass", 8.4)
+    else:
+        aero_input = cfg["wing"]["aerodynamics"]
+        mass_wing = cfg["wing"].get("mass", 15)
+        area_wing = cfg["wing"].get("area", 19.75)
+        mass_kcu = cfg.get("kcu", {}).get("mass", 8.4)
 
     return Kite(
         mass_wing=mass_wing,
         area_wing=area_wing,
         aero_input=aero_input,
-        mass_kcu=16.0,
+        mass_kcu=mass_kcu,
         steering_control="asymmetric",
     )
 
@@ -101,9 +114,9 @@ class TestKiteInitialization:
 
     def test_kite_init_with_v3_config(self, v3_kite):
         """Kite initializes correctly with V3 configuration."""
-        assert v3_kite.mass_wing == 15.0
+        assert v3_kite.mass_wing == pytest.approx(11.4746)
         assert v3_kite.area_wing == 19.75
-        assert v3_kite.mass_kcu == 16.0
+        assert v3_kite.mass_kcu == 8.4
         assert v3_kite.rho == 1.225
         assert v3_kite.g == 9.81
         assert v3_kite.steering_control == "asymmetric"
@@ -132,7 +145,7 @@ class TestKiteInitialization:
     def test_kite_mass_total(self, v3_kite):
         """Kite total mass includes wing and KCU."""
         total_mass = v3_kite.mass_wing + v3_kite.mass_kcu
-        assert total_mass == 31.0  # 15 + 16
+        assert total_mass == pytest.approx(19.8746)  # 11.4746 (PSS wing) + 8.4 (KCU)
 
     def test_kite_custom_parameters(self):
         """Kite accepts custom gravity, air density, and center locations."""
