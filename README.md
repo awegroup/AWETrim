@@ -220,6 +220,18 @@ pytest --cov=src --cov-report=term-missing
 
 ---
 
+## Related publications
+
+The methods implemented in this repository are described in the following papers:
+
+- Cayon, O., van Deursen, V., & Schmehl, R. (2026). **Translational dynamics of bridled kites: a reduced-order model in the course reference frame.** *Wind Energy Science*. [https://doi.org/10.5194/wes-11-1097-2026](https://doi.org/10.5194/wes-11-1097-2026)
+
+- Cayon, O., Watson, S., & Schmehl, R. (2025). **Kite as a sensor: wind and state estimation in tethered flying systems.** *Wind Energy Science*. [https://doi.org/10.5194/wes-10-2161-2025](https://doi.org/10.5194/wes-10-2161-2025)
+
+- Cayon, O., Gaunaa, M., & Schmehl, R. (2023). **Fast Aero-Structural Model of a Leading-Edge Inflatable Kite.** *Energies*. [https://doi.org/10.3390/en16073061](https://doi.org/10.3390/en16073061)
+
+---
+
 ## License
 
 LGPL-3.0 — see `LICENSE`.
