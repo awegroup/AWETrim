@@ -29,7 +29,6 @@ from awetrim.utils.config_paths import (
 )
 from awetrim.utils.color_palette import get_color_list, set_plot_style_no_latex
 
-
 # ---------------------------------------------------------------------------
 # Defaults: edit these for quick config-generation experiments
 # ---------------------------------------------------------------------------
@@ -117,7 +116,9 @@ def plot_generated_curve(
 ):
     """Plot the target curve and generated periodic spline control points."""
     if spline_type != "periodic":
-        raise ValueError("plot_generated_curve currently supports only periodic splines.")
+        raise ValueError(
+            "plot_generated_curve currently supports only periodic splines."
+        )
 
     set_plot_style_no_latex()
     colors = get_color_list()
@@ -215,9 +216,10 @@ def parse_args():
     parser.add_argument("--beta0", type=float, default=BETA0)
     parser.add_argument("--beta-amp0", type=float, default=BETA_AMP0)
     parser.add_argument(
-        "--uploop",
-        action="store_true",
-        help="Reverse curve orientation compared with the default downloop.",
+        "--downloops",
+        action=argparse.BooleanOptionalAction,
+        default=DOWNLOOPS,
+        help="Generate downloop pattern (--downloops) or uploop (--no-downloops). Defaults to the DOWNLOOPS constant.",
     )
     return parser.parse_args()
 
@@ -227,7 +229,7 @@ def main():
         sys.argv.pop(1)
 
     args = parse_args()
-    downloops = not args.uploop
+    downloops = args.downloops
     output_path = args.template if args.in_place else args.output
 
     written_path = write_cycle_config_from_template(
