@@ -19,6 +19,9 @@ from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
 from awetrim.aerostructural.mapping import BilinearAeroToStructuralLoadMapper
 from awetrim.aerostructural.results import (
     aerostructural_results_root,
+    build_deformed_aero_geometry,
+    build_deformed_struc_geometry,
+    save_geometry_snapshot,
     save_input_snapshot,
     save_sim_output,
 )
@@ -68,10 +71,9 @@ def main():
     results_root = aerostructural_results_root(PROJECT_DIR, kite_name)
     results_dir = results_root / "fem" / case_folder
     struc_geometry = load_yaml(struc_geometry_path)
+    aero_geometry = load_yaml(aero_geometry_path)
     results_dir = save_input_snapshot(
         config=config,
-        struc_geometry_path=struc_geometry_path,
-        aero_geometry_path=aero_geometry_path,
         results_dir=results_dir,
     )
 
@@ -216,6 +218,13 @@ def main():
     )
 
     save_sim_output(tracking_data, meta, results_dir)
+    final_nodes = np.asarray(tracking_data["positions"][meta["n_iter"] - 1])
+    save_geometry_snapshot(
+        config,
+        build_deformed_struc_geometry(struc_geometry, final_nodes),
+        build_deformed_aero_geometry(aero_geometry, final_nodes, struc_node_le_indices, struc_node_te_indices),
+        results_dir,
+    )
 
 
 if __name__ == "__main__":
