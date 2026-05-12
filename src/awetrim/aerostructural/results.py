@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import csv
 from pathlib import Path
 from typing import Any
@@ -51,12 +52,12 @@ SWEEP_CSV_FIELDNAMES: list[str] = [
 
 def aerostructural_results_root(project_dir: Path, kite_name: str) -> Path:
     """Return the canonical aerostructural result directory for a kite."""
-    return Path(project_dir) / "results" / "aerostructural" / kite_name
+    return Path(project_dir) / "results" / kite_name / "aerostructural"
 
 
 def legacy_results_root(project_dir: Path, kite_name: str) -> Path:
-    """Return the previous result root used before domain-specific folders."""
-    return Path(project_dir) / "results" / kite_name
+    """Return legacy result roots checked for warm-start recovery."""
+    return Path(project_dir) / "results" / "aerostructural" / kite_name
 
 
 def candidate_case_dirs(project_dir: Path, kite_name: str, case_subdir: str) -> list[Path]:
@@ -102,30 +103,102 @@ def steering_values_from_count_or_step(
 def save_input_snapshot(
     *,
     config: dict[str, Any],
-    struc_geometry_path: Path,
-    aero_geometry_path: Path,
     results_dir: Path,
 ) -> Path:
-    """Save the effective run config and, optionally, input geometry YAMLs."""
+    """Create the results directory and save the effective run config."""
     results_dir = Path(results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
 
     with (results_dir / "config.yaml").open("w", encoding="utf-8") as f:
         yaml.dump(config, f, sort_keys=False)
 
-    if bool(config.get(SAVE_GEOMETRY_SNAPSHOTS_KEY, False)):
-        struc_geometry = load_yaml(Path(struc_geometry_path))
-        aero_geometry = load_yaml(Path(aero_geometry_path))
-        with (results_dir / "struc_geometry_input.yaml").open(
-            "w", encoding="utf-8"
-        ) as f:
-            yaml.dump(struc_geometry, f, sort_keys=False)
-        with (results_dir / "aero_geometry_input.yaml").open(
-            "w", encoding="utf-8"
-        ) as f:
-            yaml.dump(aero_geometry, f, sort_keys=False)
-
     return results_dir
+
+
+def build_deformed_struc_geometry(
+    struc_geometry: dict[str, Any],
+    struc_nodes: np.ndarray,
+) -> dict[str, Any]:
+    """Return a copy of struc_geometry with node positions replaced by deformed values.
+
+    Node indices in the YAML are used directly as row indices into struc_nodes,
+    matching the ordering established by structural_geometry_io.main().
+    """
+    sg = copy.deepcopy(struc_geometry)
+
+    # KCU attachment point (node 0)
+    if "bridle_point_node" in sg:
+        sg["bridle_point_node"] = struc_nodes[0].tolist()
+
+    # Wing particles
+    for row in sg["wing_particles"]["data"]:
+        nid = int(row[0])
+        row[1], row[2], row[3] = float(struc_nodes[nid, 0]), float(struc_nodes[nid, 1]), float(struc_nodes[nid, 2])
+
+    # Bridle particles (if present)
+    if "bridle_particles" in sg:
+        for row in sg["bridle_particles"]["data"]:
+            nid = int(row[0])
+            row[1], row[2], row[3] = float(struc_nodes[nid, 0]), float(struc_nodes[nid, 1]), float(struc_nodes[nid, 2])
+
+    return sg
+
+
+def build_deformed_aero_geometry(
+    aero_geometry: dict[str, Any],
+    struc_nodes: np.ndarray,
+    le_indices: list[int],
+    te_indices: list[int],
+) -> dict[str, Any]:
+    """Return a copy of aero_geometry with LE/TE positions replaced by deformed values.
+
+    When the aero mesh is finer than the structural mesh, the same linear
+    interpolation used by LinearStructuralToAeroMapper is applied to subdivide
+    each structural section into the correct number of aero panels.  The
+    airfoil_id column is preserved unchanged.
+    """
+    from awetrim.aerostructural.mapping import interpolate_points
+
+    ag = copy.deepcopy(aero_geometry)
+    sections = ag["wing_sections"]["data"]
+    n_aero = len(sections)
+    n_struc = len(le_indices)
+
+    if n_aero == n_struc:
+        n_panels_per_section = 1
+    else:
+        n_sections = n_struc - 1
+        if n_sections == 0 or (n_aero - 1) % n_sections != 0:
+            raise ValueError(
+                f"Cannot infer panels-per-section from {n_aero} aero sections "
+                f"and {n_struc} structural LE nodes."
+            )
+        n_panels_per_section = (n_aero - 1) // n_sections
+
+    deformed_le = interpolate_points(struc_nodes[le_indices], n_panels_per_section)
+    deformed_te = interpolate_points(struc_nodes[te_indices], n_panels_per_section)
+
+    for i, row in enumerate(sections):
+        le, te = deformed_le[i], deformed_te[i]
+        row[1], row[2], row[3] = float(le[0]), float(le[1]), float(le[2])
+        row[4], row[5], row[6] = float(te[0]), float(te[1]), float(te[2])
+    return ag
+
+
+def save_geometry_snapshot(
+    config: dict[str, Any],
+    struc_geometry_deformed: dict[str, Any],
+    aero_geometry_deformed: dict[str, Any],
+    results_dir: Path,
+) -> None:
+    """Save deformed geometry YAMLs when is_save_geometry_snapshots is True."""
+    if not bool(config.get(SAVE_GEOMETRY_SNAPSHOTS_KEY, False)):
+        return
+    results_dir = Path(results_dir)
+    with (results_dir / "struc_geometry.yaml").open("w", encoding="utf-8") as f:
+        yaml.dump(struc_geometry_deformed, f, sort_keys=False)
+    with (results_dir / "aero_geometry.yaml").open("w", encoding="utf-8") as f:
+        yaml.dump(aero_geometry_deformed, f, sort_keys=False)
 
 
 def save_sim_output(tracking_data: dict[str, Any], meta: dict[str, Any], results_dir: Path) -> Path:
