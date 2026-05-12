@@ -3,6 +3,7 @@ bridle_point_node:
 - 0
 - 0
 pulley_mass: 0.1
+kcu_mass: 8.4
 dyneema:
   density: 724
   youngs_modulus: 20000000000
