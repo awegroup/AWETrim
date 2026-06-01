@@ -12,6 +12,8 @@ storage, and the sweep orchestration scripts.
 This module does **not** own the VSM solver or the point-mass system model — those live
 in `aerodynamics/` and `system/` respectively.
 
+Shared plotting utilities live in `src/awetrim/plotting/`.
+
 ## Public Layout
 
 ```
@@ -24,7 +26,6 @@ src/awetrim/aerostructural/
   convergence.py                   compute_adaptive_dt, check_convergence
   results.py                       save_sim_output, append_sweep_csv_row, build_sweep_csv_row
   tracking.py                      setup_tracking_arrays, update_tracking_arrays
-  plotting.py                      set_plot_style, plot_normalized_elongation
   utils.py                         rotate_geometry, calculate_cg, calculate_inertia, load_yaml
   logging_config.py                Package-level logging setup
   aerodynamic_vsm.py               VSM body initialisation and run_vsm_package wrapper (shared)

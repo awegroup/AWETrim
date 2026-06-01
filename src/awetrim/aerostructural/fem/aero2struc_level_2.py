@@ -2,7 +2,7 @@ import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
-from awetrim.aerostructural.plotting import (
+from awetrim.plotting import (
     plot_aerodynamic_forces_chordwise_distributed,
 )
 

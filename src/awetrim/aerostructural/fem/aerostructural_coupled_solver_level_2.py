@@ -6,7 +6,8 @@ from pathlib import Path
 import copy
 from . import aero2struc_level_2, structural_kite_fem_level_2
 from ..pss import structural_pss
-from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking, plotting
+from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking
+from awetrim import plotting
 from ..mapping import LinearStructuralToAeroMapper
 from ..utils import calculate_cg, rotate_geometry
 
