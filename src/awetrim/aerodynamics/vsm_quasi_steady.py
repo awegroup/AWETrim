@@ -1036,9 +1036,10 @@ def solve_vsm_qs_trim_with_williams_tether(
 #:     7   | p     | body roll rate
 #:     8   | q     | body pitch rate
 #:     9   | r     | body yaw rate
+#: Canonical free rigid-body states. The 6-DOF body has 12 states; ``x``, ``y``
+#: and the lateral velocity ``v`` are held fixed, leaving these 9 free states.
 ALL_STATE_NAMES: tuple[str, ...] = (
     "u",
-    "v",
     "w",
     "z",
     "phi",
@@ -1058,7 +1059,6 @@ DEFAULT_STATES: tuple[str, ...] = (
     "u",
     "theta",
     "q",
-    "v",
     "phi",
     "psi",
     "p",
@@ -1176,7 +1176,7 @@ def compute_vsm_trim_stability_derivatives(
 
     Default decoupled outputs (always present, shape preserved for back-compat)
     --------------------------------------------------------------------------
-    ``J_long`` (3, 3), ``J_lat`` (3, 5), ``A_long`` (3, 3), ``A_lat`` (5, 5),
+    ``J_long`` (3, 3), ``J_lat`` (3, 4), ``A_long`` (3, 3), ``A_lat`` (4, 4),
     ``eig_long``, ``eig_lat``, ``vec_long``, ``vec_lat``, ``Tfast_long``,
     ``Tfast_lat``, ``stable_long``, ``stable_lat``.
 
@@ -1513,24 +1513,23 @@ def compute_vsm_trim_stability_derivatives(
             radial_eps = min(radial_eps, 1e-5)
         radial_eps = max(radial_eps, 1e-7)
 
-    # Build the full 6×10 numerical Jacobian (rows = body force+moment outputs,
-    # cols = state perturbations in canonical ALL_STATE_NAMES order).
-    col_u = central_diff_col(+eps_vel * axes.course, zero3, eps_vel)
-    col_v = central_diff_col(+eps_vel * axes.normal, zero3, eps_vel)
-    col_w = central_diff_col(+eps_vel * axes.radial, zero3, eps_vel)
-    col_z = central_diff_col(
-        zero3, zero3, radial_eps, radial_position_offset=radial_eps
-    )
-    col_phi = central_diff_col(zero3, zero3, eps_angle_rad, droll=eps_angle_deg)
-    col_theta = central_diff_col(zero3, zero3, eps_angle_rad, dpitch=eps_angle_deg)
-    col_psi = central_diff_col(zero3, zero3, eps_angle_rad, dyaw=eps_angle_deg)
-    col_p = central_diff_col(zero3, eps_rate * axes.course, eps_rate)
-    col_q = central_diff_col(zero3, eps_rate * axes.normal, eps_rate)
-    col_r = central_diff_col(zero3, eps_rate * axes.radial, eps_rate)
-
-    J_full = np.column_stack(
-        [col_u, col_v, col_w, col_z, col_phi, col_theta, col_psi, col_p, col_q, col_r]
-    )
+    # Build the full 6×9 numerical Jacobian (rows = body force+moment outputs,
+    # cols = state perturbations in canonical ALL_STATE_NAMES order). The lateral
+    # velocity ``v`` is held fixed (not a free state), so it is never perturbed.
+    columns = {
+        "u": central_diff_col(+eps_vel * axes.course, zero3, eps_vel),
+        "w": central_diff_col(+eps_vel * axes.radial, zero3, eps_vel),
+        "z": central_diff_col(
+            zero3, zero3, radial_eps, radial_position_offset=radial_eps
+        ),
+        "phi": central_diff_col(zero3, zero3, eps_angle_rad, droll=eps_angle_deg),
+        "theta": central_diff_col(zero3, zero3, eps_angle_rad, dpitch=eps_angle_deg),
+        "psi": central_diff_col(zero3, zero3, eps_angle_rad, dyaw=eps_angle_deg),
+        "p": central_diff_col(zero3, eps_rate * axes.course, eps_rate),
+        "q": central_diff_col(zero3, eps_rate * axes.normal, eps_rate),
+        "r": central_diff_col(zero3, eps_rate * axes.radial, eps_rate),
+    }
+    J_full = np.column_stack([columns[name] for name in ALL_STATE_NAMES])
 
     _, A_full = _build_state_space(
         J_full,
@@ -1545,7 +1544,7 @@ def compute_vsm_trim_stability_derivatives(
     # ---- Backward-compatible default decoupled blocks -------------------
     # J_long keeps the historical (3, 3) shape: rows = [F_x, F_z, M_y]
     # (i.e. the longitudinal force/moment channels), cols = [u, theta, q].
-    long_default_state_idx = [0, 5, 8]  # u, theta, q
+    long_default_state_idx = _state_indices(["u", "theta", "q"])
     long_out_rows = [0, 2, 4]  # F_course, F_radial, M_normal
     j_long = J_full[np.ix_(long_out_rows, long_default_state_idx)]
 
@@ -1554,7 +1553,7 @@ def compute_vsm_trim_stability_derivatives(
     a_long[1, :] = [0.0, 0.0, 1.0]
     a_long[2, :] = j_long[2, :] / inertia_yy
 
-    lat_default_state_idx = [4, 6, 7, 9]  # phi, psi, p, r
+    lat_default_state_idx = _state_indices(["phi", "psi", "p", "r"])
     lat_out_rows = [1, 3, 5]  # F_normal, M_course, M_radial
     j_lat = J_full[np.ix_(lat_out_rows, lat_default_state_idx)]
 

@@ -766,7 +766,7 @@ def main() -> None:
             f"{{{', '.join(ALL_STATE_NAMES)}}}. "
             "Defaults to the 9-state rigid-body set "
             f"{','.join(list(LONG_STATES) + list(LAT_STATES))} "
-            "(full state minus lateral velocity `v`). "
+            "(the lateral velocity `v` and positions `x`, `y` are held fixed). "
             "Use 'all' to select every state. Overrides --stability-config."
         ),
     )
@@ -1360,7 +1360,7 @@ def main() -> None:
                     "lat",
                     np.asarray(stability["eig_lat"], dtype=complex),
                     np.asarray(stability["vec_lat"], dtype=complex),
-                    ["v", "phi", "psi", "p", "r"],
+                    ["phi", "psi", "p", "r"],
                 )
             )
 

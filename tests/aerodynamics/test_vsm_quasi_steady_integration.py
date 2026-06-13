@@ -352,10 +352,10 @@ class TestStabilityDerivativeOutput:
             trim_result=_TRIM_RESULT,
             solver=_MockSolver(),
         )
-        # Longitudinal: 3 states, 3 inputs
+        # Longitudinal: 3 force/moment rows, 3 states [u, theta, q]
         assert result["J_long"].shape == (3, 3)
-        # Lateral: 3 states, 5 inputs
-        assert result["J_lat"].shape == (3, 5)
+        # Lateral: 3 force/moment rows, 4 states [phi, psi, p, r] (v held fixed)
+        assert result["J_lat"].shape == (3, 4)
 
     def test_stability_derivative_state_space_matrices(self):
         """State-space matrices have correct dimensions."""
@@ -369,8 +369,8 @@ class TestStabilityDerivativeOutput:
         )
         # A_long: 3x3 (longitudinal state-space)
         assert result["A_long"].shape == (3, 3)
-        # A_lat: 5x5 (lateral state-space)
-        assert result["A_lat"].shape == (5, 5)
+        # A_lat: 4x4 (lateral state-space; v held fixed)
+        assert result["A_lat"].shape == (4, 4)
 
     def test_stability_derivative_eigenvalue_shapes(self):
         """Eigenvalues have correct shapes."""
@@ -383,7 +383,7 @@ class TestStabilityDerivativeOutput:
             solver=_MockSolver(),
         )
         assert result["eig_long"].shape == (3,)
-        assert result["eig_lat"].shape == (5,)
+        assert result["eig_lat"].shape == (4,)
 
     def test_stability_derivative_eigenvector_shapes(self):
         """Eigenvector matrices have correct shapes."""
@@ -396,7 +396,7 @@ class TestStabilityDerivativeOutput:
             solver=_MockSolver(),
         )
         assert result["vec_long"].shape == (3, 3)
-        assert result["vec_lat"].shape == (5, 5)
+        assert result["vec_lat"].shape == (4, 4)
 
     def test_stability_derivative_timescale_shapes(self):
         """Timescale vectors have correct shapes."""
@@ -409,7 +409,7 @@ class TestStabilityDerivativeOutput:
             solver=_MockSolver(),
         )
         assert result["Tfast_long"].shape == (3,)
-        assert result["Tfast_lat"].shape == (5,)
+        assert result["Tfast_lat"].shape == (4,)
 
     def test_stability_derivative_stability_flags(self):
         """Stability flags are boolean."""

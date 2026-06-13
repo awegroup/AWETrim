@@ -195,8 +195,9 @@ def test_compute_vsm_trim_stability_derivatives_output_shapes():
     - In VSM, Jacobian computation and linearisation were separate functions;
       in AWETrim they are one: compute_vsm_trim_stability_derivatives.
     - The state-space is larger than VSM's "fast-only" matrices:
-        A_long  (3×3)  states [u, θ, q]      vs. VSM (2×2)
-        A_lat   (5×5)  states [v, φ, ψ, p, r] vs. VSM (3×3)
+        A_long  (3×3)  states [u, θ, q]   vs. VSM (2×2)
+        A_lat   (4×4)  states [φ, ψ, p, r] vs. VSM (3×3)
+      The lateral velocity v is held fixed, so it is not a lateral state.
     - Additional output keys: vec_long, vec_lat, F_tether, M_tether_at_CG.
     - The mock solver returns zero forces/moments, so all Jacobian columns are
       zero and some eigenvalues will be zero (infinite timescales are valid).
@@ -216,21 +217,21 @@ def test_compute_vsm_trim_stability_derivatives_output_shapes():
 
     # Jacobians
     assert result["J_long"].shape == (3, 3)
-    assert result["J_lat"].shape == (3, 5)
+    assert result["J_lat"].shape == (3, 4)
 
     # State-space matrices
     assert result["A_long"].shape == (3, 3)
-    assert result["A_lat"].shape == (5, 5)
+    assert result["A_lat"].shape == (4, 4)
 
     # Eigenvalues and eigenvectors
     assert result["eig_long"].shape == (3,)
-    assert result["eig_lat"].shape == (5,)
+    assert result["eig_lat"].shape == (4,)
     assert result["vec_long"].shape == (3, 3)
-    assert result["vec_lat"].shape == (5, 5)
+    assert result["vec_lat"].shape == (4, 4)
 
     # Timescales (may be inf for zero eigenvalues — that is correct behaviour)
     assert result["Tfast_long"].shape == (3,)
-    assert result["Tfast_lat"].shape == (5,)
+    assert result["Tfast_lat"].shape == (4,)
 
     # Stability flags
     assert isinstance(result["stable_long"], bool)
@@ -266,7 +267,7 @@ def test_compute_vsm_trim_stability_derivatives_bad_x_trim_raises():
 
 
 def test_compute_vsm_trim_stability_derivatives_full_state_outputs():
-    """J_full (6, 10) and A_full (10, 10) are always present, in canonical order."""
+    """J_full (6, 9) and A_full (9, 9) are always present, in canonical order."""
     from awetrim.aerodynamics.vsm_quasi_steady import ALL_STATE_NAMES
 
     result = compute_vsm_trim_stability_derivatives(
@@ -281,10 +282,10 @@ def test_compute_vsm_trim_stability_derivatives_full_state_outputs():
         inertia_yy=20.0,
         inertia_zz=100.0,
     )
-    assert result["J_full"].shape == (6, 10)
-    assert result["A_full"].shape == (10, 10)
-    assert result["eig_full"].shape == (10,)
-    assert result["vec_full"].shape == (10, 10)
+    assert result["J_full"].shape == (6, 9)
+    assert result["A_full"].shape == (9, 9)
+    assert result["eig_full"].shape == (9,)
+    assert result["vec_full"].shape == (9, 9)
     assert result["state_names_full"] == list(ALL_STATE_NAMES)
 
     # phi/theta/psi rows of A_full must be pure kinematics: phi_dot=p, etc.
@@ -313,12 +314,12 @@ def test_compute_vsm_trim_stability_derivatives_with_w_state():
         inertia_xx=100.0,
         inertia_yy=20.0,
         inertia_zz=100.0,
-        states=["u", "w", "theta", "q", "v", "phi", "psi", "p", "r"],
+        states=["u", "w", "theta", "q", "phi", "psi", "p", "r"],
         coupled=False,
     )
     assert result["states_selected_long"] == ["u", "w", "theta", "q"]
     assert result["A_selected_long"].shape == (4, 4)
-    assert result["A_selected_lat"].shape == (5, 5)
+    assert result["A_selected_lat"].shape == (4, 4)
     # theta_dot = q kinematic row
     theta_row = result["states_selected_long"].index("theta")
     q_col = result["states_selected_long"].index("q")
@@ -327,7 +328,7 @@ def test_compute_vsm_trim_stability_derivatives_with_w_state():
 
 def test_compute_vsm_trim_stability_derivatives_coupled_selection():
     """coupled=True assembles a single A matrix over the selected states."""
-    sel = ["u", "w", "theta", "q", "v", "phi", "psi", "p", "r"]
+    sel = ["u", "w", "z", "theta", "q", "phi", "psi", "p", "r"]
     result = compute_vsm_trim_stability_derivatives(
         body_aero=_MockBody(),
         center_of_gravity=np.zeros(3),
