@@ -21,6 +21,27 @@ class Tether(ABC):
         return self.density_tether * model.distance_radial * self.area_tether
 
     # ------------------------------------------------------------------
+    # Tether load transferred to the kite. Link tethers model the tether as
+    # a massless/dragless rigid or elastic link, so these are zero; lumped
+    # and distributed tethers override them. Defining them here keeps the
+    # ``drag_tether_at_kite`` / ``force_gravity_tether_at_kite`` expressions
+    # (and ``tension_tether_equation``) valid for every tether type.
+    # ------------------------------------------------------------------
+    @property
+    def drag_tether_at_kite(self):
+        return self.drag_tether_at_kite_for(self)
+
+    def drag_tether_at_kite_for(self, model):
+        return ca.MX.zeros(3, 1)
+
+    @property
+    def force_gravity_tether_at_kite(self):
+        return self.force_gravity_tether_at_kite_for(self)
+
+    def force_gravity_tether_at_kite_for(self, model):
+        return ca.MX.zeros(3, 1)
+
+    # ------------------------------------------------------------------
     # Hooks for tethers that contribute their own decision variables and
     # equations to the system-level quasi-steady NLP. Defaults are empty
     # so simple tethers (RigidLinkTether, RigidLumpedTether, ...) keep the

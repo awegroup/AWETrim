@@ -48,6 +48,8 @@ class WilliamsTether(Tether):
         self.elastic = elastic
         self.cf = cf
         self.is_tether_rigid = True
+        # Axial stiffness E·A used by the elastic stretch model below.
+        self.EA = self.E * self.area_tether
 
         self.elevation_last_element = ca.MX.sym("elevation_last_element")
         self.azimuth_last_element = ca.MX.sym("azimuth_last_element")
