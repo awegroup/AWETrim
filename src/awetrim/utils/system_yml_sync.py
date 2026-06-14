@@ -48,11 +48,17 @@ def _compute_kite_aggregate(struc_geometry, system_config) -> dict:
 def update_from_geometry(
     system_yml_path: Path | str,
     struc_geometry_path: Path | str,
+    output_path: Path | str | None = None,
 ) -> dict:
     """Update kite, wing, and bridle fields in system.yml from a PSS struc_geometry file.
 
-    Reads both files once, computes all derived fields, and writes system.yml once,
+    Reads both files once, computes all derived fields, and writes the result,
     preserving comments and formatting via ruamel.yaml.
+
+    By default the input ``system_yml_path`` is updated in place. Pass
+    ``output_path`` to read the canonical system.yml but write the updated copy
+    elsewhere (e.g. into a deformed-result case folder), leaving the source file
+    untouched.
 
     Returns a dict with keys 'kite', 'wing', and 'bridle'.
     """
@@ -83,7 +89,9 @@ def update_from_geometry(
     for key in _BRIDLE_COMPUTED_FIELDS:
         bridle_struct[key] = bridle_stats[key]
 
-    with open(system_yml_path, "w") as f:
+    out_path = Path(output_path) if output_path is not None else system_yml_path
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
         ruamel_yaml.dump(system_config, f)
 
     return {"kite": kite_stats, "wing": wing_stats, "bridle": bridle_stats}

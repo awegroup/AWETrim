@@ -190,15 +190,35 @@ def save_geometry_snapshot(
     struc_geometry_deformed: dict[str, Any],
     aero_geometry_deformed: dict[str, Any],
     results_dir: Path,
+    system_yaml_path: Path | str | None = None,
 ) -> None:
-    """Save deformed geometry YAMLs when is_save_geometry_snapshots is True."""
+    """Save deformed geometry YAMLs when is_save_geometry_snapshots is True.
+
+    When ``system_yaml_path`` is given, also emit a ``system.yaml`` into
+    ``results_dir`` whose mass, centre of gravity and inertia tensor are
+    recomputed from the *deformed* struc geometry (the canonical source file is
+    left untouched). This makes the case folder a self-consistent config folder:
+    config + system + aero + struc all describe the same deformed shape.
+    """
     if not bool(config.get(SAVE_GEOMETRY_SNAPSHOTS_KEY, False)):
         return
     results_dir = Path(results_dir)
-    with (results_dir / "struc_geometry.yaml").open("w", encoding="utf-8") as f:
+    struc_path = results_dir / "struc_geometry.yaml"
+    with struc_path.open("w", encoding="utf-8") as f:
         yaml.dump(struc_geometry_deformed, f, sort_keys=False)
     with (results_dir / "aero_geometry.yaml").open("w", encoding="utf-8") as f:
         yaml.dump(aero_geometry_deformed, f, sort_keys=False)
+
+    if system_yaml_path is not None:
+        # Recompute the inertial properties (mass/CoG/inertia) from the deformed
+        # struc geometry just written, writing the updated system.yaml alongside.
+        from awetrim.utils.system_yml_sync import update_from_geometry
+
+        update_from_geometry(
+            system_yaml_path,
+            struc_path,
+            output_path=results_dir / "system.yaml",
+        )
 
 
 def save_sim_output(tracking_data: dict[str, Any], meta: dict[str, Any], results_dir: Path) -> Path:
