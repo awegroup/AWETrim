@@ -31,17 +31,20 @@ def compute_power(m, rho, S, CL, E, R, vw):
         P_ratio: normalized power output
     """
     Rmin = compute_Rmin(m, rho, S, CL)
-    term = 1 - (Rmin / R) ** 2
+    # Clamp at 0 so a radius below Rmin returns zero power rather than a
+    # complex number from raising a negative base to a fractional power.
+    term = max(1 - (Rmin / R) ** 2, 0.0)
     P = (4 / 27) * CL * E**2 * term ** (3 / 2) * 0.5 * rho * S * vw**3
     return P
 
 
-def compute_power_analytical_talmar(gamma, rho, S, CL, E, vw, lambd):
+def compute_power_analytical_talmar(f, gamma, rho, S, CL, E, vw, lambd):
     """
     Compute power P according to the given formula.
 
     Parameters:
-        fx     : force fraction
+        f      : force fraction
+        gamma  : elevation/inclination angle (rad)
         rho    : air density
         S      : wing area
         CL     : lift coefficient
