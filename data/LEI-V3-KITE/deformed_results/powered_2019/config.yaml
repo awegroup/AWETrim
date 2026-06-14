@@ -1,0 +1,116 @@
+is_with_gravity: false
+is_with_aero_bridle: true
+is_with_aero_tether: false
+is_run_only_1_time_step: false
+is_with_initial_point_velocity: false
+is_with_forcing_symmetry: false
+initial_geometry_rotation_deg: 0.0
+angle_elevation_deg: 0.0
+angle_azimuth_deg: 0.0
+angle_course_deg: 90.0
+speed_radial: 1.5
+distance_radial: 250.0
+wind_speed_wind_ref: 7.0
+timeder_speed_tangential: 0.0
+timeder_speed_radial: 0.0
+power_tape_extension_step: 0.05
+power_tape_final_extension: -0.2
+steering_tape_extension_step: 0.05
+steering_tape_final_extension: 0.0
+is_with_initial_structure_plot: false
+is_with_coupling_plot_per_iteration: false
+is_with_struc_plot_per_iteration: false
+is_with_aero_plot_per_iteration: false
+is_with_final_plot: true
+is_with_aero_frame_final_plot: true
+is_save_geometry_snapshots: true
+aerodynamic:
+  n_aero_panels_per_struc_section: 3
+  spanwise_panel_distribution: uniform
+  max_iterations: 1500
+  allowed_error: 2.0e-06
+  relaxation_factor: 0.025
+  reference_point:
+  - 0.0
+  - 0.0
+  - 0.0
+quasi_steady_trim:
+  moment_tolerance: 0.0001
+  force_residual_scale: 1.0
+  kite_speed_bounds_ms:
+  - 5.0
+  - 50.0
+  roll_bounds_deg:
+  - -4.0
+  - 4.0
+  pitch_bounds_deg:
+  - -4.0
+  - 4.0
+  yaw_bounds_deg:
+  - -4.0
+  - 4.0
+  course_rate_bounds_rad_s:
+  - -2.5
+  - 2.5
+aerodynamic_bridle:
+  cd_cable: 1.1
+  cf_cable: 0.01
+structural_pss:
+  dt: 0.005
+  dt_max: 0.01
+  n_internal_time_steps: 100
+  abs_tol: 1.0e-50
+  rel_tol: 1.0e-05
+  max_iter: 500
+  fixed_point_indices:
+  - 0
+  is_with_diagnostics: false
+  num_node_diagnostics: 34
+aero2struc:
+  coupling_method: NN
+  eps: 1.0e-06
+  power_for_inverse_weighting: 2.0
+  cp_distribution_path: data/LEI-V3-KITE/cp_distributions/cp_AOA_8.dat
+aero_structural_solver:
+  max_iter: 100
+  it_check: 5
+  tol: 5.0
+  is_with_aitken_relaxation: true
+  relaxation_factor: 0.05
+  n_max_constant_residual_force: 10
+  stagnation_tol: 2.0
+  qs_state_stagnation_decimals: 2
+  qs_state_stagnation_n_iter: 30
+  aero_update_interval: 1
+  steering_actuation_interval_iters: 2
+  node_displacement_tol: 0.0001
+  aero_solve_type: qsm
+grav_constant:
+- 0
+- 0
+- -9.81
+rho: 1.225
+mu: 1.789e-05
+tether:
+  model: williams
+  n_elements: 10
+  is_elastic: false
+  cf: 0.01
+  wind_model: uniform
+structural_kite_fem:
+  max_iterations: 2000
+  tolerance: 0.01
+  step_limit: 0.2
+  relax_init: 0.5
+  relax_update: 0.95
+  k_update: 1
+  I_stiffness: 25
+  is_with_diagnostics: false
+  num_node_diagnostics: 34
+  pseudo_dt: 0.1
+  k_reg_min: 2000.0
+  print_info: false
+  update_stiffness: true
+  max_stiffness: 500000
+  relaxbridles_pull_down_force_z: -500.0
+  relaxbridles_settle_force_z: -100.0
