@@ -10,7 +10,7 @@ from awetrim.kinematics.parametrized_patterns import (
 from awetrim.utils.color_palette import set_plot_style, custom_cmap
 from awetrim.utils.config_paths import (
     LEI_V3_DOWNLOOP_SPLINE_CONFIG,
-    LEI_V3_SYSTEM_CONFIG,
+    LEI_V3_SYSTEM_FLOWN_CONFIG,
 )
 from awetrim.environment.Wind import Wind
 from awetrim.system.factory import create_system_model_from_yaml
@@ -512,7 +512,8 @@ def simulate_cycle(
         )
 
         system_model = create_system_model_from_yaml(
-            LEI_V3_SYSTEM_CONFIG,
+            # Validation reproduces a specific flight; use the as-flown KCU mass.
+            LEI_V3_SYSTEM_FLOWN_CONFIG,
             # tether_config={"model": "williams", "n_elements": 10, "cf": 0.01},
         )
 

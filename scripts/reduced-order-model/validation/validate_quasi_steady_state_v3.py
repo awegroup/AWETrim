@@ -17,7 +17,8 @@ import matplotlib.pyplot as plt
 from scipy.ndimage import gaussian_filter1d
 import yaml
 
-from awetrim.utils.config_paths import LEI_V3_SYSTEM_CONFIG
+# Validation reproduces a specific flight, so use the as-flown KCU mass.
+from awetrim.utils.config_paths import LEI_V3_SYSTEM_FLOWN_CONFIG
 
 RUN_WILLIAMS = False
 RUN_RIGID = True
@@ -223,7 +224,7 @@ else:
     plt.close()
 flight_data["course_rate"] = course_rate
 # Run simulation for aerodynamic model defined in system.yml (awesIO format)
-with open(LEI_V3_SYSTEM_CONFIG, "r") as file:
+with open(LEI_V3_SYSTEM_FLOWN_CONFIG, "r") as file:
     kite_cfg = yaml.safe_load(file)
 
 aero_labels = []
@@ -244,7 +245,7 @@ for cfg, label in zip(aero_cfgs, aero_labels):
     tether_struct = cfg["components"].get("tether", {}).get("structure", {})
 
     aero_input = load_aero_input_from_system_config(
-        cfg, config_path=LEI_V3_SYSTEM_CONFIG
+        cfg, config_path=LEI_V3_SYSTEM_FLOWN_CONFIG
     )
     mass_wing = wing_struct.get("mass", 14)
     area_wing = wing_struct.get("projected_surface_area", 20)
