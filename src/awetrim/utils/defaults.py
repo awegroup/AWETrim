@@ -120,13 +120,6 @@ DEFAULT_OPTI_LIMITS = {
     # "vr": (-10, 10),      # Range for vr: 0 to 100
     "beta0": (np.radians(12), np.radians(50)),  # Range for beta: 20 ot 50 degrees
     "phi0": (np.radians(-5), np.radians(5)),  # Range for phi0: 0 to 360 degrees
-    "d0": (40, 500),  # Range for d0: 0 to 100
-    # Figure Eight
-    "ry": (60, 180),  # Range for ry: 0 to 100
-    "rz": (60, 180),  # Range for rz: 0 to 100
-    "ky": (0.5, 1),  # Range for ky: 0 to 100
-    "kz": (0.5, 1),  # Range for kz: 0 to 100
-    "vr": (-10, 10),  # Range for vr: 0 to 100
     "az_amp0": (
         np.radians(5),
         np.radians(40),
@@ -138,15 +131,15 @@ DEFAULT_OPTI_LIMITS = {
     "beta_coeffs": (-1, 1),  # Range for beta coefficients: -1 to 1
     "az_coeffs": (-1, 1),  # Range for azimuth coefficients: -1 to 1
     "speed_radial": (-10, 10),
-    "distance_radial": (100, 2000),
+    "distance_radial": (100, 360),
     "k_vr": (0.5, 1.5),
-    "slope_winch_ro": (200, 10000),  # Range for slope in winch model
+    "slope_winch_ro": (3000, 30000),  # Range for slope in winch model
     "offset_winch_ro": (-6, 0),  # Range for offset in winch model
-    "slope_winch_ri": (100, 8000),  # Range for slope in winch model
-    "offset_winch_ri": (-16, 0),  # Range for offset in winch model
+    "slope_winch_ri": (0, 10000),  # Range for slope in winch model
+    "offset_winch_ri": (-6, -1),  # Range for offset in winch model
     # "max_tether_force": (20000, 50000),  # Range for max tether force in winch model
     "end_angle": (0.6, 30),
-    "elevation_start_riro": (np.radians(30), np.radians(160)),
+    "elevation_start_riro": (np.radians(30), np.radians(110)),
     "height": (50, 400),
     "r0": (180, 300),
     "steering_rate": (-0.5, 0.5),
