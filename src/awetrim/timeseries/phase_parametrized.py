@@ -671,6 +671,66 @@ class PhaseParameterized(TimeSeries):
         def _finite_or(value, default):
             return float(value) if np.isfinite(value) else float(default)
 
+        def _perturb_list(key, base, *, multipliers=(), offsets=(), positive=False):
+            """Ordered, de-duplicated seed values for one swept retry variable.
+
+            Starts with ``base`` so the leading retries reproduce the original
+            force/length-only sweep; the multipliers and additive offsets then
+            spread the path speed (s_dot) and radial speed around it, since
+            those move the residual just like the tether force does. A wholesale
+            override is read from ``sim_params[key]`` when present.
+            """
+            explicit = sim_params.get(key)
+            if explicit is not None:
+                values = [float(v) for v in explicit]
+            else:
+                values = [float(base)]
+                values += [float(base) * m for m in multipliers]
+                values += [float(base) + o for o in offsets]
+            if positive:
+                values = [v for v in values if v > 0.0] or [max(float(base), 0.2)]
+            seen, uniq = set(), []
+            for v in values:
+                k = round(v, 9)
+                if k not in seen:
+                    seen.add(k)
+                    uniq.append(v)
+            return uniq
+
+        def _tiered_seeds(force_list, rate_list, radial_list, assemble):
+            """Build seeds force-sweep first, then s_dot, then speed_radial.
+
+            ``assemble(force, path_rate, speed_radial)`` returns the decision
+            vector for the active layout. The tiers keep the cheap, most-likely
+            recoveries (re-trying the force at the seeded speeds) ahead of the
+            broader speed sweeps so the retry cap trims only the exotic combos.
+            """
+            base_rate, base_radial = rate_list[0], radial_list[0]
+            nominal_force = force_list[0]
+            seeds = [assemble(f, base_rate, base_radial) for f in force_list]
+            for rate in rate_list[1:]:
+                seeds += [assemble(f, rate, base_radial) for f in force_list]
+            for radial in radial_list[1:]:
+                seeds += [assemble(f, base_rate, radial) for f in force_list]
+            for rate in rate_list[1:]:
+                for radial in radial_list[1:]:
+                    seeds.append(assemble(nominal_force, rate, radial))
+            return seeds
+
+        def _finalize_guesses(guesses):
+            """Clip seeds to the box, drop duplicates, and cap the count."""
+            max_retries = int(sim_params.get("solver_max_retries", 40))
+            seen, clipped = set(), []
+            for guess in guesses[:max_retries]:
+                cg = _clip_guess_to_bounds(guess)
+                key = tuple(
+                    np.round(np.asarray(ca.DM(cg), dtype=float).reshape(-1), 9)
+                )
+                if key not in seen:
+                    seen.add(key)
+                    clipped.append(cg)
+            return clipped
+
         def _fallback_z_guesses(z_guess, p_solver, node_index):
             """Conservative alternate seeds for a failed per-node residual solve."""
             guesses = [z_guess]
@@ -722,16 +782,33 @@ class PhaseParameterized(TimeSeries):
                         "solver_retry_length_tether",
                         [r_current, 1.02 * r_current, r_current + 5.0],
                     )
-                for first_var in first_var_candidates:
-                    guesses.append(
-                        ca.vertcat(
-                            float(first_var),
-                            steering,
-                            path_rate_or_accel,
-                            speed_radial,
-                        )
+                if self.quasi_steady:
+                    rate_candidates = _perturb_list(
+                        "solver_retry_s_dot",
+                        path_rate_or_accel,
+                        multipliers=(0.5, 2.0),
+                        positive=True,
                     )
-                return [_clip_guess_to_bounds(guess) for guess in guesses]
+                else:
+                    rate_candidates = _perturb_list(
+                        "solver_retry_s_ddot",
+                        path_rate_or_accel,
+                        offsets=(0.5, -0.5),
+                    )
+                radial_candidates = _perturb_list(
+                    "solver_retry_speed_radial", speed_radial, offsets=(1.5, -1.5)
+                )
+
+                def _assemble(first_var, rate, radial):
+                    return ca.vertcat(float(first_var), steering, rate, radial)
+
+                guesses += _tiered_seeds(
+                    first_var_candidates,
+                    rate_candidates,
+                    radial_candidates,
+                    _assemble,
+                )
+                return _finalize_guesses(guesses)
 
             if z_arr.size < 7:
                 return guesses
@@ -749,58 +826,53 @@ class PhaseParameterized(TimeSeries):
                 )
             )
             if self.quasi_steady:
-                speed_along_path = (
+                path_rate = (
                     s_dot_guess_profile[node_index]
                     if s_dot_guess_profile is not None
                     else max(abs(_finite_or(z_arr[1], 0.2)), 0.2)
                 )
-                speed_radial = (
-                    speed_radial_profile[node_index]
-                    if speed_radial_profile is not None
-                    else _finite_or(z_arr[2], 0.0)
+                rate_candidates = _perturb_list(
+                    "solver_retry_s_dot",
+                    path_rate,
+                    multipliers=(0.5, 2.0),
+                    positive=True,
                 )
-                tension_candidates = sim_params.get(
-                    "solver_retry_tension_kite", [300.0, 5.0e3, 2.0e4, 8.0e4]
-                )
-                for tension in tension_candidates:
-                    guesses.append(
-                        ca.vertcat(
-                            steering,
-                            speed_along_path,
-                            speed_radial,
-                            float(tension) / self.WILLIAMS_TENSION_SCALE,
-                            elev,
-                            azim,
-                            length,
-                        )
-                    )
             else:
-                acceleration_guess = np.clip(
+                path_rate = np.clip(
                     _finite_or(z_arr[1], 0.0),
                     DEFAULT_BOUNDS["s_ddot"][0],
                     DEFAULT_BOUNDS["s_ddot"][1],
                 )
-                speed_radial = (
-                    speed_radial_profile[node_index]
-                    if speed_radial_profile is not None
-                    else _finite_or(z_arr[2], 0.0)
+                rate_candidates = _perturb_list(
+                    "solver_retry_s_ddot", path_rate, offsets=(0.5, -0.5)
                 )
-                tension_candidates = sim_params.get(
-                    "solver_retry_tension_kite", [300.0, 5.0e3, 2.0e4, 8.0e4]
+            speed_radial = (
+                speed_radial_profile[node_index]
+                if speed_radial_profile is not None
+                else _finite_or(z_arr[2], 0.0)
+            )
+            radial_candidates = _perturb_list(
+                "solver_retry_speed_radial", speed_radial, offsets=(1.5, -1.5)
+            )
+            tension_candidates = sim_params.get(
+                "solver_retry_tension_kite", [300.0, 5.0e3, 2.0e4, 8.0e4]
+            )
+
+            def _assemble(tension, rate, radial):
+                return ca.vertcat(
+                    steering,
+                    rate,
+                    radial,
+                    float(tension) / self.WILLIAMS_TENSION_SCALE,
+                    elev,
+                    azim,
+                    length,
                 )
-                for tension in tension_candidates:
-                    guesses.append(
-                        ca.vertcat(
-                            steering,
-                            acceleration_guess,
-                            speed_radial,
-                            float(tension) / self.WILLIAMS_TENSION_SCALE,
-                            elev,
-                            azim,
-                            length,
-                        )
-                    )
-            return [_clip_guess_to_bounds(guess) for guess in guesses]
+
+            guesses += _tiered_seeds(
+                tension_candidates, rate_candidates, radial_candidates, _assemble
+            )
+            return _finalize_guesses(guesses)
 
         def _solve_node(z_guess, p_solver, node_index):
             last_error = None
