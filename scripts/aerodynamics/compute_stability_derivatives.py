@@ -7,7 +7,8 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
-from matplotlib.animation import FuncAnimation
+from matplotlib.animation import FuncAnimation, writers
+from mpl_toolkits.mplot3d.art3d import Poly3DCollection
 
 from common import (
     add_common_arguments,
@@ -100,7 +101,15 @@ def _load_rigid_body_axes_from_result(result_path: Path, struc_override: Path | 
                     else parts[ri + 1]
                 )
                 project_root = Path(*parts[:ri])
-                fallback = project_root / "data" / kite_name / "struc_geometry.yaml"
+                kite_data = project_root / "data" / kite_name
+                fallback = kite_data / "struc_geometry.yaml"
+                if not fallback.exists():
+                    fallback = (
+                        kite_data
+                        / "deformed_results"
+                        / "powered_2019"
+                        / "struc_geometry.yaml"
+                    )
             except (StopIteration, IndexError):
                 raise FileNotFoundError(
                     "Could not infer struc_geometry path from result layout."
@@ -154,11 +163,18 @@ def _rotate_pts(pts: np.ndarray, R: np.ndarray, origin: np.ndarray) -> np.ndarra
     return origin + (pts - origin) @ R.T
 
 
-def _save_animation(anim: FuncAnimation, path, *, fps: int, fmt: str) -> None:
+def _save_animation(
+    anim: FuncAnimation, path, *, fps: int, fmt: str, dpi: int | None = None
+) -> None:
     if fmt == "mp4":
-        anim.save(str(path), writer="ffmpeg", fps=fps, dpi=100)
+        if not writers.is_available("ffmpeg"):
+            raise RuntimeError(
+                "MP4 export for this animation requires ffmpeg. "
+                "The clean combined animation can export MP4 through OpenCV."
+            )
+        anim.save(str(path), writer="ffmpeg", fps=fps, dpi=dpi or 180)
     else:
-        anim.save(str(path), writer="pillow", fps=fps, dpi=80)
+        anim.save(str(path), writer="pillow", fps=fps, dpi=dpi or 100)
     print(f"Wrote {path}")
 
 
@@ -215,26 +231,32 @@ def load_bridle_geometry(bridle_yaml_path) -> dict | None:
     _parse_particles("wing_particles")
     _parse_particles("bridle_particles")
 
-    def _parse_edges(key: str) -> list[tuple[int, int]]:
+    def _parse_edges(key: str) -> tuple[list[tuple[int, int]], list[str]]:
         edges: list[tuple[int, int]] = []
+        names: list[str] = []
         table = data.get(key, {})
         for row in table.get("data", []):
+            name = str(row[0])
             ids = [int(v) for v in row[1:] if v is not None]
             if len(ids) == 2:
                 edges.append((ids[0], ids[1]))
+                names.append(name)
             elif len(ids) == 3:
                 # pulley: line goes ids[1] → ids[0] → ids[2]
                 edges.append((ids[1], ids[0]))
                 edges.append((ids[0], ids[2]))
-        return edges
+                names.extend([name, name])
+        return edges, names
 
-    wing_edges = _parse_edges("wing_connections")
-    bridle_edges = _parse_edges("bridle_connections")
+    wing_edges, wing_edge_names = _parse_edges("wing_connections")
+    bridle_edges, bridle_edge_names = _parse_edges("bridle_connections")
 
     return {
         "nodes": nodes,
         "wing_edges": wing_edges,
+        "wing_edge_names": wing_edge_names,
         "bridle_edges": bridle_edges,
+        "bridle_edge_names": bridle_edge_names,
         "kcu_point": nodes[0].copy(),
     }
 
@@ -408,6 +430,7 @@ def animate_eigenmode(
     amplitude_rad: float = np.deg2rad(5.0),
     max_physics_s: float = 30.0,
     fmt: str = "gif",
+    dpi: int | None = None,
     reference_point: np.ndarray | None = None,
     bridle_geom: dict | None = None,
 ) -> None:
@@ -673,7 +696,209 @@ def animate_eigenmode(
         fig, update, init_func=init, frames=n_frames, interval=1000.0 / fps, blit=False
     )
     fig.tight_layout()
-    _save_animation(anim, out_path, fps=fps, fmt=fmt)
+    _save_animation(anim, out_path, fps=fps, fmt=fmt, dpi=dpi)
+    plt.close(fig)
+
+
+def animate_all_eigenmodes_clean(
+    body_aero,
+    trim_result: dict,
+    mode_blocks: list[tuple[str, str, np.ndarray, np.ndarray, list[str]]],
+    *,
+    out_path,
+    fps: int = 8,
+    amplitude_rad: float = np.deg2rad(5.0),
+    max_physics_s: float = 30.0,
+    fmt: str = "gif",
+    dpi: int | None = None,
+    reference_point: np.ndarray | None = None,
+    bridle_geom: dict | None = None,
+    mode_gap_s: float = 0.25,
+) -> None:
+    """Save one clean animation with all modes played sequentially.
+
+    The playback is in physical time: a mode shown for ``t`` seconds in the
+    linear response is written as ``t * fps`` frames in the output animation.
+    """
+    panel_corners = np.array(
+        [panel.corner_points for panel in body_aero.panels], dtype=float
+    )
+    origin = np.asarray(
+        reference_point if reference_point is not None else [0.0, 0.0, 0.0],
+        dtype=float,
+    )
+    trim_rad = _trim_baseline_rad(trim_result)
+    U_ref = float(trim_result.get("Umag", trim_result["opt_x"][0]))
+    if U_ref <= 0.0:
+        U_ref = 1.0
+    L_ref = _characteristic_length(body_aero)
+
+    frames: list[tuple[complex, float, float, float]] = []
+    for _block_title, _slug, eigvals, eigvecs, block_states in mode_blocks:
+        states = list(block_states)
+        weights = _nondim_weights(states, U_ref, L_ref)
+        state_to_idx = {s: i for i, s in enumerate(states)}
+        for i, eig in enumerate(np.asarray(eigvals, dtype=complex)):
+            mode_vec = np.asarray(eigvecs[:, i], dtype=complex).copy()
+            mode_vec = _scale_mode_dimensionless(mode_vec, weights, amplitude_rad)
+            t_end = _physics_duration(eig, max_s=max_physics_s)
+            n_mode_frames = max(2, int(np.ceil(t_end * fps)))
+            t_phys = np.arange(n_mode_frames, dtype=float) / float(fps)
+            t_phys = np.minimum(t_phys, t_end)
+            response = _mode_time_response(eig, mode_vec, t_phys, 1.0)
+
+            for fi in range(n_mode_frames):
+                phi_p = (
+                    float(np.real(response[state_to_idx["phi"], fi]))
+                    if "phi" in state_to_idx
+                    else 0.0
+                )
+                theta_p = (
+                    float(np.real(response[state_to_idx["theta"], fi]))
+                    if "theta" in state_to_idx
+                    else 0.0
+                )
+                psi_p = (
+                    float(np.real(response[state_to_idx["psi"], fi]))
+                    if "psi" in state_to_idx
+                    else 0.0
+                )
+                frames.append(
+                    (
+                        eig,
+                        trim_rad["phi"] + phi_p,
+                        trim_rad["theta"] + theta_p,
+                        trim_rad["psi"] + psi_p,
+                    )
+                )
+
+            if mode_gap_s > 0.0 and frames:
+                gap_frames = int(np.ceil(mode_gap_s * fps))
+                frames.extend([frames[-1]] * gap_frames)
+
+    if not frames:
+        print("No modes found for combined animation.")
+        return
+
+    fig = plt.figure(figsize=(8, 8), facecolor="white", dpi=dpi or 180)
+    ax3d = fig.add_subplot(111, projection="3d")
+    ax3d.set_facecolor("white")
+    ax3d.set_axis_off()
+    ax3d.grid(False)
+    fig.subplots_adjust(left=0.0, right=1.0, bottom=0.0, top=1.0)
+
+    all_pts = panel_corners.reshape(-1, 3)
+    if bridle_geom is not None:
+        all_pts = np.vstack([all_pts, np.array(list(bridle_geom["nodes"].values()))])
+    ctr = np.mean(all_pts, axis=0)
+    hr = max(0.58 * np.max(np.ptp(all_pts, axis=0)), 1.0)
+    ax3d.set_xlim(ctr[0] - hr, ctr[0] + hr)
+    ax3d.set_ylim(ctr[1] - hr, ctr[1] + hr)
+    ax3d.set_zlim(ctr[2] - hr, ctr[2] + hr)
+    ax3d.set_box_aspect((1, 1, 1))
+    ax3d.view_init(elev=20, azim=-120)
+
+    panel_surfaces = Poly3DCollection(
+        [panel for panel in panel_corners],
+        facecolor=(0.82, 0.82, 0.82, 0.38),
+        edgecolor="none",
+        linewidth=0.0,
+        zorder=1,
+    )
+    ax3d.add_collection3d(panel_surfaces)
+
+    panel_lines = [
+        ax3d.plot([], [], [], color="black", alpha=0.55, linewidth=0.45, zorder=4)[0]
+        for _ in range(panel_corners.shape[0])
+    ]
+
+    wing_struct_lines: list = []
+    bridle_lines: list = []
+    kcu_marker = None
+    if bridle_geom is not None:
+        for name in bridle_geom["wing_edge_names"]:
+            is_inflatable = name.startswith("le_") or name.startswith("strut_")
+            (ln,) = ax3d.plot(
+                [],
+                [],
+                [],
+                color="black",
+                alpha=0.98 if is_inflatable else 0.5,
+                linewidth=2.4 if is_inflatable else 0.55,
+                zorder=5 if is_inflatable else 3,
+            )
+            wing_struct_lines.append(ln)
+        for _ in bridle_geom["bridle_edges"]:
+            (ln,) = ax3d.plot(
+                [], [], [], color="black", alpha=0.22, linewidth=0.45, zorder=2
+            )
+            bridle_lines.append(ln)
+
+    extra = [panel_surfaces, *wing_struct_lines, *bridle_lines] + (
+        [kcu_marker] if kcu_marker else []
+    )
+
+    def init():
+        for ln in panel_lines:
+            ln.set_data([], [])
+            ln.set_3d_properties([])
+        return [*panel_lines, *extra]
+
+    def update(fi: int):
+        _eig, phi_t, theta_t, psi_t = frames[fi]
+        R = (
+            _rot_rad(DEFAULT_AXES.radial, psi_t)
+            @ _rot_rad(DEFAULT_AXES.normal, theta_t)
+            @ _rot_rad(DEFAULT_AXES.course, phi_t)
+        )
+        rot = _rotate_pts(panel_corners, R, origin)
+        panel_surfaces.set_verts([panel for panel in rot])
+        for idx, ln in enumerate(panel_lines):
+            c = np.vstack([rot[idx], rot[idx][0]])
+            ln.set_data(c[:, 0], c[:, 1])
+            ln.set_3d_properties(c[:, 2])
+        _update_bridle_lines(
+            bridle_geom, wing_struct_lines, bridle_lines, kcu_marker, R, origin
+        )
+        return [*panel_lines, *extra]
+
+    if fmt == "mp4" and not writers.is_available("ffmpeg"):
+        try:
+            import cv2
+        except ImportError as exc:
+            raise RuntimeError(
+                "MP4 export requires either ffmpeg or OpenCV (`cv2`)."
+            ) from exc
+
+        init()
+        fig.canvas.draw()
+        width, height = fig.canvas.get_width_height()
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        video = cv2.VideoWriter(str(out_path), fourcc, float(fps), (width, height))
+        if not video.isOpened():
+            raise RuntimeError(f"Could not open MP4 writer for {out_path}")
+        try:
+            for fi in range(len(frames)):
+                update(fi)
+                fig.canvas.draw()
+                rgba = np.asarray(fig.canvas.buffer_rgba())
+                bgr = cv2.cvtColor(rgba, cv2.COLOR_RGBA2BGR)
+                video.write(bgr)
+        finally:
+            video.release()
+            plt.close(fig)
+        print(f"Wrote {out_path}")
+        return
+
+    anim = FuncAnimation(
+        fig,
+        update,
+        init_func=init,
+        frames=len(frames),
+        interval=1000.0 / fps,
+        blit=False,
+    )
+    _save_animation(anim, out_path, fps=fps, fmt=fmt, dpi=dpi)
     plt.close(fig)
 
 
@@ -705,7 +930,8 @@ def main() -> None:
         default=None,
         help=(
             "Directory holding the deformed result cases "
-            "(default: results/<kite>/aerostructural, derived from --config-folder)."
+            "(default: data/<kite>/deformed_results when present; otherwise "
+            "results/<kite>/aerostructural)."
         ),
     )
     parser.add_argument(
@@ -730,8 +956,8 @@ def main() -> None:
     parser.add_argument(
         "--animation-format",
         choices=["gif", "mp4"],
-        default="gif",
-        help="Animation output format (default: gif; mp4 requires ffmpeg).",
+        default="mp4",
+        help="Animation output format (default: mp4; mp4 requires ffmpeg).",
     )
     parser.add_argument(
         "--animation-fps",
@@ -746,6 +972,12 @@ def main() -> None:
         help="Fixed number of frames per animation (default: 60).",
     )
     parser.add_argument(
+        "--animation-dpi",
+        type=int,
+        default=180,
+        help="Export resolution for saved animations (default: 180 dpi).",
+    )
+    parser.add_argument(
         "--animation-amplitude-deg",
         type=float,
         default=5.0,
@@ -756,6 +988,20 @@ def main() -> None:
         type=float,
         default=30.0,
         help="Cap on real physics time shown per animation (default: 30 s).",
+    )
+    parser.add_argument(
+        "--combined-animation-only",
+        action="store_true",
+        help=(
+            "Save only the clean combined modes animation, skipping the "
+            "individual per-mode animations."
+        ),
+    )
+    parser.add_argument(
+        "--combined-animation-gap-s",
+        type=float,
+        default=0.25,
+        help="Pause between modes in the combined animation (default: 0.25 s).",
     )
     parser.add_argument(
         "--states",
@@ -825,10 +1071,15 @@ def main() -> None:
 
     # Resolve the deformed-results case selection (--deformed-case / --list-cases).
     kite_name = Path(args.config_folder).name
+    data_deformed_root = Path(args.config_folder) / "deformed_results"
     deformed_root = (
         Path(args.deformed_root)
         if args.deformed_root
-        else DEFAULT_OUTPUT_ROOT.parent / kite_name / "aerostructural"
+        else (
+            data_deformed_root
+            if data_deformed_root.is_dir()
+            else DEFAULT_OUTPUT_ROOT.parent / kite_name / "aerostructural"
+        )
     )
     if args.list_cases:
         print(f"Deformed-result cases under {deformed_root}:")
@@ -855,6 +1106,11 @@ def main() -> None:
         # build_body reads args.deformed_from to use the frozen deformed geometry.
         args.deformed_from = str(case_dir)
         print(f"Using deformed geometry from: {case_dir}")
+    elif args.deformed_from is None:
+        powered_case = deformed_root / "powered_2019"
+        if powered_case.is_dir():
+            args.deformed_from = str(powered_case)
+            print(f"Using default powered deformed geometry from: {powered_case}")
 
     values = parsed_common(args)
     out_dir = output_dir(args, "stability_derivatives")
@@ -1364,33 +1620,57 @@ def main() -> None:
                 )
             )
 
-        for block_title, slug, eigvals, eigvecs, block_states in animation_blocks:
-            n_modes = len(eigvals)
-            for i in range(n_modes):
-                eig_i = eigvals[i]
-                t_end = _physics_duration(eig_i, max_s=args.animation_max_physics_s)
-                print(
-                    f"Rendering {block_title.lower()} mode {i}/{n_modes - 1} "
-                    f"(λ={eig_i.real:+.3f}{eig_i.imag:+.3f}j  "
-                    f"t_phys={t_end:.4f} s  frames={args.animation_frames})…"
-                )
-                animate_eigenmode(
-                    anim_body,
-                    result,
-                    eig_i,
-                    eigvecs[:, i],
-                    block_states,
-                    mode_index=i,
-                    block_title=block_title,
-                    out_path=out_dir / f"mode_{slug}_{i}{ext}",
-                    fps=args.animation_fps,
-                    n_frames=args.animation_frames,
-                    amplitude_rad=amplitude_rad,
-                    max_physics_s=args.animation_max_physics_s,
-                    fmt=fmt,
-                    reference_point=values["reference_point"],
-                    bridle_geom=bridle_geom,
-                )
+        combined_mode_count = sum(len(block[2]) for block in animation_blocks)
+        print(
+            f"Rendering clean combined modes animation "
+            f"({combined_mode_count} modes, real-time playback)…"
+        )
+        animate_all_eigenmodes_clean(
+            anim_body,
+            result,
+            animation_blocks,
+            out_path=out_dir / f"modes_combined{ext}",
+            fps=args.animation_fps,
+            amplitude_rad=amplitude_rad,
+            max_physics_s=args.animation_max_physics_s,
+            fmt=fmt,
+            dpi=args.animation_dpi,
+            reference_point=values["reference_point"],
+            bridle_geom=bridle_geom,
+            mode_gap_s=args.combined_animation_gap_s,
+        )
+
+        if not args.combined_animation_only:
+            for block_title, slug, eigvals, eigvecs, block_states in animation_blocks:
+                n_modes = len(eigvals)
+                for i in range(n_modes):
+                    eig_i = eigvals[i]
+                    t_end = _physics_duration(
+                        eig_i, max_s=args.animation_max_physics_s
+                    )
+                    print(
+                        f"Rendering {block_title.lower()} mode {i}/{n_modes - 1} "
+                        f"(λ={eig_i.real:+.3f}{eig_i.imag:+.3f}j  "
+                        f"t_phys={t_end:.4f} s  frames={args.animation_frames})…"
+                    )
+                    animate_eigenmode(
+                        anim_body,
+                        result,
+                        eig_i,
+                        eigvecs[:, i],
+                        block_states,
+                        mode_index=i,
+                        block_title=block_title,
+                        out_path=out_dir / f"mode_{slug}_{i}{ext}",
+                        fps=args.animation_fps,
+                        n_frames=args.animation_frames,
+                        amplitude_rad=amplitude_rad,
+                        max_physics_s=args.animation_max_physics_s,
+                        fmt=fmt,
+                        dpi=args.animation_dpi,
+                        reference_point=values["reference_point"],
+                        bridle_geom=bridle_geom,
+                    )
 
 
 if __name__ == "__main__":

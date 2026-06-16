@@ -273,11 +273,13 @@ def load_config_from_folder(
 
     # Optional structural geometry file (also from the geometry folder).
     struc_geometry_path = geom_folder / "struc_geometry.yaml"
+    if not use_struc_geometry or not struc_geometry_path.exists():
+        struc_geometry_path = None
 
     # Select property source based on whether struc_geometry exists
     kite_node = system_config.get("components", {}).get("kite", {}).get("structure", {})
 
-    if struc_geometry_path:
+    if struc_geometry_path is not None:
         # Using bridles/KCU: extract aggregate properties from kite root
         properties = {
             "mass": float(kite_node.get("mass", 0.0)),
@@ -301,7 +303,7 @@ def load_config_from_folder(
     # Polar CSV paths are resolved against ``config_folder`` so they still
     # work when ``deformed_from`` points the geometry yamls at a results dir
     # that doesn't ship the polar files.
-    if struc_geometry_path:
+    if struc_geometry_path is not None:
         body_config = _merge_aero_and_structural_geometry(
             aero_geometry_path, struc_geometry_path, csv_root=config_folder
         )
