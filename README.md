@@ -235,6 +235,9 @@ The methods implemented in this repository are described in the following papers
 ---
 
 ## License
+Technische Universiteit Delft hereby disclaims all copyright interest in the program “AWETrim” (a Python library for the design and optimisation of soft-kite Airborne Wind Energy Systems) written by the Author(s).
+
+Prof. H.G.C. (Henri) Werij, Dean of Aerospace Engineering
 
 Copyright © 2023–2026 Oriol Cayon, Delft University of Technology.
 
