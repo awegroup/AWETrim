@@ -14,6 +14,11 @@
 # limitations under the Licence.
 #
 # SPDX-License-Identifier: EUPL-1.2
+#
+# Portions of this file are adapted from ASKITE
+# (https://github.com/awegroup/ASKITE), licensed under the MIT License,
+# Copyright (c) 2024 jellepoland (Jelle Poland, Patrick Roeleveld, TU Delft).
+# See the NOTICE file at the repository root for the full MIT licence text.
 
 import numpy as np
 import matplotlib.pyplot as plt

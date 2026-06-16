@@ -251,3 +251,10 @@ The EUPL is a copyleft (reciprocal) licence approved by the European Commission 
 We encourage users who improve this package to contribute their changes back to the upstream repository.
 
 See the [`LICENSE`](LICENSE) file for the full, legally binding text.
+
+### Third-party code
+
+Portions of the aerostructural coupling (under `src/awetrim/aerostructural/`) were
+adapted from [ASKITE](https://github.com/awegroup/ASKITE), which is distributed under
+the MIT License (Copyright © 2024 Jelle Poland, Patrick Roeleveld, TU Delft). The
+required copyright and permission notices are reproduced in the [`NOTICE`](NOTICE) file.
