@@ -11,7 +11,7 @@
     <div>
       <p class="eyebrow">Interactive framework</p>
       <h1>AWETrim computational workflow</h1>
-      <p class="lead">Click any block to open a short explanation, links and a visual placeholder that you can replace with your own plots, photos or animations.</p>
+      <p class="lead">A quasi-steady, multi-fidelity framework for soft-kite Airborne Wind Energy Systems. Click any block to see what it does, the figures it produces, and links to the code and papers behind it.</p>
     </div>
   </header>
 
@@ -68,7 +68,7 @@
           </div>
         </section>
       </div>
-      <p class="hint">This version uses grouped blocks instead of arrows. It is drawn directly with HTML and CSS, with no embedded PDF or diagram image.</p>
+      <p class="hint">Each block is clickable. Selecting one updates the panel on the right with a description, a figure, and links to the relevant repository and publication.</p>
     </section>
 
     <aside class="info-panel" id="infoPanel" aria-live="polite">
@@ -84,15 +84,83 @@
     </aside>
   </main>
 
-  <section class="howto">
-    <h2>How to add your own photos or plots</h2>
-    <p>Place your image files inside the <code>img/</code> folder, then edit <code>content.js</code>. For each block, change the <code>image</code> value to your file path and update the <code>caption</code>.</p>
-    <pre><code>"ekf-awe": {
-  title: "EKF-AWE Experimental Reconstruction",
-  image: "img/ekf_reconstruction.png",
-  caption: "Example reconstructed wind speed and kite states."
-}</code></pre>
+  <section class="references">
+    <div class="references-grid">
+      <div class="ref-col">
+        <h2>Publications</h2>
+        <p class="ref-intro">The methods behind the framework are described in:</p>
+        <ul class="ref-list">
+          <li>
+            <a href="https://doi.org/10.5194/wes-11-1097-2026" target="_blank" rel="noopener">Translational dynamics of bridled kites: a reduced-order model in the course reference frame</a>
+            <span>Cayon, van Deursen &amp; Schmehl (2026) · <em>Wind Energy Science</em> · shared kinematics &amp; reduced-order model</span>
+          </li>
+          <li>
+            <a href="https://doi.org/10.5194/wes-10-2161-2025" target="_blank" rel="noopener">Kite as a sensor: wind and state estimation in tethered flying systems</a>
+            <span>Cayon, Watson &amp; Schmehl (2025) · <em>Wind Energy Science</em> · EKF reconstruction &amp; wind estimation</span>
+          </li>
+          <li>
+            <a href="https://www.researchgate.net/publication/403912785_Optimal_Reel-Out_Trajectories_for_Soft_Kites_under_Varying_Wind_Conditions" target="_blank" rel="noopener">Optimal reel-out trajectories for soft kites under varying wind conditions</a>
+            <span>Cayon &amp; Schmehl (2026) · Torque conference · trajectory optimisation, outputs &amp; applications</span>
+          </li>
+          <li>
+            <a href="https://doi.org/10.3390/en16073061" target="_blank" rel="noopener">Fast aero-structural model of a leading-edge inflatable kite</a>
+            <span>Cayon, Gaunaa &amp; Schmehl (2023) · <em>Energies</em> · aero-structural model</span>
+          </li>
+        </ul>
+      </div>
+      <div class="ref-col">
+        <h2>Code &amp; repositories</h2>
+        <p class="ref-intro">AWETrim ties together several open-source packages:</p>
+        <ul class="ref-list">
+          <li>
+            <a href="https://github.com/awegroup/AWETrim" target="_blank" rel="noopener">AWETrim</a>
+            <span>This framework — CasADi system model, ROM &amp; trajectory optimisation</span>
+          </li>
+          <li>
+            <a href="https://github.com/awegroup/Vortex-Step-Method" target="_blank" rel="noopener">Vortex Step Method (VSM)</a>
+            <span>Enhanced lifting-line aerodynamic solver for low-aspect-ratio wings</span>
+          </li>
+          <li>
+            <a href="https://github.com/awegroup/Particle_System_Simulator" target="_blank" rel="noopener">Particle System Simulator (PSS)</a>
+            <span>Particle-spring structural solver for flexible membrane kites</span>
+          </li>
+          <li>
+            <a href="https://github.com/awegroup/kite_fem" target="_blank" rel="noopener">kite_fem</a>
+            <span>Finite-element structural solver, alternative to PSS in the coupling</span>
+          </li>
+          <li>
+            <a href="https://github.com/ocayon/EKF-AWE" target="_blank" rel="noopener">EKF-AWE</a>
+            <span>Extended Kalman Filter for AWE flight-data reconstruction</span>
+          </li>
+          <li>
+            <a href="https://github.com/awegroup/TUDELFT_V3_KITE" target="_blank" rel="noopener">TU Delft LEI-V3 kite</a>
+            <span>Reference kite data, geometry and field measurements</span>
+          </li>
+          <li>
+            <a href="https://github.com/awegroup/awesIO" target="_blank" rel="noopener">awesIO</a>
+            <span>I/O helpers for AWE data formats used by the scripts</span>
+          </li>
+          <li>
+            <a href="https://web.casadi.org" target="_blank" rel="noopener">CasADi</a>
+            <span>Symbolic computation and NLP solving (IPOPT)</span>
+          </li>
+        </ul>
+      </div>
+    </div>
   </section>
+
+  <footer class="site-footer">
+    <a class="license-badge" href="https://eupl.eu/" target="_blank" rel="noopener"
+       aria-label="Licensed under the European Union Public Licence v1.2">
+      <img src="img/eupl-logo.png" alt="European Union Public Licence v1.2 logo" />
+    </a>
+    <div class="license-text">
+      <p>AWETrim is released under the
+        <a href="https://github.com/awegroup/AWETrim/blob/main/LICENSE" target="_blank" rel="noopener">European Union Public Licence v1.2 (EUPL-1.2)</a>
+        — a copyleft licence approved by the European Commission.</p>
+      <p class="footer-copy">© 2023–2026 Oriol Cayon · Delft University of Technology</p>
+    </div>
+  </footer>
 
   <script src="content.js"></script>
   <script src="script.js"></script>
