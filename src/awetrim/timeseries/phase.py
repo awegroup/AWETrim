@@ -473,7 +473,7 @@ class Phase:
 
         ipopt_options = {
             # "bound_relax_factor": 1e-8,
-            "tol": 1e-5,
+            "tol": 1e-6,
             "acceptable_iter": 10,
             "acceptable_tol": 2e-4,
             # "constr_viol_tol": 1e-6,

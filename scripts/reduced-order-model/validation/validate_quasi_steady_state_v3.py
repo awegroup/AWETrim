@@ -177,7 +177,7 @@ print(max(flight_data.cycle))
 # mask = (flight_data.cycle>10)&(flight_data.cycle<70)
 mask = flight_data.cycle.isin(range(10, 120))
 # mask = flight_data.cycle.isin(range(64, 68))
-mask = flight_data.cycle == 60
+mask = flight_data.cycle == 65
 # mask = mask & (flight_data.kite_elevation < 0.75)
 flight_data = flight_data[mask]
 results = results[mask]
@@ -983,7 +983,7 @@ def plot_main_results_comparison(
     )
     ax5.plot(
         flight_data["time"],
-        -flight_data["kcu_actual_steering"] / (max(flight_data["kcu_actual_steering"])),
+        -flight_data["kcu_actual_steering"],
         color="black",
         linestyle="-.",
         label="Steering input EKF",
@@ -1027,7 +1027,7 @@ def plot_main_results_comparison(
         )
         ax5.plot(
             solutions_df["time"],
-            solutions_df["input_steering"],
+            solutions_df["input_steering"] * (max(flight_data["kcu_actual_steering"])),
             color="blue",
             linestyle="-.",
             label="Steering input QS",

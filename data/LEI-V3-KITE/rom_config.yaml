@@ -7,7 +7,7 @@ aerodynamics:
     CD0: 0.1130532
     CL0: 0.04671295
     angle_pitch_depower_0: -0.12
-    delta_pitch_depower: -0.15
+    delta_pitch_depower: -0.13
   coefficients:
     CL:
       - var: alpha
@@ -38,7 +38,7 @@ aerodynamics:
     CS:
       - var: u_s
         power: 1
-        coef: 0.15
+        coef: 0.12
 
 tether:
   model: "williams"

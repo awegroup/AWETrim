@@ -102,23 +102,32 @@ class Wing:
             # Loop over defined terms per coefficient
             for coeff_key, terms in aero_input.get("coefficients", {}).items():
                 for term in terms:
-                    var = term["var"]
-                    power = term.get("power", 1)
                     coef = term["coef"]
-                    if (
-                        coeff_key == "CD"
-                        and var == "u_s"
-                        and self._cd_us_param is not None
-                    ):
-                        coef = self._cd_us_param
-                    if var in variables:
-                        value = variables[var] ** power
-                        if coeff_key == "CL":
-                            C_L += coef * value
-                        elif coeff_key == "CD":
-                            C_D += coef * ca.sqrt((value) ** 2 + 1e-10)
-                        elif coeff_key == "CS":
-                            C_S += coef * value
+                    if "vars" in term:
+                        value = 1
+                        for var, power in term["vars"].items():
+                            if var not in variables:
+                                value = None
+                                break
+                            value *= variables[var] ** power
+                    else:
+                        var = term["var"]
+                        power = term.get("power", 1)
+                        if (
+                            coeff_key == "CD"
+                            and var == "u_s"
+                            and self._cd_us_param is not None
+                        ):
+                            coef = self._cd_us_param
+                        value = variables[var] ** power if var in variables else None
+                    if value is None:
+                        continue
+                    if coeff_key == "CL":
+                        C_L += coef * value
+                    elif coeff_key == "CD":
+                        C_D += coef * ca.sqrt((value) ** 2 + 1e-10)
+                    elif coeff_key == "CS":
+                        C_S += coef * value
             return C_L, C_D
 
         else:

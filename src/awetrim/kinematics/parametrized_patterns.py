@@ -249,8 +249,16 @@ def bspline_open_basis_matrix(u_grid, M, p=3):
 
 
 def periodic_bspline_basis_matrix(u_grid, M):
-    """Basis matrix B[n,j] for periodic cubic B-splines evaluated on u_grid."""
+    """Basis matrix B[n,j] for periodic cubic B-splines evaluated on u_grid.
+
+    ``u`` is wrapped into ``[0, 1)`` first — the periodic basis is exactly
+    1-periodic, so this is loss-free and mirrors ``PeriodicBSpline._u``. Without
+    it, reversed (uploop, ``u in [-1, 0]``) or multi-figure grids fall outside
+    the ``i in [-2, M+1]`` support loop below and produce all-zero (singular)
+    rows.
+    """
     u_grid = np.asarray(u_grid).ravel()
+    u_grid = u_grid - np.floor(u_grid)
     N = u_grid.size
     x = u_grid * M
 
@@ -441,9 +449,19 @@ def named_curve_angles(
 ):
     """Return azimuth/elevation samples for a named initial curve.
 
-    Supported curves are ``lissajous`` and ``helix``. The returned arrays are
-    numeric samples intended for fitting initial B-spline control points, not
-    symbolic trajectory expressions.
+    Supported curves:
+
+    - ``lissajous`` : Gerono/Lissajous figure-eight, ``az = A sin(s)``,
+      ``beta = beta0 + B sin(2s)``.
+    - ``lemniscate`` : Bernoulli lemniscate figure-eight. Same orientation and
+      amplitudes as ``lissajous`` (azimuth in ``[-az_amp0, az_amp0]``,
+      elevation in ``[beta0 - beta_amp0, beta0 + beta_amp0]``, starting at the
+      centre crossing and moving toward +azimuth) but with a smoother, more
+      rounded self-crossing — a gentler initial guess for the optimiser.
+    - ``helix`` : ``az = A sin(s)``, ``beta = beta0 + B cos(s)`` (not an eight).
+
+    The returned arrays are numeric samples intended for fitting initial
+    B-spline control points, not symbolic trajectory expressions.
     """
     s = np.asarray(s).ravel()
     omega = 1.0 if downloops else -1.0
@@ -451,12 +469,26 @@ def named_curve_angles(
     if curve_type == "lissajous":
         azimuth = az_amp0 * np.sin(omega * s)
         elevation = beta0 + beta_amp0 * np.sin(omega * 2.0 * s)
+    elif curve_type == "lemniscate":
+        # Bernoulli lemniscate, reparametrised so the centre crossing is at
+        # s = 0. With p = omega * s:
+        #   azimuth   = az_amp0 * sin(p) / (1 + cos^2 p)
+        #   elevation = beta0 + beta_amp0 * 2*sqrt(2) * sin(p) cos(p) / (1 + cos^2 p)
+        # max|sin p / (1 + cos^2 p)| = 1 and max|sin p cos p / (1 + cos^2 p)|
+        # = sqrt(2)/4, so the 2*sqrt(2) factor normalises both excursions to
+        # the requested amplitudes (matching the lissajous case exactly).
+        p = omega * s
+        denom = 1.0 + np.cos(p) ** 2
+        azimuth = az_amp0 * np.sin(p) / denom
+        elevation = (
+            beta0 + beta_amp0 * 2.0 * np.sqrt(2.0) * np.sin(p) * np.cos(p) / denom
+        )
     elif curve_type == "helix":
         azimuth = az_amp0 * np.sin(omega * s)
         elevation = beta0 + beta_amp0 * np.cos(omega * s)
     else:
         raise ValueError(
-            "curve_type must be one of 'lissajous' or 'helix'."
+            "curve_type must be one of 'lissajous', 'lemniscate' or 'helix'."
         )
 
     return azimuth, elevation
@@ -474,7 +506,11 @@ def fit_bspline_pattern_to_named_curve(
     beta_amp0=0.35,
     downloops=True,
 ):
-    """Fit a B-spline pattern to a named helix or figure-eight initial curve."""
+    """Fit a B-spline pattern to a named initial curve.
+
+    ``curve_type`` is one of ``lissajous``/``lemniscate`` (figure-eights) or
+    ``helix``; see :func:`named_curve_angles`.
+    """
     s_samples = np.linspace(s_init, s_final, int(n_fit), endpoint=True)
     az_target, el_target = named_curve_angles(
         s_samples,
@@ -537,4 +573,9 @@ def make_bspline_path_parameters_from_named_curve(
         "C_beta": _rounded_coefficients(C_beta),
         "s_init": float(s_init),
         "s_final": float(s_final),
+        # Carry the traversal sense through to the runtime pattern: the fit maps
+        # the curve onto u with this same omega, so PeriodicBSpline/OpenBSpline
+        # must rebuild with it (create_pattern_from_dict forwards it) or an
+        # uploop fit (downloops=False) is evaluated in the downloop sense.
+        "downloops": bool(downloops),
     }

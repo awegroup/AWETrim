@@ -78,7 +78,7 @@ def _v3_system_model(wind_speed=10.0):
 # --- pure: spline generation -----------------------------------------------
 
 
-@pytest.mark.parametrize("curve_type", ["lissajous", "helix"])
+@pytest.mark.parametrize("curve_type", ["lissajous", "lemniscate", "helix"])
 def test_named_curve_spline_parameters_shape(curve_type):
     params = _spline_path_parameters(curve_type)
     assert params["M"] == _M
@@ -103,7 +103,7 @@ def test_lissajous_and_helix_differ():
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("curve_type", ["lissajous", "helix"])
+@pytest.mark.parametrize("curve_type", ["lissajous", "lemniscate", "helix"])
 def test_spline_phase_runs_quasi_steady(curve_type):
     from awetrim.timeseries.phase_parametrized import PhaseParameterized
 

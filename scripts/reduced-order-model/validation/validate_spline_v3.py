@@ -514,7 +514,7 @@ def simulate_cycle(
         system_model = create_system_model_from_yaml(
             # Validation reproduces a specific flight; use the as-flown KCU mass.
             LEI_V3_SYSTEM_FLOWN_CONFIG,
-            # tether_config={"model": "williams", "n_elements": 10, "cf": 0.01},
+            tether_config={"model": "williams", "n_elements": 10, "cf": 0.01},
         )
 
         system_model.wind = wind_model
@@ -853,7 +853,7 @@ def main():
     year, month, day = "2019", "10", "08"
     kite_model = "LEI-V3-Kite"
     path_to_main = "./data/LEI-V3-KITE"
-    cycle_id = 62  # set to an int to run a single cycle, None to run all detected
+    cycle_id = 65  # set to an int to run a single cycle, None to run all detected
     downloop_cfg_path = str(LEI_V3_DOWNLOOP_SPLINE_CONFIG)
 
     # Discretization level selector: choose one of ["coarse", "medium", "fine"]

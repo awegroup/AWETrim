@@ -35,7 +35,7 @@ from awetrim.utils.color_palette import get_color_list, set_plot_style_no_latex
 TEMPLATE_PATH = LEI_V3_DOWNLOOP_SPLINE_CONFIG
 OUTPUT_PATH = LEI_V3_DOWNLOOP_SPLINE_CONFIG
 
-CURVE_TYPE = "lissajous"  # "lissajous" or "helix"
+CURVE_TYPE = "lissajous"  # "lissajous", "lemniscate" (smoother eight) or "helix"
 SPLINE_TYPE = "periodic"  # "periodic" or "open"
 DOWNLOOPS = True
 
@@ -183,7 +183,7 @@ def plot_generated_curve(
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Generate B-spline reelout YAML configs from helix or Lissajous initial curves."
+        description="Generate B-spline reelout YAML configs from helix, Lissajous or Bernoulli-lemniscate initial curves."
     )
     parser.add_argument("--template", default=TEMPLATE_PATH)
     parser.add_argument("--output", default=OUTPUT_PATH)
@@ -199,7 +199,7 @@ def parse_args():
     )
     parser.add_argument(
         "--curve-type",
-        choices=["lissajous", "helix"],
+        choices=["lissajous", "lemniscate", "helix"],
         default=CURVE_TYPE,
     )
     parser.add_argument(

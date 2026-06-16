@@ -9,6 +9,9 @@ from awetrim.system.kite import Kite
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.timeseries.phase import Phase
 from awetrim.system.factory import create_system_model_from_yaml
+from awetrim.kinematics.parametrized_patterns import (
+    make_bspline_path_parameters_from_named_curve,
+)
 from awetrim.utils.config_paths import (
     LEI_V3_HELIX_SPLINE_CONFIG,
     LEI_V3_SYSTEM_CONFIG,
@@ -37,12 +40,42 @@ SAVE_TIMESERIES = True
 
 RESULTS_DIR = Path("results") / KITE_CONFIG_PATH.parent.name / "optimization" / "helix"
 
+# ---------------------------------------------------------------------------
+# Initial path guess
+# ---------------------------------------------------------------------------
+# Regenerate the reel-out B-spline control points from a simple analytic curve
+# and override the ones loaded from YAML. Set REGENERATE_INITIAL_GUESS = False
+# to fly the control points stored in the config instead. This is the inline
+# equivalent of running generate_spline_config.py before this script.
+REGENERATE_INITIAL_GUESS = True
+INITIAL_GUESS = {
+    "curve_type": "helix",  # helix shape (use a *_pattern script for eights)
+    "M": 10,
+    "n_fit": 400,
+    "s_init": 0.0,
+    "s_final": 2.0 * np.pi,
+    "az_amp0": 0.1,
+    "beta0": 0.3,
+    "beta_amp0": 0.1,
+    "downloops": True,
+}
+
 # CYCLE_CONFIG_PATH = Path(
 #     "results/optimized_configs/helix/depower_helix_optimized_config_wind_6_z0_0.03_logarithmic_spline.yaml"
 # )
 
 # Load configurations from YAML
 REELOUT_CONFIG, REELIN_CONFIG = load_cycle_config_from_yaml(CYCLE_CONFIG_PATH)
+
+if REGENERATE_INITIAL_GUESS:
+    REELOUT_CONFIG["path_parameters"] = make_bspline_path_parameters_from_named_curve(
+        spline_type="periodic",
+        r0=REELOUT_CONFIG["path_parameters"]["r0"],
+        **INITIAL_GUESS,
+    )
+    REELOUT_CONFIG["sim_parameters"]["start_angle"] = INITIAL_GUESS["s_init"]
+    REELOUT_CONFIG["sim_parameters"]["end_angle"] = INITIAL_GUESS["s_final"]
+
 # REELOUT_CONFIG["path_parameters"]["beta0"] += 0.1
 # REELOUT_CONFIG["path_parameters"]["beta_amp0"] = 0.18
 # REELOUT_CONFIG["path_parameters"]["az_amp0"] = 0.3536
