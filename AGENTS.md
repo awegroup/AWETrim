@@ -13,7 +13,9 @@ implements the winch/tether physics for pumping-cycle simulation.
 
 ```
 src/awetrim/
-  system/            ✅  Wing, Kite, SystemModel, Tether, Winch
+  system/            ✅  Wing, Kite, SystemModel, Winch, Tether variants
+                         (rigid/flexible link, rigid/flexible lumped,
+                          Williams discretised distributed-mass)
   aerodynamics/      ✅  VSM quasi-steady trim — see src/awetrim/aerodynamics/AGENTS.md
   aerostructural/    ✅  Shared interfaces: protocols, mapping, convergence, forces, results, utils
     pss/             ✅  PSS/QSM coupled solver — see src/awetrim/aerostructural/AGENTS.md
@@ -49,6 +51,9 @@ Every governing equation should trace back to one of:
 - **Aerostructural / VSM:** Cayon, Gaunaa, Schmehl (2023) *Energies* 16, 3061
 - **Identification / ROM:** Cayon, van Deursen, Schmehl (2026) *WES* 11, 1097
 - **Trajectory optimisation:** Cayon & Schmehl (2026) Torque extended abstract
+- **Discretised tether (distributed-mass, lumped-element):** Williams (2017)
+  *J. Guid. Control Dynam.* 40, 1779–1788, https://doi.org/10.2514/1.G002354
+  — basis for `system/williams_tether.py` (`WilliamsTether`)
 
 ---
 

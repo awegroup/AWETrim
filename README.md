@@ -99,7 +99,7 @@ The external solvers (VSM, PSS, EKF-AWE) are installed automatically from GitHub
 
 ```
 src/awetrim/
-  system/          CasADi system model: SystemModel, Kite, Tether variants, Wind, Winch
+  system/          CasADi system model: SystemModel, Kite, Wind, Winch, Tether variants (rigid/flexible link & lumped, Williams discretised distributed-mass)
   aerodynamics/    VSM quasi-steady trim wrapper: solve_vsm_quasi_steady_trim, sweeps, derivatives
   aerostructural/  Shared: protocols, mapping, convergence, forces, results, tracking, utils
     pss/           PSS/QSM fixed-point coupling: PssQsmCoupler, structural_pss, aerodynamic_vsm, actuation
@@ -231,6 +231,10 @@ The methods implemented in this repository are described in the following papers
 - Cayon, O., Watson, S., & Schmehl, R. (2025). **Kite as a sensor: wind and state estimation in tethered flying systems.** *Wind Energy Science*. [https://doi.org/10.5194/wes-10-2161-2025](https://doi.org/10.5194/wes-10-2161-2025)
 
 - Cayon, O., Gaunaa, M., & Schmehl, R. (2023). **Fast Aero-Structural Model of a Leading-Edge Inflatable Kite.** *Energies*. [https://doi.org/10.3390/en16073061](https://doi.org/10.3390/en16073061)
+
+The discretised distributed-mass tether model (`WilliamsTether`) follows:
+
+- Williams, P. (2017). **Cable Modeling Approximations for Rapid Simulation.** *Journal of Guidance, Control, and Dynamics*, 40(7), 1779–1788. [https://doi.org/10.2514/1.G002354](https://doi.org/10.2514/1.G002354)
 
 ---
 
