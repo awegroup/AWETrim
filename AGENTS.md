@@ -17,59 +17,38 @@ src/awetrim/
   aerodynamics/      ✅  VSM quasi-steady trim — see src/awetrim/aerodynamics/AGENTS.md
   aerostructural/    ✅  Shared interfaces: protocols, mapping, convergence, forces, results, utils
     pss/             ✅  PSS/QSM coupled solver — see src/awetrim/aerostructural/AGENTS.md
-    fem/             🔴  FEM-based coupling — NOT YET BUILT (placeholder only)
+    fem/             🟡  FEM coupling implemented; structural solver and
+                         chordwise force distribution still need improvement (see note)
   kinematics/        ✅  course-frame kinematics, B-spline path patterns
   timeseries/        ✅  PhaseParameterized, ReeloutSimple, ReelinSimple, Cycle
   environment/       ✅  Wind (logarithmic / uniform / tabulated)
-  experimental/      ✅  EKF flight-data analysis pipeline
+  experimental/      ✅  EKF flight-data analysis pipeline (+ data_preprocessors/)
+  plotting/          ✅  shared plotting helpers — see src/awetrim/plotting/AGENTS.md
   utils/             ✅  fitting, defaults, reference frames
-  stability/         🟡  stability functions (partial)
-
-  identification/    🔴  NOT YET BUILT
+  identification/    🟡  started — rigid_body_axes.py + an aero LUT guide
+                         (the guide is outdated and needs revising)
 ```
 
-**Read the module's `AGENTS.md` before modifying `aerodynamics/` or `aerostructural/`.
+ROM is **script-based**, not a `src/` module: see `scripts/reduced-order-model/`
+(`optimization/`, `validation/`), configured via each kite's `rom_config.yaml`.
+
+**FEM known limitation:** the aero→struc coupling currently spreads each spanwise
+VSM force over 10 chordwise nodes using weights from a single-AoA Cp file
+(`cp_AOA_8.dat`), with a uniform fallback — see
+`aerostructural/fem/aero2struc.py`. A physically correct chordwise force
+distribution (from CFD or another source) is still needed, and the FEM structural
+solver itself needs further work.
+
+**Read the module's `AGENTS.md` before modifying `aerodynamics/`, `aerostructural/`,
+or `plotting/`.
 When you add, remove, or rename public functions, dataclasses, config keys, or file layout in any module that has an `AGENTS.md`, update that file in the same commit.**
 
-## Roles
+## Physics references
 
-Every session operates in exactly one role. State it explicitly at the start,
-e.g. *"acting as @architect, design the identification module interface"*.
-Default if unspecified: **@developer**.
-
-### @architect
-Design module interfaces before any implementation exists.
-- Output: Python `Protocol` or `ABC` with type signatures, data-flow description,
-  and public method docstrings. No implementation code.
-- Update the module's `AGENTS.md` with the agreed interface before any `.py`
-  file is created.
-- Cross-module data uses plain dicts or `dataclass` — no CasADi symbolics
-  crossing module boundaries unless explicitly decided.
-
-### @developer
-Implement against a spec the architect has already written.
-- Read the module's `AGENTS.md` before writing any code.
-- Use CasADi (`ca.MX`, `ca.Function`, `ca.Opti`) for all symbolic quantities.
-  Do not substitute numeric values until solve time.
-- Follow existing patterns: properties for symbolic quantities, `DEFAULT_*`
-  constants in `utils/defaults.py`, YAML-driven configs.
-- Do not change an architect-defined interface unilaterally.
-
-### @reviewer
-Check that an implementation matches the paper physics. No new code.
-- Every equation must trace back to one of:
-  - **Aerostructural / VSM:** Cayon, Gaunaa, Schmehl (2023) *Energies* 16, 3061
-  - **Identification / ROM:** Cayon, van Deursen, Schmehl (2026) *WES* 11, 1097
-  - **Trajectory optimisation:** Cayon & Schmehl (2026) Torque extended abstract
-- Flag any mismatch between code variable names and the symbol table below.
-- Confirm `timeder_speed_tangential = 0` is enforced in `SystemModel(quasi_steady=True)`.
-
-### @tester
-Write and run `pytest` tests. One test file per source module under `tests/`.
-- Test CasADi expression structure and symbolic shapes, not numeric solver values.
-- Use fixtures in `tests/conftest.py` for shared kite/system setups.
-- Tests for `aerostructural/` and `identification/` are required before those
-  modules are considered complete.
+Every governing equation should trace back to one of:
+- **Aerostructural / VSM:** Cayon, Gaunaa, Schmehl (2023) *Energies* 16, 3061
+- **Identification / ROM:** Cayon, van Deursen, Schmehl (2026) *WES* 11, 1097
+- **Trajectory optimisation:** Cayon & Schmehl (2026) Torque extended abstract
 
 ---
 
@@ -103,6 +82,12 @@ Write and run `pytest` tests. One test file per source module under `tests/`.
 - **IPOPT** is the default NLP solver: `opti.solver("ipopt", {...})`.
 - Optimisation variable bounds live in `utils/defaults.py` (`DEFAULT_OPTI_LIMITS`).
   Add new variables there, not inline in module code.
+- In `SystemModel(quasi_steady=True)`, `timeder_speed_tangential = 0` must be enforced.
+- Cross-module data uses plain dicts or `dataclass` — keep CasADi symbolics from
+  crossing module boundaries unless explicitly decided.
+- **Tests:** one file per source module under `tests/`; assert CasADi expression
+  structure and symbolic shapes, not numeric solver values; share kite/system
+  setups via fixtures in `tests/conftest.py`.
 
 ---
 
@@ -114,7 +99,7 @@ Common commands
  - **Install (editable, with dev extras):** pip install -e .[dev]
  - **Run all tests:** pytest
  - **Run tests for a module:** pytest tests/aerostructural/
- - **Run a single test:** pytest tests/aerostructural/test_pss.py::test_pulley_rest_lengths
+ - **Run a single test:** pytest tests/aerostructural/test_pss.py::test_aerostructural_import_does_not_import_pss
  - **Run with coverage:** pytest --cov=src --cov-report=term-missing
 
 Scripts
@@ -160,5 +145,5 @@ Results layout (convention):
 - `results/<kite_name>/<analysis_type>/sim_output.h5` — aerostructural coupled-solver outputs.
 - `results/<kite_name>/ekf/` — EKF outputs and diagnostics.
 
-Use the canonical filenames above so helper utilities (e.g., `resolve_kite_paths`, `resolve_kite_paths`) locate files automatically.
+Use the canonical filenames above so helper utilities (e.g., `resolve_kite_paths` in `scripts/aerostructural/common.py`) locate files automatically.
 

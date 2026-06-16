@@ -43,10 +43,10 @@ src/awetrim/aerostructural/
   # ── FEM-based solver ──────────────────────────────────────────────────────
   fem/
     __init__.py                    Re-exports all four FEM modules
-    aerostructural_coupled_solver_level_2.py  FEM/QSM high-level driver
-    aero2struc_level_2.py          Aero-to-structural force mapping and moment preservation check
-    read_struc_geometry_yaml_level_2.py  Parse level-2 struc_geometry YAML (strut tubes, LE tubes)
-    structural_kite_fem_level_2.py FEM structure instantiation and solve
+    aerostructural_coupled_solver.py  FEM/QSM high-level driver
+    aero2struc.py                  Aero-to-structural force mapping and moment preservation check
+    read_struc_geometry_yaml.py    Parse struc_geometry YAML (strut tubes, LE tubes)
+    structural_kite_fem.py         FEM structure instantiation and solve
 
 scripts/aerostructural/
   common.py                        CONFIG_DEFAULTS, build_system_model, shared helpers

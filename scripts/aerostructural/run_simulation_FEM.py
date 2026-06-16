@@ -28,9 +28,9 @@ from awetrim.aerostructural.results import (
 from awetrim.aerostructural.utils import load_yaml, rotate_geometry
 from awetrim.aerostructural import aerodynamic_vsm
 from awetrim.aerostructural.fem import (
-    aerostructural_coupled_solver_level_2,
-    read_struc_geometry_yaml_level_2,
-    structural_kite_fem_level_2,
+    aerostructural_coupled_solver,
+    read_struc_geometry_yaml,
+    structural_kite_fem,
 )
 from awetrim.system.tether import RigidLumpedTether
 from common import (
@@ -118,7 +118,7 @@ def main():
         linktype_arr,
         pulley_line_indices,
         pulley_line_to_other_node_pair_dict,
-    ) = read_struc_geometry_yaml_level_2.main(struc_geometry, config=config)
+    ) = read_struc_geometry_yaml.main(struc_geometry, config=config)
 
     struc_nodes = rotate_geometry(
         struc_nodes,
@@ -126,7 +126,7 @@ def main():
     )
 
     kite_fem_structure, _, _, _, struc_nodes_initial = (
-        structural_kite_fem_level_2.instantiate(
+        structural_kite_fem.instantiate(
             config=config,
             struc_geometry=struc_geometry,
             struc_nodes=struc_nodes,
@@ -183,7 +183,7 @@ def main():
     ########################################
     ### AEROSTRUCTURAL COUPLED SIMULATION ##
     ########################################
-    tracking_data, meta = aerostructural_coupled_solver_level_2.main(
+    tracking_data, meta = aerostructural_coupled_solver.main(
         m_arr=m_arr,
         struc_nodes=struc_nodes,
         struc_nodes_initial=struc_nodes_initial,

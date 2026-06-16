@@ -21,7 +21,7 @@ import numpy as np
 import logging
 from pathlib import Path
 import copy
-from . import aero2struc_level_2, structural_kite_fem_level_2
+from . import aero2struc, structural_kite_fem
 from ..pss import structural_pss
 from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking
 from awetrim import plotting
@@ -545,7 +545,7 @@ def main(
     #     )
 
     ### AERO --> STRUC
-    f_aero_wing, aero_mapping_debug = aero2struc_level_2.main(
+    f_aero_wing, aero_mapping_debug = aero2struc.main(
         config["aero2struc"]["coupling_method"],
         f_aero_wing_vsm_format,
         struc_nodes,
@@ -561,7 +561,7 @@ def main(
     )
 
     # Check moment preservation of aero→struc mapping (pre-loop)
-    aero2struc_level_2.check_moment_preservation(
+    aero2struc.check_moment_preservation(
         f_aero_panel=aero_mapping_debug["forces"],
         panel_cps=aero_mapping_debug["points"],
         f_aero_mapped=f_aero_wing,
@@ -640,7 +640,7 @@ def main(
                 )
             elif config["structural_solver"] == "kite_fem":
                 kite_fem_structure, is_structural_converged, struc_nodes, f_int = (
-                    structural_kite_fem_level_2.run_kite_fem(
+                    structural_kite_fem.run_kite_fem(
                         kite_fem_structure, f_ext_flat, config["structural_kite_fem"]
                     )
                 )
@@ -695,7 +695,7 @@ def main(
                 if config["structural_solver"] == "pss":
                     rest_lengths = psystem.extract_rest_length
                 elif config["structural_solver"] == "kite_fem":
-                    rest_lengths = structural_kite_fem_level_2.get_rest_lengths(
+                    rest_lengths = structural_kite_fem.get_rest_lengths(
                         kite_fem_structure, kite_connectivity_arr
                     )
                     # kite_fem_structure.plot_convergence()  # not available in kite_fem
@@ -763,7 +763,7 @@ def main(
             roll, pitch, yaw = results_aero["opt_x"][1:4]
             struc_nodes = rotate_geometry(struc_nodes, angle_deg=[roll, pitch, yaw])
             ### AERO --> STRUC
-            f_aero_wing, aero_mapping_debug = aero2struc_level_2.main(
+            f_aero_wing, aero_mapping_debug = aero2struc.main(
                 config["aero2struc"]["coupling_method"],
                 f_aero_wing_vsm_format,
                 struc_nodes,
@@ -780,7 +780,7 @@ def main(
 
             # Check moment preservation (only first coupling iteration to limit log spam)
             if i == 1:
-                aero2struc_level_2.check_moment_preservation(
+                aero2struc.check_moment_preservation(
                     f_aero_panel=aero_mapping_debug["forces"],
                     panel_cps=aero_mapping_debug["points"],
                     f_aero_mapped=f_aero_wing,
@@ -991,7 +991,7 @@ def main(
     if config["structural_solver"] == "pss":
         rest_lengths = psystem.extract_rest_length
     elif config["structural_solver"] == "kite_fem":
-        rest_lengths = structural_kite_fem_level_2.get_rest_lengths(
+        rest_lengths = structural_kite_fem.get_rest_lengths(
             kite_fem_structure, kite_connectivity_arr
         )
 
