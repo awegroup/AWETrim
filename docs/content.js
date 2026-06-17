@@ -14,6 +14,10 @@ const PAPER_AERO = {
   label: "Paper · Fast aero-structural model (Energies 2023)",
   url: "https://doi.org/10.3390/en16073061"
 };
+const PAPER_VSM = {
+  label: "Paper · Computational aerodynamics for soft-wing kite design (WES 2026)",
+  url: "https://doi.org/10.5194/wes-2026-46"
+};
 const PAPER_OPT = {
   label: "Paper · Optimal reel-out trajectories (Torque 2026)",
   url: "https://www.researchgate.net/publication/403912785_Optimal_Reel-Out_Trajectories_for_Soft_Kites_under_Varying_Wind_Conditions"
@@ -101,7 +105,7 @@ const CONTENT = {
     bullets: ["VSM aerodynamic loads (enhanced lifting line)", "Structural solver: PSS particle-spring or kite_fem FEM", "Aitken-relaxed fixed-point coupling to convergence"],
     image: "img/placeholder.svg",
     caption: "Add a loaded wing shape or pressure / load distribution plot.",
-    links: [PAPER_AERO, REPO_VSM, REPO_PSS, REPO_FEM]
+    links: [PAPER_AERO, PAPER_VSM, REPO_VSM, REPO_PSS, REPO_FEM]
   },
   "model-reduction": {
     title: "Model Reduction & Aero Identification",

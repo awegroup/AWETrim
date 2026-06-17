@@ -57,7 +57,22 @@ body::after {
   max-width: 1280px;
   margin: 0 auto;
   padding: 38px 24px 16px;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 28px;
 }
+
+.header-logo {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  line-height: 0;
+  padding-top: 6px;
+}
+
+.header-logo img { height: 58px; width: auto; transition: transform .2s ease; }
+.header-logo:hover img, .header-logo:focus-visible img { transform: scale(1.04); outline: none; }
 
 .site-header > div {
   max-width: 820px;
@@ -565,8 +580,9 @@ h1 {
 }
 
 @media (max-width: 800px) {
-  .site-header { padding-top: 20px; }
+  .site-header { padding-top: 20px; flex-direction: column; align-items: flex-start; gap: 16px; }
   .site-header > div { padding: 18px; }
+  .header-logo { padding-top: 0; }
   .node-grid-inputs, .node-grid-apps, .support-row, .model-row, .node-grid-reconstruction {
     grid-template-columns: 1fr;
   }

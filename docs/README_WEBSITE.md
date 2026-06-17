@@ -44,6 +44,14 @@ Example:
 
 Recommended image formats: `.png`, `.jpg`, `.webp`, or `.svg`.
 
+## Header logo
+
+The site header carries the TU Delft institutional logo at the top right
+(`img/tudelft-logo.svg`, linking to `tudelft.nl`). The shipped file is a
+self-contained SVG placeholder in the TU Delft house colour — swap it for the
+official TU Delft asset by replacing that file (keep the same name) or editing the
+`src` of the `.header-logo` image in `index.html`.
+
 ## Funding band and logos
 
 The dark-text funding band above the footer carries the MERIDIONAL logo, the
