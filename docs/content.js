@@ -52,10 +52,14 @@ const CONTENT = {
   },
   "experimental-flight-data": {
     title: "Experimental Flight Data",
-    text: "Raw measured data from flight tests is the starting point for reconstruction. Typical signals include position, velocity, tether force, reel-out speed and onboard sensor measurements. The reference data set in this repository comes from the TU Delft LEI-V3 kite.",
-    bullets: ["Raw CSV logs and pre-processed HDF5 files", "Position, velocity, tether force, reel-out speed", "Onboard IMU / sensor measurements"],
-    image: "img/placeholder.svg",
-    caption: "Add a photo of the experimental setup or a raw-data time series.",
+    text: "Measured flight-test data is the starting point for reconstruction. For wind and state reconstruction with the EKF, at least the kite position, velocity, tether force and tether length must be provided. The reference kite is the TU Delft V3; the open data sets include three Kitepower V9 flights with lidar wind measurements, and the most recent of the V3 flights also has lidar.",
+    bullets: [
+      "Minimum EKF inputs: position, velocity, tether force, tether length",
+      "Reference system: TU Delft V3 kite",
+      "Three Kitepower V9 flights with lidar; latest V3 flight also has lidar"
+    ],
+    image: "img/flight-setup.JPG",
+    caption: "Pre-flight ground setup: the kite, bridle lines and control unit laid out before a flight test.",
     links: [REPO_KITE, DATA_20251009, DATA_20240605, DATA_20231127, DATA_20230512, DATA_20191008]
   },
   "ekf-awe": {
