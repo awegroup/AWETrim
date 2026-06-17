@@ -288,15 +288,12 @@ def main(
         results_aero.get("alpha_at_ac"),
         results_aero.get("stall_mask"),
     )
-    # Trim attitude is applied to a throwaway copy used only for the aero->struc
-    # load mapping; the structural state struc_nodes stays un-rotated so the
-    # Aitken relaxation residual is a pure structural displacement.
     roll, pitch, yaw = results_aero["opt_x"][1:4]
-    struc_nodes_aero = rotate_geometry(struc_nodes, angle_deg=[roll, pitch, yaw])
+    struc_nodes = rotate_geometry(struc_nodes, angle_deg=[roll, pitch, yaw])
     ### AERO --> STRUC
     f_aero_wing = _map_aero_loads_to_structure(
         f_aero_wing_vsm_format,
-        struc_nodes_aero,
+        struc_nodes,
         np.array(results_aero["panel_cp_locations"]),
         aero2struc_mapping,
     )
@@ -306,7 +303,7 @@ def main(
         panel_forces=f_aero_wing_vsm_format,
         panel_points=np.array(results_aero["panel_cp_locations"]),
         nodal_forces=f_aero_wing,
-        nodes=struc_nodes_aero,
+        nodes=struc_nodes,
     )
 
     ### BRIDLE AERO
@@ -488,14 +485,12 @@ def main(
                             qs_stag_n_iter,
                             qs_opt_current_rounded,
                         )
-            # Trim attitude on a throwaway copy for the load mapping only; the
-            # structural state struc_nodes stays un-rotated (see pre-loop note).
             roll, pitch, yaw = results_aero["opt_x"][1:4]
-            struc_nodes_aero = rotate_geometry(struc_nodes, angle_deg=[roll, pitch, yaw])
+            struc_nodes = rotate_geometry(struc_nodes, angle_deg=[roll, pitch, yaw])
             ### AERO --> STRUC
             f_aero_wing = _map_aero_loads_to_structure(
                 f_aero_wing_vsm_format,
-                struc_nodes_aero,
+                struc_nodes,
                 np.array(results_aero["panel_cp_locations"]),
                 aero2struc_mapping,
             )
@@ -506,7 +501,7 @@ def main(
                     panel_forces=f_aero_wing_vsm_format,
                     panel_points=np.array(results_aero["panel_cp_locations"]),
                     nodal_forces=f_aero_wing,
-                    nodes=struc_nodes_aero,
+                    nodes=struc_nodes,
                 )
 
             ### BRIDLE AERO

@@ -4,12 +4,9 @@ Covers the pure-numpy geometry/mass helpers shared by the coupled solvers:
 - rotate_geometry (axis-angle rotations, pivot, legacy scalar angle, validation)
 - calculate_cg, calculate_inertia, calculate_moments_of_inertia
 
-Regression note: the PSS/QSM coupled solver (aerostructural_coupled_solver_qsm)
-rotates a *throwaway* copy ``struc_nodes_aero = rotate_geometry(struc_nodes, …)``
-for the aero->struc load mapping while keeping ``struc_nodes`` un-rotated, so
-the Aitken residual stays a pure structural displacement. That correctness hinges
-on rotate_geometry NOT mutating its input — locked in by
-``test_rotate_geometry_does_not_mutate_input``.
+Regression note: rotate_geometry must return a new rotated array instead of
+mutating the caller-owned input in place. The coupled solver may assign the
+returned value back to ``struc_nodes`` explicitly when it needs that behavior.
 
 Per the aerostructural AGENTS.md: this module is numeric numpy only (no CasADi),
 so deterministic numeric values are asserted directly.
@@ -38,12 +35,7 @@ class TestRotateGeometryBehaviour:
         assert np.allclose(out, nodes)
 
     def test_does_not_mutate_input(self):
-        """Regression for the coupled solver: input geometry stays un-rotated.
-
-        ``struc_nodes_aero = rotate_geometry(struc_nodes, …)`` must leave the
-        caller's ``struc_nodes`` untouched, otherwise the Aitken relaxation
-        residual would accumulate spurious trim rotation each iteration.
-        """
+        """Regression: rotation returns a new array and leaves input untouched."""
         nodes = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])
         original = nodes.copy()
         out = rotate_geometry(nodes, angle_deg=[10.0, 20.0, 30.0])
