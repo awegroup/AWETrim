@@ -181,3 +181,6 @@ src/awetrim/kinematics/winch_force_curve.py
 
 # Personal scripts (own private repo: ocayon/AWETrim-personal)
 scripts/personal/
+
+#MAC OS
+.DS_Store
