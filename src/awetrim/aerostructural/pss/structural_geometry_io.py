@@ -161,10 +161,14 @@ def compute_wing_stats_from_pss(struc_geometry):
 def _resolve_kcu_mass(struc_geometry, config=None, system_config=None):
     """Resolve KCU mass.
 
+    The single source of truth is the system config
+    (``components.kite.control_system.structure.mass``). ``struc_geometry`` must
+    NOT carry a ``kcu_mass`` — it is only honoured as a deprecated fallback.
+
     Priority:
-      1. system_config (awesIO format): components.control_system.structure.mass
-      2. config (aerostructural YAML): kcu.mass or kcu_mass
-      3. struc_geometry fallback (legacy)
+      1. system_config (awesIO): control_system.structure.mass
+      2. config (aerostructural YAML): kcu.mass or kcu_mass (per-run override)
+      3. struc_geometry.kcu_mass (deprecated fallback; emits a warning)
     """
     if isinstance(system_config, dict):
         kite = system_config.get("components", {}).get(
@@ -172,6 +176,14 @@ def _resolve_kcu_mass(struc_geometry, config=None, system_config=None):
         )
         cs_struct = kite.get("control_system", {}).get("structure", {})
         if "mass" in cs_struct:
+            if "kcu_mass" in struc_geometry:
+                logging.warning(
+                    "KCU mass defined in both system_config (%.4f kg) and "
+                    "struc_geometry (%.4f kg); using system_config and ignoring "
+                    "struc_geometry. Remove kcu_mass from the structural geometry.",
+                    float(cs_struct["mass"]),
+                    float(struc_geometry["kcu_mass"]),
+                )
             return float(cs_struct["mass"])
 
     if isinstance(config, dict):
@@ -182,6 +194,10 @@ def _resolve_kcu_mass(struc_geometry, config=None, system_config=None):
             return float(config["kcu_mass"])
 
     if "kcu_mass" in struc_geometry:
+        logging.warning(
+            "KCU mass read from struc_geometry.kcu_mass (deprecated); define it in "
+            "system.yaml control_system.structure.mass instead."
+        )
         return float(struc_geometry["kcu_mass"])
 
     logging.warning(

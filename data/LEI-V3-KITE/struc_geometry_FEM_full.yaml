@@ -4,7 +4,7 @@
 bridle_point_node: [0, 0, 0]
 ## Mass':
 pulley_mass: 0.033
-kcu_mass: 8.4
+# KCU mass lives in system.yaml (components.kite.control_system.structure.mass) — single source of truth.
 # properties kite
 pressure: 0.3 #[bar]
 canopy_density: 170 #g/m2

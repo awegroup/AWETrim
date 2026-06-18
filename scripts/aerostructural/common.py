@@ -114,19 +114,27 @@ def resolve_initial_geometry_rotation_kwargs(config: dict) -> dict:
 def build_system_model(
     system_yaml_path: Path,
     tether,
-    mass_wing: float,
+    mass_structural,
     config: dict,
 ) -> SystemModel:
-    """Create a SystemModel from system.yaml, override tether and mass, apply config.
+    """Create a SystemModel from system.yaml, override tether and masses, apply config.
 
     Using ``create_system_model_from_yaml`` ensures the Kite is fully populated
-    from YAML (aero coefficients, KCU mass, etc.) rather than the bare default.
-    The PSS particle mass overrides the YAML wing mass since it is the authoritative
-    value for aerostructural simulations.
+    from YAML (aero coefficients, etc.) rather than the bare default.
+
+    ``mass_structural`` is the per-node structural mass array (``m_arr``) from the
+    PSS/FEM geometry, with the KCU at index 0 by convention. It is authoritative
+    for aerostructural simulations, so the SystemModel masses are derived from it:
+    ``mass_kcu = m_arr[0]`` and ``mass_wing = sum(m_arr[1:])`` (wing + bridle). This
+    keeps the QSM total (``mass_wing + mass_kcu``) equal to ``sum(m_arr)`` and avoids
+    double-counting the KCU — which would happen if a full ``sum(m_arr)`` were stored
+    in ``mass_wing`` while the YAML ``mass_kcu`` were left in place.
     """
     system_model = create_system_model_from_yaml(system_yaml_path)
     system_model.tether = tether
-    system_model.kite.mass_wing = mass_wing
+    m_arr = np.asarray(mass_structural, dtype=float)
+    system_model.kite.mass_kcu = float(m_arr[0])  # KCU is structural node 0
+    system_model.kite.mass_wing = float(m_arr[1:].sum())  # wing + bridle nodes
     configure_system_model_from_config(system_model, config)
     return system_model
 

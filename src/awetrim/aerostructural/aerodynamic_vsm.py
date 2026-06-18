@@ -118,7 +118,11 @@ def _run_vsm_direct_fallback(body_aero, solver, system_model, current_guess):
 
     # Convert AWETrim vectors into the same course-frame convention used by QSM outputs.
     trans = np.asarray(DEFAULT_TRANSFORMATION_C_FROM_VSM, dtype=float)
-    inertial_force = -float(system_model.mass_wing) * np.asarray(
+    # Total kite mass (wing + KCU); mass_wing/mass_kcu live on system_model.kite.
+    mass_total = float(system_model.kite.mass_wing) + float(
+        getattr(system_model.kite, "mass_kcu", 0.0)
+    )
+    inertial_force = -mass_total * np.asarray(
         trans @ np.asarray(system_model.acceleration_course_body, dtype=float),
         dtype=float,
     ).reshape(3)

@@ -118,7 +118,9 @@ def main():
         linktype_arr,
         pulley_line_indices,
         pulley_line_to_other_node_pair_dict,
-    ) = read_struc_geometry_yaml.main(struc_geometry, config=config)
+    ) = read_struc_geometry_yaml.main(
+        struc_geometry, config=config, system_config=system_config
+    )
 
     struc_nodes = rotate_geometry(
         struc_nodes,
@@ -176,9 +178,9 @@ def main():
         diameter=tether_struct["diameter"],
         density=tether_struct.get("density", 970.0),
     )
-    mass_wing = float(np.sum(m_arr))
-    print(f"Total mass of the wing: {mass_wing:.3f} kg")
-    system_model = build_system_model(system_config_path, tether, mass_wing, config)
+    mass_total = float(np.sum(m_arr))
+    print(f"Total structural mass: {mass_total:.3f} kg")
+    system_model = build_system_model(system_config_path, tether, m_arr, config)
 
     ########################################
     ### AEROSTRUCTURAL COUPLED SIMULATION ##

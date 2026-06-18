@@ -133,8 +133,8 @@ Notes
 
 Each kite under `data/<kite_name>/` should include at minimum the following files and folders so scripts and tools can locate inputs automatically:
 
-- `system.yaml` — hardware and system-level configuration (kite mass, KCU, tether properties, winch, mass/inertia). This is the primary source for `SystemModel` properties.
-- `struc_geometry.yaml` — structural geometry describing wing nodes, LE/TE positions, bridle nodes and connectivity, spring/rest-length definitions, pulley info.
+- `system.yaml` — hardware and system-level configuration (kite mass, KCU, tether properties, winch, mass/inertia). This is the primary source for `SystemModel` properties. **KCU mass is the single source of truth here** (`components.kite.control_system.structure.mass`); both the structural KCU node mass and the QSM `mass_kcu` are resolved from it.
+- `struc_geometry.yaml` — structural geometry describing wing nodes, LE/TE positions, bridle nodes and connectivity, spring/rest-length definitions, pulley info. Does **not** carry `kcu_mass` (deprecated; ignored with a warning if present — set it in `system.yaml`).
 - `aero_geometry.yaml` — VSM aerodynamic geometry describing wing sections, paneling, and references to airfoil polars; may reference a subfolder with airfoil `.dat` or polar CSVs.
 - `as_config.yaml` (or `aerostructural_configs/config.yaml`) — aerostructural solver settings (time-step, tolerances, actuation options, initialisation flags).
 - `rom_config.yaml` — reduced-order aerodynamic coefficient definitions (plus ROM tether settings) used by ROM or identification flows.

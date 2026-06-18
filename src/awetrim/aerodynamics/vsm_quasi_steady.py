@@ -126,6 +126,22 @@ def _system_model_mass_wing(system_model: AWETrimSystemModel) -> float:
     raise AttributeError("system_model must expose mass_wing or kite.mass_wing.")
 
 
+def _system_model_mass_total(system_model: AWETrimSystemModel) -> float:
+    """Total kite mass (wing + KCU) for the d'Alembert inertial force.
+
+    The inertial reaction acts on the whole kite, so it must include the KCU
+    mass — matching the gravity force, which already covers wing + KCU. Using
+    only ``mass_wing`` here (which once held the full structural sum but now is
+    wing+bridle only) leaves the KCU out and unbalances the gravity-on trim.
+    """
+    mass_total = _system_model_mass_wing(system_model)
+    if hasattr(system_model, "mass_kcu"):
+        mass_total += float(getattr(system_model, "mass_kcu"))
+    elif hasattr(system_model, "kite") and hasattr(system_model.kite, "mass_kcu"):
+        mass_total += float(system_model.kite.mass_kcu)
+    return mass_total
+
+
 def _set_course_rate_body(
     system_model: AWETrimSystemModel, course_rate_body: float
 ) -> None:
@@ -313,7 +329,7 @@ def solve_vsm_quasi_steady_trim(
         _set_course_rate_body(system_model, course_rate_body)
         system_model.speed_tangential = speed_tangential
 
-        inertial_force = -_system_model_mass_wing(system_model) * _as_3vector(
+        inertial_force = -_system_model_mass_total(system_model) * _as_3vector(
             transformation_c_from_vsm @ _acceleration_course_body(system_model)
         )
         gravity_force = _as_3vector(

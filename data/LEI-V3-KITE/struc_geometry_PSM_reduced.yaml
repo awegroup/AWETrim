@@ -5,7 +5,7 @@ bridle_point_node: [0, 0, 0] #[x,y,z] --> location of kcu
 
 ## Mass
 pulley_mass: !!float 0.09 #[kg] # 0.54 kg measured pulley mass / 6 modeled pulleys
-kcu_mass: !!float 22.75 #[kg]
+# KCU mass lives in system.yaml (components.kite.control_system.structure.mass) — single source of truth.
 
 ## Material properties
 dyneema:

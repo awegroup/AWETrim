@@ -18,8 +18,23 @@ import numpy as np
 import logging
 
 
-def _resolve_kcu_mass(struc_geometry, config=None):
-    """Resolve KCU mass with config override and geometry fallback."""
+def _resolve_kcu_mass(struc_geometry, config=None, system_config=None):
+    """Resolve KCU mass.
+
+    Single source of truth is the system config
+    (``components.kite.control_system.structure.mass``). ``struc_geometry`` must
+    NOT carry a ``kcu_mass`` — it is only honoured as a deprecated fallback.
+
+    Priority: system_config -> config (per-run override) -> struc_geometry.
+    """
+    if isinstance(system_config, dict):
+        kite = system_config.get("components", {}).get(
+            "kite", system_config.get("components", {})
+        )
+        cs_struct = kite.get("control_system", {}).get("structure", {})
+        if "mass" in cs_struct:
+            return float(cs_struct["mass"])
+
     if isinstance(config, dict):
         kcu_cfg = config.get("kcu", {})
         if isinstance(kcu_cfg, dict) and "mass" in kcu_cfg:
@@ -28,10 +43,14 @@ def _resolve_kcu_mass(struc_geometry, config=None):
             return float(config["kcu_mass"])
 
     if "kcu_mass" in struc_geometry:
+        logging.warning(
+            "KCU mass read from struc_geometry.kcu_mass (deprecated); define it in "
+            "system.yaml control_system.structure.mass instead."
+        )
         return float(struc_geometry["kcu_mass"])
 
     logging.warning(
-        "KCU mass not found in config or structural geometry; defaulting to 0.0 kg."
+        "KCU mass not found in system_config, config, or structural geometry; defaulting to 0.0 kg."
     )
     return 0.0
 
@@ -740,13 +759,15 @@ def initialize_bridle_line_system(
     )
 
 
-def main(struc_geometry, config=None):
+def main(struc_geometry, config=None, system_config=None):
 
     ### First append the bridle_point_node, as this node (KCU) should have index 0
     struc_nodes = []
     m_arr = []
     struc_nodes.append(np.array(struc_geometry["bridle_point_node"]))
-    m_arr.append(_resolve_kcu_mass(struc_geometry, config=config))
+    m_arr.append(
+        _resolve_kcu_mass(struc_geometry, config=config, system_config=system_config)
+    )
 
     # initialize element level lists
     kite_connectivity_arr = []

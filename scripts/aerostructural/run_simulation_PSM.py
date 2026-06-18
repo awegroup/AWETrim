@@ -605,9 +605,9 @@ def main():
         diameter=tether_struct["diameter"],
         density=tether_struct.get("density", 970.0),
     )
-    mass_wing = float(np.sum(m_arr))
-    print(f"Total mass of the wing (sum of particle masses): {mass_wing:.3f} kg")
-    system_model = build_system_model(system_config_path, tether, mass_wing, config)
+    mass_total = float(np.sum(m_arr))
+    print(f"Total structural mass (sum of particle masses): {mass_total:.3f} kg")
+    system_model = build_system_model(system_config_path, tether, m_arr, config)
 
     ########################################
     ### AEROSTUCTURAL COUPLED SIMULATION ###
