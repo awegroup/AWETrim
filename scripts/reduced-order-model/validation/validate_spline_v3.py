@@ -13,6 +13,10 @@ from awetrim.utils.config_paths import (
     LEI_V3_SYSTEM_FLOWN_CONFIG,
 )
 from awetrim.environment.Wind import Wind
+from awetrim.identification.controls import (
+    ROM_POWERED_INPUT_DEPOWER,
+    flight_dataframe_depower_to_power_tape_length,
+)
 from awetrim.system.factory import create_system_model_from_yaml
 from awetrim.timeseries.phase import Phase
 
@@ -417,6 +421,7 @@ def simulate_cycle(
         # Spline is fitted on [0, 1]; force the sim grid to match regardless of yaml
         sim_params["start_angle"] = 0.0
         sim_params["end_angle"] = 1.0
+        s_sim = np.linspace(0.0, 1.0, sim_params["n_points"] + 1, endpoint=True)
 
         # Wind: default to EKF-derived profile averaged over ±2.5 s, resampled to sim s-grid
         wind_col = "wind_speed_horizontal"
@@ -435,7 +440,6 @@ def simulate_cycle(
             if not np.isfinite(wind_ref):
                 wind_ref = 0.0
             wind_smooth = np.where(np.isfinite(wind_smooth), wind_smooth, wind_ref)
-            s_sim = np.linspace(0.0, 1.0, sim_params["n_points"] + 1, endpoint=True)
             wind_profile = np.interp(s_sim, s_samples, wind_smooth)
             sim_params["wind_speed_profile"] = wind_profile.tolist()
             wind_ref = float(np.nanmean(wind_profile))
@@ -479,18 +483,21 @@ def simulate_cycle(
         else:
             current_start_state["s_dot"] = 0.1
 
-        if "up" in flight_cycle.columns:
-            u_p_raw = flight_cycle["up"].to_numpy(dtype=float)
-            s_meas = np.linspace(0.0, 1.0, u_p_raw.size, endpoint=True)
-            s_sim = np.linspace(0.0, 1.0, sim_params["n_points"] + 1, endpoint=True)
+        if any(
+            c in flight_cycle.columns for c in ("kcu_actual_depower", "kcu_set_depower")
+        ):
+            u_p_raw = flight_dataframe_depower_to_power_tape_length(flight_cycle)
+            s_meas = np.linspace(0.0, 1.0, len(u_p_raw), endpoint=True)
             u_dep_profile = np.interp(s_sim, s_meas, u_p_raw)
             sim_params["input_depower_profile"] = u_dep_profile.tolist()
             sim_params["input_depower"] = float(u_dep_profile[0])
             print(
-                f"Using depower profile from measurements (resampled to {sim_params['n_points']+1} points)"
+                f"Using physical depower l_dp profile from KCU measurements "
+                f"(resampled to {sim_params['n_points']+1} points)"
             )
         else:
-            sim_params["input_depower"] = 0.0
+            sim_params["input_depower"] = ROM_POWERED_INPUT_DEPOWER
+
         # sim_params["debug_solver"] = True
 
         phase_config = {

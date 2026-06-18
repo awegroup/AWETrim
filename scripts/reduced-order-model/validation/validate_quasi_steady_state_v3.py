@@ -11,6 +11,12 @@ from awetrim.system.tether import (
 from awetrim.system.factory import load_aero_input_from_system_config
 from awetrim.system.williams_tether import WilliamsTether
 from awetrim.environment.Wind import Wind
+from awetrim.identification.controls import (
+    ROM_POWERED_INPUT_DEPOWER,
+    ROM_DEPOWERED_INPUT_DEPOWER,
+    flight_dataframe_depower_to_power_tape_length,
+    flight_dataframe_steering_to_us,
+)
 import casadi as ca
 import time
 import matplotlib.pyplot as plt
@@ -210,10 +216,14 @@ speed_tangential = np.linalg.norm(np.cross(position, velocity), axis=1) / np.max
 azimuth = np.arctan2(results.kite_position_y, results.kite_position_x)
 
 
-# Normalize up between 0 and 1 which now is between 0.08 and 0.8
-flight_data["up"] = (flight_data["up"] - flight_data["up"].min()) / (
-    flight_data["up"].max() - flight_data["up"].min()
+# ROM controls use the physical convention from the 2019 flight:
+#   u_p = absolute power-tape length l_dp [m] (powered ~= 1.7, depowered ~= 2.1)
+#   u_s = -kcu_actual_steering / 100
+# Do not feed the legacy normalised flight_data["up"] / ["us"] columns into the ROM.
+flight_data["input_depower"] = flight_dataframe_depower_to_power_tape_length(
+    flight_data
 )
+flight_data["input_steering_measured"] = flight_dataframe_steering_to_us(flight_data)
 
 course_rate = np.gradient(np.unwrap(flight_data.kite_course), flight_data.time)
 course_rate = gaussian_filter1d(course_rate, sigma=1)
@@ -378,8 +388,9 @@ for cfg, label in zip(aero_cfgs, aero_labels):
             "angle_elevation": row.kite_elevation,
             "speed_friction": uf,
             "timeder_angle_course": course_rate[i],
-            "input_depower": row.up,
+            "input_depower": row.input_depower,
         }
+        qs_guess[1] = row.input_steering_measured
 
         p = np.asarray(
             [current_state[name] for name in kite_model._qs_inputs],
@@ -552,12 +563,17 @@ for cfg, label in zip(aero_cfgs, aero_labels):
 # Print comparison results for both models
 for label, solutions_df in all_solutions.items():
     # --- Create phase masks ---
+    powered_depower_threshold = 0.5 * (
+        ROM_POWERED_INPUT_DEPOWER + ROM_DEPOWERED_INPUT_DEPOWER
+    )
     mask_pow = (
-        (flight_data.up < 0.1)
+        (flight_data.input_depower < powered_depower_threshold)
         & (flight_data.kite_elevation < 0.75)
         & (flight_data.tether_reelout_speed > 0.5)
     )
-    mask_dep = (flight_data.tether_reelout_speed < -0.5) & (flight_data.up > 0.9)
+    mask_dep = (flight_data.tether_reelout_speed < -0.5) & (
+        flight_data.input_depower >= powered_depower_threshold
+    )
     mask_trans = ~(mask_pow | mask_dep)
 
     def compute_cycle_phase_averages():
@@ -810,7 +826,7 @@ for label, solutions_df in all_solutions.items():
     )
 
     mask_pow = (
-        (flight_data.up < 0.1)
+        (flight_data.input_depower < powered_depower_threshold)
         & (flight_data.kite_elevation < 0.75)
         & (flight_data.tether_reelout_speed > 0.5)
     )
@@ -869,7 +885,9 @@ for label, solutions_df in all_solutions.items():
     print("Estimated power KCU reelout: ", total_power, "W")
     print("Measured power reelout: ", measured_power, "W")
 
-    mask_dep = (flight_data.tether_reelout_speed < -0.5) & (flight_data.up > 0.9)
+    mask_dep = (flight_data.tether_reelout_speed < -0.5) & (
+        flight_data.input_depower >= powered_depower_threshold
+    )
     total_power_dep = (
         sum(
             solutions_df["tension_tether_ground"][mask_dep]
@@ -925,9 +943,7 @@ def plot_main_results_comparison(
         if "apparent" in cols:
             print(cols)
     plt.plot(
-        flight_data["kite_apparent_windspeed"]
-        * -flight_data["kcu_actual_steering"]
-        / max(flight_data["kcu_actual_steering"]),
+        flight_data["kite_apparent_windspeed"] * flight_data["input_steering_measured"],
         flight_data["course_rate"],
         ".",
     )
@@ -983,10 +999,10 @@ def plot_main_results_comparison(
     )
     ax5.plot(
         flight_data["time"],
-        -flight_data["kcu_actual_steering"],
+        flight_data["input_steering_measured"],
         color="black",
         linestyle="-.",
-        label="Steering input EKF",
+        label="Steering input EKF $u_s$",
     )
 
     # Plot results for aerodynamic models
@@ -1027,10 +1043,10 @@ def plot_main_results_comparison(
         )
         ax5.plot(
             solutions_df["time"],
-            solutions_df["input_steering"] * (max(flight_data["kcu_actual_steering"])),
+            solutions_df["input_steering"],
             color="blue",
             linestyle="-.",
-            label="Steering input QS",
+            label="Steering input QS $u_s$",
         )
     axs = [ax3, ax4, ax5]
     # Add phase shading to all subplots

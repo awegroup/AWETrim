@@ -12,6 +12,7 @@ from awetrim.system.factory import create_system_model_from_yaml
 from awetrim.kinematics.parametrized_patterns import (
     make_bspline_path_parameters_from_named_curve,
 )
+from awetrim.identification.controls import ROM_POWERED_INPUT_DEPOWER
 from awetrim.utils.config_paths import (
     LEI_V3_DOWNLOOP_SPLINE_CONFIG,
     LEI_V3_SYSTEM_CONFIG,
@@ -79,7 +80,7 @@ if REGENERATE_INITIAL_GUESS:
     REELOUT_CONFIG["sim_parameters"]["end_angle"] = INITIAL_GUESS["s_final"]
 
 REELOUT_CONFIG["sim_parameters"]["n_points"] = 100
-REELOUT_CONFIG["sim_parameters"]["input_depower"] = -0.5
+REELOUT_CONFIG["sim_parameters"]["input_depower"] = ROM_POWERED_INPUT_DEPOWER
 WIND_CONFIG = {
     "speed_wind_at_100": 10,
     "z0": 0.03,
