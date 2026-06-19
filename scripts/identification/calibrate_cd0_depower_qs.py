@@ -66,6 +66,7 @@ POINT_STRIDE = 4  # raise (3, 4, ...) to subsample points and speed up the fit
 # Targets and their weights in the residual (set a weight to 0 to drop it).
 WEIGHT_FORCE = 1.0
 WEIGHT_SPEED = 0.8
+WEIGHT_US = 1.0  # match predicted (solved) steering u_s to the measured u_s
 
 # The two depower DOFs are parametrized so they are ORTHOGONAL in the opti:
 #   apd(l_dp) = apd_powered + (l_dp - l_dp_powered)/l_dp_span * delta_swing
@@ -89,17 +90,26 @@ DELTA_FIXED = -0.13  # swing [rad]; physical powered->depowered (legacy -0.13)
 FIT_CD_US = False
 CD_US_FIXED = 0.0642857
 
+# Steering->roll gain k_steering = d(roll_aero)/d(u_s) = -CS_us. In the QS trim
+# u_s is SOLVED (u_s = required_roll / k_steering), so k_steering is what makes
+# the predicted u_s match the measured u_s -- roll_aero itself is set by the turn
+# kinematics and is invariant to it. Written back to rom_config as CS_us=-k_steer.
+FIT_K_STEER = True
+K_STEER_FIXED = -0.342857  # = -(current CS u_s coef 0.342857)
+
 # Initial guess (current rom_config.yaml values).
 CD0_0 = 0.1130532
 APD_POW_0 = -0.12  # powered apd [rad] at l_dp = 1.7 m (legacy powered pitch)
 DELTA_0 = -0.13  # swing [rad]
 CD_US_0 = 0.0642857
+K_STEER_0 = -0.342857  # roll per unit u_s (= -CS_us)
 
 # Bounds for the fit.
 CD0_BOUNDS = (0.0, 0.40)
 APD_POW_BOUNDS = (-0.5, 0.5)  # powered apd [rad]
 DELTA_BOUNDS = (-0.40, 0.0)  # swing [rad] between powered and depowered apd
 CD_US_BOUNDS = (0.0, 0.5)  # CD += CD_us*|u_s| -> keep >= 0 (steering adds drag)
+K_STEER_BOUNDS = (-1.0, -0.05)  # roll per u_s; CS_us = -k_steering in (0.05, 1.0)
 
 # Penalty residual for a fit point that fails to converge at some parameters.
 FAIL_PENALTY = 2.0
@@ -107,7 +117,7 @@ FAIL_PENALTY = 2.0
 WRITE_BACK = True  # if True, print a ready-to-paste YAML block (no file edit)
 
 # Wind model used by the validator (logarithmic, z0 = 0.1 m).
-WIND_Z0 = 0.1
+WIND_Z0 = 0.03
 
 # QS solve setup (rigid lumped tether path, as in the validator default).
 UNKNOWN_VARS = ["tension_tether_ground", "input_steering", "speed_tangential"]
@@ -238,7 +248,7 @@ def phase_masks(df):
 # ---------------------------------------------------------------------------
 # QS prediction for a given parameter set
 # ---------------------------------------------------------------------------
-def build_kite_model(cd0, apd0, delta, cd_us):
+def build_kite_model(cd0, apd0, delta, cd_us, k_steer):
     with open(LEI_V3_SYSTEM_FLOWN_CONFIG, "r") as f:
         cfg = yaml.safe_load(f)
     aero_input = load_aero_input_from_system_config(
@@ -251,6 +261,10 @@ def build_kite_model(cd0, apd0, delta, cd_us):
     for term in aero_input.get("coefficients", {}).get("CD", []):
         if term.get("var") == "u_s":
             term["coef"] = float(cd_us)
+    # CS u_s coefficient sets the roll gain: kite.py uses k_steering = -CS_us.
+    for term in aero_input.get("coefficients", {}).get("CS", []):
+        if term.get("var") == "u_s":
+            term["coef"] = float(-k_steer)
 
     wing = cfg["components"]["kite"]["wing"]["structure"]
     cs = cfg["components"]["kite"].get("control_system", {}).get("structure", {})
@@ -277,16 +291,17 @@ def build_kite_model(cd0, apd0, delta, cd_us):
 def run_predictions(df, params):
     """Solve the QS trim for every (subsampled) row. Returns predicted force and
     speed arrays aligned to ``df`` (NaN where the trim did not converge)."""
-    cd0, apd_pow, delta_swing, cd_us = params
+    cd0, apd_pow, delta_swing, cd_us, k_steer = params
     # Convert the orthogonal opti params (powered offset + swing) to the ROM's
     # l_dp=0 intercept + per-metre slope.
     coef = delta_swing / L_DP_SPAN
     apd0_intercept = apd_pow - L_DP_POWERED * coef
-    model = build_kite_model(cd0, apd0_intercept, coef, cd_us)
+    model = build_kite_model(cd0, apd0_intercept, coef, cd_us, k_steer)
     qs_inputs = model._qs_inputs
 
     pred_force = np.full(len(df), np.nan)
     pred_speed = np.full(len(df), np.nan)
+    pred_us = np.full(len(df), np.nan)
     guess = np.array([1e5, 0.0, 60.0])
 
     for i in range(0, len(df), POINT_STRIDE):
@@ -319,22 +334,26 @@ def run_predictions(df, params):
         if float(np.linalg.norm(sol["g"])) < ACCEPT_RESIDUAL_NORM:
             x = np.asarray(sol["x"], float).reshape(-1)
             pred_force[i] = x[0]
+            pred_us[i] = x[1]
             pred_speed[i] = x[2]
             guess = x
         else:
             guess = np.array([1e10, row.input_steering_measured, 100.0])
-    return pred_force, pred_speed
+    return pred_force, pred_speed, pred_us
 
 
 # ---------------------------------------------------------------------------
 # Residuals and reporting
 # ---------------------------------------------------------------------------
-def phase_relative_errors(df, masks, pred_force, pred_speed):
-    """Per-phase mean relative error for force and speed (NaN-safe)."""
+def phase_relative_errors(df, masks, pred_force, pred_speed, pred_us):
+    """Per-phase error for force/speed (relative) and u_s (rmse, NaN-safe)."""
     mask_pow, mask_dep = masks
+    us_meas_arr = df.input_steering_measured.to_numpy()
     out = {}
     for name, m in (("powered", mask_pow), ("depowered", mask_dep)):
-        valid = m & np.isfinite(pred_force) & np.isfinite(pred_speed)
+        valid = (
+            m & np.isfinite(pred_force) & np.isfinite(pred_speed) & np.isfinite(pred_us)
+        )
         if valid.sum() < 2:
             out[name] = None
             continue
@@ -350,18 +369,23 @@ def phase_relative_errors(df, masks, pred_force, pred_speed):
             "speed_meas": mv_meas,
             "speed_pred": mv_pred,
             "speed_rel": (mv_pred - mv_meas) / mv_meas if mv_meas else 0.0,
+            "us_meas_absmean": float(np.mean(np.abs(us_meas_arr[valid]))),
+            "us_rmse": float(
+                np.sqrt(np.mean((pred_us[valid] - us_meas_arr[valid]) ** 2))
+            ),
         }
     return out
 
 
 def unpack(x):
-    """Map the optimizer vector to (cd0, apd_powered, delta_swing, cd_us)."""
+    """Map the optimizer vector to (cd0, apd_powered, delta_swing, cd_us, k_steer)."""
     it = iter(x)
     cd0 = next(it)
     apd_pow = next(it)
     delta = next(it) if FIT_DELTA else DELTA_FIXED
     cd_us = next(it) if FIT_CD_US else CD_US_FIXED
-    return (cd0, apd_pow, delta, cd_us)
+    k_steer = next(it) if FIT_K_STEER else K_STEER_FIXED
+    return (cd0, apd_pow, delta, cd_us, k_steer)
 
 
 def pack_x0_bounds():
@@ -377,33 +401,43 @@ def pack_x0_bounds():
         x0.append(CD_US_0)
         lb.append(CD_US_BOUNDS[0])
         ub.append(CD_US_BOUNDS[1])
+    if FIT_K_STEER:
+        x0.append(K_STEER_0)
+        lb.append(K_STEER_BOUNDS[0])
+        ub.append(K_STEER_BOUNDS[1])
     return x0, lb, ub
 
 
 def make_residuals(df, fit_idx):
-    """Per-point relative residual on force and speed over ``fit_idx``.
+    """Per-point residual on force, speed (relative) and u_s (absolute).
 
     Per-point (not phase-mean) so the |u_s| variation across turns/straights
-    makes CD_us identifiable separately from the constant CD0.
+    makes CD_us identifiable separately from the constant CD0. The u_s residual
+    is absolute (u_s crosses zero) and pins k_steering.
     """
     f_meas = df.measured_force.to_numpy()
     v_meas = df.measured_speed.to_numpy()
+    us_meas = df.input_steering_measured.to_numpy()
 
     def residuals(x):
         params = unpack(x)
-        pf, pv = run_predictions(df, params)
+        pf, pv, pus = run_predictions(df, params)
         rF = np.empty(len(fit_idx))
         rV = np.empty(len(fit_idx))
+        rU = np.empty(len(fit_idx))
         for k, i in enumerate(fit_idx):
-            if np.isfinite(pf[i]) and np.isfinite(pv[i]):
+            if np.isfinite(pf[i]) and np.isfinite(pv[i]) and np.isfinite(pus[i]):
                 rF[k] = (pf[i] - f_meas[i]) / f_meas[i] if f_meas[i] else 0.0
                 rV[k] = (pv[i] - v_meas[i]) / v_meas[i] if v_meas[i] else 0.0
+                rU[k] = pus[i] - us_meas[i]
             else:
-                rF[k] = rV[k] = FAIL_PENALTY
-        r = np.concatenate([WEIGHT_FORCE * rF, WEIGHT_SPEED * rV])
+                rF[k] = rV[k] = rU[k] = FAIL_PENALTY
+        r = np.concatenate(
+            [WEIGHT_FORCE * rF, WEIGHT_SPEED * rV, WEIGHT_US * rU]
+        )
         print(
             f"  CD0={params[0]:.5f} apd_pow={params[1]:+.4f} delta_sw={params[2]:+.4f} "
-            f"cd_us={params[3]:.4f} -> rms={np.sqrt(np.mean(r**2)):.4f}"
+            f"cd_us={params[3]:.4f} k_st={params[4]:+.4f} -> rms={np.sqrt(np.mean(r**2)):.4f}"
         )
         return r
 
@@ -411,12 +445,13 @@ def make_residuals(df, fit_idx):
 
 
 def report(df, masks, params, title):
-    pf, pv = run_predictions(df, params)
-    errs = phase_relative_errors(df, masks, pf, pv)
+    pf, pv, pus = run_predictions(df, params)
+    errs = phase_relative_errors(df, masks, pf, pv, pus)
     print(f"\n=== {title} ===")
     print(
         f"  CD0={params[0]:.5f}  apd_pow={params[1]:+.4f}  "
-        f"delta_swing={params[2]:+.4f} rad  cd_us={params[3]:.4f}"
+        f"delta_swing={params[2]:+.4f} rad  cd_us={params[3]:.4f}  "
+        f"k_steer={params[4]:+.4f} (CS_us={-params[4]:.4f})"
     )
     for name in ("powered", "depowered"):
         e = errs[name]
@@ -428,7 +463,8 @@ def report(df, masks, params, title):
             f"F {e['force_pred']:8.0f}/{e['force_meas']:8.0f} N "
             f"({100*e['force_rel']:+5.1f}%) | "
             f"v {e['speed_pred']:5.1f}/{e['speed_meas']:5.1f} m/s "
-            f"({100*e['speed_rel']:+5.1f}%)"
+            f"({100*e['speed_rel']:+5.1f}%) | "
+            f"u_s rmse {e['us_rmse']:.3f} (|u_s|~{e['us_meas_absmean']:.3f})"
         )
     return errs
 
@@ -445,16 +481,27 @@ def main():
         f"powered={mask_pow.sum()} depowered={mask_dep.sum()}"
     )
 
-    x0_full = (CD0_0, APD_POW_0, DELTA_0, CD_US_0)
+    x0_full = (CD0_0, APD_POW_0, DELTA_0, CD_US_0, K_STEER_0)
     report(df, masks, x0_full, "Initial (current rom_config)")
 
     # Fit points: converged at the initial guess and inside a fitted phase.
-    pf0, pv0 = run_predictions(df, x0_full)
-    fit_mask = (mask_pow | mask_dep) & np.isfinite(pf0) & np.isfinite(pv0)
+    pf0, pv0, pus0 = run_predictions(df, x0_full)
+    fit_mask = (
+        (mask_pow | mask_dep)
+        & np.isfinite(pf0)
+        & np.isfinite(pv0)
+        & np.isfinite(pus0)
+    )
     fit_idx = np.where(fit_mask)[0]
+    free = (
+        ["CD0", "apd_pow"]
+        + (["delta"] if FIT_DELTA else [])
+        + (["cd_us"] if FIT_CD_US else [])
+        + (["k_steer"] if FIT_K_STEER else [])
+    )
     print(
-        f"\nFitting per-point (force + speed) on {len(fit_idx)} points "
-        f"[{', '.join(['CD0', 'apd0'] + (['delta'] if FIT_DELTA else []) + (['cd_us'] if FIT_CD_US else []))}]..."
+        f"\nFitting per-point (force + speed + u_s) on {len(fit_idx)} points "
+        f"[{', '.join(free)}]..."
     )
 
     x0, lb, ub = pack_x0_bounds()
@@ -469,9 +516,10 @@ def main():
     fitted = unpack(sol.x)
     report(df, masks, fitted, "Fitted")
 
-    cd0, apd_pow, delta_swing, cd_us = fitted
+    cd0, apd_pow, delta_swing, cd_us, k_steer = fitted
     delta_coef = delta_swing / L_DP_SPAN
     apd0_intercept = apd_pow - L_DP_POWERED * delta_coef
+    cs_us = -k_steer
     print("\nFitted parameters (orthogonal opti vars):")
     print(f"  CD0                   : {cd0:.6f}")
     print(
@@ -481,11 +529,15 @@ def main():
         f"  delta swing (pow->dep): {delta_swing:.6f} rad"
         f"  ({'fitted' if FIT_DELTA else 'fixed'})"
     )
+    print(
+        f"  k_steer (roll/u_s)    : {k_steer:.6f}  ({'fitted' if FIT_K_STEER else 'fixed'})"
+    )
     print("  -> ROM coefficients:")
     print(f"     angle_pitch_depower_0: {apd0_intercept:.6f}  [rad] (l_dp=0 intercept)")
     print(
         f"     delta_pitch_depower  : {delta_coef:.6f}  [rad/m] = swing / {L_DP_SPAN:.2f}"
     )
+    print(f"     CS u_s coef          : {cs_us:.6f}  = -k_steer")
     print(
         f"  CD u_s coef           : {cd_us:.6f}  ({'fitted' if FIT_CD_US else 'fixed'})"
     )
@@ -497,6 +549,8 @@ def main():
         print(f"    delta_pitch_depower: {delta_coef:.6f}")
         print("--- rom_config.yaml  aerodynamics.coefficients.CD: (u_s term) ---")
         print(f"      - var: u_s\n        power: 1\n        coef: {cd_us:.6f}")
+        print("--- rom_config.yaml  aerodynamics.coefficients.CS: (u_s term) ---")
+        print(f"      - var: u_s\n        power: 1\n        coef: {cs_us:.6f}")
 
 
 if __name__ == "__main__":
