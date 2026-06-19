@@ -868,7 +868,17 @@ def main(
         "opt_x": opt_x,
         "aero_roll_deg": float(results_aero.get("aero_roll_deg", np.nan)),
         "aoa_deg": float(results_aero.get("aoa_deg", np.nan)),
+        # Freestream angle of attack atan2(va_z, va_x). This is the value the trim
+        # feeds to va_initialize, so it is the correct centre for a frozen alpha
+        # sweep around this anchor (the center-chord ``aoa_deg`` differs by the
+        # induced angle). Falls back to aoa_deg if the trim did not report it.
+        "aoa_course_deg": float(
+            results_aero.get("aoa_course_deg", results_aero.get("aoa_deg", np.nan))
+        ),
         "side_slip_deg": float(results_aero.get("side_slip_deg", np.nan)),
+        # Apparent-wind magnitude used by the trim (Umag), distinct from the
+        # tangential/kite speed stored in ``va``; the frozen sweep reuses it.
+        "Umag": float(results_aero.get("Umag", va)),
         "va": va,
         "cl": float(cl),
         "cd": float(cd),

@@ -46,6 +46,7 @@ SWEEP_CSV_FIELDNAMES: list[str] = [
     "timeder_speed_tangential",
     "timeder_speed_radial",
     "aoa_deg",
+    "aoa_course_deg",
     "side_slip_deg",
     "aero_roll_deg",
     "cl",
@@ -309,6 +310,9 @@ def build_sweep_csv_row(
             config.get("timeder_speed_radial", config_defaults["timeder_speed_radial"])
         ),
         "aoa_deg": float(meta.get("aoa_deg", np.nan)),
+        "aoa_course_deg": float(
+            meta.get("aoa_course_deg", meta.get("aoa_deg", np.nan))
+        ),
         "side_slip_deg": float(meta.get("side_slip_deg", np.nan)),
         "aero_roll_deg": float(meta.get("aero_roll_deg", np.nan)),
         "cl": float(meta.get("cl", np.nan)),

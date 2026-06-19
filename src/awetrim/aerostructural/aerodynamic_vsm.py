@@ -372,25 +372,48 @@ def run_frozen_geometry_alpha_sweep(
     *,
     va_magnitude: float,
     alpha_values_deg,
+    side_slip_deg: float = 0.0,
+    body_rates: float | np.ndarray = 0.0,
+    body_axis: np.ndarray | None = None,
+    reference_point: np.ndarray | None = None,
 ) -> list[dict]:
     """Direct VSM alpha sweep at a fixed (frozen) deformed geometry.
 
-    For each requested angle of attack the apparent wind is imposed in the VSM
-    body frame as ``va = |va| * (cos alpha, 0, sin alpha)`` — so that
-    ``atan2(va_z, va_x) == alpha`` and ``|va| == va_magnitude`` — and a single
-    ``solver.solve(body_aero)`` is run on the unchanged mesh.  The geometry is
-    *not* re-trimmed, so this isolates the aerodynamic ``C_L(alpha)``,
-    ``C_D(alpha)`` and ``phi_a(alpha)`` response of the deformed shape (used to
-    build the AS identification dataset).
+    For each requested angle of attack the apparent wind is imposed on the frozen
+    mesh *exactly as the quasi-steady trim does it* — through
+    ``body_aero.va_initialize`` with the SAME sideslip, body-rate, body axis and
+    reference point — and a single ``solver.solve(body_aero)`` is run on the
+    unchanged geometry (no re-trim).
+
+    The freestream apparent wind is
+    ``va = |va| * (cos a cos b, sin b, sin a)`` so that ``atan2(va_z, va_x) == a``
+    and the sideslip is ``b``; the rigid-body rate is added as rotational inflow
+    about ``body_axis`` (default ``-radial = (0, 0, -1)``) by the VSM ``va``
+    setter, and ``phi_a`` is the tilt of the total aero force about that
+    freestream apparent wind — matching
+    ``vsm_quasi_steady.solve_vsm_quasi_steady_trim``.
+
+    With the defaults (``side_slip_deg=0``, ``body_rates=0``) the sweep recovers
+    the pure symmetric ``C_L(alpha)`` / ``C_D(alpha)`` / ``phi_a(alpha)`` response.
+    To sweep *around* a turning anchor — so the swept row at the anchor's angle
+    of attack reproduces the anchor state, including its sideslip-driven
+    aerodynamic roll — pass the anchor's ``side_slip_deg`` and ``body_rates``.
 
     Args:
         body_aero: VSM ``BodyAerodynamics`` (already updated to the deformed
-            leading/trailing-edge points); its ``va`` is overwritten per sample.
+            leading/trailing-edge points); its inflow is overwritten per sample.
         solver: VSM ``Solver`` whose ``solve(body_aero)`` returns a results dict
             with wing ``"cl"``/``"cd"`` and a per-panel ``"F_distribution"``.
         va_magnitude: apparent-wind speed magnitude [m/s] held constant over the
             sweep.
         alpha_values_deg: iterable of angles of attack [deg].
+        side_slip_deg: sideslip angle [deg] held constant over the sweep.
+        body_rates: rigid-body rate(s) [rad/s] held constant over the sweep
+            (scalar or per-axis), added as rotational inflow about ``body_axis``.
+        body_axis: rotation axis (or axes) for ``body_rates``; defaults to
+            ``-radial = (0, 0, -1)`` to match the trim.
+        reference_point: reference point r0 for the rotational inflow
+            ``v_rot(r) = omega x (r - r0)``; defaults to the origin.
 
     Returns:
         One dict per requested alpha with keys ``alpha`` [rad], ``cl``, ``cd``,
@@ -403,23 +426,41 @@ def run_frozen_geometry_alpha_sweep(
     # ``plot_aero_forces_with_frames``).
     from awetrim.identification.aero_dataset import aerodynamic_roll
 
-    # In the VSM body frame the radial/lift reference axis is +z (see the alpha
-    # convention above): a force purely along +z then has zero aerodynamic roll.
+    # Lift/side reference axis for the aerodynamic-roll decomposition (the radial
+    # axis, +z): a force purely along +z has zero aerodynamic roll. This is the
+    # lift reference and is distinct from ``body_axis`` (the rigid-body rate axis).
     radial_axis = np.array([0.0, 0.0, 1.0])
+    if body_axis is None:
+        body_axis = -radial_axis
 
+    beta_rad = float(np.radians(side_slip_deg))
     rows: list[dict] = []
     for alpha_deg in np.asarray(alpha_values_deg, dtype=float).ravel():
         alpha_rad = float(np.radians(alpha_deg))
-        va_vec = float(va_magnitude) * np.array(
-            [np.cos(alpha_rad), 0.0, np.sin(alpha_rad)]
+        # Freestream apparent wind (before the per-panel rotational inflow), used
+        # as the aerodynamic-roll reference exactly as the trim does.
+        va_free = float(va_magnitude) * np.array(
+            [
+                np.cos(alpha_rad) * np.cos(beta_rad),
+                np.sin(beta_rad),
+                np.sin(alpha_rad),
+            ]
         )
-        body_aero.va = va_vec
         try:
+            body_aero.va_initialize(
+                Umag=float(va_magnitude),
+                angle_of_attack=float(alpha_deg),
+                side_slip=float(side_slip_deg),
+                body_rates=body_rates,
+                body_axis=body_axis,
+                reference_point=reference_point,
+                rates_in_body_frame=False,
+            )
             results = solver.solve(body_aero)
             cl = float(np.mean(np.asarray(results["cl"], dtype=float)))
             cd = float(np.mean(np.asarray(results["cd"], dtype=float)))
             total_force = np.asarray(results["F_distribution"], dtype=float).sum(axis=0)
-            phi_a = float(aerodynamic_roll(total_force, va_vec, radial_axis))
+            phi_a = float(aerodynamic_roll(total_force, va_free, radial_axis))
             success = True
         except Exception:
             logging.exception(

@@ -276,6 +276,13 @@ def test_coupled_solver_converges(solver_results, steering):
     course_rate = float(opt_x[4])
     assert abs(course_rate) < 5.0, f"implausible course rate {course_rate} rad/s"
 
+    # Frozen alpha-sweep anchoring relies on these: the freestream aoa_course
+    # (sweep centre) and the apparent-wind magnitude Umag (sweep speed).
+    aoa_course = float(meta["aoa_course_deg"])
+    umag = float(meta["Umag"])
+    assert np.isfinite(aoa_course) and abs(aoa_course) < 30.0
+    assert np.isfinite(umag) and 0.0 < umag < 80.0
+
 
 def test_more_steering_gives_more_turn(solver_results):
     """0.2 m steering must produce a larger turn rate than 0.0 m (sign of life).
