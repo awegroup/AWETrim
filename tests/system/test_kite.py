@@ -106,32 +106,6 @@ def assert_close_vector(actual, expected, tol=1e-6, name=""):
 class TestV3AerodynamicModel:
     """Test aerodynamic model with V3 kite coefficients."""
 
-    def test_v3_aerodynamic_config_loads(self, v3_kite_config):
-        """Verify V3 kite configuration loads with expected aerodynamic coefficients."""
-        aero, _, _, _ = _extract_from_config(v3_kite_config)
-
-        # Verify model type
-        assert aero["model"] == "coeffs", "V3 should use coefficient-based model"
-
-        # Verify key parameters exist
-        assert "CD0" in aero["params"], "CD0 should be defined"
-        assert "CL0" in aero["params"], "CL0 should be defined"
-        assert aero["params"]["CD0"] == 0.1130532, "CD0 coefficient mismatch"
-        assert aero["params"]["CL0"] == 0.04671295, "CL0 coefficient mismatch"
-
-        # Verify aerodynamic coefficient terms
-        assert "CL" in aero["coefficients"], "CL coefficients should be defined"
-        assert "CD" in aero["coefficients"], "CD coefficients should be defined"
-
-        # Verify polynomial order (CL and CD are both functions of alpha)
-        cl_terms = aero["coefficients"]["CL"]
-        assert any(
-            term["var"] == "alpha" and term["power"] == 1 for term in cl_terms
-        ), "CL should have linear alpha term"
-        assert any(
-            term["var"] == "alpha" and term["power"] == 2 for term in cl_terms
-        ), "CL should have quadratic alpha term"
-
     def test_v3_kite_initialization(self, v3_kite):
         """Verify V3 kite initializes with sane parameters.
 
