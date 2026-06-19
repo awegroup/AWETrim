@@ -173,26 +173,38 @@ const CONTENT = {
   },
   "operational-optimization": {
     title: "Operational Optimization",
-    text: "Operational optimisation uses the reduced-order model and CasADi Opti (IPOPT) to search for the path and control parameters that maximise performance while satisfying constraints — for example optimal reel-out trajectories for soft kites under varying wind conditions.",
-    bullets: ["CasADi Opti / IPOPT NLP solver", "Path-parameter and control optimisation", "Power-cycle and envelope constraints"],
-    image: "img/placeholder.svg",
-    caption: "Add an optimisation convergence or optimal-trajectory plot.",
+    text: "Public ROM scripts simulate and optimise full pumping cycles. run_cycle_simulation.py stitches a reel-out production loop, a reel-in phase and the transition into one CycleSimple, and with --optimize searches the path and control parameters that maximise cycle power (CasADi Opti / IPOPT) subject to the operational limits. Reel-out patterns — downloop, uploop and helix — and a standalone reel-in optimisation are available as separate entry points.",
+    bullets: [
+      "Full pumping cycle: reel-out → reel-in → transition (run_cycle_simulation.py)",
+      "Reel-out patterns (downloop / uploop / helix) and standalone reel-in",
+      "Cycle-power maximisation over path & control parameters (CasADi Opti / IPOPT)"
+    ],
+    image: "img/pumping-cycle-trajectory.png",
+    caption: "Simulated LEI-V3 pumping cycle: downloop reel-out (blue), reel-in (orange) and transition (green), produced by run_cycle_simulation.py.",
     links: [PAPER_OPT, REPO_AWETRIM]
   },
   "performance-assessment": {
     title: "Performance Assessment",
-    text: "Performance assessment evaluates power production, aerodynamic efficiency and tether loads, and how sensitive these are to model choices and operating conditions across the whole wind window.",
-    bullets: ["Cycle and instantaneous power", "Loads and aerodynamic efficiency", "Sensitivity to wind and configuration"],
-    image: "img/placeholder.svg",
-    caption: "Add power, load, or efficiency plots.",
-    links: [PAPER_OPT]
+    text: "The same cycle and pattern scripts report the per-phase energy balance and net cycle power, and let you study how power and loads vary with wind speed and configuration across the wind window. The ROM validators close the loop against measurements: validate_quasi_steady_state_v3.py compares the quasi-steady force balance to reconstructed flight data, and validate_spline_v3.py fits B-spline patterns to measured trajectories and replays them with the ROM.",
+    bullets: [
+      "Per-phase energy balance and net cycle power",
+      "ROM validation vs flight data (validate_quasi_steady_state_v3.py, validate_spline_v3.py)",
+      "Sensitivity of power and loads to wind and configuration"
+    ],
+    image: "img/cycle-power-breakdown.png",
+    caption: "Pumping-cycle energy balance and net power for the LEI-V3 (10 m/s at 100 m), from the ROM cycle simulation.",
+    links: [PAPER_OPT, PAPER_ROM, REPO_AWETRIM]
   },
   "design-analysis": {
     title: "Design and Model Analysis",
-    text: "Design and model analysis uses the framework to compare configurations, investigate sensitivities, and evaluate how modelling assumptions affect kite performance and stability — including the flight-dynamic modes derived from the aerodynamic stability derivatives.",
-    bullets: ["Configuration comparison", "Model validation against flight data", "Stability and eigen-mode analysis"],
-    image: "img/placeholder.svg",
-    caption: "Add a design comparison or stability plot.",
-    links: [PAPER_AERO, REPO_AWETRIM]
+    text: "Public aerodynamics scripts turn the framework into a design tool. parametric_shapes/generate_shape_variations.py morphs the wing planform — aspect ratio, anhedral, taper, twist — and re-evaluates each variant with VSM, while optimize_lei_airfoil.py tunes the LEI airfoil with the ML regression model. compute_stability_derivatives.py finite-differences the VSM trim to obtain the aerodynamic stability derivatives, then extracts and animates the longitudinal and lateral flight-dynamic eigenmodes.",
+    bullets: [
+      "Parametric wing-planform & LEI-airfoil studies (scripts/aerodynamics/parametric_shapes/)",
+      "Aerodynamic stability derivatives and animated flight-dynamic eigenmodes",
+      "Configuration comparison and model validation against flight data"
+    ],
+    image: "img/3d-wing-design.png",
+    caption: "Parametric wing-planform variations (aspect ratio and anhedral) from generate_shape_variations.py.",
+    links: [PAPER_AERO, PAPER_VSM, REPO_AWETRIM]
   }
 };
