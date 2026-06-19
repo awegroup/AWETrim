@@ -604,3 +604,257 @@ def plot_aerodynamic_forces_chordwise_distributed(
     ax.set_title("Aerodynamic Forces and Structural Nodes")
     ax.legend()
     plt.show()
+
+
+def plot_lei_airfoil(
+    fig_file_path,
+    profile_name,
+    LE_tube_points,
+    P1,
+    P11,
+    P12,
+    LE_points,
+    TE_points,
+    P2,
+    P21,
+    P22,
+    P3,
+    round_TE_points,
+    P4,
+    P5,
+    P51,
+    P52,
+    TE_lower_points,
+    P6,
+    P61,
+    P62,
+    P63,
+    fillet_points,
+    seam_a,
+    show=True,
+):
+    """Plot a parametric LEI airfoil section and its Bezier control polygons.
+
+    The control-point bundle is the output of
+    :func:`awetrim.aerodynamics.parametric_airfoil.LEI_airfoil`. The figure is
+    saved to ``fig_file_path``; set ``show=False`` to suppress the interactive
+    window (e.g. in batch/headless runs).
+    """
+    fig = plt.figure(figsize=(16, 6.5))
+    ax = fig.add_subplot(1, 1, 1)
+    ax.yaxis.grid(color="gray")
+    ax.xaxis.grid(color="gray")
+    ax.set_axisbelow(True)
+
+    line_t = 2
+    control_s = 30
+    line_type = "-"
+    control = True
+    cfd_fillet = False
+
+    # LE tube
+    if cfd_fillet:
+        plt.plot(
+            LE_tube_points[:, 0],
+            LE_tube_points[:, 1],
+            "-o",
+            linewidth=line_t,
+            markersize=0.1,
+            label="circ",
+        )
+
+    # Plot LE full circle
+    eta = np.linspace(0, 2 * np.pi, 100)  # array of LE tube angles
+    radius = -min(LE_tube_points[:, 1])
+    Origin_Circle = [radius, 0]  # origin of the LE tube
+    x_cr = Origin_Circle[0] + radius * np.cos(eta)  # x location of the LE tube points
+    y_cr = Origin_Circle[1] + radius * np.sin(eta)  # y location of the LE tube points
+    circ_full = np.column_stack((x_cr, y_cr))  # 2d array of points [[x1,y1],[xn, yn]]
+    plt.plot(
+        circ_full[:, 0],
+        circ_full[:, 1],
+        "--",
+        linewidth=line_t,
+        markersize=0.1,
+        color="#3776ab",
+        label="Circular tube",
+    )
+
+    # Plot front spline
+    plt.plot(
+        LE_points[:, 0],
+        LE_points[:, 1],
+        line_type,
+        color="#ff7f0e",
+        linewidth=line_t,
+        markersize=0.5,
+        label="Front spline",
+    )
+    if control:
+        control_points = np.array([P1, P11, P12, P2])
+        plt.plot(
+            control_points[:, 0],
+            control_points[:, 1],
+            "--",
+            linewidth=line_t,
+            color="gray",
+        )
+        plt.scatter(
+            control_points[:, 0],
+            control_points[:, 1],
+            color="#ff7f0e",
+            s=control_s,
+            label="Control front",
+        )
+
+    # Plot Rear spline
+    plt.plot(
+        TE_points[:, 0],
+        TE_points[:, 1],
+        line_type,
+        color="#2CA02C",
+        linewidth=line_t,
+        markersize=0.5,
+        label="Rear spline",
+    )
+    if control:
+        control_points = np.array([P2, P21, P22, P3])
+        plt.plot(
+            control_points[:, 0],
+            control_points[:, 1],
+            "--",
+            linewidth=line_t,
+            color="gray",
+        )
+        plt.scatter(
+            control_points[:, 0],
+            control_points[:, 1],
+            color="#2CA02C",
+            s=control_s,
+            label="Control rear",
+        )
+
+    # Plot LE fillet
+    if cfd_fillet:
+        plt.plot(
+            fillet_points[:, 0],
+            fillet_points[:, 1],
+            line_type,
+            color="#D62728",
+            linewidth=line_t,
+            markersize=0.5,
+            label="LE fillet",
+        )
+        if control:
+            control_points = np.array([P6, P61, P62, P63])
+            plt.plot(
+                control_points[:, 0],
+                control_points[:, 1],
+                "--",
+                linewidth=line_t,
+                color="gray",
+            )
+            plt.scatter(
+                control_points[:, 0],
+                control_points[:, 1],
+                color="#D62728",
+                s=control_s,
+                label="Control LE fillet",
+            )
+
+    # Plot rear lower spline
+    if cfd_fillet:
+        plt.plot(
+            TE_lower_points[:, 0],
+            TE_lower_points[:, 1],
+            line_type,
+            color="teal",
+            linewidth=line_t,
+            markersize=0.5,
+            label="TE lower",
+        )
+        if control:
+            control_points = np.array([P5, P51, P52, P4])
+            plt.plot(
+                control_points[:, 0],
+                control_points[:, 1],
+                "--",
+                linewidth=line_t,
+                color="gray",
+            )
+            plt.scatter(
+                control_points[:, 0],
+                control_points[:, 1],
+                color="teal",
+                s=control_s,
+                label="Control TE lower",
+            )
+
+    # Plot round TE
+    if cfd_fillet:
+        plt.plot(
+            round_TE_points[:, 0],
+            round_TE_points[:, 1],
+            "-",
+            markersize=0.5,
+            color="k",
+            label="Round TE",
+        )
+
+    plt.scatter(
+        Origin_Circle[0],
+        Origin_Circle[1],
+        marker="*",
+        color="b",
+        s=control_s,
+        label="LE tube centre",
+    )
+    plt.scatter(
+        TE_points[-1, 0],
+        TE_points[-1, 1],
+        marker="*",
+        color="r",
+        s=control_s,
+        label="TE position",
+    )
+    plt.scatter(
+        LE_points[0, 0],
+        LE_points[0, 1],
+        marker="*",
+        color="g",
+        s=control_s,
+        label="Tube-canopy intersection",
+    )
+    plt.scatter(
+        LE_points[-1, 0],
+        LE_points[-1, 1],
+        marker="*",
+        color="k",
+        s=control_s,
+        label="Max. camber position",
+    )
+
+    # Reflex angle for legend
+    plt.scatter(
+        [0.5], [-2], marker="$r$", color="k", s=control_s - 10, label="Reflex angle"
+    )
+
+    max_y = max(LE_points[:, 1])
+    min_y = min(LE_tube_points[:, 1])
+
+    plt.xlabel("x/c [-]")
+    plt.ylabel("y/c [-]")
+    plt.xticks(np.arange(0, 1.05, 0.1))
+    plt.yticks(
+        np.arange(
+            np.ceil(1.5 * min_y / 0.05) * 0.05, np.ceil(1.2 * max_y / 0.05) * 0.05, 0.05
+        )
+    )
+    plt.axis("equal")
+    plt.xlim([0, 1.05])
+    plt.ylim([1.5 * min_y, 1.2 * max_y])
+
+    plt.title(profile_name, fontsize=16, pad=5)
+    plt.savefig(fig_file_path, format="png", dpi=200)  # Saving figure to results
+    if show:
+        plt.show()

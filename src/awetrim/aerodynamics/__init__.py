@@ -16,6 +16,17 @@
 
 """Aerodynamic analysis interfaces for AWETrim."""
 
+from awetrim.aerodynamics.parametric_airfoil import (
+    LEI_airfoil,
+    generate_profile,
+    reading_profile_from_airfoil_dat_files,
+    save_profile_as_dat_file,
+)
+from awetrim.aerodynamics.parametric_geometry import (
+    WingSections,
+    morph_wing,
+    morph_wing_to,
+)
 from awetrim.aerodynamics.vsm_adapter import VSMAeroModelAdapter
 from awetrim.aerodynamics.vsm_quasi_steady import (
     DEFAULT_AXES,
@@ -31,6 +42,13 @@ from awetrim.aerodynamics.vsm_quasi_steady import (
 
 __all__ = [
     "VSMAeroModelAdapter",
+    "WingSections",
+    "morph_wing",
+    "morph_wing_to",
+    "LEI_airfoil",
+    "generate_profile",
+    "reading_profile_from_airfoil_dat_files",
+    "save_profile_as_dat_file",
     "DEFAULT_AXES",
     "DEFAULT_BOUNDS_LOWER",
     "DEFAULT_BOUNDS_UPPER",

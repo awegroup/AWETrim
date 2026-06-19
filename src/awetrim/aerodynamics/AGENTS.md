@@ -34,7 +34,47 @@ src/awetrim/aerodynamics/
   AGENTS.md
   protocols.py
   vsm_quasi_steady.py
+  vsm_adapter.py
+  parametric_geometry.py
+  parametric_airfoil.py
 ```
+
+`parametric_airfoil.py` owns a dependency-light (numpy only, **no VSM/CasADi**)
+parametric **2D airfoil-section** generator — the section-level counterpart to
+the 3D-planform `parametric_geometry.py`. It builds a closed LEI kite profile
+from cubic Bezier curves controlled by six design parameters (tube size, max
+camber position/height, TE reflex, camber tension, LE tension), following the
+Masure regression parametrisation. Public API:
+
+- `LEI_airfoil` — low-level constructor returning the full bundle of curves,
+  control points and curvature arrays.
+- `generate_profile` — high-level wrapper returning `(all_points, profile_name,
+  seam_a)` for a closed contour.
+- `save_profile_as_dat_file` / `reading_profile_from_airfoil_dat_files` — `.dat`
+  write/read round-trip.
+
+Section plotting lives in `awetrim.plotting.plotting.plot_lei_airfoil` (pass
+`show=False` for headless runs), keeping this module pure geometry.
+
+`parametric_geometry.py` owns a dependency-light (numpy + yaml, **no VSM/CasADi**)
+parametric 3D wing-planform representation. It reads/writes the same
+`wing_sections` table that `vsm_adapter.py` consumes, so generated geometries
+drop straight into the VSM trim/sweep path. Public API:
+
+- `WingSections` — QC-anchored full-wing planform with `from_aero_geometry` /
+  `from_yaml` / `to_aero_geometry` / `to_yaml` and planform metrics
+  (`aspect_ratio`, `anhedral_angle_deg`, `taper_ratio`, `tip_twist_deg`, `area`,
+  `projected_span`, `flat_span`, `mean_chord`).
+- `morph_wing` — direct QC-anchored morph by `span_scale`, `chord_scale`,
+  `anhedral_scale`, `taper_ratio` (area-preserving), `twist_deg`.
+- `morph_wing_to` — solve scales to hit `target_aspect_ratio` /
+  `target_anhedral_deg` (area-preserving by default), plus decoupled
+  `taper_ratio` / `twist_deg`. Taper and twist are independent of aspect ratio
+  and anhedral.
+
+Area/span conventions are documented in the module docstring (flat/developed
+area, flat aspect ratio). Inspired by the QC-anchored shape-variation generator
+in `jellepoland/WES_aero_sim_for_kite_design`.
 
 If the implementation grows, split internal helpers into:
 
@@ -62,6 +102,25 @@ Case-specific scripts may live one level deeper, for example:
 ```text
 scripts/aerodynamics/vsm_quasi_steady/tudelft_v3/
 ```
+
+Parametric shape scripts (built on `parametric_geometry.py` for 3D planforms and
+`parametric_airfoil.py` for 2D sections) live in:
+
+```text
+scripts/aerodynamics/parametric_shapes/
+  generate_shape_variations.py
+  optimize_lei_airfoil.py
+```
+
+`generate_shape_variations.py` sweeps four planform DOFs (aspect ratio,
+anhedral, taper, twist) from a baseline `aero_geometry.yaml`, writes one morphed
+variant per case, and by default evaluates each with VSM and draws shape + aero
+comparison figures coloured by swept parameter. The default sweep is one factor
+at a time (OAT); `--factorial` does the full grid; `--no-run-vsm` skips VSM.
+
+`optimize_lei_airfoil.py` optimises the six `parametric_airfoil.py` section DOFs
+(differential evolution) to maximise `max_alpha(CL^3 / CD^2)`, evaluating
+candidate `.dat` profiles with the VSM `AirfoilAerodynamics` regression model.
 
 Use snake_case Python filenames. Do not use hyphenated script names for new
 scripts.
