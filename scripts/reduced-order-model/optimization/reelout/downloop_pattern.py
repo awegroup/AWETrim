@@ -52,7 +52,7 @@ RESULTS_DIR = (
 # equivalent of running generate_spline_config.py before this script.
 REGENERATE_INITIAL_GUESS = True
 INITIAL_GUESS = {
-    "curve_type": "lemniscate",  # "lissajous" or "lemniscate" (smoother eight)
+    "curve_type": "lissajous",  # "lissajous" or "lemniscate" (smoother eight)
     "M": 10,
     "n_fit": 400,
     "s_init": 0.0,
@@ -80,7 +80,7 @@ if REGENERATE_INITIAL_GUESS:
     REELOUT_CONFIG["sim_parameters"]["end_angle"] = INITIAL_GUESS["s_final"]
 
 REELOUT_CONFIG["sim_parameters"]["n_points"] = 100
-REELOUT_CONFIG["sim_parameters"]["input_depower"] = ROM_POWERED_INPUT_DEPOWER
+REELOUT_CONFIG["sim_parameters"]["input_depower"] = 1.5
 WIND_CONFIG = {
     "speed_wind_at_100": 10,
     "z0": 0.03,

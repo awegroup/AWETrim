@@ -182,8 +182,8 @@ results, flight_data, config_data = read_results(
 print(max(flight_data.cycle))
 # mask = (flight_data.cycle>10)&(flight_data.cycle<70)
 mask = flight_data.cycle.isin(range(10, 120))
-# mask = flight_data.cycle.isin(range(64, 68))
-mask = flight_data.cycle == 65
+mask = flight_data.cycle.isin(range(60, 68))
+mask = flight_data.cycle == 64
 # mask = mask & (flight_data.kite_elevation < 0.75)
 flight_data = flight_data[mask]
 results = results[mask]

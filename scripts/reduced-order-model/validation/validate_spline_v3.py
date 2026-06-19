@@ -863,7 +863,7 @@ def main():
     year, month, day = "2019", "10", "08"
     kite_model = "LEI-V3-Kite"
     path_to_main = "./data/LEI-V3-KITE"
-    cycle_id = 65  # set to an int to run a single cycle, None to run all detected
+    cycle_id = 62  # set to an int to run a single cycle, None to run all detected
     downloop_cfg_path = str(LEI_V3_DOWNLOOP_SPLINE_CONFIG)
 
     # Discretization level selector: choose one of ["coarse", "medium", "fine"]
