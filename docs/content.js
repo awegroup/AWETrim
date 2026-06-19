@@ -34,6 +34,7 @@ const REPO_FEM = { label: "kite_fem (FEM structure)", url: "https://github.com/a
 const REPO_EKF = { label: "EKF-AWE repository", url: "https://github.com/ocayon/EKF-AWE" };
 const REPO_KITE = { label: "TU Delft LEI-V3 kite", url: "https://github.com/awegroup/TUDELFT_V3_KITE" };
 const REPO_ML = { label: "LEI airfoil ML models (Zenodo)", url: "https://doi.org/10.5281/zenodo.16925759" };
+const REPO_AWESIO = { label: "awesIO standard", url: "https://github.com/awegroup/awesIO" };
 
 // Open flight-data sets (newest first).
 const DATA_20251009 = { label: "Dataset · Flight test 9 Oct 2025", url: "https://github.com/awegroup/Flightdata09102025" };
@@ -85,11 +86,11 @@ const CONTENT = {
   },
   "system-kite": {
     title: "System / Kite Characteristics",
-    text: "The system definition holds the geometry and hardware properties of the kite, tether, KCU and winch. The examples use the TU Delft LEI-V3 leading-edge inflatable kite, described by system.yaml, aero_geometry.yaml and struc_geometry.yaml under data/LEI-V3-KITE/.",
-    bullets: ["Mass, inertia and geometry", "VSM aero and PSS structural configuration files", "Tether, KCU and winch parameters"],
-    image: "img/placeholder.svg",
-    caption: "Add a kite geometry rendering or a parameter table.",
-    links: [REPO_KITE, REPO_AWETRIM]
+    text: "The system definition holds the geometry and hardware properties of the kite, tether, KCU and winch, following the open awesIO standard schema so a single system.yaml describes the whole system in an interoperable, validated format. The examples use the TU Delft LEI-V3 leading-edge inflatable kite, described by system.yaml (awesIO format), aero_geometry.yaml and struc_geometry.yaml under data/LEI-V3-KITE/.",
+    bullets: ["Defined with the awesIO standard schema (system.yaml)", "Mass, inertia and geometry", "VSM aero and PSS structural configuration files", "Tether, KCU and winch parameters"],
+    image: "img/awesio-logo.svg",
+    caption: "System and kite characteristics follow the awesIO open standard.",
+    links: [REPO_KITE, REPO_AWESIO, REPO_AWETRIM]
   },
   "environmental-conditions": {
     title: "Environmental Conditions",
