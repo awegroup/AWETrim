@@ -1067,7 +1067,9 @@ class PhaseParameterized(TimeSeries):
                             sol["x"], p_solver
                         )
                     else:
-                        tension_ground = self.winch_model.tension_curve(speed_radial)
+                        tension_ground = self.winch_model.tension_curve(
+                            speed_radial, input_depower=float(x[2])
+                        )
                     curr_state = State(
                         t=t,
                         s=float(x[0]),
@@ -1109,7 +1111,7 @@ class PhaseParameterized(TimeSeries):
                         )
                     else:
                         tension_ground = self.winch_model.tension_curve(
-                            speed_radial_dyn
+                            speed_radial_dyn, input_depower=float(x[3])
                         )
                     curr_state = State(
                         t=t,
@@ -1280,7 +1282,9 @@ class PhaseParameterized(TimeSeries):
                 s_dot=float(sol_init["x"][1]),
                 input_steering=float(sol_init["x"][0]),
                 tension_tether_ground=float(
-                    self.winch_model.tension_curve(speed_radial_init)
+                    self.winch_model.tension_curve(
+                        speed_radial_init, input_depower=float(p_init[2])
+                    )
                 ),
                 distance_radial=float(p_init[1]),
                 speed_radial=speed_radial_init,
@@ -1368,6 +1372,13 @@ class PhaseParameterized(TimeSeries):
         # system.yaml. Use ``limits`` (not DEFAULT_OPTI_LIMITS) for every bound
         # below so the hardware values take precedence.
         limits = self._resolve_opti_limits()
+        # Per-config bound overrides: ``sim_parameters["opti_limits_override"]`` is
+        # a {name: [lb, ub]} map applied on top of the resolved limits. Lets a
+        # specific run widen a bound (e.g. C_beta for a full-cycle periodic spline
+        # whose reel-in elevation exceeds the default coefficient range) without
+        # editing the global DEFAULT_OPTI_LIMITS.
+        for _name, _bounds in (sim_params.get("opti_limits_override") or {}).items():
+            limits[_name] = tuple(_bounds)
 
         pattern = create_pattern_from_dict(
             self.pattern_config_opti["pattern_type"], path_params
@@ -1466,16 +1477,37 @@ class PhaseParameterized(TimeSeries):
                     print(f"  - Above upper bound ({ub}): max value = {max_val}")
 
         # --- Warm starts from simulation (with bound checking)
+        # The per-node decisions are length N. The warm-start simulation can be
+        # SHORTER than N when a node fails to converge and the QS march breaks
+        # early (e.g. the stiff reel-out/reel-in transition of a full-cycle
+        # spline). Pad each seed up to N by repeating the last converged value so
+        # ``set_initial`` never dimension-mismatches; IPOPT refines the tail.
+        def _fit_len(values, n):
+            arr = np.asarray(values, dtype=float).ravel()
+            if arr.size == 0:
+                return np.zeros(n)
+            if arr.size >= n:
+                return arr[:n]
+            print(
+                f"Warm start has {arr.size} nodes < {n}; padding the tail with the "
+                "last converged value (forward sim truncated at a failed node)."
+            )
+            return np.concatenate([arr, np.full(n - arr.size, arr[-1])])
+
         warm_starts = {
-            "s_dot": self.return_variable("s_dot"),
-            "input_steering": self.return_variable("input_steering"),
-            "speed_radial": self.return_variable("speed_radial"),
-            "distance_radial": self.return_variable("distance_radial"),
-            "tension_tether_ground": self.return_variable("tension_tether_ground"),
+            "s_dot": _fit_len(self.return_variable("s_dot"), N),
+            "input_steering": _fit_len(self.return_variable("input_steering"), N),
+            "speed_radial": _fit_len(self.return_variable("speed_radial"), N),
+            "distance_radial": _fit_len(self.return_variable("distance_radial"), N),
+            "tension_tether_ground": _fit_len(
+                self.return_variable("tension_tether_ground"), N
+            ),
         }
         if optimize_depower_profile:
             # Seed from the (constant) depower used in the warm-start simulation.
-            warm_starts["input_depower"] = self.return_variable("input_depower")
+            warm_starts["input_depower"] = _fit_len(
+                self.return_variable("input_depower"), N
+            )
 
         # set_initial needs the raw decision variable; tension and radius are
         # exposed as scaled expressions, so seed the underlying scaled variables
@@ -1497,6 +1529,15 @@ class PhaseParameterized(TimeSeries):
 
         # # Fix initial radius (constrain the scaled decision so the row stays O(1))
         opti.subject_to(distance_scaled[0] == state_obj.distance_radial / R_SCALE)
+
+        # Optional radial-cycle closure: tie the final radius back to the initial
+        # one so a single periodic phase represents a *closed* pumping cycle (net
+        # zero tether-length change over the period). Off by default -- a
+        # stand-alone reel-out phase ends at a larger radius by design -- and
+        # enabled via sim_parameters["close_radial_cycle"] for the full-cycle
+        # spline. Constrain the scaled decisions so the row stays O(1).
+        if bool(sim_params.get("close_radial_cycle", False)):
+            opti.subject_to(distance_scaled[-1] == distance_scaled[0])
 
         # --- Build model functions
         km_copy.establish_residual()
@@ -1647,8 +1688,17 @@ class PhaseParameterized(TimeSeries):
             if optimize_depower_profile:
                 node_syms = list(flat_syms)
                 node_syms[-1] = opti_vars["input_depower"][i]
+                node_depower = opti_vars["input_depower"][i]
             else:
                 node_syms = flat_syms
+                # Scalar-optimized depower lives on the model symbol; a fixed
+                # depower is the numeric sim value. Either way this feeds the
+                # depower-dependent winch offset (Winch.tension_curve).
+                node_depower = (
+                    km_copy.input_depower
+                    if "input_depower" in opti_params
+                    else sim_params["input_depower"]
+                )
 
             # Model tension at node i
             T_i = tether_tension_eq(
@@ -1660,7 +1710,9 @@ class PhaseParameterized(TimeSeries):
                 opti_vars["tension_tether_ground"][i],
                 *node_syms,
             )
-            T_model = winch_model.tension_curve(opti_vars["speed_radial"][i])
+            T_model = winch_model.tension_curve(
+                opti_vars["speed_radial"][i], input_depower=node_depower
+            )
 
             # Scale the tether law residual
             opti.subject_to((T_i - T_model) / S["T"] == 0)
@@ -1978,6 +2030,7 @@ class PhaseParameterized(TimeSeries):
             self.winch_model.radial_equation(
                 tension_tether_ground=kite_model.tension_tether_ground,
                 speed_radial=kite_model.speed_radial,
+                input_depower=kite_model.input_depower,
             ),
         )
         z = ca.vertcat(z, kite_model.speed_radial)
@@ -2140,6 +2193,7 @@ class PhaseParameterized(TimeSeries):
                     self.winch_model.radial_equation(
                         tension_tether_ground=tension_ground,
                         speed_radial=km_copy.speed_radial,
+                        input_depower=km_copy.input_depower,
                     )
                     / williams_force_scale,
                 )
@@ -2165,12 +2219,14 @@ class PhaseParameterized(TimeSeries):
                     self.winch_model.radial_equation(
                         tension_tether_ground=tension_ground,
                         speed_radial=km_copy.speed_radial,
+                        input_depower=km_copy.input_depower,
                     )
                     / williams_force_scale
                     if use_williams
                     else self.winch_model.radial_equation(
                         tension_tether_ground=tension_ground,
                         speed_radial=km_copy.speed_radial,
+                        input_depower=km_copy.input_depower,
                     )
                 ),
                 # km_copy.speed_radial,

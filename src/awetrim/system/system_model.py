@@ -378,6 +378,7 @@ class SystemModel(KiteKinematics):
                 winch.radial_equation(
                     speed_radial=self.speed_radial,
                     tension_tether_ground=self.tension_tether_ground,
+                    input_depower=self.input_depower,
                 ),
             )
 

@@ -142,6 +142,67 @@ class TestTensionCurveQuadratic:
 # ============================================================================
 
 
+class TestTensionCurveDepowerOffset:
+    """Depower-dependent offset: offset(l_dp) = offset0 + gain*(l_dp - ref)."""
+
+    def test_no_gain_key_ignores_depower(self):
+        # Backward compatible: without the gain key the depower arg has no effect.
+        winch = Winch(pattern_config=_linear_config(offset_winch_force=2.0))
+        base = float(winch.tension_curve(5.0))
+        assert float(winch.tension_curve(5.0, input_depower=2.1)) == pytest.approx(
+            base
+        )
+
+    def test_offset_unchanged_at_reference_depower(self):
+        winch = Winch(
+            pattern_config=_linear_config(
+                offset_winch_force=2.0,
+                winch_offset_depower_gain=-3.0,
+                winch_depower_ref=1.7,
+            )
+        )
+        # At l_dp == ref the shift is zero: 1000 * (5 - 2) = 3000.
+        assert float(winch.tension_curve(5.0, input_depower=1.7)) == pytest.approx(
+            3000.0
+        )
+
+    def test_negative_gain_shifts_offset_down_when_depowered(self):
+        winch = Winch(
+            pattern_config=_linear_config(
+                offset_winch_force=2.0,
+                winch_offset_depower_gain=-3.0,
+                winch_depower_ref=1.7,
+            )
+        )
+        # offset(2.1) = 2.0 + (-3.0)*(2.1 - 1.7) = 0.8 -> 1000 * (5 - 0.8) = 4200.
+        assert float(winch.tension_curve(5.0, input_depower=2.1)) == pytest.approx(
+            4200.0
+        )
+
+    def test_gain_key_not_mistaken_for_base_offset(self):
+        # The gain key must not be picked up by the offset_winch_* discovery loop.
+        winch = Winch(
+            pattern_config=_linear_config(
+                winch_offset_depower_gain=-3.0, winch_depower_ref=1.7
+            )
+        )
+        # No offset_winch_* key -> base offset is 0; at ref depower T = 1000*5.
+        assert float(winch.tension_curve(5.0, input_depower=1.7)) == pytest.approx(
+            5000.0
+        )
+
+    def test_symbolic_depower_returns_mx(self):
+        winch = Winch(
+            pattern_config=_linear_config(
+                winch_offset_depower_gain=-3.0, winch_depower_ref=1.7
+            )
+        )
+        l_dp = ca.MX.sym("l_dp")
+        expr = winch.tension_curve(5.0, input_depower=l_dp)
+        assert isinstance(expr, ca.MX)
+        assert expr.shape == (1, 1)
+
+
 class TestTensionCurveSymbolic:
     """Symbolic v_r produces a CasADi MX scalar expression."""
 

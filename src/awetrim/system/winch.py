@@ -30,7 +30,7 @@ class Winch:
 
         self.pattern_config = pattern_config
 
-    def tension_curve(self, speed_radial):
+    def tension_curve(self, speed_radial, input_depower=None):
         """Nominal tether force model as a CasADi function f(v_r).
 
         Uses `pattern_config` to choose the shape and optional smoothing:
@@ -39,6 +39,18 @@ class Winch:
         - min_tether_force: optional (N, default 0)
         - softplus / softminus: optional boolean flags
         - softplus_beta / softminus_beta: optional sharpness parameters
+
+        Depower-dependent offset (the key to flying a full pumping cycle as a
+        single phase): the winch's zero-force reeling speed ``offset`` is shifted
+        by ``winch_offset_depower_gain * (input_depower - winch_depower_ref)``.
+        A single force law then spans both reel-out (powered, low ``l_dp``) and
+        reel-in (depowered, high ``l_dp``): with a negative gain the offset moves
+        down as the kite is depowered, so the same balance that held high tension
+        during reel-out yields a negative reeling speed during reel-in. The shift
+        is identity (legacy behaviour) unless ``winch_offset_depower_gain`` is set
+        in ``pattern_config`` AND ``input_depower`` is supplied. The config keys
+        deliberately avoid the ``offset_winch_`` / ``slope_winch_`` prefixes so
+        they are not mistaken for the base offset/slope below.
         """
 
         model = self.pattern_config.get("force_model", "quadratic")
@@ -73,6 +85,14 @@ class Winch:
 
             # Use found offset or default to 0
             offset = 0 if offset is None else offset
+
+            # Depower-dependent shift of the zero-force reeling speed. Lets one
+            # force law cover reel-out and reel-in within a single phase (see
+            # docstring). gain < 0 -> reel-in as l_dp grows.
+            gain = self.pattern_config.get("winch_offset_depower_gain", None)
+            if gain is not None and input_depower is not None:
+                dep_ref = self.pattern_config.get("winch_depower_ref", 0.0)
+                offset = offset + gain * (input_depower - dep_ref)
 
             if model == "linear":
                 T = slope * (speed_radial - offset)
@@ -111,12 +131,17 @@ class Winch:
 
         return T
 
-    def radial_equation(self, speed_radial=None, tension_tether_ground=None):
+    def radial_equation(
+        self, speed_radial=None, tension_tether_ground=None, input_depower=None
+    ):
         """Algebraic equation for radial dynamics when using force control.
 
         Args:
             self: Winch object
             kite_model: Kite object
+            input_depower: optional depower input forwarded to
+                :meth:`tension_curve` so the force law's offset can depend on the
+                depower setting (see that method).
         Returns:
             radial_equation: Algebraic equation for radial dynamics
         """
@@ -127,7 +152,9 @@ class Winch:
                     "speed_radial and tension_tether_ground must be provided for force control"
                 )
             # Use the unified tension_curve property
-            tension_curve_val = self.tension_curve(speed_radial)
+            tension_curve_val = self.tension_curve(
+                speed_radial, input_depower=input_depower
+            )
             radial_force_law = tension_tether_ground - tension_curve_val
         elif self.pattern_config["reeling_strategy"] == "constant":
             radial_force_law = speed_radial - self.pattern_config["reeling_speed"]
