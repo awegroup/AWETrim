@@ -151,3 +151,53 @@ def test_spline_phase_runs_quasi_steady(curve_type):
     # Tether stays in tension and the kite stays above the horizon.
     assert np.all(phase.return_variable("tension_tether_ground") > 0.0)
     assert np.all(phase.return_variable("angle_elevation") > 0.0)
+
+
+# --- slow: per-node depower-profile optimization ---------------------------
+
+
+@pytest.mark.slow
+def test_depower_profile_builds_per_node_decision():
+    """With ``optimize_depower_profile``, ``opti_phase`` exposes the depower
+    input as one decision per s-node (like ``input_steering``) instead of a
+    scalar, and the per-node NLP assembles without error."""
+    import casadi as ca
+
+    from awetrim.timeseries.phase_parametrized import PhaseParameterized
+
+    n_points = 20
+    config = _reelout_config("lissajous", n_points=n_points)
+    config["sim_parameters"]["input_depower"] = 1.6
+    config["sim_parameters"]["optimize_depower_profile"] = True
+    config["sim_parameters"]["depower_rate"] = (-0.2, 0.2)
+    system_model = _v3_system_model()
+
+    start_state = {
+        "t": 0.0,
+        "s": _S_INIT,
+        "s_dot": 3.0,
+        "input_steering": 0.0,
+        "tension_tether_ground": 8.4e4,
+        "speed_radial": 0.0,
+        "distance_radial": config["path_parameters"]["r0"],
+    }
+
+    phase = PhaseParameterized(system_model, quasi_steady=True, pattern_config=config)
+    opti, opti_vars, _ = phase.opti_phase(start_state=start_state, opti_params={})
+
+    # Depower is now a per-node trajectory decision, not a scalar.
+    assert "input_depower" in opti_vars
+    depower = opti_vars["input_depower"]
+    assert isinstance(depower, ca.MX)
+    assert depower.shape == (n_points, 1)
+
+    # Without the flag, no per-node depower variable is created (scalar path).
+    config_scalar = _reelout_config("lissajous", n_points=n_points)
+    config_scalar["sim_parameters"]["input_depower"] = 1.6
+    phase_scalar = PhaseParameterized(
+        system_model, quasi_steady=True, pattern_config=config_scalar
+    )
+    _, opti_vars_scalar, _ = phase_scalar.opti_phase(
+        start_state=start_state, opti_params={}
+    )
+    assert "input_depower" not in opti_vars_scalar

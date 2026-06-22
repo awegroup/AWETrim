@@ -21,16 +21,13 @@ single reel-out pattern (downloop, uploop, helix, ...) for airborne wind
 energy systems.
 """
 
-from tracemalloc import start
 from typing import Dict, Any, List, Optional, Union
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 import copy
-import warnings
 import casadi as ca
 import numpy as np
 import yaml
-import matplotlib.pyplot as plt
 
 from awetrim.timeseries.phase_parametrized import PhaseParameterized
 from awetrim.utils.defaults import DEFAULT_RADIAL_PARAMETERS, DEFAULT_OPTI_LIMITS
@@ -55,6 +52,44 @@ class SimulationResult:
     phase_variables: Dict[str, Any]
     energy_objective: float
     total_time: float
+    # Per-node numeric trajectory read straight from the NLP solution
+    # (``solution.value(opti_vars[...])``). This is the optimizer's own output,
+    # independent of the seed-sensitive re-simulation root-find. Empty when the
+    # solve failed or the values could not be evaluated. Keys are the per-node
+    # state/control names; each value is a length-``n_points`` numpy array.
+    optimized_trajectory: Dict[str, np.ndarray] = field(default_factory=dict)
+
+    def save_trajectory_csv(self, output_path: Union[str, Path]) -> None:
+        """Save the optimizer's own per-node trajectory to a CSV file.
+
+        Writes the arrays captured in :attr:`optimized_trajectory` — i.e. the
+        values read directly from the NLP solution — so the saved record is the
+        optimum itself rather than the re-simulated reconstruction. One column
+        per variable, one row per discretization node.
+
+        Parameters
+        ----------
+        output_path : str or Path
+            Destination CSV path.
+        """
+        output_path = Path(output_path)
+        if not self.optimized_trajectory:
+            print(
+                "No optimized trajectory to save (solve failed or values "
+                "could not be evaluated)."
+            )
+            return
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        keys = list(self.optimized_trajectory.keys())
+        data = np.column_stack([self.optimized_trajectory[k] for k in keys])
+        np.savetxt(
+            output_path,
+            data,
+            delimiter=",",
+            header=",".join(keys),
+            comments="",
+        )
+        print(f"Optimized trajectory saved to {output_path}")
 
     def save_config_to_yaml(self, output_path: Union[str, Path]) -> None:
         """Save optimized configuration to a YAML file.
@@ -227,19 +262,12 @@ class Phase:
 
         pattern_config_opti = copy.deepcopy(self.pattern_config)
         start_state_opti = copy.deepcopy(start_state)
-        opti_depower = False
         for var_name, mx in self._opti_params.items():
             for entry in ["path_parameters", "radial_parameters", "sim_parameters"]:
                 if var_name in pattern_config_opti.get(entry, {}):
                     pattern_config_opti[entry][var_name] = mx
             if var_name == "input_depower":
                 self.system_model.input_depower = mx
-                # opti_depower = True
-
-        # if not opti_depower:
-        #     self.system_model.input_depower = self.pattern_config["sim_parameters"].get(
-        #         "input_depower", 0.0
-        #     )
 
         self._phase = PhaseParameterized(
             self.system_model,
@@ -275,8 +303,19 @@ class Phase:
         self._opti = opti
         self._opti_params = {}
 
+        profile_depower = bool(
+            self.pattern_config.get("sim_parameters", {}).get(
+                "optimize_depower_profile", False
+            )
+        )
+
         if optimization_params:
             for var in optimization_params:
+                # In profile mode, depower is a per-node trajectory variable
+                # built inside opti_phase (like input_steering), not a scalar
+                # design parameter -- skip it here to avoid a double definition.
+                if var == "input_depower" and profile_depower:
+                    continue
                 val = self.pattern_config["path_parameters"].get(var, None)
 
                 if isinstance(val, ca.DM):
@@ -354,6 +393,16 @@ class Phase:
         elif target == "zero":
             total_objective = 0.0
 
+        # Control-smoothness regularization (off by default). On the flat power
+        # ridge the bare optimum is non-unique, so any solver-path change moves
+        # the result; this term selects the smoothest equal-power trajectory,
+        # pinning a unique, reproducible optimum. Weight is tunable per problem.
+        reg_weight = float(
+            self.pattern_config.get("sim_parameters", {}).get("reg_weight", 0.0)
+        )
+        if reg_weight and objective_dict.get("reg") is not None:
+            total_objective = total_objective + reg_weight * objective_dict["reg"]
+
         if trust_region_weight:
             total_objective = total_objective + self._trust_region_penalty(
                 self._opti_params, trust_region_weight
@@ -365,6 +414,20 @@ class Phase:
         if solution is None:
             return None
 
+        # When the depower input is optimized as a per-node profile, persist the
+        # optimized l_dp(s) into sim_parameters["input_depower_profile"] (length
+        # n_points + 1, the s-grid). The follow-on run_simulation() and the saved
+        # YAML then re-fly the optimized profile instead of the scalar depower.
+        if "input_depower" in opti_vars:
+            dep_opt = np.asarray(solution.value(opti_vars["input_depower"])).ravel()
+            # opti_vars hold N node values; the simulation s-grid has N+1 points.
+            # The last grid point only feeds the (unrecorded) final step, so pad
+            # by repeating the last node to satisfy the length-(N+1) requirement.
+            profile = np.append(dep_opt, dep_opt[-1])
+            self.pattern_config.setdefault("sim_parameters", {})[
+                "input_depower_profile"
+            ] = profile
+
         # Carry the optimized node-0 state into start_state so a follow-on
         # run_simulation() re-simulates from the NLP's own initial conditions.
         # The NLP leaves the initial tension / s_dot / speed_radial / steering
@@ -373,11 +436,14 @@ class Phase:
         # NaN) once the winch/depower have moved a lot.
         self._update_start_state_from_solution(solution, opti_vars)
 
+        optimized_trajectory = self._extract_optimized_trajectory(solution, opti_vars)
+
         return SimulationResult(
             solution=solution,
             optimized_config=self.pattern_config,
             final_distance=objective_dict.get("distance_radial_final", 0.0),
             phase_variables=opti_vars,
+            optimized_trajectory=optimized_trajectory,
             energy_objective=objective_dict.get("energy", 0.0),
             total_time=objective_dict.get("total_time", 0.0),
         )
@@ -443,6 +509,46 @@ class Phase:
             except Exception:
                 continue
         self.start_state = new_state
+
+    def _extract_optimized_trajectory(
+        self, solution: Any, opti_vars: Dict[str, Any]
+    ) -> Dict[str, np.ndarray]:
+        """Read the optimizer's own per-node trajectory from the NLP solution.
+
+        Returns a dict of length-``n_points`` numpy arrays evaluated directly
+        from ``solution.value(opti_vars[...])`` — the optimum itself, not the
+        re-simulated reconstruction. ``s`` (the s-grid) carries ``n_points + 1``
+        entries, so it is trimmed to the ``n_points`` node values that align with
+        the per-node decisions. Best-effort: any variable that cannot be
+        evaluated is skipped, and the whole thing degrades to an empty dict
+        rather than raising.
+        """
+        try:
+            n_points = int(self.pattern_config["sim_parameters"]["n_points"])
+        except (KeyError, TypeError, ValueError):
+            n_points = None
+
+        trajectory: Dict[str, np.ndarray] = {}
+        for key in (
+            "s",
+            "s_dot",
+            "input_steering",
+            "speed_radial",
+            "distance_radial",
+            "tension_tether_ground",
+            "input_depower",
+        ):
+            var = opti_vars.get(key)
+            if var is None:
+                continue
+            try:
+                values = np.asarray(solution.value(var), dtype=float).ravel()
+            except Exception:
+                continue
+            if n_points is not None:
+                values = values[:n_points]
+            trajectory[key] = values
+        return trajectory
 
     def run_opti(
         self,
@@ -523,8 +629,27 @@ class Phase:
         # to MX in that case. Toggle via sim_parameters["expand_nlp"].
         expand_nlp = bool(sim_parameters.get("expand_nlp", True))
 
+        # Route simple variable box bounds (steering / depower / s_dot /
+        # speed_radial / tension / radius limits, added as one-sided
+        # ``subject_to`` rows) to IPOPT's lbx/ubx instead of general inequality
+        # constraints. Behaviour-preserving on the *feasible set* (removes ~half
+        # the inequality rows from ``g`` and the KKT, shrinking the
+        # factorization), but on the flat power ridge it changes IPOPT's path
+        # and therefore which equal-power point it lands on -- so it is OFF by
+        # default and only safe to enable together with a regularizer
+        # (``reg_weight``) that makes the optimum unique. Opt in via
+        # ``sim_parameters["detect_simple_bounds"]``.
+        detect_simple_bounds = bool(sim_parameters.get("detect_simple_bounds", False))
+
         def _set_solver(expand_flag):
-            opti.solver("ipopt", {"expand": expand_flag, "ipopt": ipopt_options})
+            opti.solver(
+                "ipopt",
+                {
+                    "expand": expand_flag,
+                    "detect_simple_bounds": detect_simple_bounds,
+                    "ipopt": ipopt_options,
+                },
+            )
 
         _set_solver(expand_nlp)
 

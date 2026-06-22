@@ -36,10 +36,34 @@ from awetrim.utils.reference_frames import (
 from awetrim import State
 from awetrim.system.kite import Kite
 from awetrim.system.winch import Winch
-from awetrim.utils.sparsity_analysis import stiffness_report
+from dataclasses import dataclass
 import logging
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class NodeControl:
+    """A per-node control input in the reel-out NLP (e.g. steering, depower).
+
+    Centralizes the per-control boilerplate that ``opti_phase`` would otherwise
+    copy-paste for every control: the node-to-node slew-rate limit and the
+    control-smoothness regularization term. The decision variable itself lives
+    in ``opti_vars[name]`` and its magnitude bounds come from
+    ``DEFAULT_OPTI_LIMITS[name]`` via the generic vector-bound loop, so only the
+    rate limit is carried here.
+
+    The residual-function wiring stays control-specific and is NOT abstracted
+    here: ``input_steering`` is an explicit argument of the residual / aoa /
+    tension Functions, whereas ``input_depower`` enters as the trailing
+    parameter symbol (``node_syms``). Adding a new per-node control therefore
+    means: create ``opti_vars[name]``, add a ``NodeControl`` here (-> rate limit
+    + smoothness reg), add its bounds to ``DEFAULT_OPTI_LIMITS`` (-> magnitude
+    bounds), and wire it into the residual.
+    """
+
+    name: str
+    rate_limit: tuple  # (lower, upper) bound on d(u)/dt between adjacent nodes
 
 
 def _williams_pre_solve_dump(qs_solver, z0, p, lbx, ubx, *, quasi_steady):
@@ -1282,6 +1306,28 @@ class PhaseParameterized(TimeSeries):
             speed_radial=float(sol_init["x"][3]),
         )
 
+    def _resolve_opti_limits(self) -> dict:
+        """``DEFAULT_OPTI_LIMITS`` overlaid with the system's hardware limits.
+
+        Hardware limits (KCU steering/depower actuator range and slew rate, and
+        the max tether length) are sourced from ``system.yaml`` via
+        ``SystemModel.hardware_limits`` (see
+        ``factory._extract_hardware_limits``) and take precedence over the
+        numerical fallbacks. The ``_max_tether_length`` sentinel sets the
+        ``distance_radial`` upper bound (the radial chord cannot exceed the
+        tether) while keeping the default lower bound. Any limit not provided by
+        the system config falls back to ``DEFAULT_OPTI_LIMITS``.
+        """
+        limits = dict(DEFAULT_OPTI_LIMITS)
+        hardware = getattr(self.kite_model, "hardware_limits", None) or {}
+        for key, value in hardware.items():
+            if key == "_max_tether_length":
+                lb = limits.get("distance_radial", (0.0, value))[0]
+                limits["distance_radial"] = (lb, float(value))
+            else:
+                limits[key] = tuple(value)
+        return limits
+
     def opti_phase(
         self,
         start_state,
@@ -1317,11 +1363,23 @@ class PhaseParameterized(TimeSeries):
         )
         sim_params = copy.deepcopy(self.pattern_config_opti.get("sim_parameters", {}))
 
+        # Optimizer limits: numerical defaults overlaid with the system's
+        # hardware limits (KCU actuator range/rate, max tether length) from
+        # system.yaml. Use ``limits`` (not DEFAULT_OPTI_LIMITS) for every bound
+        # below so the hardware values take precedence.
+        limits = self._resolve_opti_limits()
+
         pattern = create_pattern_from_dict(
             self.pattern_config_opti["pattern_type"], path_params
         )
 
         N = int(sim_params["n_points"])
+
+        # Optimize the depower input as a per-node profile (one decision per
+        # discretization point, like ``input_steering``) instead of a single
+        # scalar. Gated behind a sim_parameters flag so existing scalar-depower
+        # optimization is unchanged.
+        optimize_depower_profile = bool(sim_params.get("optimize_depower_profile", False))
 
         tau = ca.DM(np.linspace(0, 1, N + 1))  # numeric grid (DM column vector)
 
@@ -1358,6 +1416,31 @@ class PhaseParameterized(TimeSeries):
             "distance_radial": distance_scaled * R_SCALE,  # physical radius r
             "tension_tether_ground": tension_scaled * T_SCALE,  # physical tension T
         }
+        if optimize_depower_profile:
+            # Per-node power-tape length l_dp; O(1), no scaling needed. Bounds
+            # come from DEFAULT_OPTI_LIMITS["input_depower"] via the generic
+            # vector-bound loop below; the rate limit is applied in the node loop.
+            opti_vars["input_depower"] = opti.variable(N)
+
+        # Per-node controls (data-driven; see NodeControl). The slew-rate limit
+        # and smoothness regularizer below iterate this list instead of carrying
+        # one hand-written block per control. Order (steering, then depower) is
+        # preserved from the previous code so the NLP is byte-identical.
+        node_controls = [
+            NodeControl(
+                name="input_steering",
+                rate_limit=tuple(limits["steering_rate"]),
+            )
+        ]
+        if optimize_depower_profile:
+            node_controls.append(
+                NodeControl(
+                    name="input_depower",
+                    rate_limit=tuple(
+                        sim_params.get("depower_rate", limits["depower_rate"])
+                    ),
+                )
+            )
         # # expose design params too
         # for var in self.optimization_vars:
         #     opti_vars[var] = self.optimization_vars[var]
@@ -1390,6 +1473,9 @@ class PhaseParameterized(TimeSeries):
             "distance_radial": self.return_variable("distance_radial"),
             "tension_tether_ground": self.return_variable("tension_tether_ground"),
         }
+        if optimize_depower_profile:
+            # Seed from the (constant) depower used in the warm-start simulation.
+            warm_starts["input_depower"] = self.return_variable("input_depower")
 
         # set_initial needs the raw decision variable; tension and radius are
         # exposed as scaled expressions, so seed the underlying scaled variables
@@ -1402,8 +1488,8 @@ class PhaseParameterized(TimeSeries):
         print("\nChecking warm start values against bounds:")
         for var_name, values in warm_starts.items():
             # Check against optimization bounds if defined
-            if var_name in DEFAULT_OPTI_LIMITS:
-                check_warm_start(var_name, values, DEFAULT_OPTI_LIMITS[var_name])
+            if var_name in limits:
+                check_warm_start(var_name, values, limits[var_name])
             # Set the initial value regardless of violations (scaled seeds for
             # the scaled decisions).
             init_values = np.asarray(values) / init_scales.get(var_name, 1.0)
@@ -1470,8 +1556,8 @@ class PhaseParameterized(TimeSeries):
         )
         # --- Safety / geometry constraint
         height = pattern.z(opti_vars["distance_radial"], s_grid[:-1])  # N entries
-        opti.subject_to(height >= DEFAULT_OPTI_LIMITS["height"][0])
-        opti.subject_to(height <= DEFAULT_OPTI_LIMITS["height"][1])
+        opti.subject_to(height >= limits["height"][0])
+        opti.subject_to(height <= limits["height"][1])
 
         # Constraint init and end azimuth
         # azimuth = pattern.azimuth(opti_vars["distance_radial"], s_grid[:-1])
@@ -1528,13 +1614,13 @@ class PhaseParameterized(TimeSeries):
         # --- Helpful bounds to keep NLP well-posed
         sdot_min = 1e-2  # ensures dt>0
         opti.subject_to(opti_vars["s_dot"] >= sdot_min)
-        if "speed_radial" in DEFAULT_OPTI_LIMITS:
-            lb, ub = DEFAULT_OPTI_LIMITS["speed_radial"]
+        if "speed_radial" in limits:
+            lb, ub = limits["speed_radial"]
             print(f"Applying speed_radial limits: lb={lb}, ub={ub}")
             opti.subject_to(opti_vars["speed_radial"] >= lb)
             opti.subject_to(opti_vars["speed_radial"] <= ub)
-        if "distance_radial" in DEFAULT_OPTI_LIMITS:
-            lb, ub = DEFAULT_OPTI_LIMITS["distance_radial"]
+        if "distance_radial" in limits:
+            lb, ub = limits["distance_radial"]
             # Optional upper-bound relaxation: lets a phase reel a bit past the
             # global max radius. Used by the reel-in, whose first node starts at
             # the reel-out end -- which sits right at this bound when reel-out
@@ -1548,10 +1634,21 @@ class PhaseParameterized(TimeSeries):
         energy = 0
         t_eff = 0
 
-        if not "input_depower" in opti_params:
+        if "input_depower" not in opti_params and not optimize_depower_profile:
+            # Scalar depower (not optimized per node): pin the trailing flat_sym
+            # to the numeric value. In profile mode the trailing flat_sym stays
+            # symbolic and is filled per node from opti_vars["input_depower"].
             flat_syms[-1] = sim_params["input_depower"]
 
         for i in range(N):
+
+            # Per-node argument bundle: in profile mode swap the trailing depower
+            # symbol for this node's decision; otherwise reuse the shared bundle.
+            if optimize_depower_profile:
+                node_syms = list(flat_syms)
+                node_syms[-1] = opti_vars["input_depower"][i]
+            else:
+                node_syms = flat_syms
 
             # Model tension at node i
             T_i = tether_tension_eq(
@@ -1561,7 +1658,7 @@ class PhaseParameterized(TimeSeries):
                 opti_vars["speed_radial"][i],
                 opti_vars["distance_radial"][i],
                 opti_vars["tension_tether_ground"][i],
-                *flat_syms,
+                *node_syms,
             )
             T_model = winch_model.tension_curve(opti_vars["speed_radial"][i])
 
@@ -1576,7 +1673,7 @@ class PhaseParameterized(TimeSeries):
                 T_i,
                 opti_vars["speed_radial"][i],
                 opti_vars["distance_radial"][i],
-                *flat_syms,
+                *node_syms,
             )
             opti.subject_to(res_i[0] / S_res[0] == 0)
             opti.subject_to(res_i[1] / S_res[1] == 0)
@@ -1599,15 +1696,15 @@ class PhaseParameterized(TimeSeries):
                     / S["r"]
                     == 0
                 )
-                steering_rate = (
-                    opti_vars["input_steering"][i + 1] - opti_vars["input_steering"][i]
-                ) / dt_i
-                opti.subject_to(
-                    steering_rate <= DEFAULT_OPTI_LIMITS["steering_rate"][1]
-                )
-                opti.subject_to(
-                    steering_rate >= DEFAULT_OPTI_LIMITS["steering_rate"][0]
-                )
+                # Per-node control slew-rate limits, so the optimized profiles
+                # stay physically actuatable. Data-driven over node_controls;
+                # emits the same constraints in the same order (steering, then
+                # depower) as the previous hand-written blocks.
+                for ctrl in node_controls:
+                    u_ctrl = opti_vars[ctrl.name]
+                    ctrl_rate = (u_ctrl[i + 1] - u_ctrl[i]) / dt_i
+                    opti.subject_to(ctrl_rate <= ctrl.rate_limit[1])
+                    opti.subject_to(ctrl_rate >= ctrl.rate_limit[0])
                 # Accumulate energy and time: power_i = T_i * v_r_i
                 energy += T_i * opti_vars["speed_radial"][i] * dt_i
                 t_eff += dt_i
@@ -1620,20 +1717,36 @@ class PhaseParameterized(TimeSeries):
                     T_i,
                     opti_vars["speed_radial"][i],
                     opti_vars["distance_radial"][i],
-                    *flat_syms,
+                    *node_syms,
                 )
-                opti.subject_to(aoa_i <= DEFAULT_OPTI_LIMITS["angle_of_attack"][1])
-                opti.subject_to(aoa_i >= DEFAULT_OPTI_LIMITS["angle_of_attack"][0])
+                opti.subject_to(aoa_i <= limits["angle_of_attack"][1])
+                opti.subject_to(aoa_i >= limits["angle_of_attack"][0])
 
         power = energy / (t_eff + 1e-12)
 
-        # --- Tiny Tikhonov regularization in scaled variables (stabilizes curvature)
-        eps = 1e-6
-        reg = eps * (
-            ca.sumsqr(opti_vars["input_steering"] / S["u"])
-            + ca.sumsqr(opti_vars["s_dot"] / S["sd"])
-            + ca.sumsqr(opti_vars["speed_radial"] / S["vr"])
-        )
+        # --- Control-smoothness regularizer (node-to-node change of the
+        # controls), normalized by each control's bound width so it is
+        # dimensionless and grid-independent. It is added to the objective in
+        # ``Phase.run_simulation_opti`` weighted by ``sim_parameters["reg_weight"]``
+        # (0 by default -> objective unchanged). The power objective is a flat
+        # ridge -- many trajectories share essentially the same power -- so the
+        # bare problem has a non-unique optimum and any solver-path change moves
+        # the result. Among those equal-power solutions this term selects the
+        # SMOOTHEST one, pinning a unique, reproducible optimum. It penalizes the
+        # CONTROLS only: ``s_dot``/``speed_radial`` produce power, so penalizing
+        # their magnitude (as the old, never-wired-in term did) would fight the
+        # objective.
+        def _bound_width(name, fallback=1.0):
+            lims = limits.get(name)
+            return float(lims[1] - lims[0]) if lims and lims[1] > lims[0] else fallback
+
+        n_int = max(N - 1, 1)
+        reg = 0
+        for ctrl in node_controls:
+            reg = reg + ca.sumsqr(
+                ca.diff(opti_vars[ctrl.name]) / _bound_width(ctrl.name)
+            )
+        reg = reg / n_int
 
         # --- Initials for optimization parameters
         for var, mx in opti_params.items():
@@ -1643,7 +1756,7 @@ class PhaseParameterized(TimeSeries):
 
                 opti.set_initial(mx, init_val)
                 # print(f"Applying constraints for {var}")
-                lb, ub = DEFAULT_OPTI_LIMITS[var]
+                lb, ub = limits[var]
                 opti.subject_to(mx >= lb)
                 opti.subject_to(mx <= ub)
 
@@ -1652,7 +1765,7 @@ class PhaseParameterized(TimeSeries):
                 opti.set_initial(mx, init_val)
                 # print(f"Setting initial for {var} to {init_val}")
 
-                lb, ub = DEFAULT_OPTI_LIMITS[var]
+                lb, ub = limits[var]
                 # print(f"Applying constraints for {var}: lb={lb}, ub={ub}")
                 opti.subject_to(mx >= lb)
                 opti.subject_to(mx <= ub)
@@ -1660,7 +1773,7 @@ class PhaseParameterized(TimeSeries):
                 init_val = self.pattern_config["sim_parameters"][var]
                 opti.set_initial(mx, init_val)
                 print(f"Applying constraints for {var}, sim param initial {init_val}")
-                lb, ub = DEFAULT_OPTI_LIMITS[var]
+                lb, ub = limits[var]
                 opti.subject_to(mx >= lb)
                 opti.subject_to(mx <= ub)
             else:
@@ -1668,9 +1781,9 @@ class PhaseParameterized(TimeSeries):
 
         # --- Default limits for vector vars (if provided)
         for var_name, mx in opti_vars.items():
-            if isinstance(mx, ca.MX) and var_name in DEFAULT_OPTI_LIMITS:
+            if isinstance(mx, ca.MX) and var_name in limits:
                 # print(f"Applying constraints for {var_name}")
-                lb, ub = DEFAULT_OPTI_LIMITS[var_name]
+                lb, ub = limits[var_name]
                 if relax_tol > 0:
                     # expand bounds outward even if bounds are negative
                     lb = lb - relax_tol * np.abs(lb)
@@ -1707,56 +1820,6 @@ class PhaseParameterized(TimeSeries):
             opti_vars,
             objective_dict,
         )
-
-    def run_simulation_opti(self, opti, objective):
-        # Keep your solver choice; just add reg to the objective
-        opti.minimize(objective)
-
-        # --- Solver (UNCHANGED as requested)
-        opti.solver(
-            "ipopt",
-            {
-                "ipopt": {
-                    "bound_relax_factor": 1e-8,
-                    "tol": 1e-4,
-                    "acceptable_iter": 3,
-                    "acceptable_tol": 1e-4,
-                    "constr_viol_tol": 1e-4,
-                    "dual_inf_tol": 1e-4,
-                    "hessian_approximation": "limited-memory",
-                    "mu_strategy": "adaptive",
-                }
-            },
-        )
-        try:
-            solution = opti.solve()
-
-            # stiffness_report(opti, solution, name="My OCP")
-
-            print("\nOptimized Pattern Variables:")
-            for var_name, mx in self.optimization_vars.items():
-                val = solution.value(mx)
-                print(f"  {var_name}: {val}")
-
-                # write back optimized parameters
-                optimized_config = self.pattern_config.copy()
-                if var_name in optimized_config["path_parameters"]:
-                    optimized_config["path_parameters"][var_name] = solution.value(mx)
-                elif var_name in optimized_config["radial_parameters"]:
-                    optimized_config["radial_parameters"][var_name] = solution.value(mx)
-                elif var_name in optimized_config["sim_parameters"]:
-                    optimized_config["sim_parameters"][var_name] = solution.value(mx)
-                self.pattern_config = optimized_config
-            return solution
-
-        except Exception as e:
-            print("Debug optimization information:")
-            for var_name, mx in self.optimization_vars.items():
-                try:
-                    print(f"  {var_name}: {opti.debug.value(mx)}")
-                except Exception:
-                    pass
-            print("Optimization failed:", e)
 
     def substitute_parametrized_kinematics(self, pattern, quasi_steady=None):
 

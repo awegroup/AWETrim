@@ -81,6 +81,8 @@ if REGENERATE_INITIAL_GUESS:
 
 REELOUT_CONFIG["sim_parameters"]["n_points"] = 100
 REELOUT_CONFIG["sim_parameters"]["input_depower"] = 1.6
+REELOUT_CONFIG["sim_parameters"]["reg_weight"] = 1.0
+REELOUT_CONFIG["sim_parameters"]["detect_simple_bounds"] = True
 WIND_CONFIG = {
     "speed_wind_at_100": 8,
     "z0": 0.03,

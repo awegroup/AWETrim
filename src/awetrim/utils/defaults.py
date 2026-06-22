@@ -167,6 +167,10 @@ DEFAULT_OPTI_LIMITS = {
     # input_depower is the absolute power-tape length l_dp [m] (new convention).
     # Spans the physical depower range (legacy u_p in [-1, 1] ~ l_dp [1.20, 2.13] m).
     "input_depower": (1.1, 2.3),
+    # d(l_dp)/dt [m/s]; KCU power-tape actuation speed limit, applied when the
+    # depower profile is optimized per node (sim_parameters.optimize_depower_profile).
+    # Placeholder physical value -- override via sim_parameters["depower_rate"].
+    "depower_rate": (-0.2, 0.2),
     "speed_tangential": (10, 400),
     "angle_of_attack": (np.radians(0), np.radians(14)),
     "C_phi": (-0.8, 0.8),  # Range for C_phi in Fourier pattern
