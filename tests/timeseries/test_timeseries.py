@@ -96,7 +96,6 @@ def test_energy_metrics_returns_expected_keys(constant_series):
     expected = {
         "energy",
         "avg_power",
-        "mean_power",
         "total_time",
         "tension_mean",
         "tension_max",
