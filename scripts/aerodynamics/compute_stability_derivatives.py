@@ -52,11 +52,11 @@ from awetrim.identification.rigid_body_axes import (
 # --course-deg, --wind-speed, --radial-speed, --distance-radial) still
 # override them when provided.
 OPERATING_CONDITION = {
-    "elevation_deg": 0.0,
+    "elevation_deg": 30.0,
     "azimuth_deg": 0.0,
-    "course_deg": 90.0,
+    "course_deg": 0.0,
     "wind_speed": 8.0,
-    "radial_speed": 1.5,
+    "radial_speed": 0,
     "distance_radial": 200.0,
 }
 
@@ -1068,6 +1068,17 @@ def main() -> None:
         default=None,
         help="struc_geometry.yaml to use with --rigid-body-result (auto-detected if omitted).",
     )
+    parser.add_argument(
+        "--reduced-omega-c",
+        action="store_true",
+        help=(
+            "Use the radial-only course-frame transport rate "
+            "Omega_C = -chi_dot * e_radial for the aero body-rate and the "
+            "gyroscopic moment term (matches the closed-form turn-rate law). "
+            "Default uses the full Omega_C = [0, v_tau/r, "
+            "(v_tau/r) tan(beta) sin(chi) - chi_dot] from the system model."
+        ),
+    )
     args = parser.parse_args()
 
     # Resolve the deformed-results case selection (--deformed-case / --list-cases).
@@ -1361,7 +1372,30 @@ def main() -> None:
         eps_position=args.eps_position,
         states=sel_states,
         coupled=coupled,
+        full_omega_c=not args.reduced_omega_c,
+        # In the body frame the stability axes ARE the principal axes, so the
+        # inertia is already diagonal; only the (space-fixed) course frame needs
+        # the principal moments rotated in by the trim attitude.
+        rotate_inertia_by_trim=(stability_frame != "body"),
     )
+
+    # --- Diagnostic: course-frame transport rate used for the gyroscopic term --
+    _omega_c_axes = np.asarray(stability.get("omega_c_axes", np.zeros(3)), dtype=float)
+    print("\n--- course-frame transport rate (Omega_C) ---")
+    print(f"  omega_c_model:   {stability.get('omega_c_model')}")
+    print(
+        "  omega_c_axes:    "
+        f"[chi={_omega_c_axes[0]:+.4f}, n={_omega_c_axes[1]:+.4f}, "
+        f"r={_omega_c_axes[2]:+.4f}] rad/s"
+    )
+
+    # --- Diagnostic: inertia tensor used for the rotational dynamics ----------
+    _I_stab = np.asarray(stability.get("inertia_stability", np.zeros((3, 3))), dtype=float)
+    _off_diag = _I_stab - np.diag(np.diag(_I_stab))
+    print("\n--- inertia tensor in stability frame (A_full) ---")
+    print(f"  rotated_by_trim: {stability.get('inertia_rotated_by_trim')}")
+    print(f"  diag [Ixx,Iyy,Izz]: {np.diag(_I_stab)}")
+    print(f"  max |product of inertia|: {np.max(np.abs(_off_diag)):.3g} kg m^2")
 
     # --- Diagnostic: is the Williams radial-position dependency captured? ----
     print("\n--- radial-position (z) dependency diagnostic ---")
