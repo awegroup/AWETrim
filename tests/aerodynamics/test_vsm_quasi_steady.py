@@ -17,10 +17,16 @@ from awetrim.aerodynamics.vsm_quasi_steady import (
     compute_vsm_trim_stability_derivatives,
     run_vsm_quasi_steady_sweep,
     solve_vsm_quasi_steady_trim,
+    turn_radius_vs_steer_moment,
     # Backward-compatibility aliases (used by migrated scripts)
     compute_stability_derivatives,
     run_quasi_steady_sweep,
     solve_quasi_steady_state,
+    # Internals exercised directly for the Omega_C gyroscopic coupling
+    _gyroscopic_rate_coupling,
+    _course_transport_rate_axes,
+    _compose_attitude_rotation,
+    DEFAULT_AXES,
 )
 
 
@@ -97,6 +103,29 @@ _TRIM_RESULT = {
     "tether_force": 500.0,
 }
 _X_TRIM = np.array([20.0, 0.0, 0.0, 0.0, 0.0])
+
+
+# ---------------------------------------------------------------------------
+# Steering / turn-map API (applied moment + turn_radius_vs_steer_moment)
+# ---------------------------------------------------------------------------
+
+
+def test_solve_trim_accepts_applied_moment_nm():
+    """The steering injection is an optional, backward-compatible parameter."""
+    sig = inspect.signature(solve_vsm_quasi_steady_trim)
+    assert "applied_moment_nm" in sig.parameters
+    assert sig.parameters["applied_moment_nm"].default is None
+
+
+def test_turn_radius_vs_steer_moment_signature():
+    sig = inspect.signature(turn_radius_vs_steer_moment)
+    params = list(sig.parameters)
+    assert params[:6] == [
+        "body_aero", "center_of_gravity", "reference_point", "system_model",
+        "steer_moments_nm", "x_guess",
+    ]
+    assert "steer_gain_nm_per_us" in sig.parameters
+    assert sig.parameters["include_gravity"].default is False
 
 
 # ---------------------------------------------------------------------------
@@ -347,6 +376,138 @@ def test_compute_vsm_trim_stability_derivatives_coupled_selection():
     assert result["A_selected"].shape == (9, 9)
     assert result["J_selected"].shape == (6, 9)
     assert result["states_selected"] == sel
+
+
+def test_compute_vsm_trim_stability_derivatives_gyroscopic_coupling():
+    """A_full carries the gyroscopic term Omega_C x I omega on the rate rows.
+
+    With the mock solver returning a constant aerodynamic result, every
+    finite-difference moment column is zero, so the only entries left on the
+    p/q/r rows of A_full are the analytic gyroscopic coupling
+    ``-I^{-1} [Omega_C]_x I`` with ``Omega_C = -course_rate * e_radial``.
+    For radial-only transport this couples p <-> q exclusively:
+        A[p, q] = -course_rate * Iyy / Ixx
+        A[q, p] = +course_rate * Ixx / Iyy
+    and leaves the r row (and the p/q <-> r entries) untouched.
+    """
+    course_rate = 0.3
+    ixx, iyy, izz = 100.0, 20.0, 100.0
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        center_of_gravity=np.array([0.5, 0.0, 0.5]),
+        reference_point=np.zeros(3),
+        x_trim=np.array([20.0, 0.0, 0.0, 0.0, course_rate]),
+        trim_result=_TRIM_RESULT,
+        solver=_MockSolver(),
+        mass=15.0,
+        inertia_xx=ixx,
+        inertia_yy=iyy,
+        inertia_zz=izz,
+    )
+    names = list(result["state_names_full"])
+    p, q, r = names.index("p"), names.index("q"), names.index("r")
+    A = result["A_full"]
+    assert A[p, q] == pytest.approx(-course_rate * iyy / ixx)
+    assert A[q, p] == pytest.approx(+course_rate * ixx / iyy)
+    # Radial-only Omega_C does not couple the yaw rate, and has no self-damping.
+    assert A[p, r] == pytest.approx(0.0)
+    assert A[q, r] == pytest.approx(0.0)
+    assert A[r, p] == pytest.approx(0.0)
+    assert A[r, q] == pytest.approx(0.0)
+    assert A[p, p] == pytest.approx(0.0)
+    assert A[q, q] == pytest.approx(0.0)
+
+    # A zero course rate recovers the torque-free rate rows (no coupling).
+    result0 = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        center_of_gravity=np.array([0.5, 0.0, 0.5]),
+        reference_point=np.zeros(3),
+        x_trim=np.array([20.0, 0.0, 0.0, 0.0, 0.0]),
+        trim_result=_TRIM_RESULT,
+        solver=_MockSolver(),
+        mass=15.0,
+        inertia_xx=ixx,
+        inertia_yy=iyy,
+        inertia_zz=izz,
+    )
+    A0 = result0["A_full"]
+    assert A0[p, q] == pytest.approx(0.0)
+    assert A0[q, p] == pytest.approx(0.0)
+
+
+def test_gyroscopic_rate_coupling_full_omega_c_couples_p_and_r():
+    """The great-circle normal component of Omega_C couples p <-> r.
+
+    G = -I^{-1} [Omega_C]_x I. For Omega_C = (0, Omega_y, Omega_z) in the
+    (course, normal, radial) basis:
+        radial Omega_z couples p <-> q,
+        normal Omega_y couples p <-> r  (and leaves q <-> r zero).
+    """
+    ixx, iyy, izz = 100.0, 20.0, 100.0
+    omega_y, omega_z = 0.25, -0.3
+    G = _gyroscopic_rate_coupling(
+        np.array([0.0, omega_y, omega_z]), np.diag([ixx, iyy, izz])
+    )
+    # p <-> r from the normal (great-circle) component.
+    assert G[0, 2] == pytest.approx(-omega_y * izz / ixx)
+    assert G[2, 0] == pytest.approx(+omega_y * ixx / izz)
+    # p <-> q from the radial (turn) component.
+    assert G[0, 1] == pytest.approx(omega_z * iyy / ixx)
+    assert G[1, 0] == pytest.approx(-omega_z * ixx / iyy)
+    # No q <-> r coupling and no self-damping (Omega has no course component).
+    assert G[1, 2] == pytest.approx(0.0)
+    assert G[2, 1] == pytest.approx(0.0)
+    assert np.allclose(np.diag(G), 0.0)
+
+
+def test_compute_vsm_trim_stability_derivatives_rotates_inertia_by_trim():
+    """The principal inertia is rotated into the stability frame by the trim attitude.
+
+    In the course frame the kite's principal axes are tilted from the stability
+    axes by the trim attitude, so I_stab = R diag(I) R^T picks up off-diagonal
+    products of inertia. Disabling the rotation recovers the diagonal set.
+    """
+    ixx, iyy, izz = 100.0, 20.0, 120.0
+    roll, pitch, yaw = 3.0, -4.0, 8.0  # degrees
+    common = dict(
+        body_aero=_MockBody(),
+        center_of_gravity=np.array([0.5, 0.0, 0.5]),
+        reference_point=np.zeros(3),
+        x_trim=np.array([20.0, roll, pitch, yaw, 0.0]),
+        trim_result=_TRIM_RESULT,
+        solver=_MockSolver(),
+        mass=15.0,
+        inertia_xx=ixx,
+        inertia_yy=iyy,
+        inertia_zz=izz,
+    )
+
+    result = compute_vsm_trim_stability_derivatives(**common)
+    I_stab = np.asarray(result["inertia_stability"])
+    assert result["inertia_rotated_by_trim"] is True
+    R = _compose_attitude_rotation(
+        roll_deg=roll, pitch_deg=pitch, yaw_deg=yaw, axes=DEFAULT_AXES
+    )
+    assert np.allclose(I_stab, R @ np.diag([ixx, iyy, izz]) @ R.T)
+    assert np.allclose(I_stab, I_stab.T)  # symmetric
+    # Nonzero trim attitude -> genuine products of inertia (off-diagonal terms).
+    assert not np.allclose(I_stab, np.diag(np.diag(I_stab)))
+
+    result_diag = compute_vsm_trim_stability_derivatives(
+        **common, rotate_inertia_by_trim=False
+    )
+    assert result_diag["inertia_rotated_by_trim"] is False
+    assert np.allclose(result_diag["inertia_stability"], np.diag([ixx, iyy, izz]))
+
+
+def test_course_transport_rate_axes_reduced_without_system_model():
+    """Without a system model (or with full=False) the radial-only Omega_C is used."""
+    axes_body, axes_world, is_full = _course_transport_rate_axes(
+        None, DEFAULT_AXES, course_rate=0.3, speed_tangential=20.0, full=True
+    )
+    assert is_full is False
+    assert np.allclose(axes_body, [0.0, 0.0, -0.3])
+    assert np.allclose(axes_world, [0.0, 0.0, -0.3])
 
 
 def test_compute_vsm_trim_stability_derivatives_rejects_unknown_state():

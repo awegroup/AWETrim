@@ -72,9 +72,48 @@ drop straight into the VSM trim/sweep path. Public API:
   `taper_ratio` / `twist_deg`. Taper and twist are independent of aspect ratio
   and anhedral.
 
+`parametric_geometry.py` also owns `build_swept_wing` — a scalar-DOF constructor
+(span, root_chord, taper, `sweep_deg`, anhedral, twist) that builds a positioned
+`WingSections` from scratch (used by the swept-AWES design tool, not by morphing
+an existing planform), plus the `sweep_angle_deg` metric and a `sweep_deg` knob
+on `morph_wing`. Sweep is quarter-chord sweepback (aft shift ∝ |spanwise offset|)
+and is area/AR/anhedral-neutral, like twist and taper.
+
 Area/span conventions are documented in the module docstring (flat/developed
 area, flat aspect ratio). Inspired by the QC-anchored shape-variation generator
 in `jellepoland/WES_aero_sim_for_kite_design`.
+
+The **swept, KCU-below AWES design tool** that consumed these primitives — the
+`SweptWingDesign` design vector, the first-order `weight_model`, `evaluate_design`
+(weight → trim → stability → steering), `place_wing_for_target_aoa`, the
+stability-derivative / eigen-mode interpreters, `DEFAULT_DESIGN_LIMITS`, and the
+design scripts — now lives in the separate **AWEDesign** repo (package
+`awedesign`, https://github.com/awegroup/AWEDesign), which imports the AWETrim
+primitives below. **Do not re-add the design layer here**; add new *primitives*
+here (and re-pin AWEDesign), keep the design/orchestration layer in AWEDesign.
+
+Primitives kept here for AWEDesign (and general use):
+
+- `parametric_geometry.build_swept_wing` — scalar-DOF swept planform constructor
+  (documented above), plus the `sweep_deg` / `sweep_angle_deg` additions to
+  `morph_wing`.
+- `vsm_quasi_steady.solve_vsm_quasi_steady_trim(..., applied_moment_nm=...)` — the
+  gravity-free quasi-steady trim, with an optional external moment (e.g. a KCU
+  steering roll moment, in the `[course, normal, radial]` basis) added to the CG
+  balance so the resulting bank and turn come out as outputs.
+- `vsm_quasi_steady.turn_radius_vs_steer_moment` — sweeps an applied roll moment
+  and returns bank / aero-roll `phi_a` / turn radius / speed / tether; the
+  design-tool analogue of the point-mass `angle_roll_aerodynamic = k_steering · u_s`
+  law in `awetrim.system.kite`.
+- `vsm_quasi_steady.compute_vsm_trim_stability_derivatives` — the trim
+  linearisation AWEDesign interprets into named derivatives and eigen-modes.
+
+These use the **VSM axis convention** (matches the LEI-V3 reference): chord along
+`+x` (LE forward at smaller x, `+x` is **aft**), `+y` spanwise, `+z` up; anhedral
+droops the tips, sweepback shifts tips `+x`. The design-tool conventions
+(KCU-pivot reference point, `wing_x_offset` pitch-trim lever, the raised speed
+bound, window-centre trim at `az=el=0` with uniform wind) are documented in
+AWEDesign's `AGENTS.md`.
 
 If the implementation grows, split internal helpers into:
 
@@ -112,6 +151,12 @@ scripts/aerodynamics/parametric_shapes/
   optimize_lei_airfoil.py
 ```
 
+The swept-AWES design-tool scripts (`preview_geometry`, `place_wing`,
+`design_single_case`, `design_swept_awes`, `analyze_wing`, `sweep_design`) moved
+with the design layer to the **AWEDesign** repo (`scripts/` there). They build on
+`build_swept_wing` + `turn_radius_vs_steer_moment` from here plus `awedesign`'s
+own `design_stats` / `weight_model`.
+
 `generate_shape_variations.py` sweeps four planform DOFs (aspect ratio,
 anhedral, taper, twist) from a baseline `aero_geometry.yaml`, writes one morphed
 variant per case, and by default evaluates each with VSM and draws shape + aero
@@ -133,7 +178,10 @@ quasi-steady residual solver in `SystemModel`.
 
 Public functions should use these names:
 
-- `solve_vsm_quasi_steady_trim`
+- `solve_vsm_quasi_steady_trim` (accepts an optional `applied_moment_nm` for
+  external/steering moments, backward-compatible)
+- `turn_radius_vs_steer_moment` (roll-steering turn map: prescribed KCU roll
+  moment → bank, `phi_a`, turn radius, effective `k_steering`)
 - `compute_vsm_trim_stability_derivatives`
 - `run_vsm_quasi_steady_sweep`
 - `vsm_quasi_steady_sweep_to_dataframe`

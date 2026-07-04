@@ -12,6 +12,7 @@ import pytest
 from awetrim.aerodynamics.parametric_geometry import (
     WING_SECTION_HEADERS,
     WingSections,
+    build_swept_wing,
     morph_wing,
     morph_wing_to,
 )
@@ -239,10 +240,83 @@ def test_public_signatures():
     morph_sig = inspect.signature(morph_wing)
     assert list(morph_sig.parameters) == [
         "sections", "span_scale", "chord_scale", "anhedral_scale",
-        "taper_ratio", "twist_deg",
+        "taper_ratio", "twist_deg", "sweep_deg",
     ]
     to_sig = inspect.signature(morph_wing_to)
     assert list(to_sig.parameters) == [
         "sections", "target_aspect_ratio", "target_anhedral_deg",
         "taper_ratio", "twist_deg", "preserve_area", "max_iter", "tol",
     ]
+    build_sig = inspect.signature(build_swept_wing)
+    assert list(build_sig.parameters) == [
+        "span", "root_chord", "taper_ratio", "sweep_deg", "anhedral_deg",
+        "twist_deg", "n_sections_semi", "airfoil_id", "wing_airfoils",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Sweep
+# ---------------------------------------------------------------------------
+
+
+def test_flat_rect_sweep_angle_is_zero():
+    sec = WingSections.from_aero_geometry(_flat_rect_config())
+    assert sec.sweep_angle_deg == pytest.approx(0.0, abs=1e-9)
+
+
+def test_morph_sweep_sets_angle_and_preserves_area():
+    sec = WingSections.from_aero_geometry(_flat_rect_config(span=10.0, chord=1.0))
+    out = morph_wing(sec, sweep_deg=25.0)
+    assert out.sweep_angle_deg == pytest.approx(25.0, abs=1e-6)
+    # Sweep is purely streamwise -> y-z arc, area and aspect ratio unchanged.
+    assert out.area == pytest.approx(sec.area, rel=1e-9)
+    assert out.aspect_ratio == pytest.approx(sec.aspect_ratio, rel=1e-9)
+    assert out.flat_span == pytest.approx(sec.flat_span, rel=1e-9)
+    assert out.is_symmetric()
+
+
+# ---------------------------------------------------------------------------
+# build_swept_wing
+# ---------------------------------------------------------------------------
+
+
+def test_build_swept_wing_metrics():
+    w = build_swept_wing(
+        span=5.0, root_chord=1.0, taper_ratio=0.6, sweep_deg=20.0,
+        anhedral_deg=8.0, twist_deg=-4.0, n_sections_semi=8,
+    )
+    assert w.n_sections == 2 * 8 - 1
+    assert w.is_symmetric()
+    p = w.properties()
+    assert p["projected_span"] == pytest.approx(5.0)
+    assert p["sweep_angle_deg"] == pytest.approx(20.0, abs=1e-6)
+    assert p["anhedral_angle_deg"] == pytest.approx(8.0, abs=1e-6)
+    assert p["taper_ratio"] == pytest.approx(0.6, abs=1e-6)
+    assert p["tip_twist_deg"] == pytest.approx(-4.0, abs=1e-4)
+
+
+def test_build_swept_wing_sweep_is_area_neutral():
+    kw = dict(span=5.0, root_chord=1.0, taper_ratio=0.6, anhedral_deg=8.0,
+              n_sections_semi=8)
+    swept = build_swept_wing(sweep_deg=25.0, **kw)
+    unswept = build_swept_wing(sweep_deg=0.0, **kw)
+    assert swept.area == pytest.approx(unswept.area, rel=1e-9)
+    assert swept.aspect_ratio == pytest.approx(unswept.aspect_ratio, rel=1e-9)
+
+
+def test_build_swept_wing_carries_airfoils_and_round_trips():
+    airfoils = {
+        "headers": ["airfoil_id", "type", "info_dict"],
+        "data": [[1, "neuralfoil", {"dat_file_path": "a.dat"}]],
+    }
+    w = build_swept_wing(span=5.0, root_chord=1.0, wing_airfoils=airfoils)
+    out = w.to_aero_geometry()
+    assert out["wing_airfoils"] == airfoils
+    assert np.all(w.airfoil_ids == 1)
+
+
+def test_build_swept_wing_rejects_bad_inputs():
+    with pytest.raises(ValueError):
+        build_swept_wing(span=-1.0, root_chord=1.0)
+    with pytest.raises(ValueError):
+        build_swept_wing(span=5.0, root_chord=1.0, n_sections_semi=1)

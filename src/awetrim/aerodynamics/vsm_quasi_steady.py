@@ -49,7 +49,7 @@ DEFAULT_TRANSFORMATION_C_FROM_VSM = np.array(
 # x = [speed_tangential, angle_roll_body_deg, angle_pitch_body_deg,
 #      angle_yaw_body_deg, timeder_angle_course_body]
 DEFAULT_BOUNDS_LOWER = np.array([-2.0, -15.0, -15.0, -15.0, -5.0], dtype=float)
-DEFAULT_BOUNDS_UPPER = np.array([80.0, 15.0, 15.0, 15.0, 5.0], dtype=float)
+DEFAULT_BOUNDS_UPPER = np.array([200.0, 15.0, 15.0, 15.0, 5.0], dtype=float)
 
 
 def _default_vsm_solver(reference_point: np.ndarray) -> VsmSolver:
@@ -276,6 +276,7 @@ def solve_vsm_quasi_steady_trim(
     bounds_upper: np.ndarray = DEFAULT_BOUNDS_UPPER,
     transformation_c_from_vsm: np.ndarray = DEFAULT_TRANSFORMATION_C_FROM_VSM,
     include_gravity: bool = False,
+    applied_moment_nm: np.ndarray | None = None,
     axes: AxisDefinition = DEFAULT_AXES,
     moment_tolerance: float = 1e-2,
     return_timing_breakdown: bool = False,
@@ -286,6 +287,13 @@ def solve_vsm_quasi_steady_trim(
     The optimized state is ordered as
     `[speed_tangential, angle_roll_body_deg, angle_pitch_body_deg,
     angle_yaw_body_deg, timeder_angle_course_body]`.
+
+    ``applied_moment_nm`` is an optional external moment (3-vector, N·m, in the
+    ``axes`` = [course, normal, radial] basis) added to the CG moment balance —
+    e.g. a KCU steering roll moment about the course axis. The wing then banks
+    and turns to react it, so the resulting roll (``opt_x[1]`` /
+    ``aero_roll_deg``) and course rate (``opt_x[4]``) are *outputs*. ``None``
+    (default) leaves the free-trim behaviour unchanged.
     """
 
     bounds_lower = _as_5vector(bounds_lower, "bounds_lower")
@@ -294,6 +302,11 @@ def solve_vsm_quasi_steady_trim(
     center_of_gravity = _as_3vector(center_of_gravity)
     reference_point = _as_3vector(reference_point)
     transformation_c_from_vsm = np.asarray(transformation_c_from_vsm, dtype=float)
+    applied_moment_nm = (
+        np.zeros(3, dtype=float)
+        if applied_moment_nm is None
+        else _as_3vector(applied_moment_nm)
+    )
 
     # Seed kinematics so omega can be evaluated before the solver starts.
     system_model.speed_tangential = float(x_guess[0])
@@ -448,6 +461,15 @@ def solve_vsm_quasi_steady_trim(
         cmy += delta_cm[1]
         cmz += delta_cm[2]
 
+        # External applied moment (e.g. KCU steering roll moment). Converted to
+        # a coefficient with the same denominator the inertial delta uses, so
+        # the balance is aero + inertial + applied = 0.
+        if np.any(applied_moment_nm):
+            applied_cm = applied_moment_nm / denom
+            cmx += applied_cm[0]
+            cmy += applied_cm[1]
+            cmz += applied_cm[2]
+
         net_force = total_aero_force + inertial_force + gravity_force
         force_denom = q_inf * projected_area
         cfx = np.dot(net_force, axes.course) / force_denom
@@ -583,6 +605,144 @@ def solve_vsm_quasi_steady_trim(
         result["timing_breakdown"] = timing_counters
 
     return result, working_body
+
+
+def turn_radius_vs_steer_moment(
+    body_aero: VsmBodyAerodynamics,
+    center_of_gravity: np.ndarray,
+    reference_point: np.ndarray,
+    system_model: AWETrimSystemModel,
+    steer_moments_nm: Sequence[float],
+    x_guess: np.ndarray,
+    *,
+    solver: VsmSolver | None = None,
+    bounds_lower: np.ndarray = DEFAULT_BOUNDS_LOWER,
+    bounds_upper: np.ndarray = DEFAULT_BOUNDS_UPPER,
+    include_gravity: bool = False,
+    axes: AxisDefinition = DEFAULT_AXES,
+    steer_gain_nm_per_us: float | None = None,
+    moment_tolerance: float = 1e-2,
+    max_nfev: int | None = None,
+) -> dict[str, Any]:
+    """Map an applied KCU steering roll moment to the trimmed turn.
+
+    For each roll moment in ``steer_moments_nm`` this solves the gravity-free
+    (by default) quasi-steady trim with that moment applied about the course
+    axis (see :func:`solve_vsm_quasi_steady_trim`'s ``applied_moment_nm``) and
+    records the resulting bank, aerodynamic roll ``phi_a``, turn rate and turn
+    radius ``R = speed_tangential / |course_rate|``, plus L/D, tether force,
+    speed and side-slip. This is the design-tool analogue of the point-mass
+    steering law ``angle_roll_aerodynamic = k_steering * u_s`` in
+    ``awetrim.system.kite`` — here the roll↔steering relation is *computed* by
+    VSM rather than identified.
+
+    When ``steer_gain_nm_per_us`` is given, each moment is also reported as a
+    steering deflection ``u_s = M / steer_gain_nm_per_us`` (a first-order
+    bridle-lever model), and an effective ``k_steering = d(phi_a)/d(u_s)``
+    [rad per unit ``u_s``] is fitted across the sweep for comparison with the
+    identified gain.
+
+    Points are solved outward from zero moment in each sign direction, each
+    direction warm-started from the straight-flight solution, so the sweep is
+    robust across the sign flip.
+
+    Returns
+    -------
+    dict
+        Arrays (one entry per input moment, in the input order) under keys
+        ``steer_moment_nm``, ``input_steering``, ``roll_body_deg``,
+        ``aero_roll_deg``, ``course_rate``, ``turn_radius``,
+        ``speed_tangential``, ``cl``, ``cd``, ``lift_over_drag``,
+        ``tether_force``, ``side_slip_deg``, ``success_physical``; plus scalar
+        ``k_steering_effective`` (``nan`` if no gain given) and the raw
+        ``records`` list.
+    """
+    moments = np.asarray(list(steer_moments_nm), dtype=float).reshape(-1)
+    bounds_lower = _as_5vector(bounds_lower, "bounds_lower")
+    bounds_upper = _as_5vector(bounds_upper, "bounds_upper")
+    x_guess = np.clip(_as_5vector(x_guess, "x_guess"), bounds_lower, bounds_upper)
+    roll_axis = _as_3vector(axes.course)
+    if solver is None:
+        solver = _default_vsm_solver(_as_3vector(reference_point))
+
+    def _solve_one(
+        moment: float, warm: np.ndarray
+    ) -> tuple[dict[str, Any], np.ndarray]:
+        res, _ = solve_vsm_quasi_steady_trim(
+            body_aero=body_aero,
+            center_of_gravity=center_of_gravity,
+            reference_point=reference_point,
+            system_model=system_model,
+            x_guess=warm,
+            solver=solver,
+            bounds_lower=bounds_lower,
+            bounds_upper=bounds_upper,
+            include_gravity=include_gravity,
+            applied_moment_nm=moment * roll_axis,
+            axes=axes,
+            moment_tolerance=moment_tolerance,
+            max_nfev=max_nfev,
+        )
+        return res, np.clip(
+            np.asarray(res["opt_x"], dtype=float), bounds_lower, bounds_upper
+        )
+
+    # Solve outward from zero in each direction, warm-started from straight flight.
+    order = np.argsort(np.abs(moments))
+    results: list[dict[str, Any] | None] = [None] * moments.size
+    warm_pos = x_guess.copy()
+    warm_neg = x_guess.copy()
+    for idx in order:
+        moment = float(moments[idx])
+        if moment >= 0.0:
+            res, warm_pos = _solve_one(moment, warm_pos)
+        else:
+            res, warm_neg = _solve_one(moment, warm_neg)
+        results[idx] = res
+
+    def _turn_radius(res: dict[str, Any]) -> float:
+        opt_x = np.asarray(res["opt_x"], dtype=float)
+        v_tau, course_rate = float(opt_x[0]), float(opt_x[4])
+        return float(v_tau / abs(course_rate)) if abs(course_rate) > 1e-9 else np.inf
+
+    def _lift_over_drag(res: dict[str, Any]) -> float:
+        cl, cd = res.get("cl"), res.get("cd")
+        if cl is None or cd is None or float(cd) == 0.0:
+            return float("nan")
+        return float(cl) / float(cd)
+
+    out: dict[str, Any] = {
+        "steer_moment_nm": moments,
+        "input_steering": (
+            moments / float(steer_gain_nm_per_us)
+            if steer_gain_nm_per_us
+            else np.full(moments.size, np.nan)
+        ),
+        "roll_body_deg": np.array([float(r["opt_x"][1]) for r in results]),
+        "aero_roll_deg": np.array([float(r["aero_roll_deg"]) for r in results]),
+        "course_rate": np.array([float(r["opt_x"][4]) for r in results]),
+        "turn_radius": np.array([_turn_radius(r) for r in results]),
+        "speed_tangential": np.array([float(r["opt_x"][0]) for r in results]),
+        "cl": np.array([float(r["cl"]) for r in results]),
+        "cd": np.array([float(r["cd"]) for r in results]),
+        "lift_over_drag": np.array([_lift_over_drag(r) for r in results]),
+        "tether_force": np.array([float(r["tether_force"]) for r in results]),
+        "side_slip_deg": np.array([float(r["side_slip_deg"]) for r in results]),
+        "success_physical": np.array([bool(r["success_physical"]) for r in results]),
+        "records": results,
+    }
+
+    # Effective steering gain d(phi_a)/d(u_s) [rad per u_s], fitted across the
+    # sweep when a deflection gain is provided and the points span a range.
+    k_steering_effective = float("nan")
+    if steer_gain_nm_per_us:
+        u_s = out["input_steering"]
+        phi_a_rad = np.deg2rad(out["aero_roll_deg"])
+        good = np.isfinite(u_s) & np.isfinite(phi_a_rad) & out["success_physical"]
+        if np.count_nonzero(good) >= 2 and np.ptp(u_s[good]) > 1e-9:
+            k_steering_effective = float(np.polyfit(u_s[good], phi_a_rad[good], 1)[0])
+    out["k_steering_effective"] = k_steering_effective
+    return out
 
 
 def solve_vsm_qs_trim_with_williams_tether(
@@ -1104,6 +1264,10 @@ _FORCE_OUTPUT_ROW = {"u": 0, "v": 1, "w": 2}
 _MOMENT_OUTPUT_ROW = {"p": 3, "q": 4, "r": 5}
 _KINEMATIC_RATE = {"z": "w", "phi": "p", "theta": "q", "psi": "r"}
 
+#: Index of each body-rate state in the (course, normal, radial) principal-axis
+#: ordering used by the gyroscopic coupling term (p=course, q=normal, r=radial).
+_RATE_AXIS_INDEX = {"p": 0, "q": 1, "r": 2}
+
 
 def _state_indices(states: Sequence[str]) -> list[int]:
     """Map state names to their column index in J_full / A_full."""
@@ -1117,14 +1281,98 @@ def _state_indices(states: Sequence[str]) -> list[int]:
         ) from None
 
 
+def _gyroscopic_rate_coupling(
+    omega_c_body: np.ndarray,
+    inertia: np.ndarray,
+) -> np.ndarray:
+    """Linearised gyroscopic coupling of the body rates from course-frame transport.
+
+    The CG moment equation of the fast subsystem retains the transport term of
+    the course frame (Cayon & Schmehl, Eq. ``moment_eom_cg``)::
+
+        I_cg @ omega_dot + Omega_C x (I_cg @ omega) = M_ext
+
+    so ``omega_dot`` gains ``-I_cg^{-1} (Omega_C x I_cg @ omega)``. With
+    ``omega = Omega_C + omega_rel`` and ``Omega_C`` fixed by the trajectory, the
+    Jacobian of this term with respect to the body-rate states ``(p, q, r)`` is
+    the constant matrix ``-I_cg^{-1} [Omega_C]_x I_cg``, returned in the
+    ``(course, normal, radial) = (p, q, r)`` axis basis.
+
+    Parameters
+    ----------
+    omega_c_body
+        Course-frame transport rate ``Omega_C`` in the ``(course, normal,
+        radial)`` axis basis.
+    inertia
+        Full 3x3 inertia tensor ``I_cg`` in the same axis basis (need not be
+        diagonal — off-diagonal products of inertia are honoured).
+    """
+    inertia = np.asarray(inertia, dtype=float)
+    wx, wy, wz = (float(v) for v in np.asarray(omega_c_body, dtype=float))
+    skew = np.array(
+        [[0.0, -wz, wy], [wz, 0.0, -wx], [-wy, wx, 0.0]],
+        dtype=float,
+    )
+    # -I^{-1} [Omega_C]_x I
+    return -np.linalg.solve(inertia, skew @ inertia)
+
+
+def _course_transport_rate_axes(
+    system_model: AWETrimSystemModel | None,
+    axes: AxisDefinition,
+    course_rate: float,
+    speed_tangential: float,
+    *,
+    full: bool,
+    transformation_c_from_vsm: np.ndarray = DEFAULT_TRANSFORMATION_C_FROM_VSM,
+) -> tuple[np.ndarray, np.ndarray, bool]:
+    """Baseline course-frame transport rate ``Omega_C`` for the stability model.
+
+    Returns ``(omega_c_axes, omega_c_world, is_full)``:
+
+    - ``omega_c_axes`` — ``Omega_C`` resolved in the ``(course, normal, radial)``
+      principal-axis basis, used by the gyroscopic term in ``_build_state_space``.
+    - ``omega_c_world`` — the same vector in the world/VSM basis, used as the
+      aerodynamic body-rate baseline in ``eval_force_moment``.
+
+    Reduced form (turn-rate-law reduction, Eq. before ``inertial_reduced``)::
+
+        Omega_C = -course_rate * e_radial            # radial component only
+
+    Full form (``Kinematics.velocity_rotation_course_frame``), matching the
+    paper's ``Omega_C`` with the radial component
+    ``-chi_dot_turn = (v_tau/r) tan(beta) sin(chi) - chi_dot`` and the
+    great-circle normal component ``v_tau/r``::
+
+        Omega_C = [0, v_tau/r, (v_tau/r) tan(beta) sin(chi) - chi_dot]  (course)
+
+    The course-frame vector is mapped to the world/VSM frame with the same
+    ``transformation_c_from_vsm`` the trim uses for every course-frame quantity,
+    so the flipped course/normal axes are handled consistently (the radial
+    component, and therefore the reduced form, is invariant under the flip). The
+    full form needs ``system_model``; without it the reduced form is returned.
+    """
+    R_body = np.array([axes.course, axes.normal, axes.radial], dtype=float)
+    reduced_axes = np.array([0.0, 0.0, -float(course_rate)], dtype=float)
+    if not full or system_model is None:
+        return reduced_axes, R_body.T @ reduced_axes, False
+    _set_course_rate_body(system_model, float(course_rate))
+    system_model.speed_tangential = float(speed_tangential)
+    omega_c_course = np.asarray(
+        _as_numeric_3vector(system_model, system_model.velocity_rotation_course_frame),
+        dtype=float,
+    ).reshape(3)
+    omega_c_world = np.asarray(transformation_c_from_vsm, dtype=float) @ omega_c_course
+    return R_body @ omega_c_world, omega_c_world, True
+
+
 def _build_state_space(
     J_full: np.ndarray,
     states: Sequence[str],
     *,
     mass: float,
-    inertia_xx: float,
-    inertia_yy: float,
-    inertia_zz: float,
+    inertia: np.ndarray,
+    omega_c_body: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Assemble (J_sub, A) for a chosen subset of states.
 
@@ -1132,18 +1380,46 @@ def _build_state_space(
     caller drops some states. A has one row per state — dynamics for velocity
     and rate states, kinematics (phi_dot=p etc.) for attitude states. Kinematic
     rows whose paired rate is not in `states` collapse to a zero row.
+
+    ``inertia`` is the full 3x3 tensor ``I`` in the ``(course, normal, radial)``
+    axis basis. The body-rate rows solve ``I omega_dot = M`` as a coupled block,
+    ``omega_dot = I^{-1} M``, so any off-diagonal products of inertia (e.g. from
+    a tensor rotated into the stability frame at the trim attitude) couple the
+    moment channels. A per-row scalar division is only recovered when ``I`` is
+    diagonal.
+
+    When ``omega_c_body`` (the course-frame transport rate ``Omega_C`` in the
+    same axis basis) is given, the rate rows also carry the linearised
+    gyroscopic coupling ``-I^{-1} [Omega_C]_x I`` between the body rates, so the
+    moment dynamics implement ``I omega_dot + Omega_C x I omega = M`` rather than
+    the torque-free ``I omega_dot = M``.
     """
     cols = _state_indices(states)
     J_sub = J_full[:, cols]
 
-    inertia = {"p": inertia_xx, "q": inertia_yy, "r": inertia_zz}
+    inertia = np.asarray(inertia, dtype=float)
+    # omega_dot from the moment channels: I^{-1} @ [M_course; M_normal; M_radial].
+    moment_rows = J_sub[
+        [_MOMENT_OUTPUT_ROW["p"], _MOMENT_OUTPUT_ROW["q"], _MOMENT_OUTPUT_ROW["r"]], :
+    ]
+    rate_accel_from_moment = np.linalg.solve(inertia, moment_rows)  # (3, n)
+    gyro = (
+        _gyroscopic_rate_coupling(omega_c_body, inertia)
+        if omega_c_body is not None
+        else None
+    )
     n = len(states)
     A = np.zeros((n, n))
     for i, s in enumerate(states):
         if s in _FORCE_OUTPUT_ROW:
             A[i, :] = J_sub[_FORCE_OUTPUT_ROW[s], :] / mass
         elif s in _MOMENT_OUTPUT_ROW:
-            A[i, :] = J_sub[_MOMENT_OUTPUT_ROW[s], :] / inertia[s]
+            ax = _RATE_AXIS_INDEX[s]
+            A[i, :] = rate_accel_from_moment[ax, :]
+            if gyro is not None:
+                for j, s2 in enumerate(states):
+                    if s2 in _RATE_AXIS_INDEX:
+                        A[i, j] += gyro[ax, _RATE_AXIS_INDEX[s2]]
         elif s in _KINEMATIC_RATE:
             rate = _KINEMATIC_RATE[s]
             if rate in states:
@@ -1185,6 +1461,8 @@ def compute_vsm_trim_stability_derivatives(
     eps_position: float = 0.5,
     states: Sequence[str] | None = None,
     coupled: bool = False,
+    full_omega_c: bool = True,
+    rotate_inertia_by_trim: bool = True,
 ) -> dict[str, Any]:
     """Compute aerodynamic stability derivatives around a VSM trim state.
 
@@ -1200,6 +1478,24 @@ def compute_vsm_trim_stability_derivatives(
         into a single coupled A matrix. If ``False``, the selection is split
         into a longitudinal sub-block (states in :data:`LONG_STATES`) and a
         lateral sub-block (states in :data:`LAT_STATES`).
+    full_omega_c
+        If ``True`` (default), the course-frame transport rate ``Omega_C`` that
+        drives both the aerodynamic body-rate and the gyroscopic moment term is
+        the full ``[0, v_tau/r, (v_tau/r) tan(beta) sin(chi) - chi_dot]`` taken
+        from ``system_model`` (requires it). If ``False`` — or when no
+        ``system_model`` is supplied — the radial-only reduction
+        ``-chi_dot * e_radial`` is used, matching the closed-form turn-rate law.
+        The result records the resolved choice under ``omega_c_model``.
+    rotate_inertia_by_trim
+        If ``True`` (default), the principal moments ``diag(I_xx, I_yy, I_zz)``
+        are rotated into the stability frame by the trim attitude,
+        ``I_stab = R(roll0, pitch0, yaw0) diag(I) R^T``, so the rotational
+        dynamics use the full tensor (products of inertia and all) as a coupled
+        ``omega_dot = I_stab^{-1} M`` block. This is correct when the stability
+        axes are the (space-fixed) course axes and the kite is tilted from them
+        by the trim attitude. Set ``False`` when the stability axes are the
+        body-fixed principal axes (``--stability-frame body``), where the
+        inertia is already diagonal and no rotation applies.
 
     Always-present outputs
     ----------------------
@@ -1397,6 +1693,41 @@ def compute_vsm_trim_stability_derivatives(
 
     williams_fixed_length_force = _make_williams_fixed_length_solver()
 
+    # Baseline course-frame transport rate Omega_C (full vs radial-only). Used
+    # both as the steady aerodynamic body-rate seen by the VSM solve
+    # (omega_c_world) and as the Omega_C of the gyroscopic moment term in the
+    # state-space (omega_c_axes). Computing it once keeps the aero and the
+    # inertial coupling on the *same* Omega_C, so the linearisation point stays
+    # a consistent trim state.
+    omega_c_axes, omega_c_world, omega_c_is_full = _course_transport_rate_axes(
+        system_model,
+        axes,
+        float(course_rate0),
+        float(speed_tangential),
+        full=full_omega_c,
+    )
+
+    # Inertia tensor in the stability axis basis. In the course frame the kite's
+    # principal axes are tilted from the (space-fixed) stability axes by the trim
+    # attitude, so the principal moments are rotated in with the same rotation
+    # the aerodynamics uses: I_stab = R diag(I) R^T. This makes the moment rows a
+    # coupled I^{-1} M block and lets the gyroscopic term carry the resulting
+    # products of inertia. In the body-fixed principal-axis frame the tensor is
+    # already diagonal, so the rotation is skipped.
+    inertia_principal = np.diag(
+        [float(inertia_xx), float(inertia_yy), float(inertia_zz)]
+    )
+    if rotate_inertia_by_trim:
+        _R_attitude = _compose_attitude_rotation(
+            roll_deg=float(roll0),
+            pitch_deg=float(pitch0),
+            yaw_deg=float(yaw0),
+            axes=axes,
+        )
+        inertia_stability = _R_attitude @ inertia_principal @ _R_attitude.T
+    else:
+        inertia_stability = inertia_principal
+
     warned_williams_force = False
 
     def tether_force_for(radial_offset: float) -> np.ndarray:
@@ -1437,7 +1768,7 @@ def compute_vsm_trim_stability_derivatives(
         umag = np.linalg.norm(va_pert)
         aoa_deg = np.rad2deg(np.arctan2(va_pert[2], va_pert[0]))
         beta_deg = np.rad2deg(np.arctan2(va_pert[1], np.hypot(va_pert[0], va_pert[2])))
-        omega_total = -course_rate0 * axes.radial + omega_perturb
+        omega_total = omega_c_world + omega_perturb
         omega_mag = np.linalg.norm(omega_total)
         omega_axis = omega_total / omega_mag if omega_mag > 1e-12 else axes.radial
 
@@ -1563,17 +1894,31 @@ def compute_vsm_trim_stability_derivatives(
     }
     J_full = np.column_stack([columns[name] for name in ALL_STATE_NAMES])
 
+    # Course-frame transport rate Omega_C (computed once above, in the rate-row
+    # (course, normal, radial) basis). It drives the gyroscopic term
+    # Omega_C x I omega of the CG moment equation and is the same Omega_C the
+    # aerodynamic body-rate uses in eval_force_moment. With the full form it also
+    # carries the great-circle normal component v_tau/r, which couples p <-> r
+    # inside the lateral block; the radial-only reduction leaves only p <-> q.
+    omega_c_body = omega_c_axes
+
     _, A_full = _build_state_space(
         J_full,
         ALL_STATE_NAMES,
         mass=mass,
-        inertia_xx=inertia_xx,
-        inertia_yy=inertia_yy,
-        inertia_zz=inertia_zz,
+        inertia=inertia_stability,
+        omega_c_body=omega_c_body,
     )
     eig_full, vec_full = _eig_block(A_full)
 
     # ---- Backward-compatible default decoupled blocks -------------------
+    # These split longitudinal (u, theta, q) and lateral (phi, psi, p, r) and use
+    # the diagonal principal moments (not the trim-rotated tensor I_stab), so they
+    # stay the historical decoupled approximation; the full-tensor treatment lives
+    # in A_full and the selected/coupled blocks. The gyroscopic term Omega_C x I
+    # omega couples p <-> q (straddles the split, dropped here, retained in
+    # A_full) and — with the full Omega_C — p <-> r (within the lateral block,
+    # added to a_lat below). The radial-only reduction has no p <-> r term.
     # J_long keeps the historical (3, 3) shape: rows = [F_x, F_z, M_y]
     # (i.e. the longitudinal force/moment channels), cols = [u, theta, q].
     long_default_state_idx = _state_indices(["u", "theta", "q"])
@@ -1594,6 +1939,12 @@ def compute_vsm_trim_stability_derivatives(
     a_lat[1, :] = [0.0, 0.0, 0.0, 1.0]
     a_lat[2, :] = j_lat[1, :] / inertia_xx
     a_lat[3, :] = j_lat[2, :] / inertia_zz
+    # Within-lateral gyroscopic coupling p <-> r from the great-circle normal
+    # component of Omega_C (identically zero for the radial-only reduction).
+    # Uses the diagonal principal inertia, consistent with the decoupled blocks.
+    _gyro_lat = _gyroscopic_rate_coupling(omega_c_axes, inertia_principal)
+    a_lat[2, 3] += _gyro_lat[_RATE_AXIS_INDEX["p"], _RATE_AXIS_INDEX["r"]]
+    a_lat[3, 2] += _gyro_lat[_RATE_AXIS_INDEX["r"], _RATE_AXIS_INDEX["p"]]
 
     eig_long, vec_long = _eig_block(a_long)
     eig_lat, vec_lat = _eig_block(a_lat)
@@ -1639,6 +1990,12 @@ def compute_vsm_trim_stability_derivatives(
         "radial_position_state": "z",
         "eps_position": float(eps_position),
         "eps_position_used": float(radial_eps),
+        # Course-frame transport rate used for the aero body-rate + gyroscopic term.
+        "omega_c_model": "full" if omega_c_is_full else "radial_only",
+        "omega_c_axes": np.asarray(omega_c_axes, dtype=float),
+        # Inertia tensor used for the rotational dynamics of A_full / A_selected.
+        "inertia_stability": np.asarray(inertia_stability, dtype=float),
+        "inertia_rotated_by_trim": bool(rotate_inertia_by_trim),
     }
 
     # ---- User-selected sub-block (custom state set / coupling) ----------
@@ -1659,9 +2016,8 @@ def compute_vsm_trim_stability_derivatives(
                 J_full,
                 sel_states,
                 mass=mass,
-                inertia_xx=inertia_xx,
-                inertia_yy=inertia_yy,
-                inertia_zz=inertia_zz,
+                inertia=inertia_stability,
+                omega_c_body=omega_c_body,
             )
             eig_sel, vec_sel = _eig_block(A_sel)
             result.update(
@@ -1685,17 +2041,15 @@ def compute_vsm_trim_stability_derivatives(
                 J_full,
                 sel_long,
                 mass=mass,
-                inertia_xx=inertia_xx,
-                inertia_yy=inertia_yy,
-                inertia_zz=inertia_zz,
+                inertia=inertia_stability,
+                omega_c_body=omega_c_body,
             )
             J_sel_lat, A_sel_lat = _build_state_space(
                 J_full,
                 sel_lat,
                 mass=mass,
-                inertia_xx=inertia_xx,
-                inertia_yy=inertia_yy,
-                inertia_zz=inertia_zz,
+                inertia=inertia_stability,
+                omega_c_body=omega_c_body,
             )
             eig_sel_long, vec_sel_long = _eig_block(A_sel_long)
             eig_sel_lat, vec_sel_lat = _eig_block(A_sel_lat)
