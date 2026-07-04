@@ -630,21 +630,30 @@ def _smoothstep(edge0, edge1, x):
     return t * t * (3.0 - 2.0 * t)
 
 
-def reelin_bump(s, reelout_fraction=0.7, ramp_fraction=0.25):
-    """Smooth 0->1->0 indicator for the reel-in window, centred at ``s = 0.5``.
+def reelin_bump(s, reelout_fraction=0.7, ramp_fraction=0.25, reelin_center=0.5):
+    """Smooth 0->1->0 indicator for the reel-in window, centred at ``reelin_center``.
 
-    Returns ~1 inside the reel-in band ``[0.5 - h, 0.5 + h]`` (``h = (1 - f)/2``)
-    and 0 in the reel-out, with smoothstep edges. Centring the reel-in at
-    mid-period keeps ``s = 0`` (and ``s = 1``) in steady, full-amplitude reel-out
-    so a forward trim started there is well posed. Shared by the path generator
-    and the synthetic depower profile so both switch at the same place.
+    Returns ~1 inside the reel-in band ``[c - h, c + h]`` (``c = reelin_center``,
+    ``h = (1 - f)/2``) and 0 in the reel-out, with smoothstep edges. The window
+    is evaluated on the circular offset from ``c``, so it wraps across the
+    periodic seam and ANY centre is valid (taken mod 1): the default
+    ``c = 0.5`` keeps ``s = 0`` (and ``s = 1``) in steady, full-amplitude
+    reel-out so a forward trim started there is well posed; ``c = h`` starts
+    the reel-in exactly at ``s = 0``, ``c = 1 - h`` ends it there, and
+    ``c = 0`` puts ``s = 0`` at the top (middle) of the reel-in. Shared by the
+    path generator and the synthetic depower profile so both switch at the
+    same place.
     """
     s = np.asarray(s, dtype=float).ravel()
     f = float(reelout_fraction)
+    c = float(reelin_center)
     h = 0.5 * (1.0 - f)
     r = max(ramp_fraction * (1.0 - f), 1e-6)
-    lo, hi = 0.5 - h, 0.5 + h
-    return _smoothstep(lo, lo + r, s) * (1.0 - _smoothstep(hi - r, hi, s))
+    # Circular offset from the window centre, in [-0.5, 0.5): the window wraps
+    # across the seam, and h < 0.5 guarantees the bump is 0 (with zero slope)
+    # at the antipode, keeping the curve exactly periodic and C1.
+    d = (s - c + 0.5) % 1.0 - 0.5
+    return _smoothstep(-h, -h + r, d) * (1.0 - _smoothstep(h - r, h, d))
 
 
 def full_cycle_angles(
@@ -657,6 +666,7 @@ def full_cycle_angles(
     beta_reelin_peak=1.1,
     az_reelin_amp=0.25,
     ramp_fraction=0.4,
+    reelin_center=0.5,
     psi0=0.0,
     downloops=True,
 ):
@@ -665,14 +675,15 @@ def full_cycle_angles(
     One period ``s in [0, 1)`` is a whole cycle. The figure-eight phase advances
     *continuously* over the entire period (``psi = 2*pi*n_loops*s``) so the curve
     is exactly periodic and smooth (C1) at the ``s = 0`` boundary, with full path
-    speed there. The reel-in is a window centred at ``s = 0.5``: inside it the
+    speed there. The reel-in is a window centred at ``reelin_center`` (default
+    ``s = 0.5``): inside it the
     figure amplitude is faded to zero and the elevation is lifted along a smooth
     arc to ``beta_reelin_peak``. To avoid a cusp at the top of the climb (the kite
     going straight up and back down the same azimuth line), the reel-in also bows
     in azimuth -- to one side on the way up and the other on the way down
     (``az_reelin_amp * sin(2*pi*xi)``) -- tracing a smooth open loop instead of
     retracing. Outside the window the kite flies figure-eights at base elevation
-    ``beta0``. Centring the reel-in at mid-period leaves ``s = 0`` in steady
+    ``beta0``. The default mid-period centring leaves ``s = 0`` in steady
     reel-out, a far more trim-feasible start than a fit to noisy flight data.
 
     Unlike :func:`named_curve_angles` (reel-out-only figure-eights), this spans
@@ -699,6 +710,16 @@ def full_cycle_angles(
         Smoothstep edge width of the reel-in window (fraction of its span).
         Larger -> gentler reel-in (a single smooth hump, no flat top); ``>= 0.5``
         removes the plateau entirely.
+    reelin_center : float
+        Centre of the reel-in window in ``s`` (any value, taken mod 1: the
+        window wraps across the periodic seam). The default 0.5 keeps
+        ``s = 0`` (the periodic seam and the natural forward-trim start) in
+        steady reel-out; with ``h = (1 - reelout_fraction)/2``, ``h`` starts
+        the reel-in exactly at ``s = 0``, ``1 - h`` ends it there (so
+        ``s = 0`` is the reel-out start), and 0 puts ``s = 0`` at the top
+        (middle) of the reel-in. Off-centre windows move the seam toward or
+        into the reel-in -- expect a harder trim start (see
+        :func:`reelin_bump`).
     psi0 : float
         Constant figure-phase offset (rad). Shifts where in a figure-eight the
         reel-in window fades the oscillation out: the phase at the window edges
@@ -713,16 +734,20 @@ def full_cycle_angles(
     omega = 1.0 if downloops else -1.0
     f = float(reelout_fraction)
 
-    ri = reelin_bump(s, reelout_fraction=f, ramp_fraction=ramp_fraction)
+    c = float(reelin_center)
+    ri = reelin_bump(
+        s, reelout_fraction=f, ramp_fraction=ramp_fraction, reelin_center=c
+    )
     window = 1.0 - ri  # figure amplitude: full in reel-out, 0 in reel-in
 
     # Continuous over the period -> periodic & C1 (psi0 shifts the phase only).
     psi = 2.0 * np.pi * n_loops * s + float(psi0)
 
-    # Position within the reel-in band [0.5 - h, 0.5 + h] (0 at entry, 1 at exit).
+    # Position within the reel-in band (0 at entry, 1 at exit), via the same
+    # circular offset as reelin_bump so the band wraps across the seam.
     h = 0.5 * (1.0 - f)
-    lo, hi = 0.5 - h, 0.5 + h
-    xi = np.clip((s - lo) / max(hi - lo, 1e-9), 0.0, 1.0)
+    d = (s - c + 0.5) % 1.0 - 0.5
+    xi = np.clip((d + h) / max(2.0 * h, 1e-9), 0.0, 1.0)
     # Bow to +az while climbing (xi < 0.5), to -az while descending (xi > 0.5);
     # gated by ``ri`` so it is zero (with zero slope) outside the reel-in.
     az_bow = ri * az_reelin_amp * np.sin(omega * 2.0 * np.pi * xi)
@@ -748,6 +773,7 @@ def make_full_cycle_bspline_path_parameters(
     beta_reelin_peak=1.1,
     az_reelin_amp=0.25,
     ramp_fraction=0.4,
+    reelin_center=0.5,
     psi0=0.0,
     downloops=True,
     precision=6,
@@ -771,6 +797,7 @@ def make_full_cycle_bspline_path_parameters(
         beta_reelin_peak=beta_reelin_peak,
         az_reelin_amp=az_reelin_amp,
         ramp_fraction=ramp_fraction,
+        reelin_center=reelin_center,
         psi0=psi0,
         downloops=downloops,
     )

@@ -6,6 +6,7 @@ from awetrim.kinematics.parametrized_patterns import (
     full_cycle_angles,
     make_bspline_path_parameters_from_named_curve,
     named_curve_angles,
+    reelin_bump,
     reelin_control_point_mask,
 )
 
@@ -66,6 +67,70 @@ def test_full_cycle_angles_psi0_shifts_phase_and_preserves_periodicity():
 
     az_shift, _ = full_cycle_angles(s, psi0=1.3, **kwargs)
     assert not np.allclose(az_shift, az_zero)
+
+
+def test_reelin_bump_center_moves_the_window_and_wraps_the_seam():
+    """reelin_center relocates the window without changing its width; the
+    default 0.5 is unchanged, and the window wraps across the periodic seam
+    (any centre is valid, taken mod 1)."""
+    s = np.linspace(0.0, 1.0, 4000, endpoint=False)
+    f = 0.65
+    h = 0.5 * (1.0 - f)
+
+    b_default = reelin_bump(s, reelout_fraction=f, ramp_fraction=0.45)
+    b_mid = reelin_bump(s, reelout_fraction=f, ramp_fraction=0.45, reelin_center=0.5)
+    assert np.allclose(b_default, b_mid)
+
+    for center in (0.0, 0.1, h, 0.35, 1.0 - h):  # incl. seam-wrapping windows
+        b = reelin_bump(
+            s, reelout_fraction=f, ramp_fraction=0.45, reelin_center=center
+        )
+        # circular centroid of the bump must sit at the requested centre
+        ang = 2.0 * np.pi * s
+        centroid = (
+            np.arctan2((b * np.sin(ang)).sum(), (b * np.cos(ang)).sum())
+            / (2.0 * np.pi)
+        ) % 1.0
+        d_centroid = abs(centroid - center)
+        assert min(d_centroid, 1.0 - d_centroid) < 1e-2
+        # zero outside the (circular) window keeps the curve periodic
+        d = np.abs((s - center + 0.5) % 1.0 - 0.5)
+        assert np.allclose(b[d > h + 1e-9], 0.0)
+        # same window width regardless of the centre
+        assert np.isclose(b.sum(), b_mid.sum(), rtol=1e-6)
+
+
+def test_full_cycle_angles_reelin_center_shifts_arc_and_keeps_periodicity():
+    """A shifted reel-in window moves the elevation arc in s while the curve
+    stays exactly periodic at the seam; the default centre is unchanged."""
+    s = np.linspace(0.0, 1.0, 2000, endpoint=False)
+    f = 0.65
+    h = 0.5 * (1.0 - f)
+    kwargs = dict(n_loops=3, reelout_fraction=f, beta0=0.35, beta_amp0=0.14,
+                  az_amp0=0.36, beta_reelin_peak=1.2, az_reelin_amp=-0.5,
+                  ramp_fraction=0.45, downloops=True)
+
+    az_default, el_default = full_cycle_angles(s, **kwargs)
+    az_mid, el_mid = full_cycle_angles(s, reelin_center=0.5, **kwargs)
+    assert np.allclose(az_default, az_mid) and np.allclose(el_default, el_mid)
+
+    center = 1.0 - h  # reel-in ends at the seam -> s = 0 is the reel-out start
+    _, el = full_cycle_angles(s, reelin_center=center, **kwargs)
+    peak_mask = el > 0.9 * kwargs["beta_reelin_peak"]
+    assert abs(float(s[peak_mask].mean()) - center) < 0.02
+    # steady figure-eights around mid-period, where the window used to be
+    assert np.all(el[np.abs(s - 0.5) < 0.05] < kwargs["beta0"] + 0.2)
+
+    az_seam, el_seam = full_cycle_angles(
+        np.array([0.0, 1.0]), reelin_center=center, **kwargs
+    )
+    assert np.isclose(az_seam[0], az_seam[1]) and np.isclose(el_seam[0], el_seam[1])
+
+    # window centred ON the seam (wraps): s = 0 is the top of the reel-in and
+    # the figure-eights fly at mid-period, where the window used to be
+    _, el_wrap = full_cycle_angles(s, reelin_center=0.0, **kwargs)
+    assert el_wrap[0] > 0.9 * kwargs["beta_reelin_peak"]
+    assert np.all(el_wrap[np.abs(s - 0.5) < 0.05] < kwargs["beta0"] + 0.2)
 
 
 def test_create_pattern_from_dict_rejects_unsupported_type():
