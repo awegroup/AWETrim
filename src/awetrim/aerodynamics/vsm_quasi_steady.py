@@ -281,6 +281,7 @@ def solve_vsm_quasi_steady_trim(
     moment_tolerance: float = 1e-2,
     return_timing_breakdown: bool = False,
     max_nfev: int | None = None,
+    prescribed_roll_deg: float | None = None,
 ) -> tuple[dict[str, Any], VsmBodyAerodynamics]:
     """Solve one aerodynamic VSM quasi-steady trim state.
 
@@ -294,6 +295,15 @@ def solve_vsm_quasi_steady_trim(
     and turns to react it, so the resulting roll (``opt_x[1]`` /
     ``aero_roll_deg``) and course rate (``opt_x[4]``) are *outputs*. ``None``
     (default) leaves the free-trim behaviour unchanged.
+
+    ``prescribed_roll_deg`` pins the roll DOF to a kinematically prescribed
+    value (geometric bridle steering: the inextensible steering lines dictate
+    the roll, and transmit whatever roll moment is needed as a constraint
+    reaction). The roll-moment residual ``cmx`` is then dropped from the
+    objective and from the ``success_physical`` test — the solve is 4 unknowns
+    ``[speed, pitch, yaw, course_rate]`` against ``[cmy, cmz, cfx, cfy]`` —
+    and reported as the bridle reaction ``reaction_roll_moment_nm``. ``None``
+    (default) keeps roll free.
     """
 
     bounds_lower = _as_5vector(bounds_lower, "bounds_lower")
@@ -489,29 +499,58 @@ def solve_vsm_quasi_steady_trim(
             "res": res,
             "gravity_force": gravity_force,
             "inertial_force": inertial_force,
+            "denom": denom,
         }
         return residual
 
-    opt = least_squares(
-        lambda x: moment_residual(x),
-        np.clip(x_guess, bounds_lower, bounds_upper),
-        bounds=(bounds_lower, bounds_upper),
-        max_nfev=max_nfev,
-    )
+    if prescribed_roll_deg is None:
+        opt = least_squares(
+            lambda x: moment_residual(x),
+            np.clip(x_guess, bounds_lower, bounds_upper),
+            bounds=(bounds_lower, bounds_upper),
+            max_nfev=max_nfev,
+        )
+        opt_x = np.asarray(opt.x, dtype=float)
+    else:
+        # Kinematic bridle steering: roll is a constraint, not a DOF. Optimize
+        # the 4 remaining unknowns against [cmy, cmz, cfx, cfy]; cmx becomes
+        # the roll reaction the steering lines must carry.
+        free = np.array([0, 2, 3, 4], dtype=int)
+        roll_fixed = float(prescribed_roll_deg)
 
-    cm_best = moment_residual(opt.x)
+        def _to_full(x4: np.ndarray) -> np.ndarray:
+            x = np.empty(5, dtype=float)
+            x[free] = np.asarray(x4, dtype=float)
+            x[1] = roll_fixed
+            return x
+
+        opt = least_squares(
+            lambda x4: moment_residual(_to_full(x4))[1:],
+            np.clip(x_guess[free], bounds_lower[free], bounds_upper[free]),
+            bounds=(bounds_lower[free], bounds_upper[free]),
+            max_nfev=max_nfev,
+        )
+        opt_x = _to_full(opt.x)
+
+    cm_best = moment_residual(opt_x)
     cmx, cmy, cmz, cfx, cfy = cm_best
-    physical_success = bool(
-        np.abs(cmx) < moment_tolerance
-        and np.abs(cmy) < moment_tolerance
-        and np.abs(cmz) < moment_tolerance
-    )
+    if prescribed_roll_deg is None:
+        physical_success = bool(
+            np.abs(cmx) < moment_tolerance
+            and np.abs(cmy) < moment_tolerance
+            and np.abs(cmz) < moment_tolerance
+        )
+    else:
+        # cmx is the bridle-line reaction, not a residual to drive to zero.
+        physical_success = bool(
+            np.abs(cmy) < moment_tolerance and np.abs(cmz) < moment_tolerance
+        )
 
     payload = (
-        cached_eval["payload"] if np.array_equal(opt.x, cached_eval["x"]) else None
+        cached_eval["payload"] if np.array_equal(opt_x, cached_eval["x"]) else None
     )
     if payload is None:
-        _ = moment_residual(opt.x)
+        _ = moment_residual(opt_x)
         payload = cached_eval["payload"]
 
     kin = payload["kin"]
@@ -555,7 +594,7 @@ def solve_vsm_quasi_steady_trim(
     tether_force = float(total_aero_force[2] + gravity_force[2] + inertial_force[2])
 
     result: dict[str, Any] = {
-        "opt_x": np.asarray(opt.x, dtype=float),
+        "opt_x": opt_x,
         "cm": np.array([cmx, cmy, cmz], dtype=float),
         "cfx": float(cfx),
         "cfy": float(cfy),
@@ -586,6 +625,9 @@ def solve_vsm_quasi_steady_trim(
         "tether_force": tether_force,
         "optimizer": opt,
     }
+    if prescribed_roll_deg is not None:
+        result["prescribed_roll_deg"] = float(prescribed_roll_deg)
+        result["reaction_roll_moment_nm"] = float(cmx * payload["denom"])
 
     if return_timing_breakdown:
         residual_total = float(timing_counters["residual_total_s"])
@@ -742,6 +784,197 @@ def turn_radius_vs_steer_moment(
         if np.count_nonzero(good) >= 2 and np.ptp(u_s[good]) > 1e-9:
             k_steering_effective = float(np.polyfit(u_s[good], phi_a_rad[good], 1)[0])
     out["k_steering_effective"] = k_steering_effective
+    return out
+
+
+def steering_delta_limit(steering_h: float, steering_b: float) -> float:
+    """Maximum |delta| [m] of the rigid-segment bridle-steering triangle."""
+    h, b = float(steering_h), float(steering_b)
+    c = h**2 + (b / 2.0) ** 2
+    return 0.5 * (np.sqrt(c + h * b) - np.sqrt(max(c - h * b, 0.0)))
+
+
+def roll_angle_from_steering_delta(
+    steering_h: float, steering_b: float, delta_m: float
+) -> float:
+    """Rigid-body roll angle [deg] from a steering line-length difference [m].
+
+    Purely geometric bridle-steering model (the triangle from
+    ``scripts/personal/aerodynamics/calculate_max_roll.py``): the kite hangs
+    from the KCU apex by two lines attached at the ends of a rigid segment of
+    span ``steering_b`` whose midpoint sits ``steering_h`` above the KCU (both
+    in the roll plane, i.e. y-z distances). A steering actuation making the
+    two line lengths differ by ``2 * delta_m``
+    (``delta_m = (L_left - L_right) / 2`` [m]) tilts the segment about its
+    midpoint by
+
+        sin(theta) = -2 * delta * sqrt(c - delta^2) / (h * b),
+        c = h^2 + (b / 2)^2.
+
+    The roll is *kinematically prescribed* by the inextensible lines — no
+    moment balance involved; the lines carry the roll reaction. ``delta_m`` is
+    clamped just inside the geometric limit
+    (:func:`steering_delta_limit`). Positive ``delta_m`` (left line longer)
+    gives negative ``theta``. Small-delta gain:
+    ``dtheta/ddelta = -2 sqrt(c) / (h b)`` [rad/m].
+    """
+    h, b = float(steering_h), float(steering_b)
+    c = h**2 + (b / 2.0) ** 2
+    hb = h * b
+    if hb <= 1e-12:
+        return 0.0
+    delta_lim = steering_delta_limit(h, b)
+    delta = float(np.clip(delta_m, -0.999 * delta_lim, 0.999 * delta_lim))
+    arg = -(2.0 * delta * np.sqrt(max(c - delta**2, 0.0))) / hb
+    return float(np.degrees(np.arcsin(np.clip(arg, -1.0, 1.0))))
+
+
+def turn_radius_vs_steering_delta(
+    body_aero: VsmBodyAerodynamics,
+    center_of_gravity: np.ndarray,
+    reference_point: np.ndarray,
+    system_model: AWETrimSystemModel,
+    steering_deltas_m: Sequence[float],
+    x_guess: np.ndarray,
+    *,
+    steering_h: float,
+    steering_b: float,
+    tip_midpoint: np.ndarray,
+    solver: VsmSolver | None = None,
+    bounds_lower: np.ndarray = DEFAULT_BOUNDS_LOWER,
+    bounds_upper: np.ndarray = DEFAULT_BOUNDS_UPPER,
+    include_gravity: bool = False,
+    axes: AxisDefinition = DEFAULT_AXES,
+    moment_tolerance: float = 1e-2,
+    max_nfev: int | None = None,
+) -> dict[str, Any]:
+    """Map a geometric bridle-steering input ``delta`` [m] to the trimmed turn.
+
+    For each steering line-length half-difference in ``steering_deltas_m`` the
+    kite roll is *kinematically prescribed* by the bridle triangle
+    (:func:`roll_angle_from_steering_delta` with ``steering_h`` /
+    ``steering_b``): the baseline geometry is rotated by ``theta`` about the
+    course axis through ``tip_midpoint`` (the midpoint of the steering-line
+    attachment segment, which the rigid-segment model holds fixed), and the
+    quasi-steady trim is solved with the roll DOF pinned
+    (``prescribed_roll_deg=0`` relative to the rotated baseline) and the
+    roll-moment residual dropped — the steering lines carry that reaction,
+    reported as ``reaction_roll_moment_nm``.
+
+    ``center_of_gravity`` is held at its unrotated location: the KCU term
+    (usually dominant) does not roll with the wing and the wing CG sits near
+    the rotation point, so its shift is second order.
+
+    Points are solved outward from zero delta in each sign direction, each
+    warm-started from the previous solution.
+
+    Returns
+    -------
+    dict
+        Arrays (one entry per input delta, in input order) under keys
+        ``steering_delta_m``, ``roll_prescribed_deg`` (= ``roll_body_deg``),
+        ``aero_roll_deg``, ``course_rate``, ``turn_radius``,
+        ``speed_tangential``, ``cl``, ``cd``, ``lift_over_drag``,
+        ``tether_force``, ``side_slip_deg``, ``reaction_roll_moment_nm``,
+        ``success_physical``; scalars ``k_steering_effective``
+        (fitted ``d(phi_a)/d(delta)`` [rad/m], ``nan`` if not fittable),
+        ``k_roll_geometric`` (analytic ``|dtheta/ddelta|`` at 0 [rad/m]),
+        ``steering_h``, ``steering_b``; plus the raw ``records`` list.
+    """
+    deltas = np.asarray(list(steering_deltas_m), dtype=float).reshape(-1)
+    bounds_lower = _as_5vector(bounds_lower, "bounds_lower")
+    bounds_upper = _as_5vector(bounds_upper, "bounds_upper")
+    x_guess = np.clip(_as_5vector(x_guess, "x_guess"), bounds_lower, bounds_upper)
+    tip_midpoint = _as_3vector(tip_midpoint)
+    course_axis = _as_3vector(axes.course)
+    if solver is None:
+        solver = _default_vsm_solver(_as_3vector(reference_point))
+
+    def _solve_one(
+        delta: float, warm: np.ndarray
+    ) -> tuple[dict[str, Any], np.ndarray]:
+        theta = roll_angle_from_steering_delta(steering_h, steering_b, delta)
+        body_i = copy.deepcopy(body_aero)
+        if theta != 0.0:
+            body_i.rotate(angle_deg=theta, axis=course_axis, point=tip_midpoint)
+        res, _ = solve_vsm_quasi_steady_trim(
+            body_aero=body_i,
+            center_of_gravity=center_of_gravity,
+            reference_point=reference_point,
+            system_model=system_model,
+            x_guess=warm,
+            solver=solver,
+            bounds_lower=bounds_lower,
+            bounds_upper=bounds_upper,
+            include_gravity=include_gravity,
+            axes=axes,
+            moment_tolerance=moment_tolerance,
+            max_nfev=max_nfev,
+            prescribed_roll_deg=0.0,  # roll is baked into the rotated baseline
+        )
+        res["roll_prescribed_deg"] = theta
+        return res, np.clip(
+            np.asarray(res["opt_x"], dtype=float), bounds_lower, bounds_upper
+        )
+
+    # Solve outward from zero in each direction, warm-started from straight flight.
+    order = np.argsort(np.abs(deltas))
+    results: list[dict[str, Any] | None] = [None] * deltas.size
+    warm_pos = x_guess.copy()
+    warm_neg = x_guess.copy()
+    for idx in order:
+        delta = float(deltas[idx])
+        if delta >= 0.0:
+            res, warm_pos = _solve_one(delta, warm_pos)
+        else:
+            res, warm_neg = _solve_one(delta, warm_neg)
+        results[idx] = res
+
+    def _turn_radius(res: dict[str, Any]) -> float:
+        opt_x = np.asarray(res["opt_x"], dtype=float)
+        v_tau, course_rate = float(opt_x[0]), float(opt_x[4])
+        return float(v_tau / abs(course_rate)) if abs(course_rate) > 1e-9 else np.inf
+
+    def _lift_over_drag(res: dict[str, Any]) -> float:
+        cl, cd = res.get("cl"), res.get("cd")
+        if cl is None or cd is None or float(cd) == 0.0:
+            return float("nan")
+        return float(cl) / float(cd)
+
+    thetas = np.array([float(r["roll_prescribed_deg"]) for r in results])
+    out: dict[str, Any] = {
+        "steering_delta_m": deltas,
+        "roll_prescribed_deg": thetas,
+        "roll_body_deg": thetas,
+        "aero_roll_deg": np.array([float(r["aero_roll_deg"]) for r in results]),
+        "course_rate": np.array([float(r["opt_x"][4]) for r in results]),
+        "turn_radius": np.array([_turn_radius(r) for r in results]),
+        "speed_tangential": np.array([float(r["opt_x"][0]) for r in results]),
+        "cl": np.array([float(r["cl"]) for r in results]),
+        "cd": np.array([float(r["cd"]) for r in results]),
+        "lift_over_drag": np.array([_lift_over_drag(r) for r in results]),
+        "tether_force": np.array([float(r["tether_force"]) for r in results]),
+        "side_slip_deg": np.array([float(r["side_slip_deg"]) for r in results]),
+        "reaction_roll_moment_nm": np.array(
+            [float(r.get("reaction_roll_moment_nm", np.nan)) for r in results]
+        ),
+        "success_physical": np.array([bool(r["success_physical"]) for r in results]),
+        "records": results,
+    }
+
+    # Effective aero-roll gain d(phi_a)/d(delta) [rad/m] fitted across the sweep.
+    k_steering_effective = float("nan")
+    phi_a_rad = np.deg2rad(out["aero_roll_deg"])
+    good = np.isfinite(phi_a_rad) & out["success_physical"]
+    if np.count_nonzero(good) >= 2 and np.ptp(deltas[good]) > 1e-9:
+        k_steering_effective = float(np.polyfit(deltas[good], phi_a_rad[good], 1)[0])
+    out["k_steering_effective"] = k_steering_effective
+    c = float(steering_h) ** 2 + (float(steering_b) / 2.0) ** 2
+    out["k_roll_geometric"] = float(
+        2.0 * np.sqrt(c) / (float(steering_h) * float(steering_b))
+    )
+    out["steering_h"] = float(steering_h)
+    out["steering_b"] = float(steering_b)
     return out
 
 
