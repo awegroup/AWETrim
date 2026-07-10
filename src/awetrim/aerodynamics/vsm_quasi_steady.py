@@ -1732,6 +1732,33 @@ def _eig_block(A: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return np.linalg.eig(A)
 
 
+def _panel_stall_onsets_rad(body_aero: Any) -> np.ndarray:
+    """Per-panel 2-D stall-onset AoA [rad] from the panels' polar tables.
+
+    The onset is the first interior Cl maximum in the positive-Cl region of
+    ``panel.panel_polar_data`` (columns ``alpha [rad], cl, ...``) — the same
+    definition the VSM solver's post-stall artificial-viscosity gate uses.
+    Panels without a usable table (e.g. test mocks) get ``inf`` (never
+    limiting). Used by :func:`compute_vsm_trim_stability_derivatives` to
+    check that the linearisation point itself is attached.
+    """
+    onsets: list[float] = []
+    for panel in getattr(body_aero, "panels", None) or ():
+        onset = float("inf")
+        table = getattr(panel, "panel_polar_data", None)
+        if table is not None:
+            arr = np.asarray(table, dtype=float)
+            if arr.ndim == 2 and arr.shape[0] >= 3 and arr.shape[1] >= 2:
+                alpha, cl = arr[:, 0], arr[:, 1]
+                positive = np.flatnonzero(cl > 0.0)
+                for k in positive[1:-1]:
+                    if cl[k] > cl[k - 1] and cl[k] > cl[k + 1]:
+                        onset = float(alpha[k])
+                        break
+        onsets.append(onset)
+    return np.asarray(onsets, dtype=float)
+
+
 def _timescales_from_eigs(eigvals: np.ndarray) -> np.ndarray:
     real_parts = np.real(eigvals)
     abs_re = np.abs(real_parts)
@@ -1762,8 +1789,18 @@ def compute_vsm_trim_stability_derivatives(
     coupled: bool = False,
     full_omega_c: bool = True,
     rotate_inertia_by_trim: bool = True,
+    include_gravity: bool = True,
+    transformation_c_from_vsm: np.ndarray = DEFAULT_TRANSFORMATION_C_FROM_VSM,
 ) -> dict[str, Any]:
     """Compute aerodynamic stability derivatives around a VSM trim state.
+
+    ``include_gravity`` (default ``True``) adds the kite weight to the force
+    model so ``nonlinear_rhs(0)`` is a genuine equilibrium residual. Gravity is
+    constant in the world frame, so it contributes **nothing** to the Jacobian
+    ``A_full`` / eigenvalues — it only removes the ~mg offset from ``f(0)``. Set
+    it to match the trim's own ``include_gravity`` (a gravity-free trim wants it
+    ``False``). ``transformation_c_from_vsm`` maps the model's course-frame
+    gravity into the trim (VSM) frame, matching the trim solver's convention.
 
     Parameters
     ----------
@@ -1799,7 +1836,26 @@ def compute_vsm_trim_stability_derivatives(
     Always-present outputs
     ----------------------
     ``J_full`` (6, 9), ``A_full`` (9, 9), ``eig_full``, ``vec_full``,
-    ``Tfast_full``, ``stable_full``, ``state_names_full``, ``output_names``.
+    ``Tfast_full``, ``stable_full``, ``state_names_full``, ``output_names``,
+    and ``nonlinear_rhs`` — a callable ``f(delta_state) -> xdot`` for the
+    nonlinear fast subsystem, assembled directly from the governing equations
+    (independent of ``A_full``): ``f(0)`` is the trim equilibrium residual and
+    central-differencing it cross-checks ``A_full``. See the callable's own
+    docstring.
+
+    Numerical hygiene: every finite-difference solve is warm-started from the
+    baseline (trim-state) circulation and convergence-checked with one cold
+    retry — cold-started gamma loops scatter the small-difference lateral
+    moment derivatives (yaw channel / small Izz) enough to flip eigenvalue
+    signs. Diagnostics: ``n_unconverged_perturbation_solves`` /
+    ``perturbation_solves_converged`` (distrust the eigenvalues when False),
+    ``gamma_warm_start_used``, and the attached-flow check of the
+    linearisation point itself, ``stall_margin_min_deg_at_trim`` /
+    ``n_stalled_panels_at_trim`` (first-interior-Cl-peak onsets per panel
+    polar vs the baseline ``alpha_at_ac``; NaN/None when the solver or body
+    does not expose that information). A trim on a post-stall branch (rigged
+    kites can have multiple pitch equilibria) makes the derivatives
+    unreliable regardless of differencing care.
 
     Default decoupled outputs (always present, shape preserved for back-compat)
     --------------------------------------------------------------------------
@@ -1848,8 +1904,33 @@ def compute_vsm_trim_stability_derivatives(
         else None
     )
 
+
     working_body = copy.deepcopy(body_aero)
     baseline_sections, baseline_spanwise = _baseline_geometry(working_body)
+    # The linearisation applies the trim attitude (roll0, pitch0, yaw0) to the
+    # baseline. If ``body_aero`` is the *solved* trim body it already carries that
+    # attitude (``geometry_rotation``), so capturing its geometry as the baseline
+    # would DOUBLE the rotation -> a doubly-rotated kite and a wrong aero moment.
+    # Un-rotate the baseline back to the reference (zero-attitude) geometry about
+    # the same reference_point, so the attitude is applied exactly once. No-op
+    # for an un-rotated body (geometry_rotation == I).
+    _R_body = np.asarray(
+        getattr(working_body, "geometry_rotation", np.eye(3)), dtype=float
+    )
+    if _R_body.shape == (3, 3) and not np.allclose(_R_body, np.eye(3)):
+        _R_inv = _R_body.T
+        _origin = _as_3vector(reference_point)
+        baseline_sections = [
+            [
+                (
+                    _origin + _R_inv @ (np.asarray(le, float) - _origin),
+                    _origin + _R_inv @ (np.asarray(te, float) - _origin),
+                )
+                for (le, te) in wing_secs
+            ]
+            for wing_secs in baseline_sections
+        ]
+        baseline_spanwise = [_R_inv @ np.asarray(sp, float) for sp in baseline_spanwise]
     projected_area = float(body_aero.wings[0].compute_projected_area())
     max_chord = max(float(panel.chord) for panel in body_aero.panels)
 
@@ -2027,7 +2108,46 @@ def compute_vsm_trim_stability_derivatives(
     else:
         inertia_stability = inertia_principal
 
+    # Kite weight in the trim (VSM) frame, matching the trim's own gravity term
+    # (``transformation_c_from_vsm @ force_gravity``). Constant in the world
+    # frame -> zero contribution to the finite-difference Jacobian; it only
+    # anchors ``nonlinear_rhs(0)`` so the linearisation point is an equilibrium.
+    if include_gravity and system_model is not None:
+        gravity_force_stab = _as_3vector(
+            np.asarray(transformation_c_from_vsm, dtype=float)
+            @ _force_gravity(system_model)
+        )
+    else:
+        gravity_force_stab = np.zeros(3, dtype=float)
+
     warned_williams_force = False
+
+    # --- Numerical hygiene of the finite-difference solves ----------------
+    # The lateral moment derivatives (the yaw channel especially) are small
+    # differences of large numbers divided by a small inertia; cold-started
+    # gamma loops converge to slightly different circulation states whose
+    # scatter is visible in those derivatives. Every perturbation solve is
+    # therefore warm-started from the BASELINE (trim-state) circulation, and
+    # its convergence flag is checked (with one cold retry) instead of being
+    # silently ignored. Solvers whose ``solve`` does not accept a
+    # ``gamma_distribution`` keyword (e.g. test mocks) opt out gracefully.
+    try:
+        _solve_accepts_gamma = (
+            "gamma_distribution" in inspect.signature(solver.solve).parameters
+        )
+    except (TypeError, ValueError):
+        _solve_accepts_gamma = False
+    gamma_baseline: np.ndarray | None = None
+    n_unconverged_solves = 0
+    # Baseline force anchor for the tether (set after the baseline solve). The
+    # stability model's independent fixed-length tether re-solve disagrees with
+    # the trim's tether by a constant offset (frame/parametrisation), which
+    # otherwise leaves a large ``f(0)`` residual. Subtracting the baseline
+    # force_at_cg from the tether pins the trim to a true equilibrium of the
+    # force model. It is a *constant* offset -> zero contribution to the
+    # finite-difference Jacobian, so the eigenvalues are unchanged; only the
+    # tether's radial-offset derivative (unchanged) enters ``A``.
+    tether_baseline_anchor: np.ndarray | None = None
 
     def tether_force_for(radial_offset: float) -> np.ndarray:
         nonlocal warned_williams_force
@@ -2080,7 +2200,15 @@ def compute_vsm_trim_stability_derivatives(
             reference_point=reference_point,
             rates_in_body_frame=False,
         )
-        res = solver.solve(working_body)
+        nonlocal n_unconverged_solves
+        if _solve_accepts_gamma and gamma_baseline is not None:
+            res = solver.solve(working_body, gamma_distribution=gamma_baseline)
+            if not bool(res.get("gamma_converged", True)):
+                res = solver.solve(working_body)  # cold retry
+        else:
+            res = solver.solve(working_body)
+        if not bool(res.get("gamma_converged", True)):
+            n_unconverged_solves += 1
         f_aero = np.array(
             [
                 float(res.get("Fx", 0.0)),
@@ -2112,6 +2240,12 @@ def compute_vsm_trim_stability_derivatives(
             else None
         )
         f_tether_eff = tether_force_for(radial_position_offset)
+        if tether_baseline_anchor is not None:
+            # Anchor the tether to the trim equilibrium: subtract the (constant)
+            # baseline force residual so force_at_cg(0) == 0. The radial-offset
+            # dependence of ``tether_force_for`` is untouched, so d/dz is
+            # preserved and the Jacobian / eigenvalues do not change.
+            f_tether_eff = f_tether_eff - tether_baseline_anchor
         moment_tether_eff = np.cross(r_arm, f_tether_eff)
         f_inertial = np.zeros(3, dtype=float)
         f_inertial[1] = mass * speed_tangential_eff * float(course_rate0)
@@ -2119,11 +2253,36 @@ def compute_vsm_trim_stability_derivatives(
             f_inertial[2] = mass * speed_tangential_eff**2 / distance_radial_eff
 
         moment_at_cg = moment_aero_at_ref + np.cross(r_arm, f_aero) + moment_tether_eff
-        force_at_cg = f_aero + f_tether_eff + f_inertial
-        return force_at_cg, moment_at_cg
+        force_at_cg = f_aero + f_tether_eff + f_inertial + gravity_force_stab
+        return force_at_cg, moment_at_cg, res
 
     zero3 = np.zeros(3, dtype=float)
     eps_angle_rad = np.deg2rad(eps_angle_deg)
+
+    # --- Baseline solve at the (unperturbed) trim state -------------------
+    # Provides the warm-start circulation for every finite-difference solve
+    # and the attached-flow check of the linearisation point itself: a trim
+    # that has drifted onto a post-stall branch (multiple pitch equilibria
+    # exist for rigged kites) yields sawtooth circulation states whose
+    # derivatives are unreliable no matter how carefully they are differenced.
+    _force_baseline, _, _res_baseline = eval_force_moment(zero3, zero3)
+    # Anchor every subsequent tether evaluation to this (un-anchored) baseline
+    # force so the trim is a true equilibrium of the force model (f(0) == 0
+    # up to the fast-subsystem inertial reduction, which is genuinely in A).
+    tether_baseline_anchor = np.asarray(_force_baseline, dtype=float)
+    _gamma_res = _res_baseline.get("gamma_distribution")
+    if _gamma_res is not None:
+        gamma_baseline = np.asarray(_gamma_res, dtype=float)
+    stall_margin_min_deg = float("nan")
+    n_stalled_panels: int | None = None
+    _stall_onsets = _panel_stall_onsets_rad(working_body)
+    _alpha_eff = _res_baseline.get("alpha_at_ac")
+    if _alpha_eff is not None and _stall_onsets.size:
+        _alpha_eff = np.ravel(np.asarray(_alpha_eff, dtype=float))
+        if _alpha_eff.size == _stall_onsets.size:
+            _margins_deg = np.rad2deg(_stall_onsets - _alpha_eff)
+            stall_margin_min_deg = float(np.min(_margins_deg))
+            n_stalled_panels = int(np.sum(_margins_deg <= 0.0))
 
     # Rotation matrix from world frame to body frame (rows = body axes).
     R_body = np.array([axes.course, axes.normal, axes.radial], dtype=float)
@@ -2137,10 +2296,10 @@ def compute_vsm_trim_stability_derivatives(
         dpitch: float = 0.0,
         dyaw: float = 0.0,
     ) -> np.ndarray:
-        force_plus, moment_plus = eval_force_moment(
+        force_plus, moment_plus, _ = eval_force_moment(
             delta_v, omega_perturb, radial_position_offset, droll, dpitch, dyaw
         )
-        force_minus, moment_minus = eval_force_moment(
+        force_minus, moment_minus, _ = eval_force_moment(
             -delta_v, -omega_perturb, -radial_position_offset, -droll, -dpitch, -dyaw
         )
         d_force = (force_plus - force_minus) / (2.0 * step)
@@ -2210,6 +2369,65 @@ def compute_vsm_trim_stability_derivatives(
     )
     eig_full, vec_full = _eig_block(A_full)
 
+    def nonlinear_rhs(delta_state: np.ndarray) -> np.ndarray:
+        """Nonlinear fast-subsystem vector field ``xdot = f(x)`` at this trim.
+
+        ``delta_state`` is the perturbation of the 9 states in
+        :data:`ALL_STATE_NAMES` order ``(u, w, z, phi, theta, psi, p, q, r)``
+        about the trim (angles in rad, rates in rad/s, velocities in m/s, ``z``
+        in m); the return is ``xdot`` in the same order and units-per-second.
+
+        This assembles the state derivative *directly* from the governing
+        equations — force/mass on the velocity channels, the kinematic
+        identities ``z_dot = w, phi_dot = p, theta_dot = q, psi_dot = r`` on the
+        attitude/position channels, and the rotating-frame moment equation
+        ``I omega_dot + Omega_C x I omega = M`` on the body-rate channels — reusing
+        only :func:`eval_force_moment` for the aero+tether+inertial ``(F, M)``.
+        It shares no code with :func:`_build_state_space`, so:
+
+        * ``nonlinear_rhs(zeros(9))`` is the trim **equilibrium residual** (the
+          moment channels also carry the transport moment ``Omega_C x I Omega_C``,
+          which the trim's aero/tether moment balance does not include), and
+        * central-differencing this field is an independent cross-check of
+          ``A_full`` (the constant residual cancels in the difference).
+
+        Provided for verification and for time-domain integration of the fast
+        subsystem; not used to build any of the returned matrices.
+        """
+        dx = np.asarray(delta_state, dtype=float).reshape(9)
+        du, dw, dz, dphi, dtheta, dpsi, dp, dq, dr = dx
+        delta_v = du * axes.course + dw * axes.radial
+        omega_perturb = dp * axes.course + dq * axes.normal + dr * axes.radial
+        f_world, m_world, _ = eval_force_moment(
+            delta_v,
+            omega_perturb,
+            radial_position_offset=float(dz),
+            delta_roll_deg=float(np.rad2deg(dphi)),
+            delta_pitch_deg=float(np.rad2deg(dtheta)),
+            delta_yaw_deg=float(np.rad2deg(dpsi)),
+        )
+        f_body = R_body @ f_world  # [F_course, F_normal, F_radial]
+        m_body = R_body @ m_world  # [M_course, M_normal, M_radial]
+        omega = omega_c_axes + np.array([dp, dq, dr], dtype=float)
+        rate_dot = np.linalg.solve(
+            inertia_stability,
+            m_body - np.cross(omega_c_axes, inertia_stability @ omega),
+        )
+        return np.array(
+            [
+                f_body[0] / mass,  # u_dot     = F_course / m
+                f_body[2] / mass,  # w_dot     = F_radial / m
+                dw,  # z_dot     = w
+                dp,  # phi_dot   = p
+                dq,  # theta_dot = q
+                dr,  # psi_dot   = r
+                rate_dot[0],  # p_dot
+                rate_dot[1],  # q_dot
+                rate_dot[2],  # r_dot
+            ],
+            dtype=float,
+        )
+
     # ---- Backward-compatible default decoupled blocks -------------------
     # These split longitudinal (u, theta, q) and lateral (phi, psi, p, r) and use
     # the diagonal principal moments (not the trim-rotated tensor I_stab), so they
@@ -2269,6 +2487,11 @@ def compute_vsm_trim_stability_derivatives(
         "vec_full": vec_full,
         "Tfast_full": _timescales_from_eigs(eig_full),
         "stable_full": bool(np.all(np.real(eig_full) < 0.0)),
+        # Nonlinear fast-subsystem vector field xdot = f(delta_state), assembled
+        # directly from the governing equations (independent of A_full). f(0) is
+        # the trim equilibrium residual; central-differencing it cross-checks
+        # A_full. Also usable for time-domain integration of the fast subsystem.
+        "nonlinear_rhs": nonlinear_rhs,
         "state_names_full": list(ALL_STATE_NAMES),
         "output_names": [
             "F_course",
@@ -2289,6 +2512,18 @@ def compute_vsm_trim_stability_derivatives(
         "radial_position_state": "z",
         "eps_position": float(eps_position),
         "eps_position_used": float(radial_eps),
+        # Numerical-hygiene diagnostics: warm-started FD solves that still
+        # failed to converge (after one cold retry), and the attached-flow
+        # state of the linearisation point itself. Consumers should distrust
+        # the eigenvalues when solves are unconverged or panels are stalled
+        # at trim (NaN margin = no stall information available).
+        "n_unconverged_perturbation_solves": int(n_unconverged_solves),
+        "perturbation_solves_converged": bool(n_unconverged_solves == 0),
+        "gamma_warm_start_used": bool(
+            _solve_accepts_gamma and gamma_baseline is not None
+        ),
+        "stall_margin_min_deg_at_trim": stall_margin_min_deg,
+        "n_stalled_panels_at_trim": n_stalled_panels,
         # Course-frame transport rate used for the aero body-rate + gyroscopic term.
         "omega_c_model": "full" if omega_c_is_full else "radial_only",
         "omega_c_axes": np.asarray(omega_c_axes, dtype=float),

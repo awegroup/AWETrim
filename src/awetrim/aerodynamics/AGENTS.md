@@ -107,6 +107,11 @@ Primitives kept here for AWEDesign (and general use):
   law in `awetrim.system.kite`.
 - `vsm_quasi_steady.compute_vsm_trim_stability_derivatives` — the trim
   linearisation AWEDesign interprets into named derivatives and eigen-modes.
+  Its result dict always includes `nonlinear_rhs`, a callable
+  `f(delta_state) -> xdot` for the nonlinear 9-state fast subsystem, assembled
+  directly from the governing equations (independent of `A_full`): `f(0)` is the
+  trim equilibrium residual and central-differencing `f` cross-checks `A_full`.
+  Used by `scripts/personal/wes-quasi-steady/verify_linearization.py`.
 
 These use the **VSM axis convention** (matches the LEI-V3 reference): chord along
 `+x` (LE forward at smaller x, `+x` is **aft**), `+y` spanwise, `+z` up; anhedral
