@@ -3,7 +3,11 @@ bridle_point_node:
 - 0.0
 - 0.0
 pulley_mass: 0.09
-kcu_mass: 22.75
+# Deprecated fallback only (single source of truth is system.yaml
+# control_system.structure.mass). Snapshot was taken from a flown-KCU
+# (22.75 kg) deformation run; value corrected to the optimization-regime
+# 8.4 kg to match the sibling system.yaml and powered_2019.
+kcu_mass: 8.4
 dyneema:
   density: 1717
   youngs_modulus: 10000000000

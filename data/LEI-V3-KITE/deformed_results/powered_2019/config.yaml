@@ -14,15 +14,15 @@ wind_speed_wind_ref: 7.0
 timeder_speed_tangential: 0.0
 timeder_speed_radial: 0.0
 power_tape_extension_step: 0.05
-power_tape_final_extension: -0.2
+power_tape_final_extension: 0.0
 steering_tape_extension_step: 0.05
 steering_tape_final_extension: 0.0
 is_with_initial_structure_plot: false
 is_with_coupling_plot_per_iteration: false
-is_with_struc_plot_per_iteration: false
+is_with_struc_plot_per_iteration: true
 is_with_aero_plot_per_iteration: false
-is_with_final_plot: true
-is_with_aero_frame_final_plot: true
+is_with_final_plot: false
+is_with_aero_frame_final_plot: false
 is_save_geometry_snapshots: true
 aerodynamic:
   n_aero_panels_per_struc_section: 3
@@ -34,6 +34,8 @@ aerodynamic:
   - 0.0
   - 0.0
   - 0.0
+  is_with_artificial_viscosity: false
+  artificial_viscosity_factor: 0.035
 quasi_steady_trim:
   moment_tolerance: 0.0001
   force_residual_scale: 1.0
@@ -98,7 +100,7 @@ tether:
   cf: 0.01
   wind_model: uniform
 structural_kite_fem:
-  max_iterations: 2000
+  max_iterations: 200
   tolerance: 0.01
   step_limit: 0.2
   relax_init: 0.5
@@ -112,5 +114,5 @@ structural_kite_fem:
   print_info: false
   update_stiffness: true
   max_stiffness: 500000
-  relaxbridles_pull_down_force_z: -500.0
-  relaxbridles_settle_force_z: -100.0
+  relaxbridles_pull_down_force_z: -1000.0
+  relaxbridles_settle_force_z: -200.0
