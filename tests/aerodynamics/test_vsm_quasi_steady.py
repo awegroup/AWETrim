@@ -524,6 +524,83 @@ def test_compute_vsm_trim_stability_derivatives_rejects_unknown_state():
 
 
 # ---------------------------------------------------------------------------
+# New — numerical-hygiene diagnostics of the finite-difference solves
+# ---------------------------------------------------------------------------
+
+
+def test_stability_derivatives_hygiene_diagnostics_graceful_defaults():
+    """Mocks without gamma support / alpha_at_ac / panel polars opt out.
+
+    The warm-start machinery must not require the solver to accept a
+    ``gamma_distribution`` keyword, and the linearisation-point stall check
+    must degrade to NaN/None when the solver or body exposes no stall
+    information.
+    """
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        center_of_gravity=np.zeros(3),
+        reference_point=np.zeros(3),
+        x_trim=_X_TRIM,
+        trim_result=_TRIM_RESULT,
+        solver=_MockSolver(),
+    )
+    assert result["perturbation_solves_converged"] is True
+    assert result["n_unconverged_perturbation_solves"] == 0
+    assert result["gamma_warm_start_used"] is False
+    assert np.isnan(result["stall_margin_min_deg_at_trim"])
+    assert result["n_stalled_panels_at_trim"] is None
+
+
+class _MockStallPanel(_MockPanel):
+    def __init__(self, onset_rad: float):
+        super().__init__()
+        alpha = np.deg2rad(np.arange(-5.0, 26.0, 1.0))
+        cl = 1.5 - 5.0 * (alpha - onset_rad) ** 2  # interior peak at onset
+        self.panel_polar_data = np.column_stack(
+            [alpha, cl, np.full(alpha.size, 0.02), np.zeros(alpha.size)]
+        )
+
+
+class _MockGammaSolver(_MockSolver):
+    """Accepts a warm start and reports circulation + effective alphas."""
+
+    def __init__(self):
+        self.warm_started_calls = 0
+        self.calls = 0
+
+    def solve(self, body, gamma_distribution=None) -> dict:
+        self.calls += 1
+        if gamma_distribution is not None:
+            self.warm_started_calls += 1
+        res = dict(super().solve(body))
+        res["gamma_distribution"] = np.zeros(1)
+        res["gamma_converged"] = True
+        res["alpha_at_ac"] = np.array([[np.deg2rad(8.0)]])  # (n, 1) like VSM
+        return res
+
+
+def test_stability_derivatives_warm_start_and_trim_stall_check():
+    body = _MockBody()
+    body.panels = [_MockStallPanel(onset_rad=np.deg2rad(12.0))]
+    solver = _MockGammaSolver()
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=body,
+        center_of_gravity=np.zeros(3),
+        reference_point=np.zeros(3),
+        x_trim=_X_TRIM,
+        trim_result=_TRIM_RESULT,
+        solver=solver,
+    )
+    assert result["gamma_warm_start_used"] is True
+    # Baseline solve is cold; every finite-difference solve is warm-started.
+    assert solver.warm_started_calls == solver.calls - 1
+    assert result["perturbation_solves_converged"] is True
+    # alpha_eff 8 deg vs onset 12 deg -> 4 deg margin, no stalled panels.
+    assert result["stall_margin_min_deg_at_trim"] == pytest.approx(4.0)
+    assert result["n_stalled_panels_at_trim"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Existing — verify backward-compatibility aliases
 # ---------------------------------------------------------------------------
 

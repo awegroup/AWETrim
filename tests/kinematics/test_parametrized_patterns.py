@@ -133,6 +133,74 @@ def test_full_cycle_angles_reelin_center_shifts_arc_and_keeps_periodicity():
     assert np.all(el_wrap[np.abs(s - 0.5) < 0.05] < kwargs["beta0"] + 0.2)
 
 
+def test_full_cycle_angles_pinned_handover_phases_and_descent_bow():
+    """psi_entry/psi_exit pin the figure phase at the reel-in window edges
+    (entry at the climbing centre crossing, re-entry heading the OTHER way,
+    i.e. the first lobe lands on the other side), the curve stays exactly
+    periodic, and the descent-only bow keeps the whole climb half of the
+    reel-in on the zero-azimuth meridian."""
+    s = np.linspace(0.0, 1.0, 3000, endpoint=False)
+    f = 0.65
+    h = 0.5 * (1.0 - f)
+    c = 0.0  # window wraps the seam, like the generator's default
+    kwargs = dict(n_loops=5, reelout_fraction=f, beta0=0.35, beta_amp0=0.14,
+                  az_amp0=0.36, beta_reelin_peak=1.2, az_reelin_amp=-0.5,
+                  ramp_fraction=0.45, reelin_center=c, downloops=True)
+
+    # None/None + "sym" reproduces the legacy psi0 curve exactly
+    az_legacy, el_legacy = full_cycle_angles(s, psi0=0.7, **kwargs)
+    az_none, el_none = full_cycle_angles(
+        s, psi0=0.7, psi_entry=None, psi_exit=None, bow_shape="sym", **kwargs
+    )
+    assert np.allclose(az_legacy, az_none) and np.allclose(el_legacy, el_none)
+
+    az, el = full_cycle_angles(
+        s, psi_entry=0.0, psi_exit=np.pi, bow_shape="descent", **kwargs
+    )
+
+    # exactly periodic at the seam (which sits INSIDE the wrapped window)
+    az_seam, el_seam = full_cycle_angles(
+        np.array([0.0, 1.0]), psi_entry=0.0, psi_exit=np.pi,
+        bow_shape="descent", **kwargs
+    )
+    assert np.isclose(az_seam[0], az_seam[1], atol=1e-9)
+    assert np.isclose(el_seam[0], el_seam[1], atol=1e-9)
+
+    # entry edge (s = c - h): azimuth 0, moving toward +az and climbing;
+    # exit edge (s = c + h): azimuth 0, moving toward -az -> other side
+    ds = s[1] - s[0]
+    i_in = int(round(((c - h) % 1.0) / ds))
+    i_out = int(round(((c + h) % 1.0) / ds))
+    d_az_in = (az[(i_in + 1) % s.size] - az[i_in - 1]) / (2 * ds)
+    d_el_in = (el[(i_in + 1) % s.size] - el[i_in - 1]) / (2 * ds)
+    d_az_out = (az[(i_out + 1) % s.size] - az[i_out - 1]) / (2 * ds)
+    assert abs(az[i_in]) < 1e-6 and d_az_in > 0 and d_el_in > 0
+    assert abs(az[i_out]) < 1e-6 and d_az_out < 0
+
+    # one-sided bow: the reel-in azimuth stays on the az_reelin_amp side
+    # (never crosses to the other), unlike the antisymmetric "sym" bow
+    d = (s - c + 0.5) % 1.0 - 0.5
+    r_s = kwargs["ramp_fraction"] * (1.0 - f)
+    plateau = np.abs(d) < h - r_s
+    assert plateau.any()
+    assert az[plateau].max() < 1e-9  # negative az_reelin_amp -> -az side only
+    assert az[plateau].min() < -0.1
+    # ... and the path never stalls: the elevation plateau is flat, so the
+    # bow must carry nonzero path speed everywhere (no cusp at the top)
+    q = np.column_stack(
+        (np.cos(az) * np.cos(el), np.sin(az) * np.cos(el), np.sin(el))
+    )
+    speed = np.linalg.norm(np.roll(q, -1, axis=0) - np.roll(q, 1, axis=0), axis=1)
+    assert speed.min() > 0.1 * speed.mean()
+
+    # pinning both phases needs the plateau to hide the phase correction
+    with pytest.raises(ValueError, match="ramp_fraction"):
+        full_cycle_angles(
+            s, psi_entry=0.0, psi_exit=np.pi,
+            **{**kwargs, "ramp_fraction": 0.5},
+        )
+
+
 def test_create_pattern_from_dict_rejects_unsupported_type():
     """A type with no constructor (e.g. cst_helix, the cycle-config default)
     must raise a clear ValueError listing supported types, not a KeyError."""
