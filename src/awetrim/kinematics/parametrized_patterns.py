@@ -668,6 +668,9 @@ def full_cycle_angles(
     ramp_fraction=0.4,
     reelin_center=0.5,
     psi0=0.0,
+    psi_entry=None,
+    psi_exit=None,
+    bow_shape="sym",
     downloops=True,
 ):
     """Azimuth/elevation samples for a *synthetic full pumping cycle*.
@@ -726,7 +729,35 @@ def full_cycle_angles(
         sets how sharp the reel-out/reel-in handover is (a fade near a lobe
         extremum can leave a near-cusp), so ``psi0`` is the lever that keeps
         the handover smooth for ANY ``n_loops``. A constant offset preserves
-        exact periodicity and C1 continuity at ``s = 0``.
+        exact periodicity and C1 continuity at ``s = 0``. Ignored when the
+        handover phases below are pinned.
+    psi_entry, psi_exit : float or None
+        Figure phase (rad) PINNED at the reel-in window edges: ``psi_entry``
+        is the phase where the fade begins (figures -> reel-in handover) and
+        ``psi_exit`` the phase where the figures resume. With ``downloops``
+        the centre crossings climb, so ``psi_entry = 0`` exits the figure at
+        azimuth 0 heading up (toward zenith) and ``psi_exit = pi`` re-enters
+        at azimuth 0 heading the other way -- the first lobe after reel-in is
+        on the OTHER side. Pinning one edge re-anchors the uniform phase
+        (``psi0`` is ignored); pinning both decouples the edges: the reel-out
+        gets the figure count nearest ``n_loops * reelout_fraction`` whose
+        fractional part matches the requested phase gap (opposite-side
+        re-entry <=> half-integer figures per reel-out), and the residual
+        phase correction is hidden inside the window plateau where the figure
+        amplitude is exactly zero -- which requires ``ramp_fraction < 0.5``
+        (raises ``ValueError`` otherwise). Default ``None`` keeps the legacy
+        ``psi0`` behaviour.
+    bow_shape : str
+        Reel-in azimuth-bow profile. ``"sym"`` (default) is the legacy
+        antisymmetric bow ``sin(2*pi*xi)`` (out one side climbing, out the
+        other descending, crossing zero at the top). ``"descent"`` is
+        one-sided: the climb starts on the zero-azimuth meridian, the bow
+        rises from mid-entry-ramp, the kite crosses the flat top moving
+        sideways (the elevation plateau carries no path speed, so the
+        azimuth must -- a bow that stays zero through the climb would stall
+        the parametrization into an unflyable cusp), peaks at mid-exit-ramp
+        and returns for the figure re-entry. The sign of ``az_reelin_amp``
+        picks the side in both shapes.
     downloops : bool
         Traversal sense (flips the azimuth direction).
     """
@@ -740,17 +771,72 @@ def full_cycle_angles(
     )
     window = 1.0 - ri  # figure amplitude: full in reel-out, 0 in reel-in
 
-    # Continuous over the period -> periodic & C1 (psi0 shifts the phase only).
-    psi = 2.0 * np.pi * n_loops * s + float(psi0)
-
     # Position within the reel-in band (0 at entry, 1 at exit), via the same
     # circular offset as reelin_bump so the band wraps across the seam.
     h = 0.5 * (1.0 - f)
     d = (s - c + 0.5) % 1.0 - 0.5
     xi = np.clip((d + h) / max(2.0 * h, 1e-9), 0.0, 1.0)
-    # Bow to +az while climbing (xi < 0.5), to -az while descending (xi > 0.5);
-    # gated by ``ri`` so it is zero (with zero slope) outside the reel-in.
-    az_bow = ri * az_reelin_amp * np.sin(omega * 2.0 * np.pi * xi)
+
+    if psi_entry is None and psi_exit is None:
+        # Continuous over the period -> periodic & C1 (psi0 shifts phase only).
+        psi = 2.0 * np.pi * n_loops * s + float(psi0)
+    elif psi_entry is not None and psi_exit is not None:
+        # Both handover phases pinned. ``u`` is the circular path coordinate
+        # anchored at the window EXIT (u = 0 where the figures resume): the
+        # reel-out spans u in [0, f], the window u in [f, 1]. The reel-out
+        # phase advance must end at psi_entry, so its figure count n_ro is
+        # the value nearest the legacy visible count ``n_loops * f`` whose
+        # fractional part equals the requested (entry - exit) phase gap.
+        r_s = float(ramp_fraction) * (1.0 - f)
+        if 1.0 - r_s <= f + r_s:
+            raise ValueError(
+                "pinning psi_entry AND psi_exit needs a reel-in plateau to "
+                "absorb the phase correction: ramp_fraction must be < 0.5 "
+                f"(got {float(ramp_fraction):g})"
+            )
+        gap = ((float(psi_entry) - float(psi_exit)) / (2.0 * np.pi)) % 1.0
+        n_ro = np.floor(n_loops * f - gap + 0.5) + gap
+        if n_ro <= 0.0:
+            n_ro = gap if gap > 0.0 else 1.0
+        rate = 2.0 * np.pi * n_ro / f
+        u = (d - h) % 1.0
+        # Residual to make sin(psi) exactly periodic at the u = 0/1 wrap
+        # (total advance = 2*pi * integer), swallowed by a smoothstep strictly
+        # inside the plateau where the figure amplitude is EXACTLY zero -- it
+        # never shows in the path, and the rate matches across the seam.
+        dcorr = 2.0 * np.pi * (np.round(n_ro / f) - n_ro / f)
+        psi = (
+            float(psi_exit) + rate * u + dcorr * _smoothstep(f + r_s, 1.0 - r_s, u)
+        )
+    else:
+        # One edge pinned: re-anchor the uniform phase so it hits the target
+        # at that window edge (the legacy psi0 is replaced, not added).
+        s_anchor = (c - h) % 1.0 if psi_exit is None else (c + h) % 1.0
+        target = float(psi_entry if psi_exit is None else psi_exit)
+        psi = 2.0 * np.pi * n_loops * (s - s_anchor) + target
+
+    if bow_shape == "sym":
+        # Bow to +az while climbing (xi < 0.5), to -az while descending
+        # (xi > 0.5); gated by ``ri`` so it is zero outside the reel-in.
+        bow = np.sin(omega * 2.0 * np.pi * xi)
+    elif bow_shape == "descent":
+        # One-sided bow: climb the zero meridian, drift out as the arc tops
+        # out, cross the top moving SIDEWAYS, return during the descent. The
+        # rise must begin at mid-entry-ramp (while the elevation still moves)
+        # and peak at mid-exit-ramp: wherever the elevation plateau is flat
+        # the azimuth must carry the path speed, or the parametrization
+        # stalls (zero speed -> a cusp the trim cannot fly). Smoothstep up to
+        # the peak and back keeps it C1 with zero slope at the window edges.
+        edge = 0.5 * min(float(ramp_fraction), 0.5)
+        bow = omega * (
+            _smoothstep(edge, 1.0 - edge, xi)
+            * (1.0 - _smoothstep(1.0 - edge, 1.0, xi))
+        )
+    else:
+        raise ValueError(
+            f"bow_shape must be 'sym' or 'descent', got {bow_shape!r}"
+        )
+    az_bow = ri * az_reelin_amp * bow
 
     azimuth = window * az_amp0 * np.sin(omega * psi) + az_bow
     elevation = (
@@ -775,6 +861,9 @@ def make_full_cycle_bspline_path_parameters(
     ramp_fraction=0.4,
     reelin_center=0.5,
     psi0=0.0,
+    psi_entry=None,
+    psi_exit=None,
+    bow_shape="sym",
     downloops=True,
     precision=6,
 ):
@@ -799,6 +888,9 @@ def make_full_cycle_bspline_path_parameters(
         ramp_fraction=ramp_fraction,
         reelin_center=reelin_center,
         psi0=psi0,
+        psi_entry=psi_entry,
+        psi_exit=psi_exit,
+        bow_shape=bow_shape,
         downloops=downloops,
     )
     _, C_phi, C_beta = fit_bspline_pattern_to_trajectory(

@@ -35,9 +35,9 @@ from awetrim.utils.defaults import DEFAULT_RADIAL_PARAMETERS, DEFAULT_OPTI_LIMIT
 START_STATE = {
     "t": 0,
     "s": 0,
-    "s_dot": 2,
+    "s_dot": 0.1,
     "input_steering": 0,
-    "tension_tether_ground": 8.4e4,  # Initial guess for tension (N)
+    "tension_tether_ground": 8.4e3,  # Initial guess for tension (N)
     "speed_radial": 0,  # Positive for reel-out
 }
 
