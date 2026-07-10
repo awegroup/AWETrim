@@ -179,7 +179,28 @@ quasi-steady residual solver in `SystemModel`.
 Public functions should use these names:
 
 - `solve_vsm_quasi_steady_trim` (accepts an optional `applied_moment_nm` for
-  external/steering moments, backward-compatible)
+  external/steering moments, backward-compatible; also an optional
+  `gamma_tolerance` — the inner VSM circulation-loop convergence tolerance,
+  default `1e-6`, forwarded to the default solver so sweeps can trade a looser
+  tolerance for speed. The coupled variant
+  `solve_vsm_qs_trim_with_williams_tether` takes the same `gamma_tolerance`.)
+  `solve_vsm_qs_trim_with_williams_tether` is the **consistent (off-radial)
+  tether trim**: the tether's own drag + weight enter the kite force balance
+  (a large effect for long tethers — tether drag is a dominant AWES loss, so a
+  radial-tether assumption is optimistic on crosswind speed/load). Its
+  `tether_model` selects `"williams"` (default: full distributed shape, kite-end
+  vector baked in as the resultant so only tether length + ground closure are
+  solved) or `"rigid_lumped"` (the ROM's `RigidLumpedTether` — lumped off-radial
+  drag + half-weight, no ground closure; matches the ROM cycle model but
+  overestimates tether drag). Both also take `gamma_loop` (default `"base"`),
+  forwarded to
+  `_default_vsm_solver` → VSM `Solver(gamma_loop_type=...)`. `"anderson"` selects
+  the Anderson-accelerated inner loop (~25× fewer inner iterations in attached
+  flow), but **only use it with a tight `gamma_tolerance` (~1e-8)**: these trim
+  solvers use a finite-difference outer Jacobian, and Anderson's superlinear
+  convergence makes its tolerance-terminated `gamma` non-smooth in `x`, which
+  corrupts that Jacobian at loose tolerance and yields wrong trims. `"base"` is
+  the safe default and the only correct choice at the sweeps' loose `1e-4`.
 - `turn_radius_vs_steer_moment` (roll-steering turn map: prescribed KCU roll
   moment → bank, `phi_a`, turn radius, effective `k_steering`)
 - `compute_vsm_trim_stability_derivatives`

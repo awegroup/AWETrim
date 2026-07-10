@@ -17,6 +17,8 @@
 from __future__ import annotations
 
 import copy
+import inspect
+import logging
 from time import perf_counter
 from typing import Any, Callable, Mapping, Sequence
 
@@ -52,7 +54,11 @@ DEFAULT_BOUNDS_LOWER = np.array([-2.0, -15.0, -15.0, -15.0, -5.0], dtype=float)
 DEFAULT_BOUNDS_UPPER = np.array([200.0, 15.0, 15.0, 15.0, 5.0], dtype=float)
 
 
-def _default_vsm_solver(reference_point: np.ndarray) -> VsmSolver:
+def _default_vsm_solver(
+    reference_point: np.ndarray,
+    allowed_error: float = 1e-6,
+    gamma_loop_type: str = "base",
+) -> VsmSolver:
     try:
         from VSM.core.Solver import Solver
     except ImportError as exc:  # pragma: no cover - depends on optional package
@@ -61,8 +67,29 @@ def _default_vsm_solver(reference_point: np.ndarray) -> VsmSolver:
             "`VSM.core.Solver.Solver`, or pass a solver implementing VsmSolver."
         ) from exc
 
+    # ``allowed_error`` is the inner VSM circulation-loop convergence tolerance.
+    # The base gamma loop converges linearly under relaxation, so loosening this
+    # from the 1e-6 default to e.g. 1e-4 cuts the iteration count several-fold
+    # with a negligible change in the trimmed state (see the wind-window sweep,
+    # which exposes it as ``--gamma-tolerance``).
+    #
+    # ``gamma_loop_type`` selects the inner circulation solver:
+    #   * "base" (default) -- relaxed-Picard fixed-point iteration.
+    #   * "anderson" -- Anderson-accelerated: ~25x fewer inner iterations in
+    #     attached flow, targeting the same fixed point. It is a clear win for
+    #     *direct* single-state solves, BUT the outer trim solvers here use a
+    #     finite-difference Jacobian that needs the inner residual to be a smooth
+    #     function of x. Anderson's superlinear (jumpy) convergence makes its
+    #     tolerance-terminated gamma slightly non-smooth, which corrupts the FD
+    #     Jacobian at loose ``allowed_error`` (>=1e-6) and produces WRONG trim /
+    #     trim-existence results. Only use "anderson" here with a tight
+    #     ``gamma_tolerance`` (~1e-8), where it is correct and ~1.5-2x faster.
+    #     See the VSM ``Solver.gamma_loop_anderson`` bake-off.
     return Solver(
-        reference_point=reference_point, gamma_initial_distribution_type="zero"
+        reference_point=reference_point,
+        gamma_initial_distribution_type="zero",
+        allowed_error=allowed_error,
+        gamma_loop_type=gamma_loop_type,
     )
 
 
@@ -282,6 +309,8 @@ def solve_vsm_quasi_steady_trim(
     return_timing_breakdown: bool = False,
     max_nfev: int | None = None,
     prescribed_roll_deg: float | None = None,
+    gamma_tolerance: float = 1e-6,
+    gamma_loop: str = "base",
 ) -> tuple[dict[str, Any], VsmBodyAerodynamics]:
     """Solve one aerodynamic VSM quasi-steady trim state.
 
@@ -322,30 +351,13 @@ def solve_vsm_quasi_steady_trim(
     system_model.speed_tangential = float(x_guess[0])
     _set_course_rate_body(system_model, float(x_guess[4]))
 
-    # Seed kinematics so omega can be evaluated before the solver starts.
-    system_model.speed_tangential = float(x_guess[0])
-    _set_course_rate_body(system_model, float(x_guess[4]))
-
-    # Seed kinematics so omega can be evaluated before the solver starts.
-    system_model.speed_tangential = float(x_guess[0])
-    _set_course_rate_body(system_model, float(x_guess[4]))
-
-    # Seed kinematics so Williams omega can be evaluated before the solver.
-    system_model.speed_tangential = float(x_guess[0])
-    _set_course_rate_body(system_model, float(x_guess[4]))
-
-    # Seed system-model kinematics so Williams can evaluate omega numerically
-    # before the solver starts iterating.
-    system_model.speed_tangential = float(x_guess[0])
-    _set_course_rate_body(system_model, float(x_guess[4]))
-
     if transformation_c_from_vsm.shape != (3, 3):
         raise ValueError("transformation_c_from_vsm must be shape (3, 3).")
     if np.any(bounds_lower >= bounds_upper):
         raise ValueError("Each lower bound must be smaller than its upper bound.")
 
     if solver is None:
-        solver = _default_vsm_solver(reference_point)
+        solver = _default_vsm_solver(reference_point, gamma_tolerance, gamma_loop)
 
     def evaluate_kinematics(x: np.ndarray) -> dict[str, np.ndarray]:
         speed_tangential, _roll, _pitch, _yaw, course_rate_body = x
@@ -890,9 +902,7 @@ def turn_radius_vs_steering_delta(
     if solver is None:
         solver = _default_vsm_solver(_as_3vector(reference_point))
 
-    def _solve_one(
-        delta: float, warm: np.ndarray
-    ) -> tuple[dict[str, Any], np.ndarray]:
+    def _solve_one(delta: float, warm: np.ndarray) -> tuple[dict[str, Any], np.ndarray]:
         theta = roll_angle_from_steering_delta(steering_h, steering_b, delta)
         body_i = copy.deepcopy(body_aero)
         if theta != 0.0:
@@ -996,33 +1006,36 @@ def solve_vsm_qs_trim_with_williams_tether(
     axes: AxisDefinition = DEFAULT_AXES,
     moment_tolerance: float = 1e-2,
     max_nfev: int | None = None,
+    gamma_tolerance: float = 1e-6,
+    gamma_loop: str = "base",
+    tether_model: str = "williams",
 ) -> tuple[dict[str, Any], VsmBodyAerodynamics]:
-    """Joint VSM trim + Williams tether shape solve.
+    """Coupled VSM trim with a consistent (off-radial) tether force.
 
-    The combined least-squares system has 8 unknowns and 8 residuals:
+    Unlike a radial-tether approximation, the tether's own off-radial reaction
+    (aerodynamic drag + weight) enters the kite force balance — a large effect
+    for long tethers in crosswind flight (tether drag is a dominant AWES loss).
 
-      * 5 from the existing trim problem
-        ``[speed_tangential, roll_deg, pitch_deg, yaw_deg, course_rate_body]``
-        with residuals ``[cmx, cmy, cmz, cfx, cfy]``.
-      * 3 from the Williams tether model
-        ``[elevation_last, azimuth_last, tether_length]`` with residuals
-        ``ground_position - (0,0,0)`` (normalised by ``distance_radial``).
+    ``tether_model`` selects the tether:
 
-    The Williams tether is fed
-    ``force_kite_resultant = total_aero_force + inertial + gravity`` where
-    inertial / gravity now include both the wing and the KCU masses (the
-    user's "all forces from the kite and KCU"). ``r_kite`` is taken as
-    ``distance_radial * axes.radial`` in the same frame the trim residual
-    operates in (course/body x = ``axes.course``, z = ``axes.radial``).
+      * ``"williams"`` (default) — the full Williams distributed-mass shape. The
+        kite-end tether vector is baked in as the trim resultant (Williams
+        "collapsed" mode), so the 3-D force balance ``F_tether = -net`` holds by
+        construction and the tether shape only has to reach the ground anchor.
+        6 unknowns ``[speed, roll, pitch, yaw, course_rate, tether_length]`` /
+        6 residuals ``[cmx, cmy, cmz, ground(3)]``. Per-node local apparent wind,
+        so the tether drag is resolved along the (curved) tether.
+      * ``"rigid_lumped"`` — the ROM's ``RigidLumpedTether`` model: a radial
+        tension plus a lumped off-radial drag + half-weight evaluated at the
+        kite, no shape/ground closure. 6 unknowns
+        ``[speed, roll, pitch, yaw, course_rate, tension]`` / 6 residuals
+        ``[cmx, cmy, cmz, cfx, cfy, cfz]``. Cheaper/simpler and matches the ROM
+        cycle model, but overestimates tether drag (kite-station apparent wind
+        applied to the whole tether).
 
-    Notes / caveats:
-      * The trim residual frame and the world frame are not the same in
-        general (gravity here is the ``T_c_from_vsm @ force_gravity`` vector,
-        which is in the model's course frame, not world). For straight flight
-        with small course angles the two coincide; for circular flight there
-        will be a frame inconsistency in the tether weight direction. Treat
-        this as a first integration -- refine the transformation once the
-        rest of the wiring is in place.
+    Both feed the kite ``net = total_aero_force + inertial + gravity`` (wing +
+    KCU masses); ``r_kite`` is ``distance_radial * axes.radial`` in the trim
+    (VSM) frame. See ``src/awetrim/system/`` for the tether models.
     """
     from awetrim.system.williams_tether import WilliamsTether
     from awetrim.utils.reference_frames import transformation_C_from_W
@@ -1049,58 +1062,37 @@ def solve_vsm_qs_trim_with_williams_tether(
     if distance_radial <= 0.0:
         raise ValueError("distance_radial must be positive for Williams integration.")
 
-    # Straight-tether initial guess: the last-segment direction matches the
-    # direction from the ground anchor to the kite in the wind frame. The
-    # solver then perturbs it from there to satisfy the ground residual.
+    # Frame angles (used below for the wind-frame transforms and r_kite).
     angle_az = float(_numeric_value_for_symbol(system_model, "angle_azimuth"))
     angle_elev = float(_numeric_value_for_symbol(system_model, "angle_elevation"))
     angle_course = float(_numeric_value_for_symbol(system_model, "angle_course"))
-    _r_kite_world_init = distance_radial * np.array(
-        [
-            np.cos(angle_elev) * np.cos(angle_az),
-            np.cos(angle_elev) * np.sin(angle_az),
-            np.sin(angle_elev),
-        ],
-        dtype=float,
-    )
-    direction_wind_init = float(
-        getattr(getattr(system_model, "wind", None), "direction_wind", 0.0)
-    )
-    _T_wind_from_world_init = np.array(
-        [
-            [np.cos(-direction_wind_init), -np.sin(-direction_wind_init), 0.0],
-            [np.sin(-direction_wind_init), np.cos(-direction_wind_init), 0.0],
-            [0.0, 0.0, 1.0],
-        ],
-        dtype=float,
-    )
-    _r_kite_wind_init = _T_wind_from_world_init @ _r_kite_world_init
-    elev_guess = float(
-        np.arctan2(
-            _r_kite_wind_init[2], np.hypot(_r_kite_wind_init[0], _r_kite_wind_init[1])
+
+    _valid_models = ("williams", "rigid_lumped")
+    if tether_model not in _valid_models:
+        raise ValueError(
+            f"tether_model must be one of {_valid_models}; got {tether_model!r}."
         )
-    )
-    az_guess = float(np.arctan2(_r_kite_wind_init[1], _r_kite_wind_init[0]))
-    # Nudge off perfect wind-alignment (elev=0, az=0) to keep the Jacobian
-    # well-defined at the initial point: when the last segment is exactly
-    # parallel to the apparent wind, the lift direction is undefined.
-    if abs(elev_guess) < 1e-3 and abs(az_guess) < 1e-3:
-        elev_guess = 1e-2  # ~0.57 deg above the wind axis
+
+    # Single tether unknown per model: Williams solves the tether length (the
+    # kite-end force vector is baked in as the resultant); rigid-lumped solves
+    # the radial tension magnitude.
+    if tether_model == "rigid_lumped":
+        _wg = np.array([3.0e3], dtype=float)
+        _wlb = np.array([0.0], dtype=float)
+        _wub = np.array([1.0e6], dtype=float)
+    else:  # williams
+        _wg = np.array([distance_radial * 1.02], dtype=float)
+        _wlb = np.array([0.99 * distance_radial], dtype=float)
+        _wub = np.array([1.4 * distance_radial], dtype=float)
 
     if williams_x_guess is None:
-        williams_x_guess = np.array(
-            [elev_guess, az_guess, distance_radial * 1.02], dtype=float
-        )
-    williams_x_guess = np.asarray(williams_x_guess, dtype=float).reshape(3)
+        williams_x_guess = _wg
+    williams_x_guess = np.asarray(williams_x_guess, dtype=float).reshape(-1)
 
     if williams_bounds_lower is None:
-        williams_bounds_lower = np.array(
-            [-np.pi / 2 + 1e-3, -2.0 * np.pi, 0.99 * distance_radial], dtype=float
-        )
+        williams_bounds_lower = _wlb
     if williams_bounds_upper is None:
-        williams_bounds_upper = np.array(
-            [np.pi / 2 - 1e-3, 2.0 * np.pi, 1.4 * distance_radial], dtype=float
-        )
+        williams_bounds_upper = _wub
 
     lb = np.concatenate([bounds_lower, williams_bounds_lower])
     ub = np.concatenate([bounds_upper, williams_bounds_upper])
@@ -1109,7 +1101,7 @@ def solve_vsm_qs_trim_with_williams_tether(
     )
 
     if solver is None:
-        solver = _default_vsm_solver(reference_point)
+        solver = _default_vsm_solver(reference_point, gamma_tolerance, gamma_loop)
 
     # Seed the system-model kinematics so the symbolic
     # ``velocity_rotation_course_frame`` (which depends on speed_tangential and
@@ -1170,29 +1162,35 @@ def solve_vsm_qs_trim_with_williams_tether(
         omega_wind = np.zeros(3)
     omega_wind_dm = ca.DM(omega_wind)
 
-    # The tether reads wind/rho/g off ``env`` (= system_model). ``omega`` is
-    # the wind-frame rotation we just computed.
-    residual_fn, param_names = tether.residual_function(
-        env=system_model, omega=omega_wind_dm
-    )
-    jac_fn, _ = tether.residual_jacobian_function(env=system_model, omega=omega_wind_dm)
+    # --- Tether force at the kite, per model. -----------------------------
+    # ``williams``: symbolic shape in "collapsed" mode -- the kite-end tether
+    # vector is supplied as a parameter (the trim resultant), so the 3-D force
+    # balance is baked in and only ground closure remains. ``rigid_lumped``:
+    # the ROM's RigidLumpedTether, evaluated numerically at the seeded state.
+    coupled_fun = None
+    rl_tether = None
+    if tether_model == "williams":
+        _ktv = ca.MX.sym("kite_tension_vector", 3)
+        _sh = tether.tether_shape_symbolic(
+            env=system_model,
+            r_kite=tether.r_kite_sym,
+            kite_tension_vector=_ktv,
+            tether_length=tether.tether_length,
+            omega=omega_wind_dm,
+        )
+        coupled_fun = ca.Function(
+            "williams_collapsed",
+            [tether.tether_length, ca.vertcat(tether.r_kite_sym, _ktv)],
+            [_sh["ground_position"], _sh["positions"], _sh["tensions"]],
+            ["length", "p"],
+            ["ground", "positions", "tensions"],
+        )
+    else:  # rigid_lumped
+        from awetrim.system.tether import RigidLumpedTether
 
-    def _pack_williams_params(r_kite: np.ndarray, force_kite: np.ndarray) -> np.ndarray:
-        # ``WilliamsTether.r_kite_sym`` / ``force_kite_resultant_sym`` are
-        # 3-vector MX symbols whose ``.name()`` returns the parent name. The
-        # residual's parameter vector ``p`` is ``vertcat(r_kite, force_kite)``,
-        # so we concatenate the 3-vectors in the order ``param_names`` lists.
-        table = {
-            "r_kite": np.asarray(r_kite, dtype=float).reshape(-1),
-            "force_kite_resultant": np.asarray(force_kite, dtype=float).reshape(-1),
-        }
-        missing = [n for n in param_names if n not in table]
-        if missing:
-            raise KeyError(
-                "Williams residual still has un-bound symbols after numeric "
-                f"configuration: {missing}. Set them on the tether instance."
-            )
-        return np.concatenate([table[n] for n in param_names])
+        rl_tether = RigidLumpedTether(
+            diameter=tether.diameter_tether, density=tether.density_tether
+        )
 
     # Kite position in the wind frame: spherical (azimuth, elevation, distance)
     # in the world frame, then rotate by -direction_wind about +z.
@@ -1224,8 +1222,9 @@ def solve_vsm_qs_trim_with_williams_tether(
     working_body = copy.deepcopy(body_aero)
     baseline_sections, baseline_spanwise = _baseline_geometry(working_body)
     projected_area_cache: dict[str, float] = {}
+    trim_payload_cache: dict[bytes, dict[str, Any]] = {}
 
-    def _trim_payload(x: np.ndarray) -> dict[str, Any]:
+    def _compute_trim_payload(x: np.ndarray) -> dict[str, Any]:
         speed_tangential, roll_deg, pitch_deg, yaw_deg, course_rate_body = x
 
         _set_body_attitude_from_baseline(
@@ -1317,6 +1316,23 @@ def solve_vsm_qs_trim_with_williams_tether(
         cfx = float(np.dot(net_force, axes.course) / denom_f)
         cfy = float(np.dot(net_force, axes.normal) / denom_f)
 
+        # Rigid-lumped off-radial tether force (drag + half-weight) at the
+        # seeded state, transformed into the trim (VSM) frame like the inertial
+        # and gravity terms. The radial tension is added separately as the free
+        # unknown in the residual.
+        f_tether_offrad_vsm = None
+        if rl_tether is not None:
+            drag_c = _as_numeric_3vector(
+                system_model, rl_tether.drag_tether_at_kite_for(system_model)
+            )
+            grav_c = _as_numeric_3vector(
+                system_model,
+                rl_tether.force_gravity_tether_at_kite_for(system_model),
+            )
+            f_tether_offrad_vsm = _as_3vector(
+                transformation_c_from_vsm @ (drag_c + grav_c)
+            )
+
         return {
             "trim_res": np.array([cmx, cmy, cmz, cfx, cfy], dtype=float),
             "force_kite_resultant": net_force,
@@ -1326,45 +1342,65 @@ def solve_vsm_qs_trim_with_williams_tether(
             "res": res,
             "aoa_deg": aoa_deg,
             "beta_deg": beta_deg,
+            "denom_f": denom_f,
+            "f_tether_offrad_vsm": f_tether_offrad_vsm,
         }
+
+    def _trim_payload(x: np.ndarray) -> dict[str, Any]:
+        # Cache the (expensive) trim VSM solve on the 5-vector trim state.
+        # ``least_squares`` builds its Jacobian by finite-differencing all 8
+        # unknowns, but the 3 Williams perturbations leave the trim state
+        # ``x[:5]`` untouched and would otherwise re-run an identical VSM solve
+        # (~3 of every 8 Jacobian solves wasted). The cache returns the same
+        # residual bytes the finite difference would have produced, so the
+        # outer solve is numerically unchanged. Keyed on exact bytes (only true
+        # repeats hit); capped to bound memory. NOTE: a cache hit does not
+        # re-apply the attitude to ``working_body`` -- the caller re-runs
+        # ``_compute_trim_payload`` once at the optimum before returning the
+        # body, so its geometry always reflects the final state.
+        key = np.asarray(x, dtype=float).tobytes()
+        cached = trim_payload_cache.get(key)
+        if cached is not None:
+            return cached
+        payload = _compute_trim_payload(x)
+        if len(trim_payload_cache) > 128:
+            trim_payload_cache.clear()
+        trim_payload_cache[key] = payload
+        return payload
+
+    T_VSM_from_Wind = T_Wind_from_VSM.T
 
     def joint_residual(x: np.ndarray) -> np.ndarray:
         x_trim = np.asarray(x[:5], dtype=float)
-        x_williams = np.asarray(x[5:], dtype=float)
         payload = _trim_payload(x_trim)
-        F_kite_wind = T_Wind_from_VSM @ payload["force_kite_resultant"]
-        p = _pack_williams_params(r_kite_wind, F_kite_wind)
-        ground_res = np.asarray(residual_fn(x=x_williams, p=p)["residual"]).reshape(3)
-        # Normalise so trim (dimensionless) and tether (m) residuals are
-        # roughly comparable in magnitude.
-        ground_res = ground_res / distance_radial
-        return np.concatenate([payload["trim_res"], ground_res])
+        net_force_vsm = payload["force_kite_resultant"]
 
-    def joint_jac(x: np.ndarray) -> np.ndarray:
-        # Analytic Jacobian for the Williams block only; finite-difference
-        # the trim block. Build a (8, 8) matrix.
-        n = x.size
-        eps = 1e-6
-        f0 = joint_residual(x)
-        J = np.zeros((f0.size, n), dtype=float)
+        if tether_model == "rigid_lumped":
+            # 3-D force balance: aero+inertial+gravity + [lumped off-radial drag
+            # + half-weight] + radial tension. No ground closure.
+            tension = float(x[5])
+            f_tether = payload["f_tether_offrad_vsm"] - tension * axes.radial
+            total_force = net_force_vsm + f_tether
+            cf = np.array(
+                [
+                    np.dot(total_force, axes.course),
+                    np.dot(total_force, axes.normal),
+                    np.dot(total_force, axes.radial),
+                ],
+                dtype=float,
+            ) / payload["denom_f"]
+            return np.concatenate([payload["trim_res"][:3], cf])
 
-        for k in range(5):
-            xk = x.copy()
-            step = eps * max(1.0, abs(xk[k]))
-            xk[k] += step
-            fk = joint_residual(xk)
-            J[:, k] = (fk - f0) / step
-
-        # Williams block: analytic
-        x_williams = x[5:]
-        x_trim = x[:5]
-        payload = _trim_payload(x_trim)
-        F_kite_wind = T_Wind_from_VSM @ payload["force_kite_resultant"]
-        p = _pack_williams_params(r_kite_wind, F_kite_wind)
-        jac_williams = np.asarray(jac_fn(x=x_williams, p=p)["jac"]) / distance_radial
-        # Williams residuals are rows 5..7, columns 5..7.
-        J[5:8, 5:8] = jac_williams
-        return J
+        # williams (collapsed): kite-end tether vector = trim resultant, so the
+        # 3-D force balance holds by construction; only moments and the tether
+        # ground closure remain. Ground residual normalised by distance_radial
+        # so it is comparable in magnitude to the dimensionless moments.
+        F_kite_wind = T_Wind_from_VSM @ net_force_vsm
+        p = np.concatenate([r_kite_wind, F_kite_wind])
+        ground = np.asarray(
+            coupled_fun(length=float(x[5]), p=p)["ground"]
+        ).reshape(3)
+        return np.concatenate([payload["trim_res"][:3], ground / distance_radial])
 
     opt = least_squares(
         joint_residual,
@@ -1373,61 +1409,91 @@ def solve_vsm_qs_trim_with_williams_tether(
         bounds=(lb, ub),
         max_nfev=max_nfev,
     )
-    print(
-        f"[williams-trim] status={opt.status}  nfev={opt.nfev}  cost={opt.cost:.3e}  optimality={opt.optimality:.3e}"
+    # Per-solve diagnostics at DEBUG level: a wind-window sweep runs thousands of
+    # these, so printing them unconditionally floods the console (and, under a
+    # process pool, interleaves 8 workers' output and adds real stdout I/O cost).
+    # Recover them with ``logging.getLogger().setLevel(logging.DEBUG)``.
+    logging.debug(
+        "[williams-trim] status=%s  nfev=%s  cost=%.3e  optimality=%.3e",
+        opt.status,
+        opt.nfev,
+        opt.cost,
+        opt.optimality,
     )
-    print(f"[williams-trim] message: {opt.message}")
-    print(
-        f"[williams-trim] active_mask: {opt.active_mask}"
-    )  # 0=interior, -1=at lb, +1=at ub
-    print(f"[williams-trim] x*: trim={opt.x[:5]}  williams={opt.x[5:]}")
+    logging.debug("[williams-trim] message: %s", opt.message)
+    # active_mask: 0=interior, -1=at lb, +1=at ub
+    logging.debug("[williams-trim] active_mask: %s", opt.active_mask)
+    logging.debug("[williams-trim] x*: trim=%s  williams=%s", opt.x[:5], opt.x[5:])
 
     res_at_opt = joint_residual(opt.x)
-    trim_res = res_at_opt[:5]
-    ground_res = res_at_opt[5:] * distance_radial
-    print(f"[williams-trim] trim_res     [cmx cmy cmz cfx cfy] = {trim_res}")
-    print(f"[williams-trim] ground_res   [gx gy gz] (m)        = {ground_res}")
-    print(
-        f"[williams-trim] ||ground_res|| = {np.linalg.norm(ground_res):.4e} m  "
-        f"(distance_radial = {distance_radial:.2f} m)"
+    cm_res = res_at_opt[:3]
+    ground_res = (
+        np.zeros(3)
+        if tether_model == "rigid_lumped"
+        else res_at_opt[-3:] * distance_radial
+    )
+    logging.debug("[williams-trim] cm_res [cmx cmy cmz] = %s", cm_res)
+    logging.debug("[williams-trim] ground_res   [gx gy gz] (m)        = %s", ground_res)
+    logging.debug(
+        "[williams-trim] ||ground_res|| = %.4e m  (distance_radial = %.2f m)",
+        float(np.linalg.norm(ground_res)),
+        distance_radial,
     )
 
-    payload = _trim_payload(opt.x[:5])
+    # Fresh (uncached) evaluation at the optimum so ``working_body`` ends in the
+    # trimmed attitude regardless of what the cache last computed.
+    payload = _compute_trim_payload(opt.x[:5])
     F_kite_vsm = payload["force_kite_resultant"]
     F_kite_wind = T_Wind_from_VSM @ F_kite_vsm
 
-    physical_success = bool(
-        np.abs(trim_res[0]) < moment_tolerance
-        and np.abs(trim_res[1]) < moment_tolerance
-        and np.abs(trim_res[2]) < moment_tolerance
-    )
+    physical_success = bool(all(abs(float(c)) < moment_tolerance for c in cm_res))
 
-    elev_last, az_last, tether_length = opt.x[5:].tolist()
-
-    # Evaluate full Williams shape for plotting.
-    shape_fn, shape_param_names = tether.shape_function(
-        env=system_model, omega=omega_wind_dm
-    )
-    p_shape = _pack_williams_params(r_kite_wind, F_kite_wind)
-    shape_out = shape_fn(x=opt.x[5:], p=p_shape)
-    positions = np.asarray(shape_out["positions"])
-    tensions = np.asarray(shape_out["tensions"])
+    if tether_model == "rigid_lumped":
+        tension_opt = float(opt.x[5])
+        f_tether_vsm = payload["f_tether_offrad_vsm"] - tension_opt * axes.radial
+        tether_force = float(np.linalg.norm(f_tether_vsm))
+        positions = np.zeros((0, 3))
+        tensions = np.zeros((0, 3))
+        elev_last = az_last = tether_length = float("nan")
+        cfx, cfy, cfz = float(res_at_opt[3]), float(res_at_opt[4]), float(res_at_opt[5])
+    else:  # williams (collapsed)
+        tether_length = float(opt.x[5])
+        _out = coupled_fun(
+            length=tether_length, p=np.concatenate([r_kite_wind, F_kite_wind])
+        )
+        positions = np.asarray(_out["positions"])
+        tensions = np.asarray(_out["tensions"])
+        _dir = F_kite_wind / (float(np.linalg.norm(F_kite_wind)) + 1e-12)
+        elev_last = float(np.arcsin(np.clip(_dir[2], -1.0, 1.0)))
+        az_last = float(np.arctan2(_dir[1], _dir[0]))
+        tether_force = float(np.linalg.norm(F_kite_wind))
+        cfx = cfy = cfz = 0.0  # force balance baked in
 
     result: dict[str, Any] = {
         "opt_x": np.asarray(opt.x[:5], dtype=float),
-        "cm": trim_res[:3].copy(),
-        "cfx": float(trim_res[3]),
-        "cfy": float(trim_res[4]),
+        "cm": np.asarray(cm_res, dtype=float),
+        "cfx": float(cfx),
+        "cfy": float(cfy),
+        "cfz": float(cfz),
+        "tether_model": tether_model,
         "success": bool(opt.success),
         "success_physical": physical_success,
-        "aoa_deg": payload["aoa_deg"],
+        # Chord-referenced aerodynamic angles, same convention as
+        # solve_vsm_quasi_steady_trim: apparent wind relative to the mid-span
+        # centre chord, falling back to the course-frame inflow angle when the
+        # VSM result does not expose the centre-chord values.
+        "aoa_deg": float(
+            payload["res"].get("alpha_center_chord_deg", payload["aoa_deg"])
+        ),
         "aoa_course_deg": payload["aoa_deg"],
-        "side_slip_deg": payload["beta_deg"],
+        "side_slip_deg": float(
+            payload["res"].get("beta_center_chord_deg", payload["beta_deg"])
+        ),
         "side_slip_course_deg": payload["beta_deg"],
         "aero_roll_deg": float("nan"),
         "cl": payload["res"].get("cl"),
         "cd": payload["res"].get("cd"),
-        "tether_force": float(np.linalg.norm(F_kite_wind)),
+        "tether_force": float(tether_force),
         "va_vel_world": payload["va"],
         "Umag": payload["umag"],
         "total_aero_force_vec": payload["total_aero_force"],
