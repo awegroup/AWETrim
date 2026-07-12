@@ -1978,6 +1978,21 @@ def compute_vsm_trim_stability_derivatives(
             ).full(),
             dtype=float,
         )
+        # Course-frame transport rate ``omega`` (wind frame) at THIS trim. It is
+        # deliberately frozen here and baked into the fixed-length tether solve --
+        # do NOT convert it to a live per-solve input by analogy with the trim
+        # solver (``_tether_omega_wind``). That freeze was a bug there because the
+        # root-finder moved (v_tau, course_rate) away from the seed, so a
+        # seed-frozen omega no longer matched the state being solved. Here the
+        # state is fixed: omega is evaluated at the converged trim (course_rate0,
+        # speed_tangential from x_trim, set just above) and this solver is only
+        # used for the radial-position (z) perturbation column, which does not move
+        # v_tau or course_rate. Freezing omega across that column is exactly
+        # consistent with the aerodynamic body-rate baseline ``omega_c_world`` and
+        # the gyroscopic ``Omega_C`` -- the whole fast-subsystem linearisation
+        # holds the trajectory-set transport rate fixed (the paper's fast/slow
+        # separation). The only omega it neglects is d(v_tau/r)/dz over one radial
+        # step, verified at ~1e-5 rad/s (~0.006% of ||omega_c||): negligible.
         if hasattr(system_model, "velocity_rotation_course_frame"):
             omega_course = _as_numeric_3vector(
                 system_model, system_model.velocity_rotation_course_frame
