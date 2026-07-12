@@ -1147,45 +1147,51 @@ def solve_vsm_qs_trim_with_williams_tether(
     T_Wind_from_VSM = T_Wind_from_W @ T_W_from_Csm @ T_Csm_from_VSM
     T_Wind_from_Csm = T_Wind_from_W @ T_W_from_Csm
 
-    # Resolve the system-model rotational velocity (course frame) and rotate
-    # it into the wind frame for the Williams force balance on each tether
-    # node. In a steady straight-line state this is zero; for turning states
-    # (downloop, figure-8) it gives a nonzero omega that the tether needs to
-    # account for via the per-node `v_n = omega x r_n` and `a_n = omega x v_n`
-    # terms.
-    if hasattr(system_model, "velocity_rotation_course_frame"):
-        omega_course = _as_numeric_3vector(
+    # Tether rotation rate ``omega`` (course-frame transport rate) in the wind
+    # frame, driving the per-node ``v_n = omega x r_n`` / ``a_n = omega x v_n``
+    # tether drag (zero in a steady straight-line state; nonzero for turning
+    # states -- downloop, figure-8). It depends on the trim state (v_tau,
+    # course_rate), so it MUST be recomputed at every residual evaluation (it is
+    # a live input to ``coupled_fun`` below). Freezing it at the initial guess
+    # makes the tether see the wrong rotation rate away from the seed -- the
+    # tether tip sweeps ~omega*r ~ tens of m/s, not a small effect -- and yields
+    # seed-dependent spurious trim roots.
+    def _tether_omega_wind(speed_tangential: float, course_rate_body: float) -> np.ndarray:
+        if not hasattr(system_model, "velocity_rotation_course_frame"):
+            return np.zeros(3)
+        _set_course_rate_body(system_model, course_rate_body)
+        system_model.speed_tangential = speed_tangential
+        return T_Wind_from_Csm @ _as_numeric_3vector(
             system_model, system_model.velocity_rotation_course_frame
         )
-        omega_wind = T_Wind_from_Csm @ omega_course
-    else:
-        omega_wind = np.zeros(3)
-    omega_wind_dm = ca.DM(omega_wind)
 
     # --- Tether force at the kite, per model. -----------------------------
     # ``williams``: symbolic shape in "collapsed" mode -- the kite-end tether
     # vector is supplied as a parameter (the trim resultant), so the 3-D force
-    # balance is baked in and only ground closure remains. ``rigid_lumped``:
-    # the ROM's RigidLumpedTether, evaluated numerically at the seeded state.
+    # balance is baked in and only ground closure remains. ``omega`` (the tether
+    # rotation rate) is a Function INPUT, supplied live per residual evaluation
+    # (see _tether_omega_wind). ``rigid_lumped``: the ROM's RigidLumpedTether,
+    # evaluated numerically at the current state.
     coupled_fun = None
     rl_tether = None
     if tether_model == "williams":
         _ktv = ca.MX.sym("kite_tension_vector", 3)
+        _omega_sym = ca.MX.sym("omega_wind_shape", 3)
         _sh = tether.tether_shape_symbolic(
             env=system_model,
             r_kite=tether.r_kite_sym,
             kite_tension_vector=_ktv,
             tether_length=tether.tether_length,
-            omega=omega_wind_dm,
+            omega=_omega_sym,
         )
         coupled_fun = ca.Function(
             "williams_collapsed",
-            [tether.tether_length, ca.vertcat(tether.r_kite_sym, _ktv)],
+            [tether.tether_length, ca.vertcat(tether.r_kite_sym, _ktv), _omega_sym],
             [_sh["ground_position"], _sh["positions"], _sh["tensions"]],
-            ["length", "p"],
+            ["length", "p", "omega"],
             ["ground", "positions", "tensions"],
         )
-    else:  # rigid_lumped
+    elif tether_model == "rigid_lumped":
         from awetrim.system.tether import RigidLumpedTether
 
         rl_tether = RigidLumpedTether(
@@ -1397,8 +1403,9 @@ def solve_vsm_qs_trim_with_williams_tether(
         # so it is comparable in magnitude to the dimensionless moments.
         F_kite_wind = T_Wind_from_VSM @ net_force_vsm
         p = np.concatenate([r_kite_wind, F_kite_wind])
+        omega_use = _tether_omega_wind(float(x[0]), float(x[4]))
         ground = np.asarray(
-            coupled_fun(length=float(x[5]), p=p)["ground"]
+            coupled_fun(length=float(x[5]), p=p, omega=omega_use)["ground"]
         ).reshape(3)
         return np.concatenate([payload["trim_res"][:3], ground / distance_radial])
 
@@ -1459,7 +1466,9 @@ def solve_vsm_qs_trim_with_williams_tether(
     else:  # williams (collapsed)
         tether_length = float(opt.x[5])
         _out = coupled_fun(
-            length=tether_length, p=np.concatenate([r_kite_wind, F_kite_wind])
+            length=tether_length,
+            p=np.concatenate([r_kite_wind, F_kite_wind]),
+            omega=_tether_omega_wind(float(opt.x[0]), float(opt.x[4])),
         )
         positions = np.asarray(_out["positions"])
         tensions = np.asarray(_out["tensions"])
