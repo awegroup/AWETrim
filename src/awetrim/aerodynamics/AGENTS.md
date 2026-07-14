@@ -189,6 +189,11 @@ Public functions should use these names:
   default `1e-6`, forwarded to the default solver so sweeps can trade a looser
   tolerance for speed. The coupled variant
   `solve_vsm_qs_trim_with_williams_tether` takes the same `gamma_tolerance`.)
+  Both trim solvers accept an optional `prescribed_roll_deg` (geometric bridle
+  steering: pass the pre-rotated baseline body and `prescribed_roll_deg=0`):
+  the roll unknown and the roll-moment residual are dropped (Williams variant:
+  5 unknowns / 5 residuals `[cmy, cmz, ground(3)]`), and `cmx` becomes the
+  steering-line reaction reported as `reaction_roll_moment_nm`.
   `solve_vsm_qs_trim_with_williams_tether` is the **consistent (off-radial)
   tether trim**: the tether's own drag + weight enter the kite force balance
   (a large effect for long tethers — tether drag is a dominant AWES loss, so a

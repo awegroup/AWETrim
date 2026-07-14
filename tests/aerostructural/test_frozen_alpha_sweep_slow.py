@@ -108,6 +108,8 @@ def _anchor_reference(body, solver, *, umag, aoa_deg, beta_deg, rate):
     must use this ``aoa_deg``, not a re-derived freestream angle.
     """
     axes = DEFAULT_AXES
+    # rates_in_body_frame=True: the axis is given in world components (matches
+    # the trim solvers and run_frozen_geometry_alpha_sweep).
     body.va_initialize(
         Umag=umag,
         angle_of_attack=aoa_deg,
@@ -115,7 +117,7 @@ def _anchor_reference(body, solver, *, umag, aoa_deg, beta_deg, rate):
         body_rates=rate,
         body_axis=-axes.radial,
         reference_point=np.zeros(3),
-        rates_in_body_frame=False,
+        rates_in_body_frame=True,
     )
     res = solver.solve(body)
     # Freestream apparent wind, the aerodynamic-roll reference (matches the sweep).

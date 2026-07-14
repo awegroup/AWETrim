@@ -379,22 +379,26 @@ def test_compute_vsm_trim_stability_derivatives_coupled_selection():
 
 
 def test_compute_vsm_trim_stability_derivatives_gyroscopic_coupling():
-    """A_full carries the gyroscopic term Omega_C x I omega on the rate rows.
+    """A_full carries the gyroscopic term omega x I_B omega on the rate rows.
 
-    With the mock solver returning a constant aerodynamic result, every
-    finite-difference moment column is zero, so the only entries left on the
-    p/q/r rows of A_full are the analytic gyroscopic coupling
-    ``-I^{-1} [Omega_C]_x I`` with ``Omega_C = -course_rate * e_radial``.
-    For radial-only transport this couples p <-> q exclusively:
-        A[p, q] = -course_rate * Iyy / Ixx
-        A[q, p] = +course_rate * Ixx / Iyy
-    and leaves the r row (and the p/q <-> r entries) untouched.
+    Since the B-point rework the gyroscopic term is part of the differenced
+    right-hand side (it lives in ``eval_force_moment``), so it reaches A_full
+    through J_full rather than through an analytic addition. With the mock
+    solver returning a constant aerodynamic result, a ZERO CG offset (so the
+    mass matrix is block-diagonal, I_B == I_cg, and no offset-force terms
+    appear), and ``Omega_C = -course_rate * e_radial`` (spin rate
+    ``w = -course_rate`` about the radial axis), the classical linearised
+    Euler closed forms must be recovered exactly (central differences are
+    exact for the quadratic term):
+        A[p, q] = w (Iyy - Izz) / Ixx = course_rate * (Izz - Iyy) / Ixx
+        A[q, p] = w (Izz - Ixx) / Iyy = course_rate * (Ixx - Izz) / Iyy
+    with the r row (and the p/q <-> r entries) untouched.
     """
     course_rate = 0.3
-    ixx, iyy, izz = 100.0, 20.0, 100.0
+    ixx, iyy, izz = 80.0, 20.0, 100.0
     result = compute_vsm_trim_stability_derivatives(
         body_aero=_MockBody(),
-        center_of_gravity=np.array([0.5, 0.0, 0.5]),
+        center_of_gravity=np.zeros(3),
         reference_point=np.zeros(3),
         x_trim=np.array([20.0, 0.0, 0.0, 0.0, course_rate]),
         trim_result=_TRIM_RESULT,
@@ -407,8 +411,8 @@ def test_compute_vsm_trim_stability_derivatives_gyroscopic_coupling():
     names = list(result["state_names_full"])
     p, q, r = names.index("p"), names.index("q"), names.index("r")
     A = result["A_full"]
-    assert A[p, q] == pytest.approx(-course_rate * iyy / ixx)
-    assert A[q, p] == pytest.approx(+course_rate * ixx / iyy)
+    assert A[p, q] == pytest.approx(course_rate * (izz - iyy) / ixx)
+    assert A[q, p] == pytest.approx(course_rate * (ixx - izz) / iyy)
     # Radial-only Omega_C does not couple the yaw rate, and has no self-damping.
     assert A[p, r] == pytest.approx(0.0)
     assert A[q, r] == pytest.approx(0.0)
@@ -420,7 +424,7 @@ def test_compute_vsm_trim_stability_derivatives_gyroscopic_coupling():
     # A zero course rate recovers the torque-free rate rows (no coupling).
     result0 = compute_vsm_trim_stability_derivatives(
         body_aero=_MockBody(),
-        center_of_gravity=np.array([0.5, 0.0, 0.5]),
+        center_of_gravity=np.zeros(3),
         reference_point=np.zeros(3),
         x_trim=np.array([20.0, 0.0, 0.0, 0.0, 0.0]),
         trim_result=_TRIM_RESULT,
@@ -435,25 +439,72 @@ def test_compute_vsm_trim_stability_derivatives_gyroscopic_coupling():
     assert A0[q, p] == pytest.approx(0.0)
 
 
+def test_compute_vsm_trim_stability_derivatives_bpoint_coupling():
+    """A nonzero CG offset couples the translational and rotational channels.
+
+    The coupled B-point mass matrix ``[[m 1, -m c_x], [m c_x, I_B]]`` and the
+    offset inertial terms (centripetal force, gravity/transport moments) make
+    the force columns feed the rate rows and vice versa. A_full must equal the
+    documented assembly ``solve(M6, J_full)`` plus kinematic rows, and the
+    u-row must pick up rate-column entries that a point-mass model cannot
+    have.
+    """
+    course_rate = 0.3
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        center_of_gravity=np.array([0.5, 0.0, 0.5]),
+        reference_point=np.zeros(3),
+        x_trim=np.array([20.0, 0.0, 0.0, 0.0, course_rate]),
+        trim_result=_TRIM_RESULT,
+        solver=_MockSolver(),
+        mass=15.0,
+        inertia_xx=100.0,
+        inertia_yy=20.0,
+        inertia_zz=100.0,
+    )
+    names = list(result["state_names_full"])
+    A = np.asarray(result["A_full"], dtype=float)
+    J = np.asarray(result["J_full"], dtype=float)
+    accel = np.linalg.solve(np.asarray(result["mass_matrix_axes"], float), J)
+    assert A[names.index("u"), :] == pytest.approx(accel[0, :])
+    assert A[names.index("w"), :] == pytest.approx(accel[2, :])
+    assert A[names.index("p"), :] == pytest.approx(accel[3, :])
+    # I_B carries the parallel-axis shift of the CG offset.
+    c = np.asarray(result["cg_offset_trim_world"], dtype=float)
+    expected_ib = np.diag([100.0, 20.0, 100.0]) + 15.0 * (
+        float(c @ c) * np.eye(3) - np.outer(c, c)
+    )
+    assert np.asarray(result["inertia_b_axes"]) == pytest.approx(expected_ib)
+    # The gyroscopic/centripetal rate columns now reach the u-row through the
+    # coupled solve: at least one rate-column entry must be nonzero.
+    rate_cols = [names.index(s) for s in ("p", "q", "r")]
+    assert np.max(np.abs(A[names.index("u"), rate_cols])) > 0.0
+
+
 def test_gyroscopic_rate_coupling_full_omega_c_couples_p_and_r():
     """The great-circle normal component of Omega_C couples p <-> r.
 
-    G = -I^{-1} [Omega_C]_x I. For Omega_C = (0, Omega_y, Omega_z) in the
-    (course, normal, radial) basis:
-        radial Omega_z couples p <-> q,
-        normal Omega_y couples p <-> r  (and leaves q <-> r zero).
+    G = -I^{-1} ([Omega_C]_x I - [I Omega_C]_x). For a diagonal inertia and
+    Omega_C = (0, Omega_y, Omega_z) in the (course, normal, radial) basis the
+    closed form is
+        G[p, q] = -Omega_z (Izz - Iyy) / Ixx,
+        G[p, r] = -Omega_y (Izz - Iyy) / Ixx,
+        G[q, p] = -Omega_z (Ixx - Izz) / Iyy,
+        G[r, p] = +Omega_y (Ixx - Iyy) / Izz,
+    so the radial component couples p <-> q and the normal (great-circle)
+    component couples p <-> r, with no q <-> r coupling and a zero diagonal.
     """
-    ixx, iyy, izz = 100.0, 20.0, 100.0
+    ixx, iyy, izz = 80.0, 20.0, 100.0
     omega_y, omega_z = 0.25, -0.3
     G = _gyroscopic_rate_coupling(
         np.array([0.0, omega_y, omega_z]), np.diag([ixx, iyy, izz])
     )
     # p <-> r from the normal (great-circle) component.
-    assert G[0, 2] == pytest.approx(-omega_y * izz / ixx)
-    assert G[2, 0] == pytest.approx(+omega_y * ixx / izz)
+    assert G[0, 2] == pytest.approx(-omega_y * (izz - iyy) / ixx)
+    assert G[2, 0] == pytest.approx(+omega_y * (ixx - iyy) / izz)
     # p <-> q from the radial (turn) component.
-    assert G[0, 1] == pytest.approx(omega_z * iyy / ixx)
-    assert G[1, 0] == pytest.approx(-omega_z * ixx / iyy)
+    assert G[0, 1] == pytest.approx(-omega_z * (izz - iyy) / ixx)
+    assert G[1, 0] == pytest.approx(-omega_z * (ixx - izz) / iyy)
     # No q <-> r coupling and no self-damping (Omega has no course component).
     assert G[1, 2] == pytest.approx(0.0)
     assert G[2, 1] == pytest.approx(0.0)
