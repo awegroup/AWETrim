@@ -16,6 +16,7 @@ kite position, velocity, tether force and tether length.
 | [`run_analysis_ekf.py`](run_analysis_ekf.py) | Run the EKF over a chosen flight log: estimate kite states, in-flight aerodynamic coefficients and the wind vector. Lists available flights and writes the reconstruction to HDF5. |
 | [`plot_analysis_ekf.py`](plot_analysis_ekf.py) | Interactive plotting of a saved EKF result by category — aerodynamics, kinematics, tether, wind velocity, system performance, EKF performance, and turn-rate-law identification. |
 | [`inverse_wind_estimation.py`](inverse_wind_estimation.py) | Inverse solve: given a prescribed tether force, solve the system model for the wind speed (measured wind as the initial guess). |
+| [`hunt_open_loop_windows.py`](hunt_open_loop_windows.py) | Detect quasi-open-loop windows (steering held constant) in an EKF result, fit the growth rate and peak frequency of the course-rate residual and IMU roll/yaw rates per window, and compare with the unstable lateral mode of the modal stability analysis (divergence time, T2, mode frequency). `--selftest` runs on synthetic data. |
 
 ## Example outputs
 
