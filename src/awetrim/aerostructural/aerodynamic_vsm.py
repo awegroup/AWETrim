@@ -380,18 +380,20 @@ def run_frozen_geometry_alpha_sweep(
     """Direct VSM alpha sweep at a fixed (frozen) deformed geometry.
 
     For each requested angle of attack the apparent wind is imposed on the frozen
-    mesh *exactly as the quasi-steady trim does it* — through
-    ``body_aero.va_initialize`` with the SAME sideslip, body-rate, body axis and
-    reference point — and a single ``solver.solve(body_aero)`` is run on the
-    unchanged geometry (no re-trim).
+    mesh with the same inflow mechanism as the quasi-steady trim — through
+    ``body_aero.va_initialize`` with sideslip, body-rate, body axis and
+    reference point, rates given in world components — and a single
+    ``solver.solve(body_aero)`` is run on the unchanged geometry (no re-trim).
 
     The freestream apparent wind is
     ``va = |va| * (cos a cos b, sin b, sin a)`` so that ``atan2(va_z, va_x) == a``
     and the sideslip is ``b``; the rigid-body rate is added as rotational inflow
-    about ``body_axis`` (default ``-radial = (0, 0, -1)``) by the VSM ``va``
-    setter, and ``phi_a`` is the tilt of the total aero force about that
-    freestream apparent wind — matching
-    ``vsm_quasi_steady.solve_vsm_quasi_steady_trim``.
+    about ``body_axis`` by the VSM ``va`` setter, and ``phi_a`` is the tilt of
+    the total aero force about that freestream apparent wind. Note the trim
+    solvers evaluate the aero at the full course-frame transport rate
+    ``Omega_C``; to reproduce a trim anchor exactly, pass the anchor's
+    ``|Omega_C|`` and axis (world frame). The default ``body_axis``
+    ``-radial = (0, 0, -1)`` is the radial-only reduction.
 
     With the defaults (``side_slip_deg=0``, ``body_rates=0``) the sweep recovers
     the pure symmetric ``C_L(alpha)`` / ``C_D(alpha)`` / ``phi_a(alpha)`` response.
@@ -410,8 +412,10 @@ def run_frozen_geometry_alpha_sweep(
         side_slip_deg: sideslip angle [deg] held constant over the sweep.
         body_rates: rigid-body rate(s) [rad/s] held constant over the sweep
             (scalar or per-axis), added as rotational inflow about ``body_axis``.
-        body_axis: rotation axis (or axes) for ``body_rates``; defaults to
-            ``-radial = (0, 0, -1)`` to match the trim.
+        body_axis: rotation axis (or axes) for ``body_rates``, in world
+            components; defaults to ``-radial = (0, 0, -1)`` (the radial-only
+            reduction). Pass the anchor's full ``Omega_C`` axis to match the
+            trim exactly.
         reference_point: reference point r0 for the rotational inflow
             ``v_rot(r) = omega x (r - r0)``; defaults to the origin.
 
@@ -447,6 +451,11 @@ def run_frozen_geometry_alpha_sweep(
             ]
         )
         try:
+            # rates_in_body_frame=True: body_axis is given in world components
+            # and must be used as-is. False would multiply the rate vector by
+            # the body's accumulated ``geometry_rotation`` — a silent tilt for
+            # any body that has been ``rotate()``d (e.g. a steering-rolled
+            # turning anchor); identity-rotation bodies are unaffected.
             body_aero.va_initialize(
                 Umag=float(va_magnitude),
                 angle_of_attack=float(alpha_deg),
@@ -454,7 +463,7 @@ def run_frozen_geometry_alpha_sweep(
                 body_rates=body_rates,
                 body_axis=body_axis,
                 reference_point=reference_point,
-                rates_in_body_frame=False,
+                rates_in_body_frame=True,
             )
             results = solver.solve(body_aero)
             cl = float(np.mean(np.asarray(results["cl"], dtype=float)))
