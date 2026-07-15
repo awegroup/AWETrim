@@ -15,6 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 # color_palette.py
+import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap
 
@@ -37,7 +38,27 @@ scatter_colors = [
     PALETTE["Vermillion"],
 ]
 
-custom_cmap = LinearSegmentedColormap.from_list("custom", scatter_colors)
+# Sequential (magnitude) colormap built from the palette.
+custom_cmap = LinearSegmentedColormap.from_list("awetrim", scatter_colors)
+
+# Diverging (signed quantities, zero-centred) colormap: the palette's
+# cool/warm CVD-safe pair with a neutral near-white midpoint.
+diverging_colors = [
+    PALETTE["Blue"],
+    PALETTE["Sky Blue"],
+    "#F7F7F7",
+    PALETTE["Orange"],
+    PALETTE["Vermillion"],
+]
+custom_cmap_diverging = LinearSegmentedColormap.from_list(
+    "awetrim_diverging", diverging_colors
+)
+
+# Register under their names so string-based APIs (cmap="awetrim", CLI
+# --cmap flags, JSON-serialised plot configs) resolve them like built-ins.
+for _cmap in (custom_cmap, custom_cmap_diverging):
+    if _cmap.name not in matplotlib.colormaps:
+        matplotlib.colormaps.register(_cmap)
 
 
 def hex_to_rgba(hex_color, alpha=1.0):
