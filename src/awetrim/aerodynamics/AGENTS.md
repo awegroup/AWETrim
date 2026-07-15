@@ -107,11 +107,25 @@ Primitives kept here for AWEDesign (and general use):
   law in `awetrim.system.kite`.
 - `vsm_quasi_steady.compute_vsm_trim_stability_derivatives` — the trim
   linearisation AWEDesign interprets into named derivatives and eigen-modes.
-  Its result dict always includes `nonlinear_rhs`, a callable
-  `f(delta_state) -> xdot` for the nonlinear 9-state fast subsystem, assembled
-  directly from the governing equations (independent of `A_full`): `f(0)` is the
-  trim equilibrium residual and central-differencing `f` cross-checks `A_full`.
+  Inertia enters either as principal scalars `inertia_xx/yy/zz` or as the full
+  3x3 CG tensor `inertia_cg` (zero-attitude geometry basis, same convention as
+  `solve_vsm_quasi_steady_trim`'s `inertia_cg`), which overrides the scalars
+  and keeps the products of inertia. Its result dict always includes
+  `nonlinear_rhs`, a callable `f(delta_state) -> xdot` for the nonlinear
+  9-state fast subsystem, assembled directly from the governing equations
+  (independent of `A_full`): `f(0)` is the trim equilibrium residual and
+  central-differencing `f` cross-checks `A_full`.
   Used by `scripts/personal/wes-quasi-steady/verify_linearization.py`.
+- `vsm_quasi_steady.corotating_state_transform` — constant unipotent map `T`
+  from the linearisation's native FROZEN stability axes to the co-rotating
+  course axes (course axes at trim, carried by the body about B — the paper's
+  reporting convention; distinct from the principal-body-axes stability-frame
+  option). `A_corot = T A inv(T)`, `vec_corot = T vec`; eigenvalues and
+  margins invariant, only A-entries and mode participation change. The result
+  dict of `compute_vsm_trim_stability_derivatives` carries the assembled
+  matrix (`T_corotating_from_frozen`) and its inputs (`v_kite_trim_axes`,
+  `omega_c_axes`); `stability_common.linearise_trim` in the wes-quasi-steady
+  scripts applies it by default (`state_basis="corotating"`).
 
 These use the **VSM axis convention** (matches the LEI-V3 reference): chord along
 `+x` (LE forward at smaller x, `+x` is **aft**), `+y` spanwise, `+z` up; anhedral

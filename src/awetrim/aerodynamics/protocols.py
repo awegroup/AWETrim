@@ -178,8 +178,13 @@ class VsmQuasiSteadyAerodynamicSolver(Protocol):
         inertia_xx: float,
         inertia_yy: float,
         inertia_zz: float,
+        inertia_cg: Array | None = None,
     ) -> VsmStabilityResult:
-        """Linearise aerodynamic forces and moments around a trim state."""
+        """Linearise aerodynamic forces and moments around a trim state.
+
+        ``inertia_cg`` optionally carries the full 3x3 CG inertia tensor
+        (zero-attitude geometry basis) and overrides the principal scalars.
+        """
 
     def run_sweep(self, request: VsmSweepRequest) -> Sequence[Mapping[str, Any]]:
         """Run a warm-started principal/secondary aerodynamic trim sweep."""

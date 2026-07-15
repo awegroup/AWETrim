@@ -86,26 +86,35 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--course-deg", type=float, default=90.0)
     parser.add_argument("--radial-speed", type=float, default=0.0)
     parser.add_argument("--distance-radial", type=float, default=200.0)
-    parser.add_argument("--x-guess", default="30,0,0,0,0")
+    parser.add_argument("--x-guess", default="20,0,0,0,0")
     parser.add_argument("--bounds-lower", default="-2,-15,-15,-15,-5")
     parser.add_argument("--bounds-upper", default="80,15,15,15,5")
     parser.add_argument(
         "--inertia-xx",
         type=float,
         default=None,
-        help="Ixx in kg·m² (default: from system.yaml)",
+        help=(
+            "Ixx in kg·m² — overrides the (0,0) diagonal entry of the "
+            "system.yaml tensor; its products of inertia are kept"
+        ),
     )
     parser.add_argument(
         "--inertia-yy",
         type=float,
         default=None,
-        help="Iyy in kg·m² (default: from system.yaml)",
+        help=(
+            "Iyy in kg·m² — overrides the (1,1) diagonal entry of the "
+            "system.yaml tensor; its products of inertia are kept"
+        ),
     )
     parser.add_argument(
         "--inertia-zz",
         type=float,
         default=None,
-        help="Izz in kg·m² (default: from system.yaml)",
+        help=(
+            "Izz in kg·m² — overrides the (2,2) diagonal entry of the "
+            "system.yaml tensor; its products of inertia are kept"
+        ),
     )
     parser.add_argument("--moment-tolerance", type=float, default=1e-3)
     parser.add_argument("--include-gravity", action="store_true")

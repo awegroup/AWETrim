@@ -544,7 +544,9 @@ def solve_vsm_quasi_steady_trim(
         cg_arm = _as_3vector(kin["cg_arm"])
         omega_c_mag = float(np.linalg.norm(omega_c_vsm))
         omega_c_axis = (
-            omega_c_vsm / omega_c_mag if omega_c_mag > 1e-12 else -_as_3vector(axes.radial)
+            omega_c_vsm / omega_c_mag
+            if omega_c_mag > 1e-12
+            else -_as_3vector(axes.radial)
         )
 
         # rates_in_body_frame=True: use the axis as-is (world components).
@@ -1297,7 +1299,9 @@ def solve_vsm_qs_trim_with_williams_tether(
     # makes the tether see the wrong rotation rate away from the seed -- the
     # tether tip sweeps ~omega*r ~ tens of m/s, not a small effect -- and yields
     # seed-dependent spurious trim roots.
-    def _tether_omega_wind(speed_tangential: float, course_rate_body: float) -> np.ndarray:
+    def _tether_omega_wind(
+        speed_tangential: float, course_rate_body: float
+    ) -> np.ndarray:
         if not hasattr(system_model, "velocity_rotation_course_frame"):
             return np.zeros(3)
         _set_course_rate_body(system_model, course_rate_body)
@@ -1435,7 +1439,9 @@ def solve_vsm_qs_trim_with_williams_tether(
         # baseline.
         omega_c_mag = float(np.linalg.norm(omega_c_vsm))
         omega_c_axis = (
-            omega_c_vsm / omega_c_mag if omega_c_mag > 1e-12 else -_as_3vector(axes.radial)
+            omega_c_vsm / omega_c_mag
+            if omega_c_mag > 1e-12
+            else -_as_3vector(axes.radial)
         )
 
         # rates_in_body_frame=True: use the axis as-is (world components); see
@@ -1575,14 +1581,17 @@ def solve_vsm_qs_trim_with_williams_tether(
             tension = float(x[5])
             f_tether = payload["f_tether_offrad_vsm"] - tension * axes.radial
             total_force = net_force_vsm + f_tether
-            cf = np.array(
-                [
-                    np.dot(total_force, axes.course),
-                    np.dot(total_force, axes.normal),
-                    np.dot(total_force, axes.radial),
-                ],
-                dtype=float,
-            ) / payload["denom_f"]
+            cf = (
+                np.array(
+                    [
+                        np.dot(total_force, axes.course),
+                        np.dot(total_force, axes.normal),
+                        np.dot(total_force, axes.radial),
+                    ],
+                    dtype=float,
+                )
+                / payload["denom_f"]
+            )
             return np.concatenate([payload["trim_res"][:3], cf])
 
         # williams (collapsed): kite-end tether vector = trim resultant, so the
@@ -1667,9 +1676,7 @@ def solve_vsm_qs_trim_with_williams_tether(
     F_kite_wind = T_Wind_from_VSM @ F_kite_vsm
 
     if prescribed_roll_deg is None:
-        physical_success = bool(
-            all(abs(float(c)) < moment_tolerance for c in cm_res)
-        )
+        physical_success = bool(all(abs(float(c)) < moment_tolerance for c in cm_res))
     else:
         # cmx is the bridle-line reaction, not a residual to drive to zero.
         physical_success = bool(
@@ -1763,10 +1770,16 @@ def solve_vsm_qs_trim_with_williams_tether(
 #:     7   | p     | body roll rate
 #:     8   | q     | body pitch rate
 #:     9   | r     | body yaw rate
-#: Canonical free rigid-body states. The 6-DOF body has 12 states; ``x``, ``y``
-#: and the lateral velocity ``v`` are held fixed, leaving these 9 free states.
+#: Canonical free rigid-body states. The 6-DOF body has 12 states; the
+#: positions ``x`` and ``y`` are held fixed (lateral translation on the tether
+#: sphere belongs to the slow trajectory dynamics), leaving these 10 free
+#: states. The lateral velocity ``v`` IS a fast state: sideslip relief
+#: (beta_a = psi - v/V_a) and the side-force damping Y_v act on the mode
+#: timescale, and prescribing the velocity direction instead locks sideslip
+#: to the yaw attitude and overdrives the roll-yaw cross stiffness.
 ALL_STATE_NAMES: tuple[str, ...] = (
     "u",
+    "v",
     "w",
     "z",
     "phi",
@@ -1779,7 +1792,7 @@ ALL_STATE_NAMES: tuple[str, ...] = (
 
 #: Subsets used by the default decoupled (long + lat) split.
 LONG_STATES: tuple[str, ...] = ("u", "w", "z", "theta", "q")
-LAT_STATES: tuple[str, ...] = ("phi", "psi", "p", "r")
+LAT_STATES: tuple[str, ...] = ("v", "phi", "psi", "p", "r")
 
 #: Default selection — current behaviour, *no* vertical speed `w`.
 DEFAULT_STATES: tuple[str, ...] = (
@@ -1825,6 +1838,56 @@ def _skew(vec: np.ndarray) -> np.ndarray:
     )
 
 
+def corotating_state_transform(
+    v_kite_trim_axes: np.ndarray,
+    omega_c_axes: np.ndarray,
+    state_names: Sequence[str] = ALL_STATE_NAMES,
+) -> np.ndarray:
+    """Constant map ``T`` from frozen-axes to co-rotating-axes perturbation states.
+
+    :func:`compute_vsm_trim_stability_derivatives` resolves every perturbation
+    state in the FROZEN stability axes — the course axes of the trim state,
+    space-fixed while the body rotates relative to them. The paper convention
+    (Cayon & Schmehl, Sect. ``qs_equilibrium``) instead resolves the states in
+    the same course axes CARRIED BY THE BODY about the tether attachment:
+    axes that coincide with the course axes at trim and co-rotate with the
+    perturbed attitude. (This is a component-basis choice, distinct from the
+    principal-body-axes ``--stability-frame body`` option.) At a fixed trim
+    the two descriptions differ by the constant linear map built here,
+
+        dv_corot     = dv_frozen     + [v_kite_trim]_x dTheta
+        domega_corot = domega_frozen + [Omega_C]_x     dTheta
+
+    with the attitude angles and radial position unchanged, so
+
+        A_corot = T @ A_frozen @ inv(T),    vec_corot = T @ vec_frozen,
+
+    and the eigenvalues — hence every stability margin and boundary — are
+    invariant. The gravity-tilt force terms and the transport-corrected
+    attitude kinematics ``dTheta_dot = K (domega_corot - [Omega_C]_x dTheta)``
+    of the co-rotating description (Trevisi 2024, Eq. 8.18) emerge
+    automatically from the similarity transform. Inputs are components in the
+    stability-axes basis ``(course, normal, radial)``; both are available in
+    the result dict as ``v_kite_trim_axes`` and ``omega_c_axes``, and the
+    assembled matrix itself is returned there as ``T_corotating_from_frozen``.
+    ``T`` is unipotent (identity plus a nilpotent attitude coupling), so
+    ``inv(T) = 2 I - T`` exactly.
+    """
+    idx = {name: i for i, name in enumerate(state_names)}
+    transform = np.eye(len(idx), dtype=float)
+    attitude_cols = ("phi", "theta", "psi")
+    blocks = (
+        (("u", "v", "w"), _skew(v_kite_trim_axes)),
+        (("p", "q", "r"), _skew(omega_c_axes)),
+    )
+    for row_names, skew_block in blocks:
+        for i, row in enumerate(row_names):
+            for j, col in enumerate(attitude_cols):
+                if row in idx and col in idx:
+                    transform[idx[row], idx[col]] = skew_block[i, j]
+    return transform
+
+
 def _parallel_axis_term(mass: float, cg_offset: np.ndarray) -> np.ndarray:
     """Parallel-axis inertia shift ``m (|c|^2 1 - c c^T)`` from the CG to the
     reference point, for a CG offset ``c`` (Cayon & Schmehl, Eq.
@@ -1851,6 +1914,57 @@ def _bpoint_mass_matrix(
     matrix[:3, 3:] = -float(mass) * c_skew
     matrix[3:, :3] = float(mass) * c_skew
     matrix[3:, 3:] = np.asarray(inertia_b, dtype=float)
+    return matrix
+
+
+def _strip_theory_added_mass(
+    body_aero: VsmBodyAerodynamics,
+    reference_point: np.ndarray,
+    *,
+    rho: float,
+) -> np.ndarray:
+    """Strip-theory apparent-mass (added-mass) matrix about ``reference_point``.
+
+    Each spanwise panel entrains the 2-D flat-plate apparent mass
+    ``m' = rho pi c^2 / 4`` per unit span (Lissaman & Brown's parafoil
+    treatment), resisting acceleration along the panel normal only. Assembled
+    about the reference point this gives the symmetric 6x6 matrix
+
+        M_a = sum_i m_i [[ N_i,        -N_i [r_i]_x        ],
+                         [ [r_i]_x N_i, -[r_i]_x N_i [r_i]_x ]],
+
+    with ``N_i = n_i n_i^T`` the normal projector and ``r_i`` the panel
+    MID-CHORD (centroid) offset — the 2-D apparent-mass loading of a plate
+    acts at mid-chord (the non-circulatory centre of unsteady thin-airfoil
+    theory), NOT at the VSM 3/4-chord control point. Each block pair is the
+    exact rank-1 spatial inertia ``m_i g g^T`` with ``g = (n_i, r_i x n_i)``,
+    so the transfer to the reference point is the rigid (Kirchhoff) transfer
+    law by construction. Acts on ``(v_dot, omega_dot)`` like
+    :func:`_bpoint_mass_matrix` — simply ADD it to the rigid mass matrix; the
+    aerodynamic right-hand side is unchanged. Neglected: the strip's own
+    rotary apparent inertia about its mid-chord (``rho pi c^4/128`` per unit
+    span, ~2 kg m^2 for the V3). Strip theory over an arc canopy carries no
+    3-D/aspect-ratio reduction and no Munk rotation terms: treat magnitudes
+    as +-30%.
+    """
+    matrix = np.zeros((6, 6), dtype=float)
+    origin = _as_3vector(reference_point)
+    for panel in body_aero.panels:
+        corners = np.asarray(panel.corner_points, dtype=float)
+        width = float(np.linalg.norm(corners[3] - corners[0]))
+        chord = float(panel.chord)
+        m_i = float(rho) * np.pi * chord**2 / 4.0 * width
+        normal = getattr(panel, "x_airf", None)
+        if normal is None:
+            normal = np.cross(corners[2] - corners[0], corners[3] - corners[1])
+        normal = _as_3vector(normal)
+        normal = normal / np.linalg.norm(normal)
+        projector = np.outer(normal, normal)
+        r_skew = _skew(corners.mean(axis=0) - origin)
+        matrix[:3, :3] += m_i * projector
+        matrix[:3, 3:] += -m_i * projector @ r_skew
+        matrix[3:, :3] += m_i * r_skew @ projector
+        matrix[3:, 3:] += -m_i * r_skew @ projector @ r_skew
     return matrix
 
 
@@ -2091,6 +2205,7 @@ def compute_vsm_trim_stability_derivatives(
     inertia_xx: float = 100.0,
     inertia_yy: float = 19.43,
     inertia_zz: float = 100.0,
+    inertia_cg: np.ndarray | None = None,
     distance_radial: float | None = None,
     eps_vel: float = 0.1,
     eps_angle_deg: float = 0.5,
@@ -2101,6 +2216,7 @@ def compute_vsm_trim_stability_derivatives(
     full_omega_c: bool = True,
     rotate_inertia_by_trim: bool = True,
     include_gravity: bool = True,
+    include_added_mass: bool = False,
     transformation_c_from_vsm: np.ndarray = DEFAULT_TRANSFORMATION_C_FROM_VSM,
 ) -> dict[str, Any]:
     """Compute aerodynamic stability derivatives around a VSM trim state.
@@ -2124,6 +2240,15 @@ def compute_vsm_trim_stability_derivatives(
 
     Parameters
     ----------
+    inertia_cg
+        Optional full 3x3 kite inertia tensor about the CG in the reference
+        (zero-attitude) geometry basis — the same convention as
+        :func:`solve_vsm_quasi_steady_trim`'s ``inertia_cg``. When given, it
+        overrides ``inertia_xx``/``inertia_yy``/``inertia_zz`` and carries the
+        products of inertia into the B-point mass matrix and gyroscopic terms.
+        When ``None`` (default), the diagonal ``diag(I_xx, I_yy, I_zz)`` is
+        used — exact only when the geometry basis is principal (e.g. body
+        stability axes from a rigid-body identification).
     states
         Subset of :data:`ALL_STATE_NAMES` to use for the *selected* state-space
         block returned alongside the full coupled and default decoupled blocks.
@@ -2143,18 +2268,31 @@ def compute_vsm_trim_stability_derivatives(
         ``-chi_dot * e_radial`` is used, matching the closed-form turn-rate law.
         The result records the resolved choice under ``omega_c_model``.
     rotate_inertia_by_trim
-        If ``True`` (default), the CG offset and the principal moments
-        ``diag(I_xx, I_yy, I_zz)`` are rotated by the full trim attitude plus
-        the perturbation, matching the aerodynamic geometry — correct when the
-        stability axes are the (space-fixed) course axes and the kite is
-        tilted from them by the trim attitude. Set ``False`` when the
-        stability axes are the body-fixed principal axes (``--stability-frame
-        body``): the baseline tensors stay principal/diagonal and only the
-        attitude perturbation rotates them.
+        If ``True`` (default), the CG offset and the CG inertia tensor
+        (``inertia_cg`` or ``diag(I_xx, I_yy, I_zz)``) are rotated by the full
+        trim attitude plus the perturbation, matching the aerodynamic
+        geometry — correct when the stability axes are the (space-fixed)
+        course axes and the kite is tilted from them by the trim attitude.
+        Set ``False`` when the stability axes are the body-fixed principal
+        axes (``--stability-frame body``): the baseline tensors stay
+        principal/diagonal and only the attitude perturbation rotates them.
+    include_added_mass
+        If ``True``, the strip-theory apparent-mass matrix of the canopy
+        (:func:`_strip_theory_added_mass`, evaluated on the zero-attitude
+        geometry and rotated with the attitude exactly like the structural
+        inertia) is ADDED to the coupled 6x6 mass matrix — in the ``A_full``
+        assembly, the decoupled-block divisors, and ``nonlinear_rhs``. The
+        aerodynamic right-hand side is unchanged: the quasi-steady VSM solve
+        knows nothing of accelerations, so the fluid reaction to *acceleration*
+        must enter through the mass matrix or not at all. For ram-air kites
+        the entrained air is comparable to the structural mass and reshapes
+        the lateral eigenvalues; default ``False`` preserves the historical
+        rigid-only behaviour. The result records ``added_mass_model`` and
+        ``added_mass_matrix_axes``.
 
     Always-present outputs
     ----------------------
-    ``J_full`` (6, 9), ``A_full`` (9, 9), ``eig_full``, ``vec_full``,
+    ``J_full`` (6, 10), ``A_full`` (10, 10), ``eig_full``, ``vec_full``,
     ``Tfast_full``, ``stable_full``, ``state_names_full``, ``output_names``,
     and ``nonlinear_rhs`` — a callable ``f(delta_state) -> xdot`` for the
     nonlinear fast subsystem, assembled directly from the governing equations
@@ -2239,7 +2377,6 @@ def compute_vsm_trim_stability_derivatives(
         if system_model is not None and hasattr(system_model, "speed_radial")
         else None
     )
-
 
     working_body = copy.deepcopy(body_aero)
     baseline_sections, baseline_spanwise = _baseline_geometry(working_body)
@@ -2446,9 +2583,16 @@ def compute_vsm_trim_stability_derivatives(
     # matching the aerodynamic geometry; with ``False`` (body-fixed principal
     # stability axes) only the perturbation rotates the tensors, so the
     # baseline stays principal/diagonal as before.
-    inertia_principal = np.diag(
-        [float(inertia_xx), float(inertia_yy), float(inertia_zz)]
-    )
+    if inertia_cg is None:
+        inertia_cg0 = np.diag(
+            [float(inertia_xx), float(inertia_yy), float(inertia_zz)]
+        )
+    else:
+        inertia_cg0 = np.asarray(inertia_cg, dtype=float)
+        if inertia_cg0.shape != (3, 3):
+            raise ValueError("inertia_cg must be a 3x3 CG inertia tensor.")
+        if not np.allclose(inertia_cg0, inertia_cg0.T):
+            raise ValueError("inertia_cg must be symmetric.")
     cg_offset0 = center_of_gravity - reference_point  # zero-attitude, world
 
     def _attitude_angles_deg(
@@ -2474,8 +2618,8 @@ def compute_vsm_trim_stability_derivatives(
             roll_deg=roll_eff, pitch_deg=pitch_eff, yaw_deg=yaw_eff, axes=axes
         )
         cg = rotation @ cg_offset0
-        inertia_cg = rotation @ inertia_principal @ rotation.T
-        return cg, inertia_cg + _parallel_axis_term(mass, cg)
+        inertia_cg_att = rotation @ inertia_cg0 @ rotation.T
+        return cg, inertia_cg_att + _parallel_axis_term(mass, cg)
 
     if rotate_inertia_by_trim:
         _R_attitude = _compose_attitude_rotation(
@@ -2484,9 +2628,49 @@ def compute_vsm_trim_stability_derivatives(
             yaw_deg=float(yaw0),
             axes=axes,
         )
-        inertia_stability = _R_attitude @ inertia_principal @ _R_attitude.T
+        inertia_stability = _R_attitude @ inertia_cg0 @ _R_attitude.T
     else:
-        inertia_stability = inertia_principal
+        inertia_stability = inertia_cg0
+
+    # Strip-theory apparent mass of the canopy, evaluated once on the
+    # zero-attitude geometry and rotated with the attitude exactly like the
+    # structural tensors (same ``_attitude_angles_deg`` convention). The
+    # quasi-steady VSM right-hand side carries no acceleration reaction, so
+    # the entrained-air inertia enters through the mass matrix only.
+    if include_added_mass:
+        _set_body_attitude_from_baseline(
+            working_body,
+            baseline_sections=baseline_sections,
+            baseline_spanwise=baseline_spanwise,
+            roll_deg=0.0,
+            pitch_deg=0.0,
+            yaw_deg=0.0,
+            axes=axes,
+            reference_point=reference_point,
+        )
+        added_mass0 = _strip_theory_added_mass(
+            working_body, reference_point, rho=float(solver.rho)
+        )
+    else:
+        added_mass0 = None
+
+    def _added_mass_world(
+        droll_deg: float = 0.0, dpitch_deg: float = 0.0, dyaw_deg: float = 0.0
+    ) -> np.ndarray:
+        """6x6 added-mass matrix at the perturbed attitude (world components);
+        zeros when the model is disabled."""
+        if added_mass0 is None:
+            return np.zeros((6, 6), dtype=float)
+        roll_eff, pitch_eff, yaw_eff = _attitude_angles_deg(
+            droll_deg, dpitch_deg, dyaw_deg
+        )
+        rotation = _compose_attitude_rotation(
+            roll_deg=roll_eff, pitch_deg=pitch_eff, yaw_deg=yaw_eff, axes=axes
+        )
+        block_rotation = np.zeros((6, 6), dtype=float)
+        block_rotation[:3, :3] = rotation
+        block_rotation[3:, 3:] = rotation
+        return block_rotation @ added_mass0 @ block_rotation.T
 
     # Kite weight in the trim (VSM) frame, matching the trim's own gravity term
     # (``transformation_c_from_vsm @ force_gravity``). Constant in the world
@@ -2628,7 +2812,10 @@ def compute_vsm_trim_stability_derivatives(
             * denom
         )
 
-        speed_tangential_eff = float(speed_tangential) + float(
+        # The kite flies along -e_course in the trim (VSM) frame (course/normal
+        # axes flip), so a positive course-axis kite-velocity increment
+        # REDUCES the tangential speed.
+        speed_tangential_eff = float(speed_tangential) - float(
             np.dot(delta_v, axes.course)
         )
         distance_radial_eff = (
@@ -2659,10 +2846,21 @@ def compute_vsm_trim_stability_derivatives(
             )
             f_transport = -mass * np.cross(omega_c_world, v_kite_eff)
         else:
+            # Radial-only reduction with the frozen-transport convention:
+            # -m Omega_red x v with Omega_red = -course_rate e_radial and
+            # v = -v_eff e_course gives the normal component; the great-circle
+            # part (v_tau/r along -e_normal in the VSM frame) contributes the
+            # outward centrifugal radial component, one factor frozen at the
+            # trim speed. Signs follow the kite flying along -e_course.
             f_transport = np.zeros(3, dtype=float)
-            f_transport[1] = mass * speed_tangential_eff * float(course_rate0)
+            f_transport[1] = -mass * speed_tangential_eff * float(course_rate0)
             if distance_radial_eff is not None and distance_radial_eff > 0.0:
-                f_transport[2] = mass * speed_tangential_eff**2 / distance_radial_eff
+                f_transport[2] = (
+                    mass
+                    * float(speed_tangential)
+                    * speed_tangential_eff
+                    / distance_radial_eff
+                )
 
         # Attitude-rotated CG offset and B-point inertia: the centripetal and
         # gyroscopic terms carry the full omega; the gravity and transport
@@ -2672,12 +2870,8 @@ def compute_vsm_trim_stability_derivatives(
         cg_world, inertia_b_world = _cg_and_inertia_b(
             delta_roll_deg, delta_pitch_deg, delta_yaw_deg
         )
-        f_centripetal = -mass * np.cross(
-            omega_total, np.cross(omega_total, cg_world)
-        )
-        force = (
-            f_aero + f_tether_eff + gravity_force_stab + f_transport + f_centripetal
-        )
+        f_centripetal = -mass * np.cross(omega_total, np.cross(omega_total, cg_world))
+        force = f_aero + f_tether_eff + gravity_force_stab + f_transport + f_centripetal
         moment_b = (
             moment_aero_at_ref
             + np.cross(cg_world, gravity_force_stab)
@@ -2704,6 +2898,14 @@ def compute_vsm_trim_stability_derivatives(
     _gamma_res = _res_baseline.get("gamma_distribution")
     if _gamma_res is not None:
         gamma_baseline = np.asarray(_gamma_res, dtype=float)
+    # Warm-started re-evaluation of the trim right-hand side. The anchor was
+    # taken from the COLD baseline solve, while every finite-difference
+    # evaluation warm-starts from its circulation — so the field the FD sees
+    # retains a small warm/cold force residual at zero perturbation (plus the
+    # by-design moment residual of a pinned-roll steering trim). Verification
+    # needs the RHS the warm-started field actually has at the trim, in both
+    # channels; A_full itself is unaffected (a constant cancels in the FD).
+    _force0_warm, _moment0_warm, _ = eval_force_moment(zero3, zero3)
     stall_margin_min_deg = float("nan")
     n_stalled_panels: int | None = None
     _stall_onsets = _panel_stall_onsets_rad(working_body)
@@ -2766,10 +2968,13 @@ def compute_vsm_trim_stability_derivatives(
         radial_eps = max(radial_eps, 1e-7)
 
     # Build the full 6×9 numerical Jacobian (rows = body force+moment outputs,
-    # cols = state perturbations in canonical ALL_STATE_NAMES order). The lateral
-    # velocity ``v`` is held fixed (not a free state), so it is never perturbed.
+    # cols = state perturbations in canonical ALL_STATE_NAMES order). The
+    # lateral-velocity column is the sideslip derivative (va_pert picks up the
+    # normal delta_v) plus its transport term; releasing it restores the
+    # sideslip relief and Y_v damping a prescribed velocity direction removes.
     columns = {
         "u": central_diff_col(+eps_vel * axes.course, zero3, eps_vel),
+        "v": central_diff_col(+eps_vel * axes.normal, zero3, eps_vel),
         "w": central_diff_col(+eps_vel * axes.radial, zero3, eps_vel),
         "z": central_diff_col(
             zero3, zero3, radial_eps, radial_position_offset=radial_eps
@@ -2793,7 +2998,14 @@ def compute_vsm_trim_stability_derivatives(
     c_trim_world, inertia_b_trim_world = _cg_and_inertia_b()
     c_trim_axes = R_body @ c_trim_world
     inertia_b_trim_axes = R_body @ inertia_b_trim_world @ R_body.T
-    mass_matrix_axes = _bpoint_mass_matrix(mass, c_trim_axes, inertia_b_trim_axes)
+    _block_r_body = np.zeros((6, 6), dtype=float)
+    _block_r_body[:3, :3] = R_body
+    _block_r_body[3:, 3:] = R_body
+    added_mass_trim_axes = _block_r_body @ _added_mass_world() @ _block_r_body.T
+    mass_matrix_axes = (
+        _bpoint_mass_matrix(mass, c_trim_axes, inertia_b_trim_axes)
+        + added_mass_trim_axes
+    )
 
     # Attitude-rate kinematics: (phi_dot, theta_dot, psi_dot) = K (p, q, r).
     # The generators of the yaw(e_r) pitch(e_n) roll(e_c) increment
@@ -2816,37 +3028,52 @@ def compute_vsm_trim_stability_derivatives(
     )
     eig_full, vec_full = _eig_block(A_full)
 
-    def nonlinear_rhs(delta_state: np.ndarray) -> np.ndarray:
-        """Nonlinear fast-subsystem vector field ``xdot = f(x)`` at this trim.
+    # Kite velocity at trim in the stability axes — input to the co-rotating
+    # state transform (course axes carried by the body, see
+    # :func:`corotating_state_transform`). Prefer the trim's own world-frame
+    # kite velocity; fall back to the tangential speed along the course axis.
+    _v_kite_world = trim_result.get("kite_vel_world")
+    if _v_kite_world is not None:
+        v_kite_trim_axes = R_body @ _as_3vector(_v_kite_world)
+    elif system_model is not None:
+        v_kite_trim_axes = R_body @ _as_3vector(
+            np.asarray(transformation_c_from_vsm, dtype=float)
+            @ np.asarray(system_model.velocity_kite, dtype=float).reshape(3)
+        )
+    else:
+        v_kite_trim_axes = np.array([float(speed_tangential), 0.0, 0.0])
 
-        ``delta_state`` is the perturbation of the 9 states in
-        :data:`ALL_STATE_NAMES` order ``(u, w, z, phi, theta, psi, p, q, r)``
-        about the trim (angles in rad, rates in rad/s, velocities in m/s, ``z``
-        in m); the return is ``xdot`` in the same order and units-per-second.
+    def mass_matrix_world_fn(
+        droll_deg: float = 0.0, dpitch_deg: float = 0.0, dyaw_deg: float = 0.0
+    ) -> np.ndarray:
+        """Coupled 6x6 mass matrix (rigid + added mass) at the perturbed
+        attitude, in world components — the matrix ``nonlinear_rhs`` solves.
+        Exposed so verification can form the non-equilibrium FD artifact
+        ``d(M^-1)/dTheta @ rhs_world_at_trim`` exactly."""
+        cg_world, inertia_b_world = _cg_and_inertia_b(droll_deg, dpitch_deg, dyaw_deg)
+        return _bpoint_mass_matrix(mass, cg_world, inertia_b_world) + _added_mass_world(
+            droll_deg, dpitch_deg, dyaw_deg
+        )
 
-        This assembles the state derivative *directly* from the governing
-        B-point equations: the right-hand side from :func:`eval_force_moment`,
-        one joint solve of the coupled 6x6 mass matrix (built at the
-        *perturbed* attitude, so the CG offset and I_B rotate with the state)
-        for the translational and angular accelerations, the kinematic
-        identity ``z_dot = w``, and the exact attitude kinematics through the
-        increment-generator matrix evaluated at the perturbed attitude. It
-        shares no code with :func:`_build_state_space`, so:
+    def nonlinear_rhs_full(delta_state: np.ndarray) -> dict[str, np.ndarray]:
+        """One evaluation of the nonlinear fast subsystem with its internals.
 
-        * ``nonlinear_rhs(zeros(9))`` is the trim **equilibrium residual**. A
-          trim solved with the gyroscopic couple (``inertia_cg``), the
-          centripetal CG-offset force, and the full ``Omega_C`` aerodynamic
-          body rates shares this evaluation's physics, so all channels should
-          vanish to within the trim solver convergence, and
-        * central-differencing this field is an independent cross-check of
-          ``A_full`` (the constant residual cancels in the difference).
-
-        Provided for verification and for time-domain integration of the fast
-        subsystem; not used to build any of the returned matrices.
+        Returns ``{"xdot", "rhs_world", "accel_world", "mass_matrix_world"}``
+        for the perturbed state: the state derivative (see
+        :func:`nonlinear_rhs`), the B-point right-hand side ``(force,
+        moment)`` in world components, the joint 6-DOF acceleration it
+        produces, and the perturbed-attitude mass matrix that links them
+        (``rhs_world = mass_matrix_world @ accel_world``). Verification can
+        difference ``rhs_world`` through the *trim* mass matrix — the
+        documented ``A_full`` assembly on independent evaluations — which is
+        free of the two attitude-column FD artifacts of the raw field: the
+        constant-residual term ``d(M^-1)/dTheta @ rhs(0)`` and the O(eps^2)
+        curvature of ``M(Theta)^-1`` (visible once the strongly anisotropic
+        added-mass block rotates with attitude).
         """
-        dx = np.asarray(delta_state, dtype=float).reshape(9)
-        du, dw, dz, dphi, dtheta, dpsi, dp, dq, dr = dx
-        delta_v = du * axes.course + dw * axes.radial
+        dx = np.asarray(delta_state, dtype=float).reshape(10)
+        du, dv, dw, dz, dphi, dtheta, dpsi, dp, dq, dr = dx
+        delta_v = du * axes.course + dv * axes.normal + dw * axes.radial
         omega_perturb = dp * axes.course + dq * axes.normal + dr * axes.radial
         droll_deg = float(np.rad2deg(dphi))
         dpitch_deg = float(np.rad2deg(dtheta))
@@ -2861,13 +3088,9 @@ def compute_vsm_trim_stability_derivatives(
         )
         # Joint accelerations from the coupled mass matrix at the perturbed
         # attitude (world components, projected onto the axes basis below).
-        cg_world, inertia_b_world = _cg_and_inertia_b(
-            droll_deg, dpitch_deg, dyaw_deg
-        )
-        accel = np.linalg.solve(
-            _bpoint_mass_matrix(mass, cg_world, inertia_b_world),
-            np.concatenate([f_world, m_world]),
-        )
+        rhs_world = np.concatenate([f_world, m_world])
+        mass_matrix_world = mass_matrix_world_fn(droll_deg, dpitch_deg, dyaw_deg)
+        accel = np.linalg.solve(mass_matrix_world, rhs_world)
         v_dot_axes = R_body @ accel[:3]
         rate_dot_axes = R_body @ accel[3:]
         # Exact attitude kinematics: the rate perturbation (frozen-basis
@@ -2883,9 +3106,10 @@ def compute_vsm_trim_stability_derivatives(
             ),
             omega_perturb,
         )
-        return np.array(
+        xdot = np.array(
             [
                 v_dot_axes[0],  # u_dot (course)
+                v_dot_axes[1],  # v_dot (normal)
                 v_dot_axes[2],  # w_dot (radial)
                 dw,  # z_dot = w
                 euler_rates[0],  # phi_dot
@@ -2897,11 +3121,53 @@ def compute_vsm_trim_stability_derivatives(
             ],
             dtype=float,
         )
+        return {
+            "xdot": xdot,
+            "rhs_world": rhs_world,
+            "accel_world": accel,
+            "mass_matrix_world": mass_matrix_world,
+        }
+
+    def nonlinear_rhs(delta_state: np.ndarray) -> np.ndarray:
+        """Nonlinear fast-subsystem vector field ``xdot = f(x)`` at this trim.
+
+        ``delta_state`` is the perturbation of the 10 states in
+        :data:`ALL_STATE_NAMES` order ``(u, v, w, z, phi, theta, psi, p, q,
+        r)`` about the trim (angles in rad, rates in rad/s, velocities in m/s,
+        ``z`` in m); the return is ``xdot`` in the same order and
+        units-per-second.
+
+        This assembles the state derivative *directly* from the governing
+        B-point equations: the right-hand side from :func:`eval_force_moment`,
+        one joint solve of the coupled 6x6 mass matrix (built at the
+        *perturbed* attitude, so the CG offset, I_B, and added-mass tensor
+        rotate with the state) for the translational and angular
+        accelerations, the kinematic identity ``z_dot = w``, and the exact
+        attitude kinematics through the increment-generator matrix evaluated
+        at the perturbed attitude. It shares no code with
+        :func:`_build_state_space`, so:
+
+        * ``nonlinear_rhs(zeros(10))`` is the trim **equilibrium residual**. A
+          trim solved with the gyroscopic couple (``inertia_cg``), the
+          centripetal CG-offset force, and the full ``Omega_C`` aerodynamic
+          body rates shares this evaluation's physics, so all channels should
+          vanish to within the trim solver convergence (a pinned-roll
+          bridle-steering trim keeps its steering-line reaction moment), and
+        * central-differencing this field is an independent cross-check of
+          ``A_full`` — after removing the attitude-column artifacts of the
+          attitude-dependent mass matrix; ``nonlinear_rhs_full`` exposes the
+          per-evaluation right-hand side for an artifact-free comparison.
+
+        Provided for verification and for time-domain integration of the fast
+        subsystem; not used to build any of the returned matrices.
+        """
+        return nonlinear_rhs_full(delta_state)["xdot"]
 
     # ---- Backward-compatible default decoupled blocks -------------------
     # Historical split (u, theta, q | phi, psi, p, r) with per-channel scalar
     # inertia: the translational–rotational mass-matrix coupling is dropped by
-    # construction and the moment rows divide by the I_B diagonal. All
+    # construction and each row divides by the corresponding mass-matrix
+    # diagonal (== m or the I_B diagonal when added mass is off). All
     # velocity-product derivatives (gyroscopic terms included) now arrive
     # through J_full itself — they are part of the differenced right-hand
     # side — so nothing is added analytically here. The full coupled
@@ -2913,9 +3179,9 @@ def compute_vsm_trim_stability_derivatives(
     j_long = J_full[np.ix_(long_out_rows, long_default_state_idx)]
 
     a_long = np.zeros((3, 3))
-    a_long[0, :] = j_long[0, :] / mass
+    a_long[0, :] = j_long[0, :] / mass_matrix_axes[0, 0]
     a_long[1, :] = [0.0, 0.0, kinematic_map[1, 1]]
-    a_long[2, :] = j_long[2, :] / inertia_b_trim_axes[1, 1]
+    a_long[2, :] = j_long[2, :] / mass_matrix_axes[4, 4]
 
     lat_default_state_idx = _state_indices(["phi", "psi", "p", "r"])
     lat_out_rows = [1, 3, 5]  # F_normal, M_course, M_radial
@@ -2924,8 +3190,8 @@ def compute_vsm_trim_stability_derivatives(
     a_lat = np.zeros((4, 4))
     a_lat[0, :] = [0.0, 0.0, kinematic_map[0, 0], kinematic_map[0, 2]]
     a_lat[1, :] = [0.0, 0.0, kinematic_map[2, 0], kinematic_map[2, 2]]
-    a_lat[2, :] = j_lat[1, :] / inertia_b_trim_axes[0, 0]
-    a_lat[3, :] = j_lat[2, :] / inertia_b_trim_axes[2, 2]
+    a_lat[2, :] = j_lat[1, :] / mass_matrix_axes[3, 3]
+    a_lat[3, :] = j_lat[2, :] / mass_matrix_axes[5, 5]
 
     eig_long, vec_long = _eig_block(a_long)
     eig_lat, vec_lat = _eig_block(a_lat)
@@ -2944,7 +3210,7 @@ def compute_vsm_trim_stability_derivatives(
         "Tfast_lat": _timescales_from_eigs(eig_lat),
         "stable_long": bool(np.all(np.real(eig_long) < 0.0)),
         "stable_lat": bool(np.all(np.real(eig_lat) < 0.0)),
-        # Full 9-state coupled system (always available for inspection)
+        # Full 10-state coupled system (always available for inspection)
         "J_full": J_full,
         "A_full": A_full,
         "eig_full": eig_full,
@@ -2991,6 +3257,14 @@ def compute_vsm_trim_stability_derivatives(
         # Course-frame transport rate used for the aero body-rate + inertial terms.
         "omega_c_model": "full" if omega_c_is_full else "radial_only",
         "omega_c_axes": np.asarray(omega_c_axes, dtype=float),
+        # Co-rotating-axes representation (paper convention: course axes
+        # carried by the body about B). The native states above are frozen-
+        # axes; apply T to move to co-rotating components — eigenvalues are
+        # invariant. See :func:`corotating_state_transform`.
+        "v_kite_trim_axes": np.asarray(v_kite_trim_axes, dtype=float),
+        "T_corotating_from_frozen": corotating_state_transform(
+            v_kite_trim_axes, omega_c_axes
+        ),
         # CG inertia tensor at the trim attitude (historical key).
         "inertia_stability": np.asarray(inertia_stability, dtype=float),
         "inertia_rotated_by_trim": bool(rotate_inertia_by_trim),
@@ -3001,6 +3275,35 @@ def compute_vsm_trim_stability_derivatives(
         "inertia_b_axes": np.asarray(inertia_b_trim_axes, dtype=float),
         "mass_matrix_axes": np.asarray(mass_matrix_axes, dtype=float),
         "kinematic_map": np.asarray(kinematic_map, dtype=float),
+        # Strip-theory apparent mass (zeros / "none" when disabled). The
+        # matrix is the trim-attitude added-mass block already CONTAINED in
+        # ``mass_matrix_axes``; subtract it to recover the rigid-only matrix.
+        "include_added_mass": bool(include_added_mass),
+        "added_mass_model": "strip_theory" if include_added_mass else "none",
+        "added_mass_matrix_axes": np.asarray(added_mass_trim_axes, dtype=float),
+        # Warm-started right-hand side at the trim (world components): the
+        # residual the FD field carries at zero perturbation — warm/cold
+        # anchor mismatch in the force channel, plus any constant reaction
+        # the trim did not balance (the steering-line reaction of a
+        # pinned-roll bridle-steering trim, or solver tolerance) in the
+        # moment channel. A constant reaction contributes nothing to the
+        # Jacobian at the balanced point, but a raw finite difference of
+        # ``nonlinear_rhs`` picks up ``d(M^-1)/dTheta @ rhs_world_at_trim``;
+        # together with ``mass_matrix_world_fn`` verification can subtract
+        # that artifact exactly.
+        "rhs_world_at_trim": np.concatenate(
+            [
+                np.asarray(_force0_warm, dtype=float),
+                np.asarray(_moment0_warm, dtype=float),
+            ]
+        ),
+        "mass_matrix_world_fn": mass_matrix_world_fn,
+        "nonlinear_rhs_full": nonlinear_rhs_full,
+        # Raw B-point force model f(delta_v, omega_perturb, ...) -> (force,
+        # moment_B, res), world components, warm-started. Exposed for
+        # verification and state-space experiments on channels outside the
+        # canonical state set.
+        "eval_force_moment_fn": eval_force_moment,
     }
 
     # ---- User-selected sub-block (custom state set / coupling) ----------

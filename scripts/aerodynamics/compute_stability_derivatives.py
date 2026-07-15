@@ -53,11 +53,11 @@ from awetrim.identification.rigid_body_axes import (
 # override them when provided.
 OPERATING_CONDITION = {
     "elevation_deg": 30.0,
-    "azimuth_deg": 0.0,
-    "course_deg": 0.0,
+    "azimuth_deg": 10.0,
+    "course_deg": 90.0,
     "wind_speed": 8.0,
-    "radial_speed": 0,
-    "distance_radial": 200.0,
+    "radial_speed": 1.5,
+    "distance_radial": 250.0,
 }
 
 
@@ -1213,22 +1213,22 @@ def main() -> None:
         args.mass_wing if args.mass_wing is not None else props.get("mass", 30.0)
     )
 
-    # Inertia: use from system.yaml unless explicitly overridden
-    inertia_tensor = props.get("inertia", [[100, 0, 0], [0, 20, 0], [0, 0, 100]])
+    # Inertia: full CG tensor from system.yaml unless explicitly overridden.
+    # --inertia-xx/yy/zz replace individual diagonal entries; the products of
+    # inertia (off-diagonals, geometry basis) are kept and passed through.
     try:
-        inertia_xx = (
-            float(inertia_tensor[0][0]) if args.inertia_xx is None else args.inertia_xx
-        )
-        inertia_yy = (
-            float(inertia_tensor[1][1]) if args.inertia_yy is None else args.inertia_yy
-        )
-        inertia_zz = (
-            float(inertia_tensor[2][2]) if args.inertia_zz is None else args.inertia_zz
-        )
-    except (IndexError, TypeError):
-        inertia_xx = args.inertia_xx if args.inertia_xx is not None else 100.0
-        inertia_yy = args.inertia_yy if args.inertia_yy is not None else 20.0
-        inertia_zz = args.inertia_zz if args.inertia_zz is not None else 100.0
+        inertia_cg = np.asarray(
+            props.get("inertia", [[100, 0, 0], [0, 20, 0], [0, 0, 100]]),
+            dtype=float,
+        ).reshape(3, 3)
+    except (ValueError, TypeError):
+        inertia_cg = np.diag([100.0, 20.0, 100.0])
+    for _i, _diag_override in enumerate(
+        (args.inertia_xx, args.inertia_yy, args.inertia_zz)
+    ):
+        if _diag_override is not None:
+            inertia_cg[_i, _i] = float(_diag_override)
+    inertia_xx, inertia_yy, inertia_zz = (float(v) for v in np.diag(inertia_cg))
 
     center_of_gravity = values["center_of_gravity"]
     trim_axes = DEFAULT_AXES
@@ -1253,7 +1253,19 @@ def main() -> None:
             radial=rb.body_axes[2],  # z_body - yaw
         )
         center_of_gravity = rb.cg
-        inertia_xx, inertia_yy, inertia_zz = rb.principal_moments
+        inertia_xx, inertia_yy, inertia_zz = (
+            float(v) for v in rb.principal_moments
+        )
+        if stability_frame == "body":
+            # Body stability axes ARE the principal axes: the tensor is
+            # exactly diagonal there (rotate_inertia_by_trim=False below
+            # keeps the baseline diagonal).
+            inertia_cg = np.diag(np.asarray(rb.principal_moments, dtype=float))
+        else:
+            # Course stability axes: pass the full structural-frame tensor so
+            # the trim-attitude rotation needs no principal-axis
+            # approximation — the products of inertia are kept.
+            inertia_cg = np.asarray(rb.inertia_cg, dtype=float)
 
         case_dir = args.rigid_body_result.resolve()
         if case_dir.is_file():
@@ -1361,9 +1373,9 @@ def main() -> None:
         trim_result=result,
         system_model=system_model,
         mass=mass_wing,
-        inertia_xx=inertia_xx,
-        inertia_yy=inertia_yy,
-        inertia_zz=inertia_zz,
+        # Full CG tensor (zero-attitude geometry basis for the course frame;
+        # diagonal principal tensor for the body frame — set above).
+        inertia_cg=inertia_cg,
         axes=stability_axes,
         distance_radial=args.distance_radial,
         eps_vel=args.eps_vel,
@@ -1375,7 +1387,7 @@ def main() -> None:
         full_omega_c=not args.reduced_omega_c,
         # In the body frame the stability axes ARE the principal axes, so the
         # inertia is already diagonal; only the (space-fixed) course frame needs
-        # the principal moments rotated in by the trim attitude.
+        # the full tensor rotated in by the trim attitude.
         rotate_inertia_by_trim=(stability_frame != "body"),
     )
 
@@ -1390,7 +1402,9 @@ def main() -> None:
     )
 
     # --- Diagnostic: inertia tensor used for the rotational dynamics ----------
-    _I_stab = np.asarray(stability.get("inertia_stability", np.zeros((3, 3))), dtype=float)
+    _I_stab = np.asarray(
+        stability.get("inertia_stability", np.zeros((3, 3))), dtype=float
+    )
     _off_diag = _I_stab - np.diag(np.diag(_I_stab))
     print("\n--- inertia tensor in stability frame (A_full) ---")
     print(f"  rotated_by_trim: {stability.get('inertia_rotated_by_trim')}")
@@ -1481,6 +1495,7 @@ def main() -> None:
                 "inertia_xx": inertia_xx,
                 "inertia_yy": inertia_yy,
                 "inertia_zz": inertia_zz,
+                "inertia_cg": np.asarray(inertia_cg, dtype=float).tolist(),
             },
             "frame": {
                 "trim_frame": "course",
