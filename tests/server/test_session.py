@@ -107,7 +107,7 @@ def patched_session(monkeypatch, tmp_path):
 
     sess = ReeloutSession()
     init_config = {
-        "wind": {"model_type": "uniform", "U_ref": 8.0, "direction_wind": 0.0},
+        "inflow_conditions": {"wind_speed": 8.0, "profile_law": 0},  # CONST
         "initial_guess": None,
         "system_config_path": str(system_yaml),
         "cycle_config_path": str(cycle_yaml),
@@ -165,7 +165,6 @@ def test_init_from_inflow_conditions(patched_session):
     """InflowConditions is resolved into the Wind model and echoed back."""
     sess, config = patched_session
     config = dict(config)
-    del config["wind"]
     config["inflow_conditions"] = {
         "wind_speed": 8.0, "wind_direction": 270.0, "profile_law": 3,
         "alpha": 0.1, "z0": 0.01, "turbulence": 0.2,
@@ -186,7 +185,7 @@ def test_init_from_inflow_conditions(patched_session):
 def test_init_without_any_wind_raises(patched_session):
     sess, config = patched_session
     config = dict(config)
-    del config["wind"]
+    del config["inflow_conditions"]
     with pytest.raises(ValueError, match="no wind given"):
         sess.init(config)
 
@@ -266,8 +265,7 @@ def test_second_step_warm_starts_and_updates_radius(patched_session):
     }
     phase.results.append(_fake_result())
     sess.step(
-        wind={"model_type": "tabulated", "heights": [10.0, 300.0],
-              "speeds": [5.0, 9.0], "direction_wind": 0.0},
+        inflow_conditions={"wind_speed": 9.0, "profile_law": 2, "z0": 0.03},
         distance_radial=R0 + 20.0,
     )
     assert phase.solve_started.wait(timeout=5.0)
@@ -280,9 +278,9 @@ def test_second_step_warm_starts_and_updates_radius(patched_session):
     np.testing.assert_allclose(
         phase._warm_start_trajectory["distance_radial"], R0 + 20.0
     )
-    # Tabulated wind must disable SX expansion
-    assert phase.pattern_config["sim_parameters"]["expand_nlp"] is False
-    assert sess.status()["wind"]["model_type"] == "tabulated"
+    # every InflowConditions law is analytic -> SX expansion stays enabled
+    assert phase.pattern_config["sim_parameters"]["expand_nlp"] is True
+    assert sess.status()["wind"]["model_type"] == "logarithmic"
 
 
 def test_failed_step_keeps_previous_record(patched_session):

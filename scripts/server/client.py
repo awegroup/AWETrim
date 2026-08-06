@@ -6,12 +6,14 @@ with HTTP or polling directly:
     from client import ReeloutClient
 
     client = ReeloutClient("http://127.0.0.1:8000")
-    client.init(wind={"model_type": "logarithmic", "U_ref": 8.0})
+    client.init(inflow_conditions={"wind_speed": 5.2, "profile_law": 2})
     trajectory = client.optimize()                      # step + wait, one call
     ...
     trajectory = client.optimize(                       # later: refresh
-        wind={"model_type": "tabulated",
-              "heights": [10, 100, 300], "speeds": [5.5, 8.0, 9.3]},
+        inflow_conditions={"wind_speed": 8.4, "wind_direction": 265.0,
+                           "profile_law": 6,
+                           "heights": [10, 50, 100, 200, 300],
+                           "speeds": [5.5, 7.4, 8.0, 9.3, 8.6]},
         length=220.0,
     )
 
@@ -40,21 +42,24 @@ class ReeloutClient:
     def status(self) -> dict:
         return self._request("GET", "/status")
 
-    def init(self, wind: dict, **options) -> dict:
+    def init(self, inflow_conditions: dict, **options) -> dict:
         """POST /init. `options` maps to the InitRequest fields, e.g.
         initial_guess=..., n_points=..., length=..., input_depower=..."""
-        return self._request("POST", "/init", json={"wind": wind, **options})
+        return self._request(
+            "POST", "/init",
+            json={"inflow_conditions": inflow_conditions, **options},
+        )
 
     def step(
         self,
-        wind: Optional[dict] = None,
+        inflow_conditions: Optional[dict] = None,
         length: Optional[float] = None,
         max_iter: Optional[int] = None,
     ) -> dict:
         """POST /step (non-blocking). Returns the 202 acknowledgement."""
         payload = {"wait": False}  # keep this client's step/wait split
-        if wind is not None:
-            payload["wind"] = wind
+        if inflow_conditions is not None:
+            payload["inflow_conditions"] = inflow_conditions
         if length is not None:
             payload["length"] = length
         if max_iter is not None:
@@ -108,7 +113,9 @@ if __name__ == "__main__":
 
     print("initializing session ...")
     client.init(
-        wind={"model_type": "logarithmic", "U_ref": 8.0, "z_ref": 100.0, "z0": 0.03},
+        # 5.2 m/s at 6 m height, wind from the west, logarithmic profile
+        inflow_conditions={"wind_speed": 5.2, "wind_direction": 270.0,
+                           "profile_law": 2, "z0": 0.03},
         initial_guess={"curve_type": "lissajous"},
         input_depower=1.6, reg_weight=1.0, detect_simple_bounds=True,
     )
@@ -122,8 +129,11 @@ if __name__ == "__main__":
 
     print("refreshing with new wind + tether length (warm start) ...")
     trajectory = client.optimize(
-        wind={"model_type": "tabulated",
-              "heights": [10.0, 100.0, 300.0], "speeds": [5.5, 8.0, 9.3]},
+        # a measured profile: CUSTOM_JET fits the heights/speeds samples
+        inflow_conditions={"wind_speed": 8.4, "wind_direction": 265.0,
+                           "profile_law": 6,
+                           "heights": [10.0, 50.0, 100.0, 200.0, 300.0],
+                           "speeds": [5.5, 7.4, 8.0, 9.3, 8.6]},
         length=220.0,
     )
     metrics = trajectory["metrics"]

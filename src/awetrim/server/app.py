@@ -101,7 +101,6 @@ def create_app(
             inflow_conditions=request.inflow_conditions.model_dump()
             if request.inflow_conditions
             else None,
-            wind=request.wind.model_dump() if request.wind else None,
             winch_params=request.winch_params.model_dump()
             if request.winch_params
             else None,

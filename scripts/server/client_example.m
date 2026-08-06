@@ -13,10 +13,14 @@ json = weboptions("MediaType", "application/json", "Timeout", 30);
 %% 1. Check the server is up
 disp(webread(BASE + "/health"))
 
-%% 2. Initialize once (does not solve yet). Only "wind" is required;
-%  all tunable fields shown with their defaults — see README.md for meanings.
-init.wind = struct("model_type", "logarithmic", ...
-                   "U_ref", 8.0, "z_ref", 100.0, "z0", 0.03);
+%% 2. Initialize once (does not solve yet). Only "inflow_conditions" is
+%  required; all tunable fields shown with their defaults — see README.md.
+%  5.2 m/s at 6 m height, wind from the west, logarithmic profile
+%  (profile_law 2, ~8 m/s at 100 m with this roughness).
+init.inflow_conditions = struct("wind_speed", 5.2, ...
+                                "wind_direction", 270.0, ...
+                                "profile_law", 2, ...
+                                "z0", 0.03);
 init.length = 200.0;                       % initial tether length r0 [m]
 init.initial_guess = struct( ...
     "curve_type", "lissajous", ...         % figure-8; or "helix" for circles
@@ -51,10 +55,14 @@ figure; plot3(x, y, z, "LineWidth", 1.5); grid on; axis equal
 xlabel("x downwind [m]"); ylabel("y [m]"); zlabel("z [m]")
 title("Optimized reelout pattern")
 
-%% 4. Later, from your simulation loop: refresh with current conditions
-request.wind = struct("model_type", "tabulated", ...
-                      "heights", [10.0 100.0 300.0], ...
-                      "speeds",  [5.5 8.0 9.3]);
+%% 4. Later, from your simulation loop: refresh with current conditions.
+%  A measured profile is sent as a CUSTOM_* law: the heights/speeds samples
+%  are fitted (here: profile_law 6 = log law + Gaussian jet, >= 5 samples).
+request.inflow_conditions = struct("wind_speed", 8.4, ...
+                                   "wind_direction", 265.0, ...
+                                   "profile_law", 6, ...
+                                   "heights", [10.0 50.0 100.0 200.0 300.0], ...
+                                   "speeds",  [5.5 7.4 8.0 9.3 8.6]);
 request.length = 220.0;              % current tether length in your sim
 traj = optimize(BASE, json, request);
 fprintf("step %d: re-anchored at r0 = %.0f m\n", ...
@@ -63,6 +71,7 @@ fprintf("step %d: re-anchored at r0 = %.0f m\n", ...
 %% ------------------------------------------------------------------------
 function traj = optimize(BASE, json, request)
 % One re-optimization: POST /step, poll /status, GET /trajectory.
+    request.wait = false;                       % 202 + polling, not blocking
     webwrite(BASE + "/step", request, json);   % returns immediately (202)
     while true                                  % poll until finished
         status = webread(BASE + "/status");

@@ -144,8 +144,9 @@ def test_init_validation_errors(client):
     del payload["inflow_conditions"]  # no wind at all
     assert client.post("/init", json=payload).status_code == 422
 
+    # the removed low-level 'wind' field is rejected, not silently ignored
     payload = dict(client.init_payload)
-    payload["wind"] = {"model_type": "gaussian", "U_ref": 8.0}
+    payload["wind"] = {"model_type": "logarithmic", "U_ref": 8.0}
     assert client.post("/init", json=payload).status_code == 422
 
     payload = dict(client.init_payload)
@@ -155,17 +156,13 @@ def test_init_validation_errors(client):
     assert "not found" in response.json()["detail"]
 
 
-def test_init_accepts_low_level_wind_field(client):
-    """The pre-InflowConditions 'wind' field keeps working."""
-    payload = dict(client.init_payload)
-    del payload["inflow_conditions"]
-    payload["wind"] = {"model_type": "logarithmic", "U_ref": 8.0}
-    reply = client.post("/init", json=payload)
-    assert reply.status_code == 200
-    assert reply.json()["inflow_conditions"] is None
-    status = client.get("/status").json()
-    assert status["wind"]["model_type"] == "logarithmic"
-    assert status["inflow_conditions"] is None
+def test_step_rejects_low_level_wind_field(client):
+    """/step, too, only takes inflow_conditions."""
+    assert client.post("/init", json=client.init_payload).status_code == 200
+    response = client.post(
+        "/step", json={"wind": {"model_type": "logarithmic", "U_ref": 8.0}}
+    )
+    assert response.status_code == 422
 
 
 def test_full_flow(client):

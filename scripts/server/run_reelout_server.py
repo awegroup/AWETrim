@@ -11,11 +11,11 @@ with exactly one worker process (enforced below). Interactive docs are at
 http://<host>:<port>/docs once running.
 
 Typical client flow (e.g. from a Julia kite simulator):
-    POST /init        {"wind": {"model_type": "logarithmic", "U_ref": 8}}
+    POST /init        {"inflow_conditions": {"wind_speed": 5.2, "profile_law": 2}}
     POST /step        {}                          -> 202, solve in background
     GET  /status      poll until "converged"
     GET  /trajectory  dense guidance table (t, azimuth, elevation, rates, r, r_dot)
-    POST /step        {"wind": {...}, "length": 220}   -> refresh
+    POST /step        {"inflow_conditions": {...}, "length": 220}   -> refresh
 """
 
 # Force a non-interactive matplotlib backend BEFORE any awetrim import:

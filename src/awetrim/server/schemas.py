@@ -31,7 +31,7 @@ DEGREES, matching the Julia/MATLAB clients.
 
 import math
 from datetime import datetime
-from typing import Annotated, Dict, List, Literal, Optional, Union
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -116,76 +116,6 @@ class InflowConditions(BaseModel):
 def wind_kwargs_from_inflow_schema(inflow: InflowConditions) -> dict:
     """Translate :class:`InflowConditions` into ``create_wind_model`` kwargs."""
     return wind_kwargs_from_inflow(inflow.model_dump())
-
-
-# ---------------------------------------------------------------------------
-# Wind profile (discriminated union on model_type) — low-level alternative
-# to InflowConditions, kept for existing clients and for direct control of
-# the Wind model.
-# ---------------------------------------------------------------------------
-class WindLogarithmic(BaseModel):
-    model_type: Literal["logarithmic"]
-    U_ref: float = Field(gt=0, description="Wind speed [m/s] at z_ref")
-    z_ref: float = Field(default=100.0, gt=0, description="Reference height [m]")
-    z0: float = Field(default=0.03, gt=0, description="Roughness length [m]")
-    direction_wind: float = Field(
-        default=0.0, description="Wind direction [rad], 0 = blowing along +x"
-    )
-
-
-class WindUniform(BaseModel):
-    model_type: Literal["uniform"]
-    U_ref: float = Field(gt=0, description="Wind speed [m/s], constant with height")
-    direction_wind: float = 0.0
-
-
-class WindTabulated(BaseModel):
-    model_type: Literal["tabulated"]
-    heights: List[float] = Field(min_length=2, description="Sample heights [m]")
-    speeds: List[float] = Field(description="Wind speeds [m/s] at heights")
-    direction_wind: float = 0.0
-
-    @model_validator(mode="after")
-    def _check_table(self):
-        if len(self.heights) != len(self.speeds):
-            raise ValueError("heights and speeds must have the same length")
-        if any(h2 <= h1 for h1, h2 in zip(self.heights, self.heights[1:])):
-            raise ValueError("heights must be strictly increasing")
-        if self.heights[0] <= 0:
-            raise ValueError("heights must be positive")
-        if any(v < 0 for v in self.speeds):
-            raise ValueError("speeds must be non-negative")
-        return self
-
-
-WindProfile = Annotated[
-    Union[WindLogarithmic, WindUniform, WindTabulated],
-    Field(discriminator="model_type"),
-]
-
-
-def wind_kwargs_from_schema(wind: Union[WindLogarithmic, WindUniform, WindTabulated]) -> dict:
-    """Translate a wind schema into ``create_wind_model`` keyword arguments."""
-    if wind.model_type == "logarithmic":
-        return dict(
-            model_type="logarithmic",
-            U_ref=wind.U_ref,
-            z_ref=wind.z_ref,
-            z0=wind.z0,
-            direction_wind=wind.direction_wind,
-        )
-    if wind.model_type == "uniform":
-        return dict(
-            model_type="uniform",
-            U_ref=wind.U_ref,
-            direction_wind=wind.direction_wind,
-        )
-    return dict(
-        model_type="tabulated",
-        heights=wind.heights,
-        speeds=wind.speeds,
-        direction_wind=wind.direction_wind,
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -276,15 +206,9 @@ class InitRequest(BaseModel):
     # the old "distance_radial") gets a 422 instead of a silently ignored field.
     model_config = ConfigDict(extra="forbid")
 
-    inflow_conditions: Optional[InflowConditions] = Field(
-        default=None,
-        description="Wind seen by the kite (shared client struct). Required "
-        "unless the low-level 'wind' field is used instead.",
-    )
-    wind: Optional[WindProfile] = Field(
-        default=None,
-        description="Low-level wind model (logarithmic/uniform/tabulated); "
-        "alternative to inflow_conditions, which takes precedence",
+    inflow_conditions: InflowConditions = Field(
+        description="Wind seen by the kite (shared client struct); required, "
+        "the optimizer cannot work without wind",
     )
     name: str = Field(
         default="reelout-optimization", description="Name of the simulation"
@@ -343,25 +267,15 @@ class InitRequest(BaseModel):
                 self.sim_parameters[key] = value
         return self
 
-    @model_validator(mode="after")
-    def _check_wind_given(self):
-        if self.inflow_conditions is None and self.wind is None:
-            raise ValueError(
-                "inflow_conditions is required (the optimizer cannot work "
-                "without wind); the low-level 'wind' field is accepted too"
-            )
-        return self
-
 
 class StepRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     inflow_conditions: Optional[InflowConditions] = Field(
         default=None,
-        description="Updated wind for this re-optimization; takes precedence "
-        "over the low-level 'wind' field",
+        description="Updated wind for this re-optimization; the inflow of "
+        "/init keeps being used when it is omitted",
     )
-    wind: Optional[WindProfile] = None
     winch_params: Optional[WinchParams] = Field(
         default=None, description="Updated winch law for this re-optimization"
     )
@@ -401,7 +315,9 @@ class StatusResponse(BaseModel):
     metrics: Optional[SolveMetrics] = None
     inflow_conditions: Optional[InflowConditions] = None
     wind: Optional[dict] = Field(
-        default=None, description="Resolved Wind model the optimizer uses"
+        default=None,
+        description="Read-only diagnostics: the Wind model the optimizer "
+        "built from inflow_conditions",
     )
     n_points: Optional[int] = None
     last_step_started: Optional[datetime] = None
@@ -419,7 +335,7 @@ class InitReply(BaseModel):
     length, winch_params, inflow_conditions, trajectory + the solver knobs)
     plus server state. The trajectory is the fitted starting path (closed:
     last point equals the first, degrees); inflow_conditions echoes the
-    accepted inflow (absent when the low-level 'wind' field was used)."""
+    accepted inflow."""
 
     name: str
     max_time: Optional[float] = None

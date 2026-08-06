@@ -7,65 +7,15 @@ import pytest
 pytest.importorskip("fastapi")
 pytest.importorskip("pydantic")
 
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
 from awetrim.server.schemas import (
     InflowConditions,
     InitialGuess,
     InitRequest,
     StepRequest,
-    WindLogarithmic,
-    WindProfile,
-    WindTabulated,
-    WindUniform,
     wind_kwargs_from_inflow_schema,
-    wind_kwargs_from_schema,
 )
-
-WIND_ADAPTER = TypeAdapter(WindProfile)
-
-
-def test_wind_union_discriminates_on_model_type():
-    log = WIND_ADAPTER.validate_python(
-        {"model_type": "logarithmic", "U_ref": 8.0, "z_ref": 100.0, "z0": 0.03}
-    )
-    assert isinstance(log, WindLogarithmic)
-    uni = WIND_ADAPTER.validate_python({"model_type": "uniform", "U_ref": 7.0})
-    assert isinstance(uni, WindUniform)
-    tab = WIND_ADAPTER.validate_python(
-        {"model_type": "tabulated", "heights": [10, 100], "speeds": [5, 8]}
-    )
-    assert isinstance(tab, WindTabulated)
-
-
-def test_wind_union_rejects_unknown_model_type():
-    with pytest.raises(ValidationError):
-        WIND_ADAPTER.validate_python({"model_type": "gaussian", "U_ref": 8.0})
-
-
-def test_tabulated_wind_rejects_bad_tables():
-    with pytest.raises(ValidationError):
-        WindTabulated(model_type="tabulated", heights=[10, 100], speeds=[5])
-    with pytest.raises(ValidationError):
-        WindTabulated(model_type="tabulated", heights=[100, 10], speeds=[5, 8])
-    with pytest.raises(ValidationError):
-        WindTabulated(model_type="tabulated", heights=[-5, 10], speeds=[5, 8])
-    with pytest.raises(ValidationError):
-        WindTabulated(model_type="tabulated", heights=[10], speeds=[5])
-
-
-def test_wind_kwargs_round_trip():
-    log = WindLogarithmic(model_type="logarithmic", U_ref=8.0)
-    kw = wind_kwargs_from_schema(log)
-    assert kw["model_type"] == "logarithmic"
-    assert kw["U_ref"] == 8.0
-    assert kw["z_ref"] == 100.0
-    tab = WindTabulated(
-        model_type="tabulated", heights=[10, 100], speeds=[5, 8]
-    )
-    kw = wind_kwargs_from_schema(tab)
-    assert kw["heights"] == [10, 100]
-    assert "U_ref" not in kw
 
 
 def test_initial_guess_matches_named_curve_signature():
@@ -118,19 +68,20 @@ def test_init_request_defaults():
     assert req.n_points == 100
     assert req.initial_guess is None
     assert req.sim_parameters == {}
-    assert req.wind is None
 
 
-def test_init_request_needs_wind():
-    with pytest.raises(ValidationError, match="inflow_conditions is required"):
+def test_init_request_needs_inflow_conditions():
+    with pytest.raises(ValidationError):
         InitRequest()
-    # the low-level wind field remains an accepted alternative
-    assert InitRequest(wind={"model_type": "uniform", "U_ref": 8.0}) is not None
+    # the removed low-level wind field is rejected, not silently ignored
+    with pytest.raises(ValidationError):
+        InitRequest(inflow_conditions={"wind_speed": 8.0, "profile_law": 0},
+                    wind={"model_type": "uniform", "U_ref": 8.0})
 
 
 def test_step_request_optional_fields():
     req = StepRequest()
-    assert req.inflow_conditions is None and req.wind is None
+    assert req.inflow_conditions is None
     assert req.length is None and req.max_iter is None
     with pytest.raises(ValidationError):
         StepRequest(length=-10.0)

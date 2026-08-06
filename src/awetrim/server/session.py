@@ -274,7 +274,7 @@ class ReeloutSession:
         sim_parameters.update(config.get("sim_parameters") or {})
 
         inflow = config.get("inflow_conditions")
-        wind_spec = self._resolve_wind_spec(inflow, config.get("wind"))
+        wind_spec = self._resolve_wind_spec(inflow)
         system_model.wind = self._build_wind(wind_spec)
         sim_parameters["expand_nlp"] = wind_spec["model_type"] != "tabulated"
 
@@ -317,26 +317,19 @@ class ReeloutSession:
             self.state = SessionState.READY
 
     @staticmethod
-    def _resolve_wind_spec(
-        inflow: Optional[Dict[str, Any]], wind: Optional[Dict[str, Any]]
-    ) -> Dict[str, Any]:
-        """InflowConditions (preferred) or a raw wind model -> Wind kwargs."""
-        if inflow is not None:
-            turbulence = inflow.get("turbulence") or 0.0
-            if turbulence > 0.0:
-                logger.warning(
-                    "inflow_conditions.turbulence=%g is ignored: the "
-                    "trajectory optimization is deterministic and uses the "
-                    "mean wind profile",
-                    turbulence,
-                )
-            return wind_kwargs_from_inflow(inflow)
-        if wind is None:
-            raise ValueError(
-                "no wind given: pass inflow_conditions (or the low-level "
-                "'wind' field)"
+    def _resolve_wind_spec(inflow: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """InflowConditions -> ``create_wind_model`` kwargs."""
+        if inflow is None:
+            raise ValueError("no wind given: inflow_conditions is required")
+        turbulence = inflow.get("turbulence") or 0.0
+        if turbulence > 0.0:
+            logger.warning(
+                "inflow_conditions.turbulence=%g is ignored: the "
+                "trajectory optimization is deterministic and uses the "
+                "mean wind profile",
+                turbulence,
             )
-        return dict(wind)
+        return wind_kwargs_from_inflow(inflow)
 
     @staticmethod
     def _build_wind(spec: Dict[str, Any]) -> Any:
@@ -445,7 +438,6 @@ class ReeloutSession:
     # ------------------------------------------------------------------
     def _prepare_step(
         self,
-        wind: Optional[Dict[str, Any]],
         distance_radial: Optional[float],
         winch_params: Optional[Dict[str, Any]],
         trajectory: Optional[Dict[str, Any]],
@@ -460,16 +452,14 @@ class ReeloutSession:
 
             pattern_config = self.phase.pattern_config
             sim_parameters = pattern_config.setdefault("sim_parameters", {})
-            if inflow_conditions is not None or wind is not None:
-                wind_spec = self._resolve_wind_spec(inflow_conditions, wind)
+            if inflow_conditions is not None:
+                wind_spec = self._resolve_wind_spec(inflow_conditions)
                 self.system_model.wind = self._build_wind(wind_spec)
                 sim_parameters["expand_nlp"] = (
                     wind_spec["model_type"] != "tabulated"
                 )
                 self._wind_spec = wind_spec
-                self._inflow = (
-                    dict(inflow_conditions) if inflow_conditions else None
-                )
+                self._inflow = dict(inflow_conditions)
 
             if winch_params is not None:
                 self._apply_winch_params(
@@ -505,7 +495,6 @@ class ReeloutSession:
 
     def step(
         self,
-        wind: Optional[Dict[str, Any]] = None,
         distance_radial: Optional[float] = None,
         max_iter: Optional[int] = None,
         winch_params: Optional[Dict[str, Any]] = None,
@@ -514,7 +503,7 @@ class ReeloutSession:
     ) -> int:
         """Launch one warm-started re-optimization in a background thread."""
         step_index = self._prepare_step(
-            wind, distance_radial, winch_params, trajectory, inflow_conditions
+            distance_radial, winch_params, trajectory, inflow_conditions
         )
         self._thread = threading.Thread(
             target=self._solve, args=(step_index, max_iter), daemon=True
@@ -524,7 +513,6 @@ class ReeloutSession:
 
     def step_blocking(
         self,
-        wind: Optional[Dict[str, Any]] = None,
         distance_radial: Optional[float] = None,
         max_iter: Optional[int] = None,
         winch_params: Optional[Dict[str, Any]] = None,
@@ -539,7 +527,7 @@ class ReeloutSession:
         trajectory remains available via :meth:`trajectory`).
         """
         step_index = self._prepare_step(
-            wind, distance_radial, winch_params, trajectory, inflow_conditions
+            distance_radial, winch_params, trajectory, inflow_conditions
         )
         self._solve(step_index, max_iter)
         with self._lock:

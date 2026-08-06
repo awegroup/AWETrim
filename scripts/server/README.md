@@ -140,10 +140,10 @@ height for `CUSTOM_LOG`, ...) is rejected with **422** before any solve.
 optimized in the wind-aligned frame, where azimuth 0 is downwind by
 definition.
 
-Instead of `inflow_conditions`, the low-level `wind` field still selects an
-AWETrim `Wind` model directly (`{"model_type": "logarithmic", "U_ref": 8.0,
-"z_ref": 100.0, "z0": 0.03}`, or `uniform`/`tabulated`). `inflow_conditions`
-takes precedence if both are sent.
+`inflow_conditions` is the only way to describe the wind: the low-level
+`wind` field (an AWETrim `Wind` model sent verbatim) is gone, and requests
+carrying it are rejected with **422**. `GET /status` still reports the
+resolved `Wind` model under `wind`, read-only, as diagnostics.
 
 Output: `{"state": "ready", ...}`. The same field descriptions appear in the
 interactive docs (`/docs`, expand the POST /init schema).
@@ -248,11 +248,9 @@ is periodic in `s`.
   (InflowConditions/WinchParams/InitParams/StepParams) as dataclasses + httpx,
   self-contained; `python scripts/server/client_example.py` runs the demo.
 - **Julia**: [`client_example.jl`](client_example.jl) — the same structs with
-  HTTP.jl + JSON3; blocking init/step flow. Still sends the low-level `wind`
-  field rather than `inflow_conditions`.
+  HTTP.jl + JSON3; blocking init/step flow.
 - **MATLAB**: [`client_example.m`](client_example.m) — built-in webread/webwrite
-  only; includes a 3D plot of the optimized pattern. Also still on the
-  low-level `wind` field.
+  only; includes a 3D plot of the optimized pattern.
 - **Python (rich API)**: [`client.py`](client.py) — `ReeloutClient` class using
   the asynchronous step/status/trajectory flow and the full guidance table;
   `python scripts/server/client.py` runs a full demo.
