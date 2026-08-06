@@ -1,0 +1,33 @@
+#!/bin/bash -eu
+# Copyright (c) 2023-2026 Oriol Cayon, Delft University of Technology
+# SPDX-License-Identifier: Apache-2.0
+#
+# Start the AWETrim reelout-optimization REST server.
+#
+# Usage:
+#   ./bin/run_server                      # http://127.0.0.1:8000
+#   ./bin/run_server --port 9000          # different port
+#   ./bin/run_server --host 0.0.0.0       # reachable from other machines
+#
+# Interactive API docs are at http://<host>:<port>/docs once running.
+
+# always run from the project root, no matter where the script is called from
+cd "$(dirname "$(readlink -f "$0")")/.."
+
+VENV_PYTHON="venv/bin/python"
+
+if [[ ! -x "$VENV_PYTHON" ]]; then
+    echo "Error: $PWD/$VENV_PYTHON not found." >&2
+    echo "Create the virtual environment first:" >&2
+    echo "    python3 -m venv venv && venv/bin/pip install -e '.[dev,server]'" >&2
+    exit 1
+fi
+
+if ! "$VENV_PYTHON" -c "import fastapi, uvicorn" 2>/dev/null; then
+    echo "Error: the server dependencies are missing." >&2
+    echo "Install the server extra:" >&2
+    echo "    venv/bin/pip install -e '.[server]'" >&2
+    exit 1
+fi
+
+exec "$VENV_PYTHON" scripts/server/run_reelout_server.py "$@"
