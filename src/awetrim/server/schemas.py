@@ -55,6 +55,8 @@ class InflowConditions(BaseModel):
     ``alpha`` and ``z0`` and are fitted to ``heights``/``speeds`` instead.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     wind_speed: float = Field(
         gt=0, description=f"Wind speed [m/s] at {REFERENCE_HEIGHT:g} m height"
     )
