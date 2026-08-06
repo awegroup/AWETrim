@@ -57,7 +57,7 @@ const BASE = "http://127.0.0.1:8000"
 
 function post(path, payload; timeout = 600)
     response = HTTP.post(BASE * path, ["Content-Type" => "application/json"];
-                         body = JSON3.write(payload), readtimeout = timeout)
+                         body = JSON3.write(payload), read_idle_timeout = timeout)
     return response.body
 end
 
