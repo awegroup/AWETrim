@@ -564,7 +564,7 @@ def initialize_bridle_line_system(
         # In here we will treat both ci-cj and cj-ck
         if len(conn_data[1:]) == 3:
             logging.debug(
-                f"-- linktype should be pulley, linktype: {bridle_lines_dict[conn_name]["linktype"]}"
+                f"-- linktype should be pulley, linktype: {bridle_lines_dict[conn_name]['linktype']}"
             )
             # adding pulley_node_indices
             pulley_node_indices.append(cj)
@@ -687,7 +687,7 @@ def initialize_bridle_line_system(
         # if there is no third connections this line represents a knot-to-knot line, a regular spring damper
         elif len(conn_data[1:]) == 2:
             logging.debug(
-                f"-- linktype should be noncompressive, linktype: {bridle_lines_dict[conn_name]["linktype"]}"
+                f"-- linktype should be noncompressive, linktype: {bridle_lines_dict[conn_name]['linktype']}"
             )
             # add this new connection to the connectivity array, and also increase counter
             k = (struc_geometry[material]["youngs_modulus"] * cross_sectional_area) / l0

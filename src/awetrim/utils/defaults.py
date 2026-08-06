@@ -78,7 +78,7 @@ PLOT_LABELS = {
     "y": "y (m)",
     "z": "z (m)",
     "input_steering": "$u_s$",
-    "phase": "$\\Phi (^\circ)$",
+    "phase": "$\\Phi (^\\circ)$",
     "angle_azimuth": "$\\phi (^\\circ)$",
     "angle_elevation": "$\\beta (^\\circ)$",
     "angle_of_attack": "$\\alpha (^\\circ)$",
