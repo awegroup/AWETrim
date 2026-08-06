@@ -281,10 +281,10 @@ class ReeloutSession:
         start_state = {
             "t": 0,
             "s": 0,
-            "s_dot": 1,
+            "s_dot": 0.1,
             "input_steering": 0,
-            "tension_tether_ground": 8.4e5,
-            "speed_radial": 1,
+            "tension_tether_ground": 8.4e3,
+            "speed_radial": 0,
             "distance_radial": r0,
         }
         phase = Phase(
