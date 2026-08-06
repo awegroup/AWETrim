@@ -9,8 +9,8 @@ is self-contained and can be copied into any project.
 Contract: POST /init receives and replies InitParams; POST /step receives and
 replies StepParams (blocking — the reply contains the OPTIMIZED trajectory).
 Reply trajectories are CLOSED (last point == first) with the same number of
-points you sent. Angles in DEGREES; wind and tether length travel as sibling
-JSON fields next to the structs.
+points you sent. Angles in DEGREES; the tether length travels as a sibling
+JSON field next to the structs.
 
 Winch coupling: the optimizer maps v_set = k_v*sqrt(force) onto its radial
 force model, so the optimized path assumes exactly your winch behavior.
@@ -28,6 +28,20 @@ import httpx
 # ---------------------------------------------------------------------------
 # The shared structs (as agreed)
 # ---------------------------------------------------------------------------
+@dataclass
+class InflowConditions:
+    wind_speed: float                   # in m/s at 6 m height
+    wind_direction: float               # in degrees, 0 = North, 90 = East
+    profile_law: int                    # 0=CONST, 1=EXP, 2=LOG, 3=EXPLOG, 4=CUSTOM_LOG, 5=CUSTOM_EXP, 6=CUSTOM_JET
+    # the custom profiles are fitted using the heights and speeds given in the heights and speeds fields
+    # CUSTOM_JET: u(z) = u_bg(z) + U_J * exp(-(z - z_c)^2 / (2*sigma^2))
+    # the following fields are optional; leave them at None to get the server
+    # defaults given in the comments
+    alpha: Optional[float] = None       # exponent of the wind profile law, default: 0.08163
+    z0: Optional[float] = None          # surface roughness [m], default: 0.0002
+    turbulence: Optional[float] = None  # in [0, 1], 0 = no turbulence, 1 = full turbulence, default: 0.0
+    heights: Optional[List[float]] = None  # heights at which the wind speed is given, default: [6.0]
+    speeds: Optional[List[float]] = None   # wind speeds at the given heights, default: [wind_speed]
 
 
 @dataclass
@@ -50,6 +64,7 @@ class InitParams:
     name: str
     max_time: float
     winch_params: WinchParams
+    inflow_conditions: InflowConditions
     trajectory: Trajectory
 
 
@@ -66,6 +81,16 @@ BASE = "http://127.0.0.1:8000"
 _http = httpx.Client(base_url=BASE, timeout=600.0)  # blocking solves
 
 
+def _payload(params) -> dict:
+    """dataclass -> JSON dict, dropping unset optional fields so the server
+    applies its documented defaults."""
+    return {
+        key: value
+        for key, value in asdict(params).items()
+        if value is not None
+    }
+
+
 def _post(path: str, payload: dict) -> dict:
     response = _http.post(path, json=payload)
     if response.status_code >= 400:
@@ -74,39 +99,42 @@ def _post(path: str, payload: dict) -> dict:
     return response.json()
 
 
-def init(
-    params: InitParams,
-    *,
-    wind: dict,
-    distance_radial: Optional[float] = None,
-    **extra,
-) -> InitParams:
-    """Send InitParams (+ wind, tether length, solver knobs) -> InitParams."""
-    payload = asdict(params)
-    payload["wind"] = wind  # required by the optimizer
-    if distance_radial is not None:
-        payload["distance_radial"] = distance_radial
-    payload.update(extra)  # e.g. sim_parameters={...}
-    reply = _post("/init", payload)
+def _init_params(reply: dict) -> InitParams:
     return InitParams(
         name=reply["name"],
         max_time=reply["max_time"],
         winch_params=WinchParams(**reply["winch_params"]),
+        inflow_conditions=InflowConditions(**reply["inflow_conditions"]),
         trajectory=Trajectory(**reply["trajectory"]),
     )
+
+
+def init(
+    params: InitParams,
+    *,
+    distance_radial: Optional[float] = None,
+    **extra,
+) -> InitParams:
+    """Send InitParams (+ tether length, solver knobs) -> InitParams."""
+    payload = _payload(params)
+    payload["inflow_conditions"] = _payload(params.inflow_conditions)
+    if distance_radial is not None:
+        payload["distance_radial"] = distance_radial
+    payload.update(extra)  # e.g. sim_parameters={...}
+    return _init_params(_post("/init", payload))
 
 
 def step(
     params: StepParams,
     *,
-    wind: Optional[dict] = None,
+    inflow_conditions: Optional[InflowConditions] = None,
     distance_radial: Optional[float] = None,
 ) -> StepParams:
-    """Send StepParams (+ optional wind / tether length) -> receive
+    """Send StepParams (+ optional new inflow / tether length) -> receive
     StepParams with the OPTIMIZED trajectory. Blocks ~10 s - 2 min."""
-    payload = asdict(params)
-    if wind is not None:
-        payload["wind"] = wind
+    payload = _payload(params)
+    if inflow_conditions is not None:
+        payload["inflow_conditions"] = _payload(inflow_conditions)
     if distance_radial is not None:
         payload["distance_radial"] = distance_radial
     reply = _post("/step", payload)
@@ -134,10 +162,13 @@ if __name__ == "__main__":
     winch = WinchParams(mode="reelout", k_v=0.11, v_max=8.0,
                         f_min=1000.0, f_max=8400.0)
 
+    # 5.2 m/s at 6 m height, wind from the west, logarithmic profile
+    # (~8 m/s at 100 m with this roughness).
+    inflow = InflowConditions(wind_speed=5.2, wind_direction=270.0,
+                              profile_law=2, z0=0.03)
+
     reply = init(
-        InitParams("python-sim-1", 600.0, winch, guess),
-        wind={"model_type": "logarithmic", "U_ref": 8.0,
-              "z_ref": 100.0, "z0": 0.03},
+        InitParams("python-sim-1", 600.0, winch, inflow, guess),
         distance_radial=200.0,
         sim_parameters={"input_depower": 1.6, "reg_weight": 1.0,
                         "detect_simple_bounds": True},
@@ -153,12 +184,16 @@ if __name__ == "__main__":
 
     # ... fly the kite along result.trajectory ...
 
-    # Later, refresh with the current conditions from your simulation:
+    # Later, refresh with the current conditions from your simulation. A
+    # measured profile is sent as a CUSTOM_* law: the heights/speeds samples
+    # are fitted (here: log law + Gaussian jet).
     result = step(
         StepParams(winch, result.trajectory),
-        wind={"model_type": "tabulated",
-              "heights": [10.0, 100.0, 300.0],
-              "speeds": [5.5, 8.0, 9.3]},
+        inflow_conditions=InflowConditions(
+            wind_speed=8.4, wind_direction=265.0, profile_law=6,
+            heights=[10.0, 50.0, 100.0, 200.0, 300.0],
+            speeds=[5.5, 7.4, 8.0, 9.3, 8.6],
+        ),
         distance_radial=220.0,  # current tether length
     )
     print("refreshed trajectory received")

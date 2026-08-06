@@ -58,12 +58,12 @@ tether-sphere radius.
 
 ### 1. `POST /init` — set up (once)
 
-Input — the wind profile is the only required field; everything else has a
-default:
+Input — the inflow conditions are the only required field; everything else has
+a default:
 
 ```json
 {
-  "wind": {"model_type": "logarithmic", "U_ref": 8.0, "z_ref": 100.0, "z0": 0.03},
+  "inflow_conditions": {"wind_speed": 5.2, "wind_direction": 270.0, "profile_law": 2, "z0": 0.03},
   "distance_radial": 200.0,
   "initial_guess": {"curve_type": "lissajous", "az_amp0": 0.3, "beta0": 0.35,
                     "beta_amp0": 0.12, "downloops": true, "M": 10},
@@ -74,7 +74,7 @@ default:
 
 | field | default | meaning |
 |---|---|---|
-| `wind` | required | see below |
+| `inflow_conditions` | required | the wind seen by the kite, see below |
 | `distance_radial` | 200 | initial tether length / pattern sphere radius r0 [m] |
 | `initial_guess.curve_type` | `lissajous` | starting shape: `lissajous`/`lemniscate` = figure-eight, `helix` = circular loops |
 | `initial_guess.az_amp0` | 0.3 | azimuth half-width of the figure [rad] |
@@ -102,12 +102,48 @@ value** = keep it in `optimization_params` (default); **optimized per point** =
 additionally set `sim_parameters.optimize_depower_profile: true`.
 
 The initial guess is only a starting shape — the optimizer reshapes the curve
-freely; a rough guess is fine. Wind can alternatively be a measured/forecast
-profile:
+freely; a rough guess is fine.
+
+#### `inflow_conditions` — the wind
+
+The shared `InflowConditions` struct. `wind_speed` is the speed at **6 m**
+height; the profile law extends it upwards:
+
+| field | default | meaning |
+|---|---|---|
+| `wind_speed` | required | wind speed [m/s] at 6 m |
+| `wind_direction` | 0 | direction the wind comes FROM [deg], 0 = North, 90 = East |
+| `profile_law` | required | `0`=CONST, `1`=EXP, `2`=LOG, `3`=EXPLOG, `4`=CUSTOM_LOG, `5`=CUSTOM_EXP, `6`=CUSTOM_JET |
+| `alpha` | 0.08163 | power-law exponent (EXP, EXPLOG) |
+| `z0` | 0.0002 | surface roughness [m] (LOG, EXPLOG) |
+| `turbulence` | 0.0 | accepted and echoed, but **not used**: the optimizer is deterministic and works on the mean profile |
+| `heights` | `[6.0]` | sample heights [m], for the `CUSTOM_*` laws |
+| `speeds` | `[wind_speed]` | wind speeds [m/s] at `heights` |
+
+The laws are those of AtmosphericModels.jl, normalized to `wind_speed` at 6 m:
+`EXP` = `(z/6)^alpha`, `LOG` = `ln(z/z0)/ln(6/z0)`, `EXPLOG` = `2*LOG - EXP`.
+
+The `CUSTOM_*` laws describe a **measured or forecast profile**: they are
+least-squares fits of the `heights`/`speeds` table and ignore `wind_speed`,
+`alpha` and `z0`. `CUSTOM_LOG` fits a log law (≥2 samples), `CUSTOM_EXP` a
+power law (≥2 samples), `CUSTOM_JET` a log law plus a Gaussian low-level jet
+`u(z) = u_bg(z) + U_J*exp(-(z - z_c)²/(2σ²))` (≥5 samples):
 
 ```json
-{"model_type": "tabulated", "heights": [10, 100, 300], "speeds": [5.5, 8.0, 9.3]}
+{"wind_speed": 8.4, "wind_direction": 265.0, "profile_law": 6,
+ "heights": [10, 50, 100, 200, 300], "speeds": [5.5, 7.4, 8.0, 9.3, 8.6]}
 ```
+
+A request the fit cannot handle (too few samples, a profile decreasing with
+height for `CUSTOM_LOG`, ...) is rejected with **422** before any solve.
+`wind_direction` only orients the result in the world frame — the path is
+optimized in the wind-aligned frame, where azimuth 0 is downwind by
+definition.
+
+Instead of `inflow_conditions`, the low-level `wind` field still selects an
+AWETrim `Wind` model directly (`{"model_type": "logarithmic", "U_ref": 8.0,
+"z_ref": 100.0, "z0": 0.03}`, or `uniform`/`tabulated`). `inflow_conditions`
+takes precedence if both are sent.
 
 Output: `{"state": "ready", ...}`. The same field descriptions appear in the
 interactive docs (`/docs`, expand the POST /init schema).
@@ -118,7 +154,8 @@ Input — empty `{}` for the first solve; on refreshes send what changed:
 
 ```json
 {
-  "wind": {"model_type": "tabulated", "heights": [10, 100, 300], "speeds": [5.5, 8.0, 9.3]},
+  "inflow_conditions": {"wind_speed": 8.4, "wind_direction": 265.0, "profile_law": 4,
+                        "heights": [10, 100, 300], "speeds": [5.5, 8.0, 9.3]},
   "distance_radial": 220.0,
   "winch_params": {"mode": "reelout", "k_v": 0.02, "v_max": 8.0, "f_min": 1000, "f_max": 8400},
   "trajectory": {"azimuth": ["..."], "elevation": ["..."]}
@@ -149,10 +186,13 @@ Add `"wait": false` to get the old asynchronous behavior instead
   periodic (closing point optional on input, always present in replies).
   On input it is fitted to the pattern B-spline as the starting guess;
   on output it is the optimized path sampled at your resolution.
-- `InitParams {name, max_time, winch_params, trajectory}` — the `/init`
-  request and reply carry these fields (reply trajectory = fitted starting
-  path); `wind` (and optionally `distance_radial`) travel as sibling JSON
-  fields, since the optimizer cannot work without wind.
+- `InflowConditions {wind_speed, wind_direction, profile_law, ...}` — the wind
+  seen by the kite, see the table above. Required on `/init`; optional on
+  `/step`, where it replaces the profile for the re-optimization.
+- `InitParams {name, max_time, winch_params, inflow_conditions, trajectory}` —
+  the `/init` request and reply carry these fields (reply trajectory = fitted
+  starting path, `inflow_conditions` echoed with the defaults filled in);
+  `distance_radial` travels as a sibling JSON field.
 - `StepParams {winch_params, trajectory}` — the `/step` request and reply.
 
 See [`client_example.jl`](client_example.jl) for the exact structs in Julia.
@@ -197,13 +237,15 @@ is periodic in `s`.
 
 ## Ready-made clients
 
-- **Julia**: [`client_example.jl`](client_example.jl) — the shared structs
-  (InitParams/StepParams) with HTTP.jl + JSON3; blocking init/step flow.
-- **Python**: [`client_example.py`](client_example.py) — the same structs and
-  flow as the Julia example (dataclasses + httpx, self-contained);
-  `python scripts/server/client_example.py` runs the demo.
+- **Python**: [`client_example.py`](client_example.py) — the shared structs
+  (InflowConditions/WinchParams/InitParams/StepParams) as dataclasses + httpx,
+  self-contained; `python scripts/server/client_example.py` runs the demo.
+- **Julia**: [`client_example.jl`](client_example.jl) — the same structs with
+  HTTP.jl + JSON3; blocking init/step flow. Still sends the low-level `wind`
+  field rather than `inflow_conditions`.
 - **MATLAB**: [`client_example.m`](client_example.m) — built-in webread/webwrite
-  only; includes a 3D plot of the optimized pattern.
+  only; includes a 3D plot of the optimized pattern. Also still on the
+  low-level `wind` field.
 - **Python (rich API)**: [`client.py`](client.py) — `ReeloutClient` class using
   the asynchronous step/status/trajectory flow and the full guidance table;
   `python scripts/server/client.py` runs a full demo.

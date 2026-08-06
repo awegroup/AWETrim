@@ -21,6 +21,15 @@ from awetrim.utils.reference_frames import transformation_C_from_W
 
 
 class Wind:
+    """Wind profile u(z) and the world-frame velocity derived from it.
+
+    Supported ``wind_model`` values: ``uniform``, ``logarithmic``,
+    ``tabulated`` and the profile laws of the ``InflowConditions`` contract
+    (see :mod:`awetrim.environment.wind_profiles`): ``power_law``, ``explog``
+    and ``jet``. All but ``tabulated`` are smooth in ``z``, so the NLP built
+    on top of them can still be expanded to SX.
+    """
+
     def __init__(
         self,
         wind_model="logarithmic",
@@ -29,11 +38,22 @@ class Wind:
         tabulated_speeds=None,
         direction_wind=None,
         speed_wind_ref=None,
+        alpha=0.08163,
+        jet_amplitude=0.0,
+        jet_height=None,
+        jet_width=None,
     ):
         self._height_ref = 6
         self.wind_model = wind_model
         self.kappa = 0.41
         self.z0 = z0
+        # Power-law exponent (power_law/explog) and Gaussian jet parameters
+        # (jet): u(z) = u_bg(z) + jet_amplitude*exp(-(z - jet_height)^2 /
+        # (2*jet_width^2)).
+        self.alpha = alpha
+        self.jet_amplitude = jet_amplitude
+        self.jet_height = jet_height
+        self.jet_width = jet_width
         self._speed_friction = ca.MX.sym("speed_friction")
         if direction_wind is None:
             self._direction_wind = ca.MX.sym("direction_wind")
@@ -104,14 +124,33 @@ class Wind:
             value / self.kappa * ca.log(self.height_ref / self.z0)
         )
 
+    def _speed_logarithmic(self, height):
+        # = speed_wind_ref * ln(z/z0) / ln(height_ref/z0)
+        return self._speed_friction / self.kappa * ca.log(height / self.z0)
+
+    def _speed_power_law(self, height):
+        return self.speed_wind_ref * (height / self.height_ref) ** self.alpha
+
     # Should be renamed to speed_wind_kite
     def speed_wind(self, height):
         if self.wind_model == "uniform":
             return self.speed_wind_ref
         elif self.wind_model == "logarithmic":
-            return self._speed_friction / self.kappa * ca.log(height / self.z0)
+            return self._speed_logarithmic(height)
+        elif self.wind_model == "power_law":
+            return self._speed_power_law(height)
+        elif self.wind_model == "explog":
+            # AtmosphericModels.jl EXPLOG with K = 1: log + K*(log - exp).
+            return 2.0 * self._speed_logarithmic(height) - self._speed_power_law(
+                height
+            )
+        elif self.wind_model == "jet":
+            return self._speed_logarithmic(height) + self.jet_amplitude * ca.exp(
+                -((height - self.jet_height) ** 2) / (2.0 * self.jet_width**2)
+            )
         elif self.wind_model == "tabulated":
             return self.wind_interp(height)
+        raise ValueError(f"Unknown wind model: {self.wind_model}")
 
     def velocity_wind_W(self, height):
         return ca.vertcat(
@@ -130,12 +169,7 @@ class Wind:
         return T_C_from_W @ self.velocity_wind_W(model.z)
 
     def speed_wind_at_height(self, height):
-        if self.wind_model == "uniform":
-            return self.speed_wind_ref
-        elif self.wind_model == "logarithmic":
-            return self._speed_friction / self.kappa * ca.log(height / self.z0)
-        elif self.wind_model == "tabulated":
-            return self.wind_interp(height)
+        return self.speed_wind(height)
 
     def velocity_wind_at_height_W(self, height):
         # World-frame wind at an explicit height. Direction-aware and routed
@@ -163,11 +197,27 @@ class Wind:
         z_samples = np.linspace(z_min, z_max, num)
         speed_wind_ref_value = self.speed_wind_ref_value
 
+        def log_speeds():
+            return (float(self.speed_friction) / self.kappa) * np.log(
+                z_samples / self.z0
+            )
+
+        def power_law_speeds():
+            return float(speed_wind_ref_value) * (
+                z_samples / self.height_ref
+            ) ** self.alpha
+
         if self.wind_model == "uniform":
             speeds = np.full_like(z_samples, float(speed_wind_ref_value or 0.0))
         elif self.wind_model == "logarithmic":
-            speeds = (float(self.speed_friction) / self.kappa) * np.log(
-                z_samples / self.z0
+            speeds = log_speeds()
+        elif self.wind_model == "power_law":
+            speeds = power_law_speeds()
+        elif self.wind_model == "explog":
+            speeds = 2.0 * log_speeds() - power_law_speeds()
+        elif self.wind_model == "jet":
+            speeds = log_speeds() + self.jet_amplitude * np.exp(
+                -((z_samples - self.jet_height) ** 2) / (2.0 * self.jet_width**2)
             )
         elif self.wind_model == "tabulated":
             if self.tabulated_heights is None or self.tabulated_speeds is None:

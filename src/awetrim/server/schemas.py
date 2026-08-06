@@ -23,6 +23,10 @@ the wind-aligned spherical ground frame: ``distance_radial`` (r) is the
 tether-sphere radius, ``azimuth`` (phi) rotates about the vertical axis with
 0 pointing downwind (+x, the direction the wind blows towards), and
 ``elevation`` (beta) is measured from the horizontal plane.
+
+The client-facing co-simulation structs are the exception: the trajectory
+(``TrajectoryAngles``) and the wind direction (``InflowConditions``) are in
+DEGREES, matching the Julia/MATLAB clients.
 """
 
 import math
@@ -31,9 +35,93 @@ from typing import Annotated, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field, model_validator
 
+from awetrim.environment.wind_profiles import (
+    DEFAULT_ALPHA,
+    DEFAULT_Z0,
+    REFERENCE_HEIGHT,
+    wind_kwargs_from_inflow,
+)
+
 
 # ---------------------------------------------------------------------------
-# Wind profile (discriminated union on model_type)
+# Inflow conditions — the client-facing wind description
+# ---------------------------------------------------------------------------
+class InflowConditions(BaseModel):
+    """Wind seen by the kite, as sent by the simulator (shared struct).
+
+    Mirrors the ``InflowConditions`` struct of the Julia/MATLAB/Python
+    clients: a reference speed at 6 m plus a profile law. The profile laws
+    are those of AtmosphericModels.jl; laws 4-6 ignore ``wind_speed``,
+    ``alpha`` and ``z0`` and are fitted to ``heights``/``speeds`` instead.
+    """
+
+    wind_speed: float = Field(
+        gt=0, description=f"Wind speed [m/s] at {REFERENCE_HEIGHT:g} m height"
+    )
+    wind_direction: float = Field(
+        default=0.0,
+        description="Direction the wind comes FROM [deg], 0 = North, "
+        "90 = East. Only orients the result in the world frame — the path "
+        "is optimized in the wind-aligned frame (azimuth 0 = downwind).",
+    )
+    profile_law: Literal[0, 1, 2, 3, 4, 5, 6] = Field(
+        description="0=CONST, 1=EXP, 2=LOG, 3=EXPLOG, 4=CUSTOM_LOG, "
+        "5=CUSTOM_EXP, 6=CUSTOM_JET; the CUSTOM_* laws are least-squares "
+        "fits of the heights/speeds table",
+    )
+    alpha: float = Field(
+        default=DEFAULT_ALPHA,
+        description="Exponent of the power-law profile (EXP, EXPLOG)",
+    )
+    z0: float = Field(
+        default=DEFAULT_Z0,
+        gt=0,
+        description="Surface roughness [m] (LOG, EXPLOG)",
+    )
+    turbulence: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="0 = no turbulence, 1 = full turbulence. Accepted and "
+        "echoed, but NOT used: the optimizer is deterministic and works on "
+        "the mean profile.",
+    )
+    heights: Optional[List[float]] = Field(
+        default=None,
+        description=f"Sample heights [m] for the CUSTOM_* laws, "
+        f"default [{REFERENCE_HEIGHT:g}]",
+    )
+    speeds: Optional[List[float]] = Field(
+        default=None,
+        description="Wind speeds [m/s] at heights, default [wind_speed]",
+    )
+
+    @model_validator(mode="after")
+    def _check_samples(self):
+        if (self.heights is None) != (self.speeds is None):
+            raise ValueError("heights and speeds must be given together")
+        if self.heights is not None:
+            if len(self.heights) != len(self.speeds):
+                raise ValueError("heights and speeds must have the same length")
+            if any(h <= 0 for h in self.heights):
+                raise ValueError("heights must be positive")
+            if any(v < 0 for v in self.speeds):
+                raise ValueError("speeds must be non-negative")
+        # Fail fast on a CUSTOM_* law without enough samples to fit, and on
+        # samples the fit cannot handle (rather than deep inside the solver).
+        wind_kwargs_from_inflow(self.model_dump())
+        return self
+
+
+def wind_kwargs_from_inflow_schema(inflow: InflowConditions) -> dict:
+    """Translate :class:`InflowConditions` into ``create_wind_model`` kwargs."""
+    return wind_kwargs_from_inflow(inflow.model_dump())
+
+
+# ---------------------------------------------------------------------------
+# Wind profile (discriminated union on model_type) — low-level alternative
+# to InflowConditions, kept for existing clients and for direct control of
+# the Wind model.
 # ---------------------------------------------------------------------------
 class WindLogarithmic(BaseModel):
     model_type: Literal["logarithmic"]
@@ -183,7 +271,16 @@ class TrajectoryAngles(BaseModel):
 # Requests
 # ---------------------------------------------------------------------------
 class InitRequest(BaseModel):
-    wind: WindProfile
+    inflow_conditions: Optional[InflowConditions] = Field(
+        default=None,
+        description="Wind seen by the kite (shared client struct). Required "
+        "unless the low-level 'wind' field is used instead.",
+    )
+    wind: Optional[WindProfile] = Field(
+        default=None,
+        description="Low-level wind model (logarithmic/uniform/tabulated); "
+        "alternative to inflow_conditions, which takes precedence",
+    )
     name: str = Field(
         default="reelout-optimization", description="Name of the simulation"
     )
@@ -223,8 +320,22 @@ class InitRequest(BaseModel):
         "(e.g. input_depower, reg_weight, detect_simple_bounds)",
     )
 
+    @model_validator(mode="after")
+    def _check_wind_given(self):
+        if self.inflow_conditions is None and self.wind is None:
+            raise ValueError(
+                "inflow_conditions is required (the optimizer cannot work "
+                "without wind); the low-level 'wind' field is accepted too"
+            )
+        return self
+
 
 class StepRequest(BaseModel):
+    inflow_conditions: Optional[InflowConditions] = Field(
+        default=None,
+        description="Updated wind for this re-optimization; takes precedence "
+        "over the low-level 'wind' field",
+    )
     wind: Optional[WindProfile] = None
     winch_params: Optional[WinchParams] = Field(
         default=None, description="Updated winch law for this re-optimization"
@@ -263,7 +374,10 @@ class StatusResponse(BaseModel):
     successful_steps: int = 0
     last_error: Optional[str] = None
     metrics: Optional[SolveMetrics] = None
-    wind: Optional[dict] = None
+    inflow_conditions: Optional[InflowConditions] = None
+    wind: Optional[dict] = Field(
+        default=None, description="Resolved Wind model the optimizer uses"
+    )
     n_points: Optional[int] = None
     last_step_started: Optional[datetime] = None
     last_step_finished: Optional[datetime] = None
@@ -277,12 +391,15 @@ class StepAccepted(BaseModel):
 
 class InitReply(BaseModel):
     """Reply of POST /init — contains the InitParams struct (name, max_time,
-    winch_params, trajectory) plus server state. The trajectory is the fitted
-    starting path (closed: last point equals the first, degrees)."""
+    winch_params, inflow_conditions, trajectory) plus server state. The
+    trajectory is the fitted starting path (closed: last point equals the
+    first, degrees); inflow_conditions echoes the accepted inflow (absent
+    when the low-level 'wind' field was used)."""
 
     name: str
     max_time: Optional[float] = None
     winch_params: Optional[WinchParams] = None
+    inflow_conditions: Optional[InflowConditions] = None
     trajectory: TrajectoryAngles
     state: str
     n_points: Optional[int] = None

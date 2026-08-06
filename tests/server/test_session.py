@@ -161,6 +161,51 @@ def test_init_builds_phase_and_ready_state(patched_session):
     assert status["wind"]["model_type"] == "uniform"
 
 
+def test_init_from_inflow_conditions(patched_session):
+    """InflowConditions is resolved into the Wind model and echoed back."""
+    sess, config = patched_session
+    config = dict(config)
+    del config["wind"]
+    config["inflow_conditions"] = {
+        "wind_speed": 8.0, "wind_direction": 270.0, "profile_law": 3,
+        "alpha": 0.1, "z0": 0.01, "turbulence": 0.2,
+    }
+    sess.init(config)
+    assert sess.state == SessionState.READY
+    # EXPLOG is analytic -> SX expansion stays enabled
+    assert sess.phase.pattern_config["sim_parameters"]["expand_nlp"] is True
+    status = sess.status()
+    assert status["wind"]["model_type"] == "explog"
+    assert status["wind"]["z_ref"] == 6.0
+    assert status["inflow_conditions"]["profile_law"] == 3
+    assert sess.init_reply()["inflow_conditions"]["wind_speed"] == 8.0
+    # turbulence is accepted (and echoed) but does not reach the Wind model
+    assert "turbulence" not in status["wind"]
+
+
+def test_init_without_any_wind_raises(patched_session):
+    sess, config = patched_session
+    config = dict(config)
+    del config["wind"]
+    with pytest.raises(ValueError, match="no wind given"):
+        sess.init(config)
+
+
+def test_step_updates_inflow_conditions(patched_session):
+    sess, config = patched_session
+    sess.init(config)
+    _run_step_to_success(
+        sess,
+        inflow_conditions={"wind_speed": 9.0, "profile_law": 1, "alpha": 0.12},
+    )
+    status = sess.status()
+    assert status["wind"] == {
+        "model_type": "power_law", "U_ref": 9.0, "alpha": 0.12,
+        "z_ref": 6.0, "direction_wind": pytest.approx(-math.pi / 2),
+    }
+    assert status["inflow_conditions"]["wind_speed"] == 9.0
+
+
 def test_step_success_produces_guidance_record(patched_session):
     sess, config = patched_session
     sess.init(config)

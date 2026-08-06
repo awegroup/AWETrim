@@ -16,18 +16,25 @@
 
 """Factory for :class:`awetrim.environment.Wind.Wind` models.
 
-Centralises the construction of the three supported wind profiles so callers
+Centralises the construction of the supported wind profiles so callers
 (scripts, REST server) do not have to know the ``Wind`` class quirks:
 
 - ``direction_wind`` must be numeric, otherwise ``Wind`` leaves it as a free
   CasADi symbol and any NLP built on top becomes unsolvable.
 - ``height_ref`` defaults to 6 m and is read by the ``speed_wind_ref`` setter,
   so it must be assigned *before* the reference speed.
+
+The profile laws of the client-facing ``InflowConditions`` struct
+(``power_law``, ``explog``, ``jet``) are built here too; see
+:mod:`awetrim.environment.wind_profiles` for the law -> kwargs translation.
 """
 
 from typing import Optional, Sequence
 
 from awetrim.environment.Wind import Wind
+
+#: Wind models parametrized by a reference speed at a reference height.
+_ANALYTIC_MODELS = ("logarithmic", "uniform", "power_law", "explog", "jet")
 
 
 def create_wind_model(
@@ -36,28 +43,53 @@ def create_wind_model(
     U_ref: Optional[float] = None,
     z_ref: float = 100.0,
     z0: float = 0.03,
+    alpha: float = 0.08163,
     heights: Optional[Sequence[float]] = None,
     speeds: Optional[Sequence[float]] = None,
     direction_wind: float = 0.0,
+    jet_amplitude: float = 0.0,
+    jet_height: Optional[float] = None,
+    jet_width: Optional[float] = None,
 ) -> Wind:
     """Build a fully numeric :class:`Wind` model.
 
     Args:
-        model_type: ``"logarithmic"``, ``"uniform"`` or ``"tabulated"``.
-        U_ref: wind speed [m/s] at ``z_ref`` (logarithmic) or everywhere
-            (uniform). Required for those two model types.
+        model_type: ``"logarithmic"``, ``"uniform"``, ``"power_law"``,
+            ``"explog"``, ``"jet"`` or ``"tabulated"``.
+        U_ref: wind speed [m/s] at ``z_ref`` (everywhere, for ``uniform``);
+            for ``jet`` it is the reference speed of the log background.
+            Required for every model except ``tabulated``.
         z_ref: reference height [m] at which ``U_ref`` is specified.
-        z0: roughness length [m] (logarithmic only).
+        z0: roughness length [m] (``logarithmic``, ``explog``, ``jet``).
+        alpha: power-law exponent (``power_law``, ``explog``).
         heights: strictly increasing sample heights [m] (tabulated only).
         speeds: wind speeds [m/s] at ``heights`` (tabulated only).
         direction_wind: wind direction [rad]; 0 = wind blowing along +x.
+        jet_amplitude: Gaussian jet peak speed [m/s] (``jet`` only).
+        jet_height: height of the jet peak [m] (``jet`` only).
+        jet_width: standard deviation of the jet [m] (``jet`` only).
     """
-    if model_type in ("logarithmic", "uniform"):
+    if model_type in _ANALYTIC_MODELS:
         if U_ref is None:
             raise ValueError(f"'{model_type}' wind model requires U_ref")
         if U_ref <= 0:
             raise ValueError("U_ref must be positive")
-        wind = Wind(wind_model=model_type, z0=z0, direction_wind=direction_wind)
+        if model_type == "jet":
+            if jet_height is None or jet_width is None:
+                raise ValueError(
+                    "'jet' wind model requires jet_height and jet_width"
+                )
+            if jet_width <= 0:
+                raise ValueError("jet_width must be positive")
+        wind = Wind(
+            wind_model=model_type,
+            z0=z0,
+            direction_wind=direction_wind,
+            alpha=alpha,
+            jet_amplitude=jet_amplitude,
+            jet_height=jet_height,
+            jet_width=jet_width,
+        )
         # height_ref must be set before speed_wind_ref: the setter derives
         # speed_friction from U_ref * kappa / ln(height_ref / z0).
         wind.height_ref = z_ref
@@ -85,6 +117,6 @@ def create_wind_model(
         )
 
     raise ValueError(
-        f"Unknown wind model type: {model_type!r}. "
-        "Supported: 'logarithmic', 'uniform', 'tabulated'."
+        f"Unknown wind model type: {model_type!r}. Supported: "
+        "'logarithmic', 'uniform', 'power_law', 'explog', 'jet', 'tabulated'."
     )

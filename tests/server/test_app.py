@@ -94,7 +94,12 @@ def client(monkeypatch, tmp_path):
 
     test_client = TestClient(create_app(session_factory=ReeloutSession))
     test_client.init_payload = {
-        "wind": {"model_type": "logarithmic", "U_ref": 8.0},
+        "inflow_conditions": {
+            "wind_speed": 8.0,
+            "wind_direction": 270.0,
+            "profile_law": 2,  # LOG
+            "z0": 0.03,
+        },
         "system_config_path": str(system_yaml),
         "cycle_config_path": str(cycle_yaml),
         "n_points": N_NODES,
@@ -126,6 +131,20 @@ def test_endpoints_before_init(client):
 
 def test_init_validation_errors(client):
     payload = dict(client.init_payload)
+    payload["inflow_conditions"] = {"wind_speed": 8.0, "profile_law": 9}
+    assert client.post("/init", json=payload).status_code == 422
+
+    # a CUSTOM_* law without enough samples to fit is rejected up front
+    payload["inflow_conditions"] = {
+        "wind_speed": 8.0, "profile_law": 4, "heights": [10.0], "speeds": [6.0],
+    }
+    assert client.post("/init", json=payload).status_code == 422
+
+    payload = dict(client.init_payload)
+    del payload["inflow_conditions"]  # no wind at all
+    assert client.post("/init", json=payload).status_code == 422
+
+    payload = dict(client.init_payload)
     payload["wind"] = {"model_type": "gaussian", "U_ref": 8.0}
     assert client.post("/init", json=payload).status_code == 422
 
@@ -136,6 +155,19 @@ def test_init_validation_errors(client):
     assert "not found" in response.json()["detail"]
 
 
+def test_init_accepts_low_level_wind_field(client):
+    """The pre-InflowConditions 'wind' field keeps working."""
+    payload = dict(client.init_payload)
+    del payload["inflow_conditions"]
+    payload["wind"] = {"model_type": "logarithmic", "U_ref": 8.0}
+    reply = client.post("/init", json=payload)
+    assert reply.status_code == 200
+    assert reply.json()["inflow_conditions"] is None
+    status = client.get("/status").json()
+    assert status["wind"]["model_type"] == "logarithmic"
+    assert status["inflow_conditions"] is None
+
+
 def test_full_flow(client):
     # init: reply contains the InitParams struct incl. the starting path
     response = client.post("/init", json=client.init_payload)
@@ -143,6 +175,10 @@ def test_full_flow(client):
     reply = response.json()
     assert reply["state"] == "ready"
     assert reply["name"] == "reelout-optimization"
+    # the accepted inflow is echoed back, defaults filled in
+    assert reply["inflow_conditions"]["wind_speed"] == 8.0
+    assert reply["inflow_conditions"]["profile_law"] == 2
+    assert reply["inflow_conditions"]["turbulence"] == 0.0
     trajectory = reply["trajectory"]
     # no client trajectory sent -> reply resolution follows n_points
     assert len(trajectory["azimuth"]) == len(trajectory["elevation"]) == N_NODES
@@ -179,20 +215,24 @@ def test_full_flow(client):
         assert all(isinstance(v, float) for v in values)
     assert trajectory["spline"]["M"] == 4
 
-    # second step with new wind + tether length
+    # second step with new inflow conditions + tether length; the measured
+    # profile is fitted by the CUSTOM_LOG law
     response = client.post(
         "/step",
         json={
-            "wind": {
-                "model_type": "tabulated",
-                "heights": [10.0, 300.0],
-                "speeds": [5.0, 9.0],
+            "inflow_conditions": {
+                "wind_speed": 7.0,
+                "wind_direction": 265.0,
+                "profile_law": 4,
+                "heights": [10.0, 100.0, 300.0],
+                "speeds": [5.0, 8.0, 9.0],
             },
             "distance_radial": R0 + 20.0,
             "wait": False,
         },
     )
     assert response.status_code == 202
+    assert client.get("/status").json()["inflow_conditions"]["profile_law"] == 4
     phase = StubPhase.latest
     assert phase.solve_started.wait(timeout=5.0)
     # old trajectory still served while solving
