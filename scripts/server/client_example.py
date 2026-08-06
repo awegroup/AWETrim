@@ -48,7 +48,6 @@ class InflowConditions:
 class WinchParams:
     mode: str        # "reelout" ("reelin" not supported yet)
     k_v: float       # v_set = k_v * sqrt(force)
-    v_max: float     # maximum winch speed [m/s]
     f_min: float     # minimum winch force [N]
     f_max: float     # maximum winch force [N]
 
@@ -159,7 +158,7 @@ if __name__ == "__main__":
     # k_v example: v = k_v*sqrt(F) -> at 8400 N this winch reels ~10 m/s.
     # Too-stiff values (e.g. 0.02 -> only ~1.8 m/s at max force) make the
     # optimization infeasible and the server replies 422.
-    winch = WinchParams(mode="reelout", k_v=0.11, v_max=8.0,
+    winch = WinchParams(mode="reelout", k_v=0.11,
                         f_min=1000.0, f_max=8400.0)
 
     # 5.2 m/s at 6 m height, wind from the west, logarithmic profile

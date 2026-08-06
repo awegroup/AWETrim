@@ -347,7 +347,7 @@ def test_init_length_overrides_r0(patched_session):
 def test_winch_params_map_to_quadratic_force_law(patched_session):
     sess, config = patched_session
     config["winch_params"] = {
-        "mode": "reelout", "k_v": 0.02, "v_max": 8.0,
+        "mode": "reelout", "k_v": 0.02,
         "f_min": 1000.0, "f_max": 8400.0,
     }
     sess.init(config)
@@ -359,8 +359,6 @@ def test_winch_params_map_to_quadratic_force_law(patched_session):
     assert radial["offset_winch_ro"] == 0.0
     assert radial["min_tether_force"] == 1000.0
     assert radial["max_tether_force"] == 8400.0
-    sim = sess.phase.pattern_config["sim_parameters"]
-    assert sim["opti_limits_override"]["speed_radial"][1] == 8.0
 
     # reelin mode is rejected at init and at step
     config["winch_params"]["mode"] = "reelin"

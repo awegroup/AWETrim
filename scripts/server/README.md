@@ -157,7 +157,7 @@ Input — empty `{}` for the first solve; on refreshes send what changed:
   "inflow_conditions": {"wind_speed": 8.4, "wind_direction": 265.0, "profile_law": 4,
                         "heights": [10, 100, 300], "speeds": [5.5, 8.0, 9.3]},
   "length": 220.0,
-  "winch_params": {"mode": "reelout", "k_v": 0.02, "v_max": 8.0, "f_min": 1000, "f_max": 8400},
+  "winch_params": {"mode": "reelout", "k_v": 0.02, "f_min": 1000, "f_max": 8400},
   "trajectory": {"azimuth": ["..."], "elevation": ["..."]}
 }
 ```
@@ -177,11 +177,10 @@ Add `"wait": false` to get the old asynchronous behavior instead
 
 `/init` and `/step` accept and return the shared structs:
 
-- `WinchParams {mode, k_v, v_max, f_min, f_max}` — the ground-station winch
+- `WinchParams {mode, k_v, f_min, f_max}` — the ground-station winch
   law `v_set = k_v*sqrt(force)`. It is mapped onto the optimizer's quadratic
-  radial force model (`F = v²/k_v²`, clamped to `[f_min, f_max]`, `v_max`
-  bounding the reel speed), so the optimized path assumes exactly the
-  client's winch behavior. `mode: "reelin"` → 400 (not supported yet).
+  radial force model (`F = v²/k_v²`, clamped to `[f_min, f_max]`), so the
+  optimized path assumes exactly the client's winch behavior. `mode: "reelin"` → 400 (not supported yet).
 - `Trajectory {azimuth[], elevation[]}` — flight path in **degrees**,
   periodic (closing point optional on input, always present in replies).
   On input it is fitted to the pattern B-spline as the starting guess;

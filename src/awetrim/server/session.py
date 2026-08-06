@@ -47,7 +47,6 @@ from awetrim.kinematics.parametrized_patterns import (
     fit_bspline_pattern_to_trajectory,
     make_bspline_path_parameters_from_named_curve,
 )
-from awetrim.utils.defaults import DEFAULT_OPTI_LIMITS
 from awetrim.system.factory import create_system_model_from_yaml
 from awetrim.timeseries.phase import Phase
 from awetrim.utils.config_paths import (
@@ -267,7 +266,7 @@ class ReeloutSession:
         winch = config.get("winch_params")
         if winch:
             self._apply_winch_params(
-                reelout_config["radial_parameters"], sim_parameters, winch
+                reelout_config["radial_parameters"], winch
             )
 
         n_points = int(config.get("n_points", 100))
@@ -348,7 +347,6 @@ class ReeloutSession:
     @staticmethod
     def _apply_winch_params(
         radial_parameters: Dict[str, Any],
-        sim_parameters: Dict[str, Any],
         winch: Dict[str, Any],
     ) -> None:
         """Map a client winch law v_set = k_v*sqrt(F) onto the optimizer.
@@ -357,7 +355,7 @@ class ReeloutSession:
         quadratic force model T = slope*(v_r - offset)^2 with offset 0, so
         the optimizer assumes the same radial behavior the client's winch
         controller produces. f_min/f_max become the (softly clamped) force
-        limits and v_max bounds the speed_radial NLP variable.
+        limits; the reel-speed bounds stay at the optimizer defaults.
         """
         if winch["mode"] != "reelout":
             raise ValueError(
@@ -379,12 +377,6 @@ class ReeloutSession:
         )
         radial_parameters.setdefault("softplus_beta", 1e-3)
         radial_parameters.setdefault("softminus_beta", 1e-3)
-        override = dict(sim_parameters.get("opti_limits_override") or {})
-        override["speed_radial"] = [
-            DEFAULT_OPTI_LIMITS["speed_radial"][0],
-            float(winch["v_max"]),
-        ]
-        sim_parameters["opti_limits_override"] = override
 
     @staticmethod
     def _fit_trajectory_into_path(
@@ -481,8 +473,7 @@ class ReeloutSession:
 
             if winch_params is not None:
                 self._apply_winch_params(
-                    pattern_config["radial_parameters"], sim_parameters,
-                    winch_params,
+                    pattern_config["radial_parameters"], winch_params
                 )
                 self._winch_params = dict(winch_params)
 

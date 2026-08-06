@@ -232,6 +232,8 @@ class InitialGuess(BaseModel):
 class WinchParams(BaseModel):
     """Ground-station winch controller: v_set = k_v * sqrt(force)."""
 
+    model_config = ConfigDict(extra="forbid")
+
     mode: Literal["reelout", "reelin"] = Field(
         default="reelout",
         description="Phase to optimize; only 'reelout' is supported for now",
@@ -239,7 +241,6 @@ class WinchParams(BaseModel):
     k_v: float = Field(
         gt=0, description="Winch law gain: v_set = k_v * sqrt(force)"
     )
-    v_max: float = Field(gt=0, description="Maximum winch speed [m/s]")
     f_min: float = Field(ge=0, description="Minimum winch force [N]")
     f_max: float = Field(gt=0, description="Maximum winch force [N]")
 

@@ -262,7 +262,7 @@ def _closed_figure_eight_deg(n=200):
 
 def test_cosim_contract_blocking_step(client):
     """init/step replies contain the InitParams/StepParams structs."""
-    winch = {"mode": "reelout", "k_v": 0.02, "v_max": 8.0,
+    winch = {"mode": "reelout", "k_v": 0.02,
              "f_min": 1000.0, "f_max": 8400.0}
     payload = dict(client.init_payload)
     payload.update(
@@ -310,7 +310,7 @@ def test_cosim_contract_blocking_step(client):
 
 def test_reelin_mode_rejected(client):
     payload = dict(client.init_payload)
-    payload["winch_params"] = {"mode": "reelin", "k_v": 0.02, "v_max": 8.0,
+    payload["winch_params"] = {"mode": "reelin", "k_v": 0.02,
                                "f_min": 1000.0, "f_max": 8400.0}
     reply = client.post("/init", json=payload)
     assert reply.status_code == 400

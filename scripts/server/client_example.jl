@@ -24,7 +24,6 @@ using HTTP, JSON3, StructTypes
 struct WinchParams
     mode::String      # "reelout" ("reelin" not supported yet)
     k_v::Float64      # v_set = k_v * sqrt(force)
-    v_max::Float64    # maximum winch speed [m/s]
     f_min::Float64    # minimum winch force [N]
     f_max::Float64    # maximum winch force [N]
 end
@@ -68,7 +67,7 @@ function post(path, payload; timeout = 600)
 end
 
 as_dict(x) = JSON3.read(JSON3.write(x), Dict{String,Any})
-as_winch(d) = WinchParams(d["mode"], d["k_v"], d["v_max"], d["f_min"], d["f_max"])
+as_winch(d) = WinchParams(d["mode"], d["k_v"], d["f_min"], d["f_max"])
 as_traj(d) = Trajectory(Float64.(d["azimuth"]), Float64.(d["elevation"]))
 
 function as_init_params(reply)
@@ -107,7 +106,7 @@ guess = Trajectory(20.0 .* sin.(s), 22.0 .+ 8.0 .* sin.(2 .* s))
 # k_v example: v = k_v*sqrt(F) -> at 8400 N this winch reels ~10 m/s.
 # Too-stiff values (e.g. 0.02 -> ~1.8 m/s at max force) make the optimization
 # infeasible and the server replies 422.
-winch = WinchParams("reelout", 0.11, 8.0, 1000.0, 8400.0)
+winch = WinchParams("reelout", 0.11, 1000.0, 8400.0)
 
 # 200 m of tether; the solver knobs are left at their defaults
 reply = init(InitParams(name = "uwe-sim-1", max_time = 600.0, length = 200.0,
