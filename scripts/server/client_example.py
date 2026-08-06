@@ -9,8 +9,8 @@ is self-contained and can be copied into any project.
 Contract: POST /init receives and replies InitParams; POST /step receives and
 replies StepParams (blocking — the reply contains the OPTIMIZED trajectory).
 Reply trajectories are CLOSED (last point == first) with the same number of
-points you sent. Angles in DEGREES; the tether length travels as a sibling
-JSON field next to the structs.
+points you sent. Angles in DEGREES; the tether length is the `length` field of
+InitParams / StepParams.
 
 Winch coupling: the optimizer maps v_set = k_v*sqrt(force) onto its radial
 force model, so the optimized path assumes exactly your winch behavior.
@@ -63,13 +63,18 @@ class Trajectory:
 class InitParams:
     name: str
     max_time: float
+    length: float      # initial length of the tether
     winch_params: WinchParams
     inflow_conditions: InflowConditions
     trajectory: Trajectory
+    input_depower: float = 1.6           # depower setting
+    reg_weight: float = 1.0              # regularization weight
+    detect_simple_bounds: bool = True    # solver flag
 
 
 @dataclass
 class StepParams:
+    length: float      # current length of the tether
     winch_params: WinchParams
     trajectory: Trajectory
 
@@ -103,24 +108,20 @@ def _init_params(reply: dict) -> InitParams:
     return InitParams(
         name=reply["name"],
         max_time=reply["max_time"],
+        length=reply["length"],
         winch_params=WinchParams(**reply["winch_params"]),
         inflow_conditions=InflowConditions(**reply["inflow_conditions"]),
         trajectory=Trajectory(**reply["trajectory"]),
+        input_depower=reply["input_depower"],
+        reg_weight=reply["reg_weight"],
+        detect_simple_bounds=reply["detect_simple_bounds"],
     )
 
 
-def init(
-    params: InitParams,
-    *,
-    distance_radial: Optional[float] = None,
-    **extra,
-) -> InitParams:
-    """Send InitParams (+ tether length, solver knobs) -> InitParams."""
+def init(params: InitParams) -> InitParams:
+    """Send InitParams (incl. tether length and solver knobs) -> InitParams."""
     payload = _payload(params)
     payload["inflow_conditions"] = _payload(params.inflow_conditions)
-    if distance_radial is not None:
-        payload["distance_radial"] = distance_radial
-    payload.update(extra)  # e.g. sim_parameters={...}
     return _init_params(_post("/init", payload))
 
 
@@ -128,17 +129,16 @@ def step(
     params: StepParams,
     *,
     inflow_conditions: Optional[InflowConditions] = None,
-    distance_radial: Optional[float] = None,
 ) -> StepParams:
-    """Send StepParams (+ optional new inflow / tether length) -> receive
-    StepParams with the OPTIMIZED trajectory. Blocks ~10 s - 2 min."""
+    """Send StepParams (incl. the current tether length, + optional new
+    inflow) -> receive StepParams with the OPTIMIZED trajectory.
+    Blocks ~10 s - 2 min."""
     payload = _payload(params)
     if inflow_conditions is not None:
         payload["inflow_conditions"] = _payload(inflow_conditions)
-    if distance_radial is not None:
-        payload["distance_radial"] = distance_radial
     reply = _post("/step", payload)
     return StepParams(
+        length=reply["length"],
         winch_params=WinchParams(**reply["winch_params"]),
         trajectory=Trajectory(**reply["trajectory"]),
     )
@@ -167,17 +167,13 @@ if __name__ == "__main__":
     inflow = InflowConditions(wind_speed=5.2, wind_direction=270.0,
                               profile_law=2, z0=0.03)
 
-    reply = init(
-        InitParams("python-sim-1", 600.0, winch, inflow, guess),
-        distance_radial=200.0,
-        sim_parameters={"input_depower": 1.6, "reg_weight": 1.0,
-                        "detect_simple_bounds": True},
-    )
+    # 200 m of tether; the solver knobs are left at their defaults
+    reply = init(InitParams("python-sim-1", 600.0, 200.0, winch, inflow, guess))
     print(f"init ok: {reply.name}, "
           f"starting path {len(reply.trajectory.azimuth)} pts")
 
     # First optimization (blocking; reply contains the optimized path)
-    result = step(StepParams(winch, reply.trajectory))
+    result = step(StepParams(200.0, winch, reply.trajectory))
     elevation = result.trajectory.elevation
     print(f"optimized: {len(result.trajectory.azimuth)} pts, "
           f"elevation {min(elevation):.1f} - {max(elevation):.1f} deg")
@@ -188,12 +184,11 @@ if __name__ == "__main__":
     # measured profile is sent as a CUSTOM_* law: the heights/speeds samples
     # are fitted (here: log law + Gaussian jet).
     result = step(
-        StepParams(winch, result.trajectory),
+        StepParams(220.0, winch, result.trajectory),  # current tether length
         inflow_conditions=InflowConditions(
             wind_speed=8.4, wind_direction=265.0, profile_law=6,
             heights=[10.0, 50.0, 100.0, 200.0, 300.0],
             speeds=[5.5, 7.4, 8.0, 9.3, 8.6],
         ),
-        distance_radial=220.0,  # current tether length
     )
     print("refreshed trajectory received")

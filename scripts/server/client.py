@@ -12,7 +12,7 @@ with HTTP or polling directly:
     trajectory = client.optimize(                       # later: refresh
         wind={"model_type": "tabulated",
               "heights": [10, 100, 300], "speeds": [5.5, 8.0, 9.3]},
-        distance_radial=220.0,
+        length=220.0,
     )
 
 Requires only httpx (installed with the [dev] or [server] extras); runnable
@@ -42,21 +42,21 @@ class ReeloutClient:
 
     def init(self, wind: dict, **options) -> dict:
         """POST /init. `options` maps to the InitRequest fields, e.g.
-        initial_guess=..., n_points=..., sim_parameters={...}."""
+        initial_guess=..., n_points=..., length=..., input_depower=..."""
         return self._request("POST", "/init", json={"wind": wind, **options})
 
     def step(
         self,
         wind: Optional[dict] = None,
-        distance_radial: Optional[float] = None,
+        length: Optional[float] = None,
         max_iter: Optional[int] = None,
     ) -> dict:
         """POST /step (non-blocking). Returns the 202 acknowledgement."""
         payload = {"wait": False}  # keep this client's step/wait split
         if wind is not None:
             payload["wind"] = wind
-        if distance_radial is not None:
-            payload["distance_radial"] = distance_radial
+        if length is not None:
+            payload["length"] = length
         if max_iter is not None:
             payload["max_iter"] = max_iter
         return self._request("POST", "/step", json=payload)
@@ -110,8 +110,7 @@ if __name__ == "__main__":
     client.init(
         wind={"model_type": "logarithmic", "U_ref": 8.0, "z_ref": 100.0, "z0": 0.03},
         initial_guess={"curve_type": "lissajous"},
-        sim_parameters={"input_depower": 1.6, "reg_weight": 1.0,
-                        "detect_simple_bounds": True},
+        input_depower=1.6, reg_weight=1.0, detect_simple_bounds=True,
     )
 
     print("optimizing (cold start) ...")
@@ -125,7 +124,7 @@ if __name__ == "__main__":
     trajectory = client.optimize(
         wind={"model_type": "tabulated",
               "heights": [10.0, 100.0, 300.0], "speeds": [5.5, 8.0, 9.3]},
-        distance_radial=220.0,
+        length=220.0,
     )
     metrics = trajectory["metrics"]
     print(f"  step {trajectory['step_index']}: "

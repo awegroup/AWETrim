@@ -325,9 +325,9 @@ def test_reset_clears_session(patched_session):
         sess.step()
 
 
-def test_init_distance_radial_overrides_r0(patched_session):
+def test_init_length_overrides_r0(patched_session):
     sess, config = patched_session
-    config["distance_radial"] = 250.0
+    config["length"] = 250.0
     config["initial_guess"] = {
         "curve_type": "lissajous",
         "M": 8,

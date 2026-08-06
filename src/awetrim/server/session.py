@@ -240,8 +240,7 @@ class ReeloutSession:
 
         # Pattern sphere radius: request override, else the cycle-config value.
         r0 = float(
-            config.get("distance_radial")
-            or reelout_config["path_parameters"]["r0"]
+            config.get("length") or reelout_config["path_parameters"]["r0"]
         )
         reelout_config["path_parameters"]["r0"] = r0
 
@@ -560,6 +559,7 @@ class ReeloutSession:
             metrics = dict(self.last_record.metrics)
             state = self.state.value
         return {
+            "length": self._length(),
             "winch_params": dict(self._winch_params)
             if self._winch_params
             else None,
@@ -694,18 +694,27 @@ class ReeloutSession:
 
     def init_reply(self) -> Dict[str, Any]:
         """InitParams-shaped reply: session config + fitted starting path."""
+        sim_parameters = self.phase.pattern_config.get("sim_parameters", {})
         return {
             "name": self._name,
             "max_time": self._max_time,
+            "length": self._length(),
             "winch_params": dict(self._winch_params)
             if self._winch_params
             else None,
             "inflow_conditions": dict(self._inflow) if self._inflow else None,
             "trajectory": self.trajectory_degrees(),
+            "input_depower": sim_parameters.get("input_depower"),
+            "reg_weight": sim_parameters.get("reg_weight"),
+            "detect_simple_bounds": sim_parameters.get("detect_simple_bounds"),
             "state": self.state.value,
             "n_points": self._n_points,
             "session_id": self.session_id,
         }
+
+    def _length(self) -> float:
+        """Tether length the pattern is currently anchored to [m]."""
+        return float(self.phase.pattern_config["path_parameters"]["r0"])
 
     def trajectory(self, resimulate: bool = False) -> Dict[str, Any]:
         with self._lock:

@@ -64,18 +64,18 @@ a default:
 ```json
 {
   "inflow_conditions": {"wind_speed": 5.2, "wind_direction": 270.0, "profile_law": 2, "z0": 0.03},
-  "distance_radial": 200.0,
+  "length": 200.0,
   "initial_guess": {"curve_type": "lissajous", "az_amp0": 0.3, "beta0": 0.35,
                     "beta_amp0": 0.12, "downloops": true, "M": 10},
   "n_points": 100,
-  "sim_parameters": {"input_depower": 1.6, "reg_weight": 1.0, "detect_simple_bounds": true}
+  "input_depower": 1.6, "reg_weight": 1.0, "detect_simple_bounds": true
 }
 ```
 
 | field | default | meaning |
 |---|---|---|
 | `inflow_conditions` | required | the wind seen by the kite, see below |
-| `distance_radial` | 200 | initial tether length / pattern sphere radius r0 [m] |
+| `length` | 200 | initial tether length / pattern sphere radius r0 [m] |
 | `initial_guess.curve_type` | `lissajous` | starting shape: `lissajous`/`lemniscate` = figure-eight, `helix` = circular loops |
 | `initial_guess.az_amp0` | 0.3 | azimuth half-width of the figure [rad] |
 | `initial_guess.beta0` | 0.35 | mean elevation above the horizon [rad] |
@@ -84,20 +84,20 @@ a default:
 | `initial_guess.M` | 10 | B-spline control points — the optimizer's shape freedom |
 | `n_points` | 100 | optimization grid nodes (also the reply-table resolution unless you send a trajectory — then replies match your resolution) |
 | `optimization_params` | `["C_phi","C_beta","input_depower"]` | what the optimizer is allowed to change |
-| `sim_parameters` | `{}` | solver knobs, see below |
+| `input_depower` | from config | depower setting; the FIXED value when depower is not optimized |
+| `reg_weight` | from config | smoothness regularization |
+| `detect_simple_bounds` | from config | IPOPT speed-up |
+| `sim_parameters` | `{}` | further solver knobs, see below |
 
-Solver knobs worth knowing (`sim_parameters`):
+Further solver knobs (`sim_parameters`), for the ones without their own field:
 
 | key | default | meaning |
 |---|---|---|
 | `winch_mode` | `"force_law"` | `"force_law"`: reel speed follows the winch tension curve (the WinchParams law). `"free_speed"`: reel speed is a free, rate-limited control — the optimizer picks it |
-| `input_depower` | from config | depower setting; the FIXED value when depower is not optimized |
 | `optimize_depower_profile` | `false` | `false`: depower optimized as ONE scalar (if `input_depower` is in `optimization_params`). `true`: optimized PER NODE (a depower time-profile) |
-| `reg_weight` | config | smoothness regularization |
-| `detect_simple_bounds` | config | IPOPT speed-up |
 
 Depower cheat-sheet: **fixed** = remove `"input_depower"` from
-`optimization_params` and set `sim_parameters.input_depower`; **one optimized
+`optimization_params` and set the `input_depower` field; **one optimized
 value** = keep it in `optimization_params` (default); **optimized per point** =
 additionally set `sim_parameters.optimize_depower_profile: true`.
 
@@ -156,13 +156,13 @@ Input — empty `{}` for the first solve; on refreshes send what changed:
 {
   "inflow_conditions": {"wind_speed": 8.4, "wind_direction": 265.0, "profile_law": 4,
                         "heights": [10, 100, 300], "speeds": [5.5, 8.0, 9.3]},
-  "distance_radial": 220.0,
+  "length": 220.0,
   "winch_params": {"mode": "reelout", "k_v": 0.02, "v_max": 8.0, "f_min": 1000, "f_max": 8400},
   "trajectory": {"azimuth": ["..."], "elevation": ["..."]}
 }
 ```
 
-`distance_radial` is the **current tether length** from your simulator; the
+`length` is the **current tether length** from your simulator; the
 refreshed pattern is re-anchored there. All fields are optional.
 
 **Blocking by default:** the call returns when the solve finishes (~10-20 s)
@@ -189,11 +189,19 @@ Add `"wait": false` to get the old asynchronous behavior instead
 - `InflowConditions {wind_speed, wind_direction, profile_law, ...}` — the wind
   seen by the kite, see the table above. Required on `/init`; optional on
   `/step`, where it replaces the profile for the re-optimization.
-- `InitParams {name, max_time, winch_params, inflow_conditions, trajectory}` —
-  the `/init` request and reply carry these fields (reply trajectory = fitted
-  starting path, `inflow_conditions` echoed with the defaults filled in);
-  `distance_radial` travels as a sibling JSON field.
-- `StepParams {winch_params, trajectory}` — the `/step` request and reply.
+- `InitParams {name, max_time, length, winch_params, inflow_conditions,
+  trajectory, input_depower, reg_weight, detect_simple_bounds}` — the `/init`
+  request and reply carry these fields (reply trajectory = fitted starting
+  path, `inflow_conditions` echoed with the defaults filled in). `length` is
+  the initial tether length; the last three are the solver knobs and default
+  to `1.6`, `1.0` and `true`.
+- `StepParams {length, winch_params, trajectory}` — the `/step` request and
+  reply, `length` being the current tether length.
+- The struct fields go on the wire as they are — the clients do no mapping.
+  Server-side the three solver knobs are merged into the `sim_parameters`
+  overrides. Both replies echo `length`, `/init` also echoes the knobs.
+  (`distance_radial` stays the name of the tether length in the guidance
+  *table* below, where it is the physical radius r along the path.)
 
 See [`client_example.jl`](client_example.jl) for the exact structs in Julia.
 

@@ -17,7 +17,7 @@ disp(webread(BASE + "/health"))
 %  all tunable fields shown with their defaults — see README.md for meanings.
 init.wind = struct("model_type", "logarithmic", ...
                    "U_ref", 8.0, "z_ref", 100.0, "z0", 0.03);
-init.distance_radial = 200.0;              % initial tether length r0 [m]
+init.length = 200.0;                       % initial tether length r0 [m]
 init.initial_guess = struct( ...
     "curve_type", "lissajous", ...         % figure-8; or "helix" for circles
     "az_amp0",   0.3, ...                  % figure half-width [rad]
@@ -26,8 +26,9 @@ init.initial_guess = struct( ...
     "downloops", true, ...                 % turn downward through the loops
     "M",         10);                      % B-spline control points
 init.n_points = 100;                       % trajectory table rows
-init.sim_parameters = struct("input_depower", 1.6, "reg_weight", 1.0, ...
-                             "detect_simple_bounds", true);
+init.input_depower = 1.6;                  % depower setting
+init.reg_weight = 1.0;                     % regularization weight
+init.detect_simple_bounds = true;          % solver flag
 webwrite(BASE + "/init", init, json);
 
 %% 3. First optimization (cold start, ~10 s)
@@ -54,7 +55,7 @@ title("Optimized reelout pattern")
 request.wind = struct("model_type", "tabulated", ...
                       "heights", [10.0 100.0 300.0], ...
                       "speeds",  [5.5 8.0 9.3]);
-request.distance_radial = 220.0;     % current tether length in your sim
+request.length = 220.0;              % current tether length in your sim
 traj = optimize(BASE, json, request);
 fprintf("step %d: re-anchored at r0 = %.0f m\n", ...
         traj.step_index, traj.spline.r0);

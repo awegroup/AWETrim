@@ -227,7 +227,7 @@ def test_full_flow(client):
                 "heights": [10.0, 100.0, 300.0],
                 "speeds": [5.0, 8.0, 9.0],
             },
-            "distance_radial": R0 + 20.0,
+            "length": R0 + 20.0,
             "wait": False,
         },
     )

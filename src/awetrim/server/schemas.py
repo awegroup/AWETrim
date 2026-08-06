@@ -33,7 +33,7 @@ import math
 from datetime import datetime
 from typing import Annotated, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from awetrim.environment.wind_profiles import (
     DEFAULT_ALPHA,
@@ -271,6 +271,10 @@ class TrajectoryAngles(BaseModel):
 # Requests
 # ---------------------------------------------------------------------------
 class InitRequest(BaseModel):
+    # Unknown keys are rejected: a client still sending a removed name (e.g.
+    # the old "distance_radial") gets a 422 instead of a silently ignored field.
+    model_config = ConfigDict(extra="forbid")
+
     inflow_conditions: Optional[InflowConditions] = Field(
         default=None,
         description="Wind seen by the kite (shared client struct). Required "
@@ -301,7 +305,7 @@ class InitRequest(BaseModel):
         "B-spline. Takes precedence over initial_guess.",
     )
     initial_guess: Optional[InitialGuess] = None
-    distance_radial: Optional[float] = Field(
+    length: Optional[float] = Field(
         default=None,
         gt=0,
         description="Initial tether length / pattern sphere radius r0 [m]; "
@@ -316,9 +320,27 @@ class InitRequest(BaseModel):
     n_points: int = Field(default=100, ge=10, le=1000)
     sim_parameters: Dict = Field(
         default_factory=dict,
-        description="Overrides merged into the pattern config sim_parameters "
-        "(e.g. input_depower, reg_weight, detect_simple_bounds)",
+        description="Overrides merged into the pattern config sim_parameters",
     )
+    # The InitParams solver knobs: sent flat by the clients, merged into
+    # sim_parameters here so the session sees a single dict.
+    input_depower: Optional[float] = Field(
+        default=None, exclude=True, description="Depower setting u_p"
+    )
+    reg_weight: Optional[float] = Field(
+        default=None, exclude=True, description="Regularization weight"
+    )
+    detect_simple_bounds: Optional[bool] = Field(
+        default=None, exclude=True, description="Solver flag"
+    )
+
+    @model_validator(mode="after")
+    def _merge_solver_knobs(self):
+        for key in ("input_depower", "reg_weight", "detect_simple_bounds"):
+            value = getattr(self, key)
+            if value is not None:
+                self.sim_parameters[key] = value
+        return self
 
     @model_validator(mode="after")
     def _check_wind_given(self):
@@ -331,6 +353,8 @@ class InitRequest(BaseModel):
 
 
 class StepRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     inflow_conditions: Optional[InflowConditions] = Field(
         default=None,
         description="Updated wind for this re-optimization; takes precedence "
@@ -345,7 +369,7 @@ class StepRequest(BaseModel):
         description="Current flight path in degrees, used as the starting "
         "guess for the re-optimization",
     )
-    distance_radial: Optional[float] = Field(
+    length: Optional[float] = Field(
         default=None,
         gt=0,
         description="Current tether length [m]; re-anchors the pattern radius r0",
@@ -391,16 +415,22 @@ class StepAccepted(BaseModel):
 
 class InitReply(BaseModel):
     """Reply of POST /init — contains the InitParams struct (name, max_time,
-    winch_params, inflow_conditions, trajectory) plus server state. The
-    trajectory is the fitted starting path (closed: last point equals the
-    first, degrees); inflow_conditions echoes the accepted inflow (absent
-    when the low-level 'wind' field was used)."""
+    length, winch_params, inflow_conditions, trajectory + the solver knobs)
+    plus server state. The trajectory is the fitted starting path (closed:
+    last point equals the first, degrees); inflow_conditions echoes the
+    accepted inflow (absent when the low-level 'wind' field was used)."""
 
     name: str
     max_time: Optional[float] = None
+    length: Optional[float] = Field(
+        default=None, description="Accepted tether length / sphere radius [m]"
+    )
     winch_params: Optional[WinchParams] = None
     inflow_conditions: Optional[InflowConditions] = None
     trajectory: TrajectoryAngles
+    input_depower: Optional[float] = None
+    reg_weight: Optional[float] = None
+    detect_simple_bounds: Optional[bool] = None
     state: str
     n_points: Optional[int] = None
     session_id: str = "default"
@@ -408,9 +438,12 @@ class InitReply(BaseModel):
 
 class StepReply(BaseModel):
     """Reply of POST /step with wait=true — contains the StepParams struct
-    (winch_params, trajectory) plus solve metadata. The trajectory is the
-    OPTIMIZED path (closed, degrees)."""
+    (length, winch_params, trajectory) plus solve metadata. The trajectory is
+    the OPTIMIZED path (closed, degrees)."""
 
+    length: Optional[float] = Field(
+        default=None, description="Tether length the pattern is anchored to [m]"
+    )
     winch_params: Optional[WinchParams] = None
     trajectory: TrajectoryAngles
     state: str

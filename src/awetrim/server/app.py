@@ -108,7 +108,7 @@ def create_app(
             trajectory=request.trajectory.model_dump()
             if request.trajectory
             else None,
-            distance_radial=request.distance_radial,
+            distance_radial=request.length,
             max_iter=request.max_iter,
         )
         try:

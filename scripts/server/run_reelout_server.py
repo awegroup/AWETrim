@@ -15,7 +15,7 @@ Typical client flow (e.g. from a Julia kite simulator):
     POST /step        {}                          -> 202, solve in background
     GET  /status      poll until "converged"
     GET  /trajectory  dense guidance table (t, azimuth, elevation, rates, r, r_dot)
-    POST /step        {"wind": {...}, "distance_radial": 220}   -> refresh
+    POST /step        {"wind": {...}, "length": 220}   -> refresh
 """
 
 # Force a non-interactive matplotlib backend BEFORE any awetrim import:

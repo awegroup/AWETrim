@@ -131,6 +131,6 @@ def test_init_request_needs_wind():
 def test_step_request_optional_fields():
     req = StepRequest()
     assert req.inflow_conditions is None and req.wind is None
-    assert req.distance_radial is None and req.max_iter is None
+    assert req.length is None and req.max_iter is None
     with pytest.raises(ValidationError):
-        StepRequest(distance_radial=-10.0)
+        StepRequest(length=-10.0)
