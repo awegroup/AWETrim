@@ -31,7 +31,7 @@ import httpx
 @dataclass
 class InflowConditions:
     wind_speed: float                   # in m/s at 6 m height
-    wind_direction: float               # in degrees, 0 = North, 90 = East
+    wind_direction: float=270.0         # in degrees, 0 = North, 90 = East
     profile_law: int                    # 0=CONST, 1=EXP, 2=LOG, 3=EXPLOG, 4=CUSTOM_LOG, 5=CUSTOM_EXP, 6=CUSTOM_JET
     # the custom profiles are fitted using the heights and speeds given in the heights and speeds fields
     # CUSTOM_JET: u(z) = u_bg(z) + U_J * exp(-(z - z_c)^2 / (2*sigma^2))
