@@ -23,7 +23,14 @@ src/awetrim/
                          chordwise force distribution still need improvement (see note)
   kinematics/        ✅  course-frame kinematics, B-spline path patterns
   timeseries/        ✅  PhaseParameterized, ReeloutSimple, ReelinSimple, Cycle
-  environment/       ✅  Wind (logarithmic / uniform / tabulated)
+  environment/       ✅  Wind (logarithmic / uniform / tabulated);
+                         wind_factory.create_wind_model builds fully numeric models
+  server/            ✅  REST API for reelout trajectory optimization
+                         (FastAPI, optional [server] extra; endpoints
+                         /init /status /step /trajectory /reset; one
+                         warm-started re-solve per /step for co-simulation
+                         clients, e.g. an external kite simulator).
+                         Launcher: scripts/server/run_reelout_server.py
   experimental/      ✅  EKF flight-data analysis pipeline (+ data_preprocessors/)
   plotting/          ✅  shared plotting helpers — see src/awetrim/plotting/AGENTS.md
   utils/             ✅  fitting, defaults, reference frames

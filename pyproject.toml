@@ -60,6 +60,12 @@ dev = [
   "pytest",
   "pytest-cov",
   "black",
+  "httpx",
+  ]
+server = [
+  "fastapi>=0.110",
+  "uvicorn[standard]",
+  "pydantic>=2",
   ]
 
 [project.urls]
