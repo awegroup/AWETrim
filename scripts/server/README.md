@@ -39,7 +39,18 @@ pip install -e .[server]       # ~5-10 min, downloads the solver stack
 
 ## Starting the server (every session: one command)
 
-From the AWETrim folder, with the venv active:
+On Linux/macOS, from the AWETrim folder — the script picks up `venv/` itself, so
+no `activate` needed:
+
+```
+./bin/run_server                      # http://127.0.0.1:8000
+./bin/run_server --port 9000          # different port
+./bin/run_server --host 0.0.0.0       # reachable from other machines
+```
+
+It checks that the venv exists and that the server extra is installed, and tells
+you what to run if not. On Windows (or to bypass the script), with the venv
+active:
 
 ```
 python scripts/server/run_reelout_server.py --port 8000
