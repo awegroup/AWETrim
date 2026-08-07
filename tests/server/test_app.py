@@ -264,7 +264,6 @@ def test_cosim_contract_blocking_step(client):
     payload = dict(client.init_payload)
     payload.update(
         name="uwe-sim-1",
-        max_time=600.0,
         winch_params=winch,
         trajectory=_closed_figure_eight_deg(),
     )
@@ -272,7 +271,6 @@ def test_cosim_contract_blocking_step(client):
     assert reply.status_code == 200
     reply = reply.json()
     assert reply["name"] == "uwe-sim-1"
-    assert reply["max_time"] == 600.0
     assert reply["winch_params"]["k_v"] == 0.02
     # starting path echoed at the client's resolution, closed
     assert len(reply["trajectory"]["azimuth"]) == 200

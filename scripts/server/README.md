@@ -82,7 +82,6 @@ field; everything else has a default:
 ```json
 {
   "name": "uwe-sim-1",
-  "max_time": 600.0,
   "length": 200.0,
   "winch_params": {"mode": "reelout", "k_v": 0.11, "f_min": 1000, "f_max": 8400},
   "inflow_conditions": {"wind_speed": 5.2, "wind_direction": 270.0, "profile_law": 2, "z0": 0.03},
@@ -95,7 +94,6 @@ field; everything else has a default:
 |---|---|---|
 | `inflow_conditions` | required | the wind seen by the kite, see below |
 | `name` | `reelout-optimization` | name of the simulation, echoed in the reply |
-| `max_time` | — | your simulation horizon [s]; stored and echoed, not used by the optimizer |
 | `length` | from config (200) | initial tether length / pattern sphere radius r0 [m] |
 | `winch_params` | from config | the ground-station winch law, see [2b](#2b-co-simulation-structs-juliahost-side-contract) |
 | `trajectory` | built-in figure-eight | starting flight path in degrees; fitted to the pattern B-spline. Also sets the reply resolution |
@@ -196,7 +194,7 @@ Add `"wait": false` to get the old asynchronous behavior instead
 - `InflowConditions {wind_speed, wind_direction, profile_law, ...}` — the wind
   seen by the kite, see the table above. Required on `/init`; optional on
   `/step`, where it replaces the profile for the re-optimization.
-- `InitParams {name, max_time, length, winch_params, inflow_conditions,
+- `InitParams {name, length, winch_params, inflow_conditions,
   trajectory, input_depower, reg_weight, detect_simple_bounds}` — the `/init`
   request and reply carry these fields (reply trajectory = fitted starting
   path, `inflow_conditions` echoed with the defaults filled in). `length` is

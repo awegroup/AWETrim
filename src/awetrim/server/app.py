@@ -74,7 +74,7 @@ def create_app(
     @app.post("/init", response_model=InitReply)
     def init(request: InitRequest) -> InitReply:
         """Set up the session. The reply contains the InitParams struct
-        (name, max_time, winch_params, inflow_conditions, trajectory); the
+        (name, winch_params, inflow_conditions, trajectory); the
         trajectory is the fitted STARTING path — call /step to optimize it."""
         try:
             session().init(request.model_dump())

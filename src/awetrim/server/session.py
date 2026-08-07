@@ -203,7 +203,6 @@ class ReeloutSession:
         self._target: str = "power"
         self._n_points: Optional[int] = None
         self._name: str = "reelout-optimization"
-        self._max_time: Optional[float] = None
         self._winch_params: Optional[dict] = None
         # Resolution of the degree-table replies: matches the client-sent
         # trajectory when there is one, else falls back to n_points.
@@ -314,7 +313,6 @@ class ReeloutSession:
             self._target = config.get("target", "power")
             self._n_points = n_points
             self._name = config.get("name") or "reelout-optimization"
-            self._max_time = config.get("max_time")
             self._winch_params = dict(winch) if winch else None
             if trajectory:
                 self._trajectory_points = len(trajectory["azimuth"])
@@ -680,7 +678,6 @@ class ReeloutSession:
         sim_parameters = self.phase.pattern_config.get("sim_parameters", {})
         return {
             "name": self._name,
-            "max_time": self._max_time,
             "length": self._length(),
             "winch_params": dict(self._winch_params)
             if self._winch_params

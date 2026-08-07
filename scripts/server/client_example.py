@@ -61,7 +61,6 @@ class Trajectory:
 @dataclass
 class InitParams:
     name: str
-    max_time: float
     length: float      # initial length of the tether
     winch_params: WinchParams
     inflow_conditions: InflowConditions
@@ -106,7 +105,6 @@ def _post(path: str, payload: dict) -> dict:
 def _init_params(reply: dict) -> InitParams:
     return InitParams(
         name=reply["name"],
-        max_time=reply["max_time"],
         length=reply["length"],
         winch_params=WinchParams(**reply["winch_params"]),
         inflow_conditions=InflowConditions(**reply["inflow_conditions"]),

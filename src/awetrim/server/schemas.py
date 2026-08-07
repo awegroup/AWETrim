@@ -215,11 +215,6 @@ class InitRequest(BaseModel):
     name: str = Field(
         default="reelout-optimization", description="Name of the simulation"
     )
-    max_time: Optional[float] = Field(
-        default=None,
-        gt=0,
-        description="Client-side simulation horizon [s]; stored and echoed",
-    )
     winch_params: Optional[WinchParams] = Field(
         default=None,
         description="Ground-station winch law; mapped onto the optimizer's "
@@ -322,14 +317,13 @@ class StepAccepted(BaseModel):
 
 
 class InitReply(BaseModel):
-    """Reply of POST /init — contains the InitParams struct (name, max_time,
-    length, winch_params, inflow_conditions, trajectory + the solver knobs)
+    """Reply of POST /init — contains the InitParams struct (name, length,
+    winch_params, inflow_conditions, trajectory + the solver knobs)
     plus server state. The trajectory is the fitted starting path (closed:
     last point equals the first, degrees); inflow_conditions echoes the
     accepted inflow."""
 
     name: str
-    max_time: Optional[float] = None
     length: Optional[float] = Field(
         default=None, description="Accepted tether length / sphere radius [m]"
     )
