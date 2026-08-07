@@ -26,14 +26,20 @@ init.initial_guess = struct( ...
     "downloops", true, ...                 % turn downward through the loops
     "M",         10);                      % B-spline control points
 init.n_points = 100;                       % trajectory table rows
-init.sim_parameters = struct("input_depower", 1.6, "reg_weight", 1.0, ...
+% Depower: "optimize" (default) lets the solver pick l_dp — worth ~9% power,
+% but you MUST then fly the value it returns (traj.table.input_depower).
+% Use "fixed" if your simulator cannot command depower, or "profile" for a
+% per-node schedule (worth ~12%, needs an actuator that can follow it).
+init.depower = struct("mode", "optimize", "value", 1.6);
+init.sim_parameters = struct("reg_weight", 1.0, ...
                              "detect_simple_bounds", true);
 webwrite(BASE + "/init", init, json);
 
 %% 3. First optimization (cold start, ~10 s)
 traj = optimize(BASE, json, struct());
-fprintf("step %d: %.2f kW average power\n", ...
-        traj.step_index, traj.metrics.avg_power_W / 1e3);
+fprintf("step %d: %.2f kW average power, fly it at depower %.4f\n", ...
+        traj.step_index, traj.metrics.avg_power_W / 1e3, ...
+        traj.optimized_parameters.input_depower);
 
 % The flight path as plain vectors (100 points):
 t      = traj.table.t;               % time along the path [s]
@@ -43,6 +49,7 @@ az_dot = traj.table.azimuth_dot;     % [rad/s]  feedforward rates
 el_dot = traj.table.elevation_dot;   % [rad/s]
 r      = traj.table.distance_radial; % tether length [m]
 r_dot  = traj.table.speed_radial;    % reel-out speed [m/s]
+l_dp   = traj.table.input_depower;   % depower the path assumes [-]
 
 % 3D view of the path:
 x = r .* cos(el) .* cos(az);  y = r .* cos(el) .* sin(az);  z = r .* sin(el);
@@ -58,6 +65,13 @@ request.distance_radial = 220.0;     % current tether length in your sim
 traj = optimize(BASE, json, request);
 fprintf("step %d: re-anchored at r0 = %.0f m\n", ...
         traj.step_index, traj.spline.r0);
+
+%% 5. If your simulator cannot command depower, pin it to your own setting
+%  instead of flying an optimized path at the wrong l_dp (~10% power lost).
+request2.depower = struct("mode", "fixed", "value", 1.6);
+traj = optimize(BASE, json, request2);
+fprintf("depower pinned at %.4f: %.2f kW\n", ...
+        traj.table.input_depower(1), traj.metrics.avg_power_W / 1e3);
 
 %% ------------------------------------------------------------------------
 function traj = optimize(BASE, json, request)

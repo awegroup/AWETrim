@@ -30,6 +30,11 @@ src/awetrim/
                          /init /status /step /trajectory /reset; one
                          warm-started re-solve per /step for co-simulation
                          clients, e.g. an external kite simulator).
+                         Co-sim structs: WinchParams, Trajectory,
+                         DepowerParams {mode: fixed|optimize|profile, value},
+                         InitParams, StepParams. Replies always echo the
+                         depower the returned path assumes — it is not
+                         flyable without it.
                          Launcher: scripts/server/run_reelout_server.py
   experimental/      ✅  EKF flight-data analysis pipeline (+ data_preprocessors/)
   plotting/          ✅  shared plotting helpers — see src/awetrim/plotting/AGENTS.md

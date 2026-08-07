@@ -162,6 +162,46 @@ class WinchParams(BaseModel):
         return self
 
 
+class DepowerSpec(BaseModel):
+    """How the depower input l_dp is handled during the optimization.
+
+    Depower changes the kite's angle of attack, so the optimized path is only
+    flyable at the depower setting it was optimized for. Clients that cannot
+    command depower should send ``mode="fixed"`` with the value their own
+    simulator flies; clients that can should read the value back from the
+    ``depower`` field of the /init and /step replies and apply it.
+    """
+
+    mode: Literal["fixed", "optimize", "profile"] = Field(
+        default="optimize",
+        description="'fixed': l_dp stays at value (the client's setting is "
+        "honoured). 'optimize': one scalar l_dp is optimized (default). "
+        "'profile': l_dp is optimized per node, giving a depower time-profile.",
+    )
+    value: Optional[float] = Field(
+        default=None,
+        description="Depower setting: the FIXED value in 'fixed' mode, the "
+        "starting value in 'optimize'/'profile' mode. Defaults to the kite "
+        "cycle config's value.",
+    )
+
+
+class DepowerReply(BaseModel):
+    """The depower the returned trajectory was optimized for — fly this.
+
+    In 'profile' mode ``profile`` holds the per-node values, index-aligned with
+    the reply trajectory's azimuth/elevation; ``value`` is then its mean.
+    """
+
+    mode: Literal["fixed", "optimize", "profile"]
+    value: float = Field(description="Scalar depower setting l_dp")
+    profile: Optional[List[float]] = Field(
+        default=None,
+        description="Per-node depower, aligned with the reply trajectory "
+        "(profile mode only; null otherwise)",
+    )
+
+
 class TrajectoryAngles(BaseModel):
     """Flight path as azimuth/elevation samples in DEGREES.
 
@@ -204,6 +244,12 @@ class InitRequest(BaseModel):
         "B-spline. Takes precedence over initial_guess.",
     )
     initial_guess: Optional[InitialGuess] = None
+    depower: Optional[DepowerSpec] = Field(
+        default=None,
+        description="Depower handling. Takes precedence over the legacy "
+        "combination of optimization_params/sim_parameters.input_depower; "
+        "when omitted those still apply unchanged.",
+    )
     distance_radial: Optional[float] = Field(
         default=None,
         gt=0,
@@ -233,6 +279,11 @@ class StepRequest(BaseModel):
         default=None,
         description="Current flight path in degrees, used as the starting "
         "guess for the re-optimization",
+    )
+    depower: Optional[DepowerSpec] = Field(
+        default=None,
+        description="Updated depower handling for this and later steps; "
+        "omit to keep the mode and value set at /init",
     )
     distance_radial: Optional[float] = Field(
         default=None,
@@ -277,13 +328,15 @@ class StepAccepted(BaseModel):
 
 class InitReply(BaseModel):
     """Reply of POST /init — contains the InitParams struct (name, max_time,
-    winch_params, trajectory) plus server state. The trajectory is the fitted
-    starting path (closed: last point equals the first, degrees)."""
+    winch_params, trajectory, depower) plus server state. The trajectory is the
+    fitted starting path (closed: last point equals the first, degrees) and
+    ``depower`` echoes the mode and starting value (no solve has run yet)."""
 
     name: str
     max_time: Optional[float] = None
     winch_params: Optional[WinchParams] = None
     trajectory: TrajectoryAngles
+    depower: Optional[DepowerReply] = None
     state: str
     n_points: Optional[int] = None
     session_id: str = "default"
@@ -291,11 +344,13 @@ class InitReply(BaseModel):
 
 class StepReply(BaseModel):
     """Reply of POST /step with wait=true — contains the StepParams struct
-    (winch_params, trajectory) plus solve metadata. The trajectory is the
-    OPTIMIZED path (closed, degrees)."""
+    (winch_params, trajectory, depower) plus solve metadata. The trajectory is
+    the OPTIMIZED path (closed, degrees) and ``depower`` is the setting it was
+    optimized for: fly BOTH, or the reported metrics are not achievable."""
 
     winch_params: Optional[WinchParams] = None
     trajectory: TrajectoryAngles
+    depower: Optional[DepowerReply] = None
     state: str
     step_index: int
     metrics: SolveMetrics
@@ -317,7 +372,9 @@ class TrajectoryResponse(BaseModel):
     n_points: int
     # Dense per-node guidance table. Columns: t, s, azimuth, elevation,
     # azimuth_dot, elevation_dot, distance_radial, speed_radial, s_dot,
-    # tension_tether_ground, input_steering, input_depower.
+    # tension_tether_ground, input_steering, input_depower. The
+    # input_depower column is always present: constant in fixed/optimize
+    # mode, the per-node profile in profile mode.
     table: Dict[str, List[Optional[float]]]
     spline: SplineBlock
     metrics: SolveMetrics

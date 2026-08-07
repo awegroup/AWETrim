@@ -275,3 +275,45 @@ def test_reelin_mode_rejected(client):
     reply = client.post("/init", json=payload)
     assert reply.status_code == 400
     assert "reelout" in reply.json()["detail"]
+
+
+def test_depower_round_trips_through_init_and_step(client):
+    payload = dict(client.init_payload)
+    payload["depower"] = {"mode": "fixed", "value": 1.45}
+    reply = client.post("/init", json=payload)
+    assert reply.status_code == 200
+    assert reply.json()["depower"] == {
+        "mode": "fixed", "value": 1.45, "profile": None
+    }
+
+    phase = StubPhase.latest
+    phase.results.append(_fake_result())
+    phase.release.set()
+    step = client.post("/step", json={}).json()
+    assert step["depower"]["mode"] == "fixed"
+    assert step["depower"]["value"] == pytest.approx(1.45)
+
+    # /step may switch the mode mid-session
+    phase.results.append(_fake_result())
+    phase.release.set()
+    step = client.post(
+        "/step", json={"depower": {"mode": "optimize", "value": 1.6}}
+    ).json()
+    assert step["depower"]["mode"] == "optimize"
+
+
+def test_depower_omitted_keeps_the_legacy_behaviour(client):
+    payload = dict(client.init_payload)
+    payload["sim_parameters"] = {"input_depower": 1.6}
+    reply = client.post("/init", json=payload)
+    assert reply.status_code == 200
+    # default optimization_params include input_depower -> derived mode
+    assert reply.json()["depower"] == {
+        "mode": "optimize", "value": 1.6, "profile": None
+    }
+
+
+def test_unknown_depower_mode_is_rejected(client):
+    payload = dict(client.init_payload)
+    payload["depower"] = {"mode": "auto", "value": 1.6}
+    assert client.post("/init", json=payload).status_code == 422

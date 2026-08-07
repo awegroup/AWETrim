@@ -94,3 +94,29 @@ def test_step_request_optional_fields():
     assert req.wind is None and req.distance_radial is None and req.max_iter is None
     with pytest.raises(ValidationError):
         StepRequest(distance_radial=-10.0)
+
+
+def test_depower_spec_defaults_and_validation():
+    from awetrim.server.schemas import DepowerSpec
+
+    spec = DepowerSpec()
+    assert spec.mode == "optimize" and spec.value is None
+    assert DepowerSpec(mode="fixed", value=1.6).value == 1.6
+    with pytest.raises(ValidationError):
+        DepowerSpec(mode="disabled")
+
+
+def test_depower_is_optional_on_both_requests():
+    assert InitRequest(wind={"model_type": "uniform", "U_ref": 8.0}).depower is None
+    assert StepRequest().depower is None
+    req = StepRequest(depower={"mode": "profile", "value": 1.4})
+    assert req.depower.mode == "profile" and req.depower.value == 1.4
+
+
+def test_depower_reply_carries_profile():
+    from awetrim.server.schemas import DepowerReply
+
+    reply = DepowerReply(mode="optimize", value=1.52)
+    assert reply.profile is None
+    profiled = DepowerReply(mode="profile", value=1.4, profile=[1.3, 1.5])
+    assert profiled.profile == [1.3, 1.5]

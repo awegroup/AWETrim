@@ -42,7 +42,8 @@ class ReeloutClient:
 
     def init(self, wind: dict, **options) -> dict:
         """POST /init. `options` maps to the InitRequest fields, e.g.
-        initial_guess=..., n_points=..., sim_parameters={...}."""
+        initial_guess=..., n_points=..., sim_parameters={...},
+        depower={"mode": "fixed"|"optimize"|"profile", "value": 1.6}."""
         return self._request("POST", "/init", json={"wind": wind, **options})
 
     def step(
@@ -50,6 +51,7 @@ class ReeloutClient:
         wind: Optional[dict] = None,
         distance_radial: Optional[float] = None,
         max_iter: Optional[int] = None,
+        depower: Optional[dict] = None,
     ) -> dict:
         """POST /step (non-blocking). Returns the 202 acknowledgement."""
         payload = {"wait": False}  # keep this client's step/wait split
@@ -59,6 +61,8 @@ class ReeloutClient:
             payload["distance_radial"] = distance_radial
         if max_iter is not None:
             payload["max_iter"] = max_iter
+        if depower is not None:
+            payload["depower"] = depower
         return self._request("POST", "/step", json=payload)
 
     def trajectory(self, resimulate: bool = False) -> dict:
@@ -83,9 +87,11 @@ class ReeloutClient:
     def optimize(self, timeout: float = 600.0, **step_kwargs) -> dict:
         """step + wait + trajectory in one blocking call.
 
-        Returns the TrajectoryResponse dict. Raises SolveFailedError if the
-        solve fails (the previous trajectory, if any, remains available via
-        .trajectory()).
+        Returns the TrajectoryResponse dict. Its ``table["input_depower"]``
+        column and ``optimized_parameters["input_depower"]`` give the depower
+        the path was optimized for — fly it, or the reported power is not
+        achievable. Raises SolveFailedError if the solve fails (the previous
+        trajectory, if any, remains available via .trajectory()).
         """
         self.step(**step_kwargs)
         status = self.wait(timeout=timeout)
@@ -110,8 +116,8 @@ if __name__ == "__main__":
     client.init(
         wind={"model_type": "logarithmic", "U_ref": 8.0, "z_ref": 100.0, "z0": 0.03},
         initial_guess={"curve_type": "lissajous"},
-        sim_parameters={"input_depower": 1.6, "reg_weight": 1.0,
-                        "detect_simple_bounds": True},
+        depower={"mode": "optimize", "value": 1.6},
+        sim_parameters={"reg_weight": 1.0, "detect_simple_bounds": True},
     )
 
     print("optimizing (cold start) ...")
@@ -120,6 +126,14 @@ if __name__ == "__main__":
     print(f"  step {trajectory['step_index']}: "
           f"{metrics['avg_power_W'] / 1e3:.2f} kW average power, "
           f"{metrics['total_time_s']:.1f} s pattern")
+    print(f"  fly it at depower "
+          f"{trajectory['optimized_parameters']['input_depower']:.4f}")
+
+    print("re-optimizing with depower pinned at the client's own setting ...")
+    trajectory = client.optimize(depower={"mode": "fixed", "value": 1.6})
+    print(f"  {trajectory['metrics']['avg_power_W'] / 1e3:.2f} kW at "
+          f"l_dp = {trajectory['table']['input_depower'][0]:.4f} "
+          f"(what a client that cannot command depower actually gets)")
 
     print("refreshing with new wind + tether length (warm start) ...")
     trajectory = client.optimize(

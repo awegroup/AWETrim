@@ -391,3 +391,107 @@ def test_init_with_named_curve_initial_guess(patched_session):
     sim = sess.phase.pattern_config["sim_parameters"]
     assert sim["start_angle"] == 0.0
     assert sim["end_angle"] == pytest.approx(2.0 * math.pi)
+
+
+# ---------------------------------------------------------------------------
+# Depower handling
+# ---------------------------------------------------------------------------
+def test_apply_depower_fixed_drops_it_from_the_nlp():
+    sim, params = {}, ["C_phi", "C_beta", "input_depower"]
+    mode = ReeloutSession._apply_depower(sim, params, {"mode": "fixed", "value": 1.6})
+    assert mode == "fixed"
+    assert "input_depower" not in params
+    assert sim["input_depower"] == 1.6
+    assert sim["optimize_depower_profile"] is False
+
+
+def test_apply_depower_optimize_adds_it_and_seeds_the_value():
+    sim, params = {}, ["C_phi", "C_beta"]
+    mode = ReeloutSession._apply_depower(sim, params, {"mode": "optimize", "value": 1.4})
+    assert mode == "optimize"
+    assert params.count("input_depower") == 1
+    assert sim["input_depower"] == 1.4
+
+
+def test_apply_depower_profile_sets_the_per_node_flag():
+    sim, params = {}, ["C_phi"]
+    mode = ReeloutSession._apply_depower(sim, params, {"mode": "profile", "value": 1.6})
+    assert mode == "profile"
+    assert sim["optimize_depower_profile"] is True
+    assert "input_depower" in params
+
+
+def test_apply_depower_clears_a_stale_profile_when_leaving_profile_mode():
+    sim = {"input_depower_profile": [1.3, 1.4], "optimize_depower_profile": True}
+    params = ["input_depower"]
+    ReeloutSession._apply_depower(sim, params, {"mode": "fixed", "value": 1.6})
+    assert "input_depower_profile" not in sim
+
+
+def test_apply_depower_none_derives_the_legacy_mode_without_mutating():
+    sim = {"input_depower": 1.6}
+    params = ["C_phi", "input_depower"]
+    assert ReeloutSession._apply_depower(sim, params, None) == "optimize"
+    assert sim == {"input_depower": 1.6} and "input_depower" in params
+
+    params_fixed = ["C_phi"]
+    assert ReeloutSession._apply_depower(sim, params_fixed, None) == "fixed"
+
+    sim_profile = {"optimize_depower_profile": True}
+    assert ReeloutSession._apply_depower(sim_profile, ["C_phi"], None) == "profile"
+
+
+def test_apply_depower_rejects_an_unknown_mode():
+    with pytest.raises(ValueError, match="depower mode"):
+        ReeloutSession._apply_depower({}, [], {"mode": "auto"})
+
+
+def test_init_depower_spec_overrides_optimization_params(patched_session):
+    sess, config = patched_session
+    config = dict(config, depower={"mode": "fixed", "value": 1.45})
+    sess.init(config)
+    assert "input_depower" not in sess._optimization_params
+    assert sess.phase.pattern_config["sim_parameters"]["input_depower"] == 1.45
+    assert sess.init_reply()["depower"] == {
+        "mode": "fixed", "value": 1.45, "profile": None
+    }
+
+
+def test_step_reply_and_table_carry_the_depower(patched_session):
+    sess, config = patched_session
+    sess.init(dict(config, depower={"mode": "optimize", "value": 1.6}))
+    phase = sess.phase
+    phase.results.append(_fake_result())
+    phase.release.set()
+    reply = sess.step_blocking()
+    assert reply["depower"]["mode"] == "optimize"
+    assert reply["depower"]["value"] == pytest.approx(1.6)
+    assert reply["depower"]["profile"] is None
+    # the stub returns a per-node input_depower, so the table keeps that column
+    table = sess.trajectory()["table"]
+    assert len(table["input_depower"]) == N_NODES
+
+
+def test_depower_column_is_constant_when_not_a_node_variable(patched_session):
+    sess, config = patched_session
+    sess.init(dict(config, depower={"mode": "fixed", "value": 1.45}))
+    phase = sess.phase
+    result = _fake_result()
+    del result.optimized_trajectory["input_depower"]  # scalar depower: no column
+    phase.results.append(result)
+    phase.release.set()
+    sess.step_blocking()
+    column = sess.trajectory()["table"]["input_depower"]
+    assert len(column) == N_NODES
+    assert all(v == pytest.approx(1.45) for v in column)
+
+
+def test_step_can_switch_the_depower_mode(patched_session):
+    sess, config = patched_session
+    sess.init(dict(config, depower={"mode": "optimize", "value": 1.6}))
+    phase = sess.phase
+    phase.results.append(_fake_result())
+    phase.release.set()
+    reply = sess.step_blocking(depower={"mode": "fixed", "value": 1.3})
+    assert reply["depower"] == {"mode": "fixed", "value": 1.3, "profile": None}
+    assert "input_depower" not in sess._optimization_params

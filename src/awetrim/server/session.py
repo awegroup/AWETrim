@@ -201,6 +201,7 @@ class ReeloutSession:
         self._name: str = "reelout-optimization"
         self._max_time: Optional[float] = None
         self._winch_params: Optional[dict] = None
+        self._depower_mode: str = "optimize"
         # Resolution of the degree-table replies: matches the client-sent
         # trajectory when there is one, else falls back to n_points.
         self._trajectory_points: Optional[int] = None
@@ -270,6 +271,16 @@ class ReeloutSession:
         sim_parameters["n_points"] = n_points
         sim_parameters.update(config.get("sim_parameters") or {})
 
+        # Depower last: the explicit spec wins over the legacy
+        # optimization_params / sim_parameters.input_depower combination.
+        optimization_params = list(
+            config.get("optimization_params")
+            or ["C_phi", "C_beta", "input_depower"]
+        )
+        depower_mode = self._apply_depower(
+            sim_parameters, optimization_params, config.get("depower")
+        )
+
         wind_spec = dict(config["wind"])
         system_model.wind = self._build_wind(wind_spec)
         sim_parameters["expand_nlp"] = wind_spec["model_type"] != "tabulated"
@@ -298,10 +309,8 @@ class ReeloutSession:
             self.system_model = system_model
             self.phase = phase
             self._wind_spec = wind_spec
-            self._optimization_params = list(
-                config.get("optimization_params")
-                or ["C_phi", "C_beta", "input_depower"]
-            )
+            self._optimization_params = optimization_params
+            self._depower_mode = depower_mode
             self._target = config.get("target", "power")
             self._n_points = n_points
             self._name = config.get("name") or "reelout-optimization"
@@ -316,6 +325,92 @@ class ReeloutSession:
         spec = dict(spec)
         model_type = spec.pop("model_type")
         return create_wind_model(model_type, **spec)
+
+    @staticmethod
+    def _apply_depower(
+        sim_parameters: Dict[str, Any],
+        optimization_params: List[str],
+        depower: Optional[Dict[str, Any]],
+    ) -> str:
+        """Apply a DepowerSpec-shaped dict; return the effective mode.
+
+        Mutates ``sim_parameters`` and ``optimization_params`` in place so the
+        three ways of driving the depower input stay a single switch:
+
+        - ``fixed``   -> l_dp pinned at ``value``; dropped from the NLP.
+        - ``optimize``-> one scalar l_dp optimized, seeded at ``value``.
+        - ``profile`` -> l_dp optimized per node (a depower time-profile).
+
+        With ``depower=None`` nothing is changed and the mode is *derived* from
+        the legacy ``optimization_params`` / ``sim_parameters`` combination, so
+        older clients keep their exact behaviour.
+        """
+        if depower is None:
+            if sim_parameters.get("optimize_depower_profile"):
+                return "profile"
+            return "optimize" if "input_depower" in optimization_params else "fixed"
+
+        mode = depower.get("mode") or "optimize"
+        if mode not in ("fixed", "optimize", "profile"):
+            raise ValueError(
+                f"depower mode {mode!r} must be 'fixed', 'optimize' or 'profile'"
+            )
+
+        value = depower.get("value")
+        if value is not None:
+            sim_parameters["input_depower"] = float(value)
+        else:
+            # Guarantee the key exists: the optimizer writes the optimized
+            # scalar back into whichever config section already holds it.
+            sim_parameters.setdefault("input_depower", 1.6)
+
+        sim_parameters["optimize_depower_profile"] = mode == "profile"
+        if mode != "profile":
+            # A previous profile solve would otherwise keep being re-flown.
+            sim_parameters.pop("input_depower_profile", None)
+
+        if mode == "fixed":
+            while "input_depower" in optimization_params:
+                optimization_params.remove("input_depower")
+        elif "input_depower" not in optimization_params:
+            optimization_params.append("input_depower")
+        return mode
+
+    def depower_state(
+        self, n_points: Optional[int] = None
+    ) -> Optional[Dict[str, Any]]:
+        """DepowerReply-shaped dict: the setting the current path assumes.
+
+        In profile mode the per-node values are resampled onto the same grid as
+        :meth:`trajectory_degrees`, so ``profile[i]`` belongs to
+        ``azimuth[i]``/``elevation[i]``.
+        """
+        if self.phase is None:
+            return None
+        pattern_config = self.phase.pattern_config
+        sim_parameters = pattern_config.get("sim_parameters", {})
+
+        profile = sim_parameters.get("input_depower_profile")
+        if self._depower_mode == "profile" and profile is not None:
+            values = np.asarray(profile, dtype=float).ravel()
+            path_parameters = pattern_config["path_parameters"]
+            s_init = float(path_parameters["s_init"])
+            s_final = float(path_parameters["s_final"])
+            n = int(n_points or self._trajectory_points or self._n_points or 100)
+            s_src = np.linspace(s_init, s_final, values.size)
+            s_dst = np.linspace(s_init, s_final, n, endpoint=True)
+            resampled = np.interp(s_dst, s_src, values)
+            return {
+                "mode": self._depower_mode,
+                "value": float(values.mean()),
+                "profile": [float(v) for v in resampled],
+            }
+
+        try:
+            value = float(np.asarray(sim_parameters["input_depower"]).ravel()[0])
+        except (KeyError, TypeError, ValueError, IndexError):
+            return None
+        return {"mode": self._depower_mode, "value": value, "profile": None}
 
     @staticmethod
     def _apply_winch_params(
@@ -429,6 +524,7 @@ class ReeloutSession:
         distance_radial: Optional[float],
         winch_params: Optional[Dict[str, Any]],
         trajectory: Optional[Dict[str, Any]],
+        depower: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Validate, apply the updated inputs and transition to SOLVING."""
         with self._lock:
@@ -460,6 +556,11 @@ class ReeloutSession:
                 )
                 self._trajectory_points = len(trajectory["azimuth"])
 
+            if depower is not None:
+                self._depower_mode = self._apply_depower(
+                    sim_parameters, self._optimization_params, depower
+                )
+
             if distance_radial is not None:
                 path_parameters = pattern_config["path_parameters"]
                 old_r0 = float(path_parameters["r0"])
@@ -487,10 +588,11 @@ class ReeloutSession:
         max_iter: Optional[int] = None,
         winch_params: Optional[Dict[str, Any]] = None,
         trajectory: Optional[Dict[str, Any]] = None,
+        depower: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Launch one warm-started re-optimization in a background thread."""
         step_index = self._prepare_step(
-            wind, distance_radial, winch_params, trajectory
+            wind, distance_radial, winch_params, trajectory, depower
         )
         self._thread = threading.Thread(
             target=self._solve, args=(step_index, max_iter), daemon=True
@@ -505,16 +607,18 @@ class ReeloutSession:
         max_iter: Optional[int] = None,
         winch_params: Optional[Dict[str, Any]] = None,
         trajectory: Optional[Dict[str, Any]] = None,
+        depower: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """One warm-started re-optimization, solved in the calling thread.
 
         Returns a StepParams-shaped dict: the (possibly updated) winch
-        parameters and the OPTIMIZED trajectory in degrees. Raises
-        SolveFailedError if the solve does not converge (the last good
-        trajectory remains available via :meth:`trajectory`).
+        parameters, the OPTIMIZED trajectory in degrees and the depower the
+        path was optimized for. Raises SolveFailedError if the solve does not
+        converge (the last good trajectory remains available via
+        :meth:`trajectory`).
         """
         step_index = self._prepare_step(
-            wind, distance_radial, winch_params, trajectory
+            wind, distance_radial, winch_params, trajectory, depower
         )
         self._solve(step_index, max_iter)
         with self._lock:
@@ -529,6 +633,7 @@ class ReeloutSession:
             if self._winch_params
             else None,
             "trajectory": self.trajectory_degrees(),
+            "depower": self.depower_state(),
             "state": state,
             "step_index": step_index,
             "metrics": metrics,
@@ -583,6 +688,16 @@ class ReeloutSession:
                     "input_depower"):
             if key in arrays:
                 table[key] = arrays[key]
+
+        # Depower is a per-node variable only in profile mode; in fixed and
+        # scalar-optimize mode the column is the (constant) setting the path
+        # was optimized for, so clients always find it in the same place.
+        if "input_depower" not in table:
+            depower = self.depower_state(n_points=len(table["s"]))
+            if depower is not None:
+                table["input_depower"] = np.full(
+                    len(table["s"]), depower["value"], dtype=float
+                )
 
         spline = {
             "spline_type": "periodic"
@@ -665,6 +780,7 @@ class ReeloutSession:
             if self._winch_params
             else None,
             "trajectory": self.trajectory_degrees(),
+            "depower": self.depower_state(),
             "state": self.state.value,
             "n_points": self._n_points,
             "session_id": self.session_id,
