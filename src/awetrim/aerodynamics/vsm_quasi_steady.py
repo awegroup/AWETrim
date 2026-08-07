@@ -2555,7 +2555,19 @@ def compute_vsm_trim_stability_derivatives(
             force_wind = np.asarray(
                 force_fun(x=sol.x, r_kite=r_kite)["force_kite"]
             ).reshape(3)
-            return T_wind_from_course.T @ force_wind
+            # Wind -> course -> VSM. ``T_wind_from_course.T`` alone stops at
+            # COURSE-frame components, but the caller sums this force with
+            # VSM-frame quantities (the baseline ``f_tether`` is
+            # -force_kite_resultant_vsm); the course/normal axes flip
+            # ``transformation_c_from_vsm`` (its own inverse) completes the
+            # chain. The historical radial-only return hid the missing hop —
+            # e_radial is invariant under the flip — so only the small
+            # lateral z-derivatives of the tether force carried the wrong
+            # sign; for lateral position perturbations the flip is
+            # first-order.
+            return np.asarray(transformation_c_from_vsm, dtype=float) @ (
+                T_wind_from_course.T @ force_wind
+            )
 
         return solve_force
 
