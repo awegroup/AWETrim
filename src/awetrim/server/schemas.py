@@ -245,29 +245,18 @@ class InitRequest(BaseModel):
     )
     target: Literal["power", "energy"] = "power"
     n_points: int = Field(default=100, ge=10, le=1000)
-    sim_parameters: Dict = Field(
-        default_factory=dict,
-        description="Overrides merged into the pattern config sim_parameters",
-    )
-    # The InitParams solver knobs: sent flat by the clients, merged into
-    # sim_parameters here so the session sees a single dict.
+    # The InitParams solver knobs: sent flat by the clients, merged into the
+    # cycle config's sim_parameters by the session. They are the only solver
+    # knobs the API exposes — there is no generic overrides dict.
     input_depower: Optional[float] = Field(
-        default=None, exclude=True, description="Depower setting u_p"
+        default=None, description="Depower setting u_p"
     )
     reg_weight: Optional[float] = Field(
-        default=None, exclude=True, description="Regularization weight"
+        default=None, description="Regularization weight"
     )
     detect_simple_bounds: Optional[bool] = Field(
-        default=None, exclude=True, description="Solver flag"
+        default=None, description="Solver flag"
     )
-
-    @model_validator(mode="after")
-    def _merge_solver_knobs(self):
-        for key in ("input_depower", "reg_weight", "detect_simple_bounds"):
-            value = getattr(self, key)
-            if value is not None:
-                self.sim_parameters[key] = value
-        return self
 
 
 class StepRequest(BaseModel):

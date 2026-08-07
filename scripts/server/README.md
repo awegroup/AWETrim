@@ -62,23 +62,31 @@ http://127.0.0.1:8000/docs
 
 ## Inputs and outputs
 
-All quantities: **angles rad, rates rad/s, lengths m, speeds m/s, forces N, time s.**
+Lengths m, speeds m/s, forces N, time s.
+
+**Angles are in DEGREES in the co-simulation structs** — `trajectory.azimuth`,
+`trajectory.elevation` (`/init` and `/step`, request *and* reply) and
+`inflow_conditions.wind_direction`. **Radians** are used only by the low-level
+parts: the guidance table of `GET /trajectory` (`azimuth`, `elevation` [rad],
+`azimuth_dot`, `elevation_dot` [rad/s]) and the `initial_guess` amplitudes.
+
 Frame: spherical, centered at the winch. `azimuth = 0` points straight downwind,
 `elevation` is measured up from the ground plane, `distance_radial` (r) is the
 tether-sphere radius.
 
 ### 1. `POST /init` — set up (once)
 
-Input — the inflow conditions are the only required field; everything else has
-a default:
+Input — the `InitParams` struct. `inflow_conditions` is the only required
+field; everything else has a default:
 
 ```json
 {
-  "inflow_conditions": {"wind_speed": 5.2, "wind_direction": 270.0, "profile_law": 2, "z0": 0.03},
+  "name": "uwe-sim-1",
+  "max_time": 600.0,
   "length": 200.0,
-  "initial_guess": {"curve_type": "lissajous", "az_amp0": 0.3, "beta0": 0.35,
-                    "beta_amp0": 0.12, "downloops": true, "M": 10},
-  "n_points": 100,
+  "winch_params": {"mode": "reelout", "k_v": 0.11, "f_min": 1000, "f_max": 8400},
+  "inflow_conditions": {"wind_speed": 5.2, "wind_direction": 270.0, "profile_law": 2, "z0": 0.03},
+  "trajectory": {"azimuth": ["..."], "elevation": ["..."]},
   "input_depower": 1.6, "reg_weight": 1.0, "detect_simple_bounds": true
 }
 ```
@@ -86,34 +94,23 @@ a default:
 | field | default | meaning |
 |---|---|---|
 | `inflow_conditions` | required | the wind seen by the kite, see below |
-| `length` | 200 | initial tether length / pattern sphere radius r0 [m] |
-| `initial_guess.curve_type` | `lissajous` | starting shape: `lissajous`/`lemniscate` = figure-eight, `helix` = circular loops |
-| `initial_guess.az_amp0` | 0.3 | azimuth half-width of the figure [rad] |
-| `initial_guess.beta0` | 0.35 | mean elevation above the horizon [rad] |
-| `initial_guess.beta_amp0` | 0.12 | elevation half-height of the figure [rad] |
-| `initial_guess.downloops` | true | kite turns downward (true) or upward (false) through the loops |
-| `initial_guess.M` | 10 | B-spline control points — the optimizer's shape freedom |
-| `n_points` | 100 | optimization grid nodes (also the reply-table resolution unless you send a trajectory — then replies match your resolution) |
-| `optimization_params` | `["C_phi","C_beta","input_depower"]` | what the optimizer is allowed to change |
+| `name` | `reelout-optimization` | name of the simulation, echoed in the reply |
+| `max_time` | — | your simulation horizon [s]; stored and echoed, not used by the optimizer |
+| `length` | from config (200) | initial tether length / pattern sphere radius r0 [m] |
+| `winch_params` | from config | the ground-station winch law, see [2b](#2b-co-simulation-structs-juliahost-side-contract) |
+| `trajectory` | built-in figure-eight | starting flight path in degrees; fitted to the pattern B-spline. Also sets the reply resolution |
 | `input_depower` | from config | depower setting; the FIXED value when depower is not optimized |
 | `reg_weight` | from config | smoothness regularization |
 | `detect_simple_bounds` | from config | IPOPT speed-up |
-| `sim_parameters` | `{}` | further solver knobs, see below |
 
-Further solver knobs (`sim_parameters`), for the ones without their own field:
+The last three are the complete set of solver knobs `InitParams` exposes; there
+is no generic overrides dict. Everything else comes from the cycle config the
+server loads (the LEI-V3 downloop spline config by default) — see
+[Low-level API](#low-level-api) for the few extra request fields that reach
+into it.
 
-| key | default | meaning |
-|---|---|---|
-| `winch_mode` | `"force_law"` | `"force_law"`: reel speed follows the winch tension curve (the WinchParams law). `"free_speed"`: reel speed is a free, rate-limited control — the optimizer picks it |
-| `optimize_depower_profile` | `false` | `false`: depower optimized as ONE scalar (if `input_depower` is in `optimization_params`). `true`: optimized PER NODE (a depower time-profile) |
-
-Depower cheat-sheet: **fixed** = remove `"input_depower"` from
-`optimization_params` and set the `input_depower` field; **one optimized
-value** = keep it in `optimization_params` (default); **optimized per point** =
-additionally set `sim_parameters.optimize_depower_profile: true`.
-
-The initial guess is only a starting shape — the optimizer reshapes the curve
-freely; a rough guess is fine.
+The trajectory you send is only a starting shape — the optimizer reshapes the
+curve freely; a rough guess is fine.
 
 #### `inflow_conditions` — the wind
 
@@ -208,8 +205,8 @@ Add `"wait": false` to get the old asynchronous behavior instead
 - `StepParams {length, winch_params, trajectory}` — the `/step` request and
   reply, `length` being the current tether length.
 - The struct fields go on the wire as they are — the clients do no mapping.
-  Server-side the three solver knobs are merged into the `sim_parameters`
-  overrides. Both replies echo `length`, `/init` also echoes the knobs.
+  The three solver knobs are sent flat; the server merges them into the cycle
+  config it solves with. Both replies echo `length`, `/init` also echoes the knobs.
   (`distance_radial` stays the name of the tether length in the guidance
   *table* below, where it is the physical radius r along the path.)
 
@@ -274,3 +271,47 @@ is periodic in `s`.
 | `/step` before `/init` | `409` |
 | `/trajectory` before any success | `404` |
 | solve failed | `/status` → `"state": "failed"` + `last_error`; previous trajectory still served |
+
+## Low-level API
+
+Everything above is the co-simulation contract: `InitParams` in, `StepParams`
+out. `POST /init` additionally accepts the fields below. The ready-made clients
+never send them and a co-simulation does not need them — they are for
+exploring from `/docs`, for scripted parameter studies, and for pointing the
+server at a different kite:
+
+| field | default | meaning |
+|---|---|---|
+| `initial_guess.curve_type` | `lissajous` | starting shape: `lissajous`/`lemniscate` = figure-eight, `helix` = circular loops |
+| `initial_guess.az_amp0` | 0.3 | azimuth half-width of the figure [rad] |
+| `initial_guess.beta0` | 0.35 | mean elevation above the horizon [rad] |
+| `initial_guess.beta_amp0` | 0.12 | elevation half-height of the figure [rad] |
+| `initial_guess.downloops` | true | kite turns downward (true) or upward (false) through the loops |
+| `initial_guess.M` | 10 | B-spline control points — the optimizer's shape freedom |
+| `n_points` | 100 | optimization grid nodes (also the reply-table resolution unless you send a `trajectory` — then replies match your resolution) |
+| `optimization_params` | `["C_phi","C_beta","input_depower"]` | what the optimizer is allowed to change |
+| `target` | `power` | `power` = maximize average power (energy/time), `energy` = maximize energy per pattern |
+| `system_config_path` | built-in LEI-V3 | path on the server to a different system (kite) config |
+| `cycle_config_path` | built-in downloop spline | path on the server to a different cycle config |
+
+`initial_guess` is the parametric alternative to `trajectory`, for clients that
+have no flight path yet. If both are sent, `trajectory` wins.
+
+Unknown keys are rejected with **422** rather than silently ignored, so a
+client still sending a removed field name notices immediately.
+
+### Cycle-config solver knobs
+
+Everything not listed above comes from the cycle config the server loads, under
+its `reelout.sim_parameters:` section. Two entries there change the
+optimization noticeably:
+
+| key | default | meaning |
+|---|---|---|
+| `winch_mode` | `"force_law"` | `"force_law"`: reel speed follows the winch tension curve (the WinchParams law). `"free_speed"`: reel speed is a free, rate-limited control — the optimizer picks it |
+| `optimize_depower_profile` | `false` | `false`: depower optimized as ONE scalar (if `input_depower` is in `optimization_params`). `true`: optimized PER NODE (a depower time-profile) |
+
+Depower cheat-sheet: **fixed** = remove `"input_depower"` from
+`optimization_params` and set the `input_depower` field; **one optimized
+value** = keep it in `optimization_params` (default); **optimized per point** =
+additionally set `optimize_depower_profile: true` in the cycle config.
