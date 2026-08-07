@@ -60,6 +60,15 @@ Leave the terminal open. Your own program (Julia/MATLAB/...) talks to
 `http://127.0.0.1:8000`. Interactive documentation of every message:
 http://127.0.0.1:8000/docs
 
+The same contract is checked in as an OpenAPI 3.1 document,
+[`openapi.yaml`](openapi.yaml) — readable without a running server and usable
+for client-code generation. Regenerate it after changing `app.py` or
+`schemas.py`:
+
+```
+python scripts/server/generate_openapi.py
+```
+
 ## Inputs and outputs
 
 Lengths m, speeds m/s, forces N, time s.
