@@ -271,7 +271,11 @@ class ReeloutSession:
 
         n_points = int(config.get("n_points", 100))
         sim_parameters["n_points"] = n_points
-        sim_parameters.update(config.get("sim_parameters") or {})
+        # The flat InitParams solver knobs; unset ones keep the cycle-config value.
+        for key in ("input_depower", "reg_weight", "detect_simple_bounds"):
+            value = config.get(key)
+            if value is not None:
+                sim_parameters[key] = value
 
         inflow = config.get("inflow_conditions")
         wind_spec = self._resolve_wind_spec(inflow)

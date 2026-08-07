@@ -67,7 +67,10 @@ def test_init_request_defaults():
     assert req.target == "power"
     assert req.n_points == 100
     assert req.initial_guess is None
-    assert req.sim_parameters == {}
+    # the solver knobs are unset by default: the cycle config decides
+    assert req.input_depower is None
+    assert req.reg_weight is None
+    assert req.detect_simple_bounds is None
 
 
 def test_init_request_needs_inflow_conditions():
@@ -77,6 +80,10 @@ def test_init_request_needs_inflow_conditions():
     with pytest.raises(ValidationError):
         InitRequest(inflow_conditions={"wind_speed": 8.0, "profile_law": 0},
                     wind={"model_type": "uniform", "U_ref": 8.0})
+    # so is the removed generic solver-knob dict
+    with pytest.raises(ValidationError):
+        InitRequest(inflow_conditions={"wind_speed": 8.0, "profile_law": 0},
+                    sim_parameters={"input_depower": 1.6})
 
 
 def test_step_request_optional_fields():

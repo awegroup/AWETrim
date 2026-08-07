@@ -114,7 +114,7 @@ def patched_session(monkeypatch, tmp_path):
         "optimization_params": ["C_phi", "C_beta", "input_depower"],
         "target": "power",
         "n_points": N_NODES,
-        "sim_parameters": {"input_depower": 1.6},
+        "input_depower": 1.6,
     }
     return sess, init_config
 
