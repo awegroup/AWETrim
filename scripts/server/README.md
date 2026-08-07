@@ -37,6 +37,10 @@ venv\Scripts\activate          # Windows   (Linux/macOS: source venv/bin/activat
 pip install -e .[server]       # ~5-10 min, downloads the solver stack
 ```
 
+If you are using [SimpleKiteControllers.jl](https://github.com/OpenSourceAWE/SimpleKiteControllers.jl),
+just run `bin/install_awetrim` from that repository instead — it clones this repo as a
+sibling checkout and sets up the venv for you.
+
 ## Starting the server (every session: one command)
 
 On Linux/macOS, from the AWETrim folder — the script picks up `venv/` itself, so
