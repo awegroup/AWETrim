@@ -207,6 +207,11 @@ Add `"wait": false` to get the old asynchronous behavior instead
   config it solves with. Both replies echo `length`, `/init` also echoes the knobs.
   (`distance_radial` stays the name of the tether length in the guidance
   *table* below, where it is the physical radius r along the path.)
+- The structs carry the physical state only. `wait` and `max_iter` control how
+  the call is made, not what is optimized, so they are wire fields of `/step`
+  and keyword arguments of the clients' `step()` — not `StepParams` fields.
+  There is no `wait` on `/init`: it only assembles the session and fits the
+  starting path, it never solves.
 
 See [`client_example.jl`](client_example.jl) for the exact structs in Julia.
 
@@ -254,7 +259,8 @@ is periodic in `s`.
   (InflowConditions/WinchParams/InitParams/StepParams) as dataclasses + httpx,
   self-contained; `python scripts/server/client_example.py` runs the demo.
 - **Julia**: [`client_example.jl`](client_example.jl) — the same structs with
-  HTTP.jl + JSON3; blocking init/step flow.
+  HTTP.jl + JSON3; blocking init/step flow, `step(params; wait = false)` for
+  the asynchronous one.
 - **MATLAB**: [`client_example.m`](client_example.m) — built-in webread/webwrite
   only; includes a 3D plot of the optimized pattern.
 - **Python (rich API)**: [`client.py`](client.py) — `ReeloutClient` class using
