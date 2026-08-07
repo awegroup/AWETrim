@@ -125,7 +125,37 @@ Primitives kept here for AWEDesign (and general use):
   dict of `compute_vsm_trim_stability_derivatives` carries the assembled
   matrix (`T_corotating_from_frozen`) and its inputs (`v_kite_trim_axes`,
   `omega_c_axes`); `stability_common.linearise_trim` in the wes-quasi-steady
-  scripts applies it by default (`state_basis="corotating"`).
+  scripts applies it by default (`state_basis="corotating"`). The map is
+  state-name-list agnostic: passing `AUG_STATE_NAMES` extends it with
+  identity position rows.
+- `vsm_quasi_steady` position-augmented block (`position_states=True`,
+  keyword of `compute_vsm_trim_stability_derivatives`): additionally
+  linearises the 12-state set `AUG_STATE_NAMES = ALL_STATE_NAMES + (x, y)` —
+  tangential kite positions relative to the (rotating + reeling) trim
+  reference point, frozen stability axes. New physics in the extra columns:
+  the tether at the laterally displaced `r_kite` (Williams fixed-length
+  re-solve, now taking a 3-vector offset with the full VSM→course→wind
+  chain on input AND wind→course→VSM on output; analytic straight-tether
+  tilt `-(T/r)(1 - r_hat r_hat^T)` as the non-Williams fallback) and the
+  kite inflow at the displaced height (`wind.speed_wind_at_height` shear;
+  the augmented block's own z column carries it too, while the historical
+  `J_full`/`A_full` z column stays shear-free). Position kinematics carry
+  the frozen-axes transport `delta_r_dot = delta_v - Omega_C x delta_r`;
+  gravity/course-orientation columns are zero by construction and `Omega_C`
+  stays frozen. Requires `system_model` + positive `distance_radial`
+  (`ValueError` otherwise); default `False` leaves every historical output
+  byte-identical. Outputs: `J_aug`, `A_aug`, `eig_aug`, `vec_aug`,
+  `Tfast_aug`, `stable_aug`, `state_names_aug`,
+  `T_corotating_from_frozen_aug`, `tether_position_model_aug`,
+  `eps_position_lateral_used`, and the independent verification field
+  `nonlinear_rhs_aug` / `nonlinear_rhs_aug_full` (12-state analogue of
+  `nonlinear_rhs`, cross-checked by
+  `scripts/personal/wes-quasi-steady/verify_linearization.py
+  --position-states`). Consumers: `stability_common.linearise_trim`
+  (`position_states=True` forwarded; adds `is_lat_aug`,
+  `participation_aug`, `alpha_lon_aug`, `alpha_lat_aug`) and
+  `run_modal_stability.py` (`--position-states`, default on: 10-vs-12
+  comparison table, `modal_stability_position_states.pdf`).
 
 These use the **VSM axis convention** (matches the LEI-V3 reference): chord along
 `+x` (LE forward at smaller x, `+x` is **aft**), `+y` spanwise, `+z` up; anhedral

@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import inspect
 import logging
+import math
 from time import perf_counter
 from typing import Any, Callable, Mapping, Sequence
 
@@ -1790,6 +1791,16 @@ ALL_STATE_NAMES: tuple[str, ...] = (
     "r",
 )
 
+#: Position-augmented state set of the optional 12-state block
+#: (``position_states=True``): the tangential positions relative to the
+#: (rotating + reeling) trim reference point, resolved in the frozen
+#: stability axes — ``x`` along ``axes.course``, ``y`` along ``axes.normal``.
+#: Appended (not inserted) so rows/cols 0..9 of every augmented object align
+#: with the 10-state objects. ``ALL_STATE_NAMES`` itself stays 10 entries —
+#: J_full/A_full shapes and every downstream consumer keep the historical
+#: contract.
+AUG_STATE_NAMES: tuple[str, ...] = (*ALL_STATE_NAMES, "x", "y")
+
 #: Subsets used by the default decoupled (long + lat) split.
 LONG_STATES: tuple[str, ...] = ("u", "w", "z", "theta", "q")
 LAT_STATES: tuple[str, ...] = ("v", "phi", "psi", "p", "r")
@@ -1817,15 +1828,23 @@ _KINEMATIC_RATE = {"z": "w", "phi": "p", "theta": "q", "psi": "r"}
 _RATE_AXIS_INDEX = {"p": 0, "q": 1, "r": 2}
 
 
-def _state_indices(states: Sequence[str]) -> list[int]:
-    """Map state names to their column index in J_full / A_full."""
-    full_idx = {name: idx for idx, name in enumerate(ALL_STATE_NAMES)}
+def _state_indices(
+    states: Sequence[str],
+    full_state_names: Sequence[str] = ALL_STATE_NAMES,
+) -> list[int]:
+    """Map state names to their column index in J_full / A_full.
+
+    ``full_state_names`` selects the canonical column ordering — the 10-state
+    :data:`ALL_STATE_NAMES` (default) or the position-augmented
+    :data:`AUG_STATE_NAMES`.
+    """
+    full_idx = {name: idx for idx, name in enumerate(full_state_names)}
     try:
         return [full_idx[s] for s in states]
     except KeyError as exc:
         raise ValueError(
             f"Unknown stability state {exc.args[0]!r}. "
-            f"Valid names: {list(ALL_STATE_NAMES)}"
+            f"Valid names: {list(full_state_names)}"
         ) from None
 
 
@@ -2096,6 +2115,8 @@ def _build_state_space(
     *,
     mass_matrix: np.ndarray,
     kinematic_map: np.ndarray | None = None,
+    full_state_names: Sequence[str] = ALL_STATE_NAMES,
+    position_transport: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Assemble (J_sub, A) for a chosen subset of states.
 
@@ -2103,6 +2124,17 @@ def _build_state_space(
     caller drops some states. A has one row per state — dynamics for velocity
     and rate states, kinematics for attitude/position states. Kinematic rows
     whose paired rate states are absent collapse to zero rows.
+
+    ``full_state_names`` selects the canonical column ordering of ``J_full``
+    (:data:`ALL_STATE_NAMES` default, :data:`AUG_STATE_NAMES` for the
+    position-augmented block). ``position_transport`` is the frozen
+    course-frame transport rate ``Omega_C`` in the stability-axes basis: the
+    frozen axes rotate at that constant rate, so a position perturbation
+    ``delta_r = (x, y, z)`` relative to the (rotating + reeling) trim
+    reference point obeys ``delta_r_dot = delta_v - Omega_C x delta_r``. With
+    ``None`` (default) only the paired-velocity terms remain — exact for the
+    10-state set, whose sole position state z has no transport coupling when
+    x = y = 0 are frozen.
 
     ``J_full`` rows are the complete B-point right-hand sides
     ``[F_course, F_normal, F_radial, M_course, M_normal, M_radial]`` about the
@@ -2123,7 +2155,7 @@ def _build_state_space(
     (see :func:`_attitude_generator_matrix`); ``None`` uses identity, exact
     only at zero trim pitch and yaw.
     """
-    cols = _state_indices(states)
+    cols = _state_indices(states, full_state_names)
     J_sub = J_full[:, cols]
 
     # (v_dot; omega_dot) columns from the joint 6x6 solve, rows in the
@@ -2133,6 +2165,12 @@ def _build_state_space(
         np.eye(3) if kinematic_map is None else np.asarray(kinematic_map, dtype=float)
     )
     _ATTITUDE_ROW = {"phi": 0, "theta": 1, "psi": 2}
+    # Position states, their paired velocities, and their axis index in the
+    # (course, normal, radial) delta_r ordering of the transport coupling.
+    _POSITION_ROW = {"x": ("u", 0), "y": ("v", 1), "z": ("w", 2)}
+    transport_skew = (
+        _skew(position_transport) if position_transport is not None else None
+    )
 
     n = len(states)
     A = np.zeros((n, n))
@@ -2141,9 +2179,16 @@ def _build_state_space(
             A[i, :] = accel[_FORCE_OUTPUT_ROW[s], :]
         elif s in _MOMENT_OUTPUT_ROW:
             A[i, :] = accel[_MOMENT_OUTPUT_ROW[s], :]
-        elif s == "z":
-            if "w" in states:
-                A[i, states.index("w")] = 1.0
+        elif s in _POSITION_ROW:
+            velocity, axis = _POSITION_ROW[s]
+            if velocity in states:
+                A[i, states.index(velocity)] = 1.0
+            if transport_skew is not None:
+                # delta_r_dot = delta_v - Omega_C x delta_r (frozen axes
+                # rotating at the constant trim transport rate).
+                for other, (_, other_axis) in _POSITION_ROW.items():
+                    if other in states:
+                        A[i, states.index(other)] -= transport_skew[axis, other_axis]
         elif s in _ATTITUDE_ROW:
             for rate, ax in _RATE_AXIS_INDEX.items():
                 if rate in states:
@@ -2217,6 +2262,7 @@ def compute_vsm_trim_stability_derivatives(
     rotate_inertia_by_trim: bool = True,
     include_gravity: bool = True,
     include_added_mass: bool = False,
+    position_states: bool = False,
     transformation_c_from_vsm: np.ndarray = DEFAULT_TRANSFORMATION_C_FROM_VSM,
 ) -> dict[str, Any]:
     """Compute aerodynamic stability derivatives around a VSM trim state.
@@ -2289,6 +2335,42 @@ def compute_vsm_trim_stability_derivatives(
         the lateral eigenvalues; default ``False`` preserves the historical
         rigid-only behaviour. The result records ``added_mass_model`` and
         ``added_mass_matrix_axes``.
+    position_states
+        If ``True``, additionally build the position-augmented 12-state block
+        over :data:`AUG_STATE_NAMES` — the 10 canonical states plus the
+        tangential positions ``x`` (along ``axes.course``) and ``y`` (along
+        ``axes.normal``) relative to the (rotating + reeling) trim reference
+        point, resolved in the frozen stability axes. Physics of the extra
+        columns (every existing output is untouched):
+
+        * **tether**: the ground anchor is fixed, so a lateral kite
+          displacement rotates the tether — the Williams fixed-length re-solve
+          used for the ``z`` column is evaluated at the displaced ``r_kite``
+          (spherical-pendulum stiffness ``~T/r`` plus sag reorientation);
+          without a Williams tether a straight-tether analytic tilt
+          ``-(T/r)(1 - r_hat r_hat^T)`` is used (recorded under
+          ``tether_position_model_aug``);
+        * **wind shear**: the kite inflow is evaluated at the displaced
+          height through ``system_model.wind.speed_wind_at_height``; the
+          augmented block's own ``z`` column carries the same shear term for
+          internal consistency (the historical shear-free ``z`` column of
+          ``J_full``/``A_full`` is preserved);
+        * **kinematics**: the frozen axes rotate at the constant trim
+          transport rate, so ``delta_r_dot = delta_v - Omega_C x delta_r``
+          (the 10-state ``z_dot = w`` row is the exact x = y = 0 restriction);
+        * gravity and course-frame-orientation columns are zero by
+          construction in the frozen axes, and ``Omega_C`` stays frozen —
+          the augmentation adds position *feedback*, not transport-rate
+          perturbations.
+
+        Requires ``system_model`` (with a wind model exposing
+        ``speed_wind_at_height``) and a positive ``distance_radial``; raises
+        ``ValueError`` otherwise. Outputs: ``J_aug`` (6, 12), ``A_aug``
+        (12, 12), ``eig_aug``, ``vec_aug``, ``Tfast_aug``, ``stable_aug``,
+        ``state_names_aug``, ``T_corotating_from_frozen_aug``,
+        ``tether_position_model_aug``, ``eps_position_lateral_used``, and the
+        independent-verification callables ``nonlinear_rhs_aug`` /
+        ``nonlinear_rhs_aug_full``.
 
     Always-present outputs
     ----------------------
@@ -2378,6 +2460,21 @@ def compute_vsm_trim_stability_derivatives(
         else None
     )
 
+    if position_states:
+        _missing = None
+        if system_model is None:
+            _missing = "a system_model"
+        elif distance_radial_trim is None:
+            _missing = "a positive distance_radial"
+        elif not hasattr(getattr(system_model, "wind", None), "speed_wind_at_height"):
+            _missing = "a wind model exposing speed_wind_at_height"
+        if _missing is not None:
+            raise ValueError(
+                f"position_states=True requires {_missing}: the x/y position "
+                "columns need the tether geometry (fixed ground anchor) and "
+                "the wind profile at the displaced kite height."
+            )
+
     working_body = copy.deepcopy(body_aero)
     baseline_sections, baseline_spanwise = _baseline_geometry(working_body)
     # The linearisation applies the trim attitude (roll0, pitch0, yaw0) to the
@@ -2407,22 +2504,25 @@ def compute_vsm_trim_stability_derivatives(
     projected_area = float(body_aero.wings[0].compute_projected_area())
     max_chord = max(float(panel.chord) for panel in body_aero.panels)
 
-    def _make_williams_fixed_length_solver():
-        if system_model is None or "williams_tether_length" not in trim_result:
+    def _make_frame_chain() -> dict[str, np.ndarray] | None:
+        """Wind-frame chain shared by the tether position models and the
+        wind-at-height (shear) evaluation of the position-augmented block.
+
+        Returns ``{"T_wind_from_course", "r0_wind"}`` — the course->wind map
+        at the trim window position and the trim kite position in the wind
+        frame (z up, wind along +x). Built once; historically this lived
+        inside the Williams fixed-length builder, but the straight-tether
+        fallback and the shear term of ``position_states`` need it for
+        non-Williams trims too. Gated so plain (non-Williams, non-position)
+        runs execute the exact historical sequence with no side effects.
+        """
+        if system_model is None:
+            return None
+        if not (position_states or "williams_tether_length" in trim_result):
             return None
         try:
-            from awetrim.system.williams_tether import WilliamsTether
             from awetrim.utils.reference_frames import transformation_Wind_from_C
         except ImportError:
-            return None
-        tether = getattr(system_model, "tether", None)
-        # Match by class name too: ``isinstance`` can miss the WilliamsTether
-        # when ``awetrim`` is importable via two paths (giving two distinct
-        # class objects), which would silently drop the radial dependency.
-        if not (
-            isinstance(tether, WilliamsTether)
-            or type(tether).__name__ == "WilliamsTether"
-        ):
             return None
 
         _set_course_rate_body(system_model, float(course_rate0))
@@ -2442,6 +2542,40 @@ def compute_vsm_trim_stability_derivatives(
             ).full(),
             dtype=float,
         )
+        r0_wind = (
+            _as_3vector(trim_result["r_kite"])
+            if "r_kite" in trim_result
+            else T_wind_from_course @ np.array([0.0, 0.0, distance_radial_trim or 0.0])
+        )
+        return {"T_wind_from_course": T_wind_from_course, "r0_wind": r0_wind}
+
+    frame_chain = _make_frame_chain()
+    if position_states and frame_chain is None:
+        raise ValueError(
+            "position_states=True requires awetrim.utils.reference_frames "
+            "(transformation_Wind_from_C) to build the wind-frame chain."
+        )
+
+    def _make_williams_fixed_length_solver():
+        if frame_chain is None or "williams_tether_length" not in trim_result:
+            return None
+        try:
+            from awetrim.system.williams_tether import WilliamsTether
+        except ImportError:
+            return None
+        tether = getattr(system_model, "tether", None)
+        # Match by class name too: ``isinstance`` can miss the WilliamsTether
+        # when ``awetrim`` is importable via two paths (giving two distinct
+        # class objects), which would silently drop the radial dependency.
+        if not (
+            isinstance(tether, WilliamsTether)
+            or type(tether).__name__ == "WilliamsTether"
+        ):
+            return None
+
+        T_wind_from_course = frame_chain["T_wind_from_course"]
+        r0_wind = frame_chain["r0_wind"]
+
         # Course-frame transport rate ``omega`` (wind frame) at THIS trim. It is
         # deliberately frozen here and baked into the fixed-length tether solve --
         # do NOT convert it to a live per-solve input by analogy with the trim
@@ -2510,16 +2644,17 @@ def compute_vsm_trim_stability_derivatives(
             ],
             dtype=float,
         )
-        r0_wind = (
-            _as_3vector(trim_result["r_kite"])
-            if "r_kite" in trim_result
-            else T_wind_from_course @ np.array([0.0, 0.0, distance_radial_trim or 0.0])
-        )
 
-        def solve_force(radial_offset: float) -> np.ndarray:
-            r_kite = r0_wind + T_wind_from_course @ (
-                float(radial_offset) * DEFAULT_AXES.radial
+        def solve_force(offset_axes: np.ndarray) -> np.ndarray:
+            # Position offset in the stability (VSM) axes -> course -> wind
+            # frame. The VSM->course flip matters for the lateral components;
+            # the historical radial-only offset was flip-invariant. ``x0`` is
+            # the stateless trim seed for EVERY call — never chained across
+            # offsets, which would bias the central differences.
+            offset_course = np.asarray(transformation_c_from_vsm, dtype=float) @ (
+                np.asarray(offset_axes, dtype=float).reshape(3)
             )
+            r_kite = r0_wind + T_wind_from_course @ offset_course
 
             def residual(x: np.ndarray) -> np.ndarray:
                 return np.asarray(
@@ -2549,7 +2684,7 @@ def compute_vsm_trim_stability_derivatives(
             # so accept the solve whenever that residual is below tolerance.
             if np.linalg.norm(sol.fun) > 1e-3:
                 raise RuntimeError(
-                    "Williams fixed-length radial perturbation solve failed: "
+                    "Williams fixed-length position perturbation solve failed: "
                     f"{sol.message}; residual={sol.fun}"
                 )
             force_wind = np.asarray(
@@ -2596,9 +2731,7 @@ def compute_vsm_trim_stability_derivatives(
     # stability axes) only the perturbation rotates the tensors, so the
     # baseline stays principal/diagonal as before.
     if inertia_cg is None:
-        inertia_cg0 = np.diag(
-            [float(inertia_xx), float(inertia_yy), float(inertia_zz)]
-        )
+        inertia_cg0 = np.diag([float(inertia_xx), float(inertia_yy), float(inertia_zz)])
     else:
         inertia_cg0 = np.asarray(inertia_cg, dtype=float)
         if inertia_cg0.shape != (3, 3):
@@ -2725,21 +2858,56 @@ def compute_vsm_trim_stability_derivatives(
     # tether's radial-offset derivative (unchanged) enters ``A``.
     tether_baseline_anchor: np.ndarray | None = None
 
-    def tether_force_for(radial_offset: float) -> np.ndarray:
-        nonlocal warned_williams_force
-        if williams_fixed_length_force is None:
-            return f_tether.copy()
-        try:
-            return williams_fixed_length_force(radial_offset)
-        except RuntimeError as exc:
-            if not warned_williams_force:
-                print(
-                    "Warning: Williams fixed-length radial perturbation failed; "
-                    "falling back to baseline tether force."
-                )
-                print(f"  reason: {exc}")
-                warned_williams_force = True
-            return f_tether.copy()
+    # Straight-tether analytic position model: magnitude-preserving direction
+    # change of a straight line to the fixed ground anchor. Central-differencing
+    # it yields exactly -(T0/r)(1 - r_hat r_hat^T) — the spherical-pendulum
+    # tangential stiffness — with ZERO radial stiffness, consistent with the
+    # historical constant-force z model it falls back beside. Only used by the
+    # position-augmented block when no Williams tether is available (or when a
+    # Williams position solve fails).
+    def _make_straight_tether_force():
+        if frame_chain is None:
+            return None
+        T_wind_from_course = frame_chain["T_wind_from_course"]
+        r0_wind = frame_chain["r0_wind"]
+        tension0 = float(np.linalg.norm(f_tether))
+        if tension0 <= 0.0 or float(np.linalg.norm(r0_wind)) <= 0.0:
+            return None
+        flip = np.asarray(transformation_c_from_vsm, dtype=float)
+
+        def straight_force(offset_axes: np.ndarray) -> np.ndarray:
+            offset_course = flip @ np.asarray(offset_axes, dtype=float).reshape(3)
+            r_vec = r0_wind + T_wind_from_course @ offset_course
+            r_norm = float(np.linalg.norm(r_vec))
+            force_wind = -tension0 * r_vec / r_norm
+            return flip @ (T_wind_from_course.T @ force_wind)
+
+        return straight_force
+
+    straight_tether_force = _make_straight_tether_force() if position_states else None
+    # Set True when a Williams position solve fails and the evaluation
+    # degrades to a coarser tether model (recorded in the aug diagnostics).
+    tether_position_solver_degraded = False
+
+    def tether_force_for(
+        offset_axes: np.ndarray, use_position_fallback: bool = False
+    ) -> np.ndarray:
+        nonlocal warned_williams_force, tether_position_solver_degraded
+        if williams_fixed_length_force is not None:
+            try:
+                return williams_fixed_length_force(offset_axes)
+            except RuntimeError as exc:
+                if not warned_williams_force:
+                    print(
+                        "Warning: Williams fixed-length position perturbation "
+                        "failed; falling back to a coarser tether model."
+                    )
+                    print(f"  reason: {exc}")
+                    warned_williams_force = True
+                tether_position_solver_degraded = True
+        if use_position_fallback and straight_tether_force is not None:
+            return straight_tether_force(offset_axes)
+        return f_tether.copy()
 
     def eval_force_moment(
         delta_v: np.ndarray,
@@ -2748,8 +2916,18 @@ def compute_vsm_trim_stability_derivatives(
         delta_roll_deg: float = 0.0,
         delta_pitch_deg: float = 0.0,
         delta_yaw_deg: float = 0.0,
+        position_offset_axes: np.ndarray | None = None,
+        position_feedback: bool = False,
     ) -> tuple[np.ndarray, np.ndarray]:
         """Complete B-point right-hand side at a perturbed state.
+
+        ``position_offset_axes`` (3-vector, stability axes) is an additional
+        kite position offset on top of ``radial_position_offset * e_radial``.
+        ``position_feedback`` enables the position-augmented physics: the
+        kite inflow is evaluated at the displaced height (wind shear) and a
+        missing/failed Williams tether solve falls back to the straight-
+        tether direction model instead of the constant baseline force. Both
+        default off, so the historical 10-state columns are untouched.
 
         Returns ``(force, moment_about_B, res)`` in world components — the
         full right-hand side of Cayon & Schmehl Eqs. ``force_eom_B`` /
@@ -2774,7 +2952,35 @@ def compute_vsm_trim_stability_derivatives(
             axes=axes,
             reference_point=reference_point,
         )
-        va_pert = va_trim - delta_v
+        # Total kite position offset in the stability axes: the historical
+        # radial (z) channel plus the optional lateral position offset.
+        offset_axes_total = float(radial_position_offset) * axes.radial
+        if position_offset_axes is not None:
+            offset_axes_total = offset_axes_total + np.asarray(
+                position_offset_axes, dtype=float
+            ).reshape(3)
+        # Wind shear at the displaced kite: the wind vector is U(h) along +x
+        # of the wind frame (z up), so only the wind-frame z-component of the
+        # offset changes the inflow. Off (historical frozen inflow) unless
+        # the position-augmented block asks for it.
+        delta_wind_axes = np.zeros(3, dtype=float)
+        if position_feedback and frame_chain is not None:
+            T_wc = frame_chain["T_wind_from_course"]
+            flip = np.asarray(transformation_c_from_vsm, dtype=float)
+            offset_wind = T_wc @ (flip @ offset_axes_total)
+            h0 = float(frame_chain["r0_wind"][2])
+            z0_wind = float(getattr(system_model.wind, "z0", 0.0) or 0.0)
+            h_min = max(1e-6, 1.001 * z0_wind)
+            h_pert = max(h0 + float(offset_wind[2]), h_min)
+            h_base = max(h0, h_min)
+            wind_model = system_model.wind
+            d_speed = float(ca.DM(wind_model.speed_wind_at_height(h_pert))) - float(
+                ca.DM(wind_model.speed_wind_at_height(h_base))
+            )
+            delta_wind_axes = flip @ (
+                T_wc.T @ np.array([d_speed, 0.0, 0.0], dtype=float)
+            )
+        va_pert = va_trim + delta_wind_axes - delta_v
         umag = np.linalg.norm(va_pert)
         aoa_deg = np.rad2deg(np.arctan2(va_pert[2], va_pert[0]))
         beta_deg = np.rad2deg(np.arctan2(va_pert[1], np.hypot(va_pert[0], va_pert[2])))
@@ -2830,12 +3036,17 @@ def compute_vsm_trim_stability_derivatives(
         speed_tangential_eff = float(speed_tangential) - float(
             np.dot(delta_v, axes.course)
         )
+        # Radial distance change: the radial component of the total offset.
+        # A pure lateral offset changes |r| only at second order.
+        radial_offset_total = float(np.dot(offset_axes_total, axes.radial))
         distance_radial_eff = (
-            distance_radial_trim + radial_position_offset
+            distance_radial_trim + radial_offset_total
             if distance_radial_trim is not None
             else None
         )
-        f_tether_eff = tether_force_for(radial_position_offset)
+        f_tether_eff = tether_force_for(
+            offset_axes_total, use_position_fallback=position_feedback
+        )
         if tether_baseline_anchor is not None:
             # Anchor the tether to the trim equilibrium: subtract the (constant)
             # baseline force residual so force(0) == 0. The radial-offset
@@ -2940,12 +3151,34 @@ def compute_vsm_trim_stability_derivatives(
         droll: float = 0.0,
         dpitch: float = 0.0,
         dyaw: float = 0.0,
+        position_offset_axes: np.ndarray | None = None,
+        position_feedback: bool = False,
     ) -> np.ndarray:
+        offset_plus = (
+            None
+            if position_offset_axes is None
+            else np.asarray(position_offset_axes, dtype=float)
+        )
+        offset_minus = None if offset_plus is None else -offset_plus
         force_plus, moment_plus, _ = eval_force_moment(
-            delta_v, omega_perturb, radial_position_offset, droll, dpitch, dyaw
+            delta_v,
+            omega_perturb,
+            radial_position_offset,
+            droll,
+            dpitch,
+            dyaw,
+            position_offset_axes=offset_plus,
+            position_feedback=position_feedback,
         )
         force_minus, moment_minus, _ = eval_force_moment(
-            -delta_v, -omega_perturb, -radial_position_offset, -droll, -dpitch, -dyaw
+            -delta_v,
+            -omega_perturb,
+            -radial_position_offset,
+            -droll,
+            -dpitch,
+            -dyaw,
+            position_offset_axes=offset_minus,
+            position_feedback=position_feedback,
         )
         d_force = (force_plus - force_minus) / (2.0 * step)
         d_moment = (moment_plus - moment_minus) / (2.0 * step)
@@ -3040,6 +3273,76 @@ def compute_vsm_trim_stability_derivatives(
     )
     eig_full, vec_full = _eig_block(A_full)
 
+    # ---- Optional position-augmented 12-state block ----------------------
+    # Three extra FD columns on top of the 10-state machinery: x, y (lateral
+    # positions) and a recomputed z that carries the same position feedback
+    # (wind shear at the displaced height; straight-tether fallback when no
+    # Williams solve exists). J_full/A_full above stay the historical
+    # shear-free objects; the augmented block is internally consistent with
+    # ``nonlinear_rhs_aug``.
+    if position_states:
+        lateral_eps = float(eps_position)
+        if (
+            williams_fixed_length_force is not None
+            and "williams_tether_length" in trim_result
+        ):
+            # A lateral offset eps grows |r_kite| by ~eps^2/(2 r): keep that
+            # growth within a quarter of the tether slack so the fixed-length
+            # solve stays feasible (the radial clamp above does not cover the
+            # lateral steps).
+            _r_norm_aug = float(
+                np.linalg.norm(_as_3vector(trim_result.get("r_kite", [0.0, 0.0, 0.0])))
+            )
+            _slack_aug = float(trim_result["williams_tether_length"]) - _r_norm_aug
+            if _slack_aug > 1e-8 and _r_norm_aug > 0.0:
+                lateral_eps = min(
+                    lateral_eps, math.sqrt(0.5 * _r_norm_aug * _slack_aug)
+                )
+            elif _slack_aug <= 1e-8:
+                lateral_eps = min(lateral_eps, 1e-3)
+            lateral_eps = max(lateral_eps, 1e-7)
+
+        columns_aug = dict(columns)
+        columns_aug["z"] = central_diff_col(
+            zero3,
+            zero3,
+            radial_eps,
+            radial_position_offset=radial_eps,
+            position_feedback=True,
+        )
+        columns_aug["x"] = central_diff_col(
+            zero3,
+            zero3,
+            lateral_eps,
+            position_offset_axes=lateral_eps * axes.course,
+            position_feedback=True,
+        )
+        columns_aug["y"] = central_diff_col(
+            zero3,
+            zero3,
+            lateral_eps,
+            position_offset_axes=lateral_eps * axes.normal,
+            position_feedback=True,
+        )
+        J_aug = np.column_stack([columns_aug[name] for name in AUG_STATE_NAMES])
+        _, A_aug = _build_state_space(
+            J_aug,
+            AUG_STATE_NAMES,
+            mass_matrix=mass_matrix_axes,
+            kinematic_map=kinematic_map,
+            full_state_names=AUG_STATE_NAMES,
+            position_transport=omega_c_axes,
+        )
+        eig_aug, vec_aug = _eig_block(A_aug)
+        if williams_fixed_length_force is not None:
+            tether_position_model_aug = "williams_fixed_length"
+            if tether_position_solver_degraded:
+                tether_position_model_aug += "_degraded"
+        elif straight_tether_force is not None:
+            tether_position_model_aug = "straight_tether_analytic"
+        else:
+            tether_position_model_aug = "constant_trim_force"
+
     # Kite velocity at trim in the stability axes — input to the co-rotating
     # state transform (course axes carried by the body, see
     # :func:`corotating_state_transform`). Prefer the trim's own world-frame
@@ -3047,7 +3350,7 @@ def compute_vsm_trim_stability_derivatives(
     _v_kite_world = trim_result.get("kite_vel_world")
     if _v_kite_world is not None:
         v_kite_trim_axes = R_body @ _as_3vector(_v_kite_world)
-    elif system_model is not None:
+    elif system_model is not None and hasattr(system_model, "velocity_kite"):
         v_kite_trim_axes = R_body @ _as_3vector(
             np.asarray(transformation_c_from_vsm, dtype=float)
             @ np.asarray(system_model.velocity_kite, dtype=float).reshape(3)
@@ -3174,6 +3477,86 @@ def compute_vsm_trim_stability_derivatives(
         subsystem; not used to build any of the returned matrices.
         """
         return nonlinear_rhs_full(delta_state)["xdot"]
+
+    def nonlinear_rhs_aug_full(delta_state: np.ndarray) -> dict[str, np.ndarray]:
+        """Position-augmented analogue of :func:`nonlinear_rhs_full`.
+
+        ``delta_state`` is the 12-vector in :data:`AUG_STATE_NAMES` order
+        (``x``, ``y`` appended). The right-hand side carries the position
+        feedback of the augmented block — tether at the displaced ``r_kite``
+        (with the straight-tether fallback) and wind shear at the displaced
+        height — and the position kinematics carry the frozen-axes transport
+        ``delta_r_dot = delta_v - Omega_C x delta_r``. Like
+        :func:`nonlinear_rhs_full` it shares no code with
+        :func:`_build_state_space`: ``f(0)`` is the trim equilibrium residual
+        and central-differencing it independently cross-checks ``A_aug``.
+        Only exposed in the result dict when ``position_states=True``.
+        """
+        dx = np.asarray(delta_state, dtype=float).reshape(12)
+        du, dv, dw, dz, dphi, dtheta, dpsi, dp, dq, dr, dxp, dyp = dx
+        delta_v = du * axes.course + dv * axes.normal + dw * axes.radial
+        omega_perturb = dp * axes.course + dq * axes.normal + dr * axes.radial
+        droll_deg = float(np.rad2deg(dphi))
+        dpitch_deg = float(np.rad2deg(dtheta))
+        dyaw_deg = float(np.rad2deg(dpsi))
+        f_world, m_world, _ = eval_force_moment(
+            delta_v,
+            omega_perturb,
+            radial_position_offset=float(dz),
+            delta_roll_deg=droll_deg,
+            delta_pitch_deg=dpitch_deg,
+            delta_yaw_deg=dyaw_deg,
+            position_offset_axes=dxp * axes.course + dyp * axes.normal,
+            position_feedback=True,
+        )
+        rhs_world = np.concatenate([f_world, m_world])
+        mass_matrix_world = mass_matrix_world_fn(droll_deg, dpitch_deg, dyaw_deg)
+        accel = np.linalg.solve(mass_matrix_world, rhs_world)
+        v_dot_axes = R_body @ accel[:3]
+        rate_dot_axes = R_body @ accel[3:]
+        roll_eff, pitch_eff, yaw_eff = _attitude_angles_deg(
+            droll_deg, dpitch_deg, dyaw_deg
+        )
+        euler_rates = np.linalg.solve(
+            _attitude_generator_matrix(
+                roll_deg=roll_eff, pitch_deg=pitch_eff, yaw_deg=yaw_eff, axes=axes
+            ),
+            omega_perturb,
+        )
+        # Position kinematics with the frame transport: delta_r = (x, y, z)
+        # in the (course, normal, radial) component ordering.
+        delta_r = np.array([dxp, dyp, dz], dtype=float)
+        r_dot = np.array([du, dv, dw], dtype=float) - np.cross(
+            np.asarray(omega_c_axes, dtype=float), delta_r
+        )
+        xdot = np.array(
+            [
+                v_dot_axes[0],  # u_dot (course)
+                v_dot_axes[1],  # v_dot (normal)
+                v_dot_axes[2],  # w_dot (radial)
+                r_dot[2],  # z_dot = w - (Omega_C x delta_r)_radial
+                euler_rates[0],  # phi_dot
+                euler_rates[1],  # theta_dot
+                euler_rates[2],  # psi_dot
+                rate_dot_axes[0],  # p_dot
+                rate_dot_axes[1],  # q_dot
+                rate_dot_axes[2],  # r_dot
+                r_dot[0],  # x_dot = u - (Omega_C x delta_r)_course
+                r_dot[1],  # y_dot = v - (Omega_C x delta_r)_normal
+            ],
+            dtype=float,
+        )
+        return {
+            "xdot": xdot,
+            "rhs_world": rhs_world,
+            "accel_world": accel,
+            "mass_matrix_world": mass_matrix_world,
+        }
+
+    def nonlinear_rhs_aug(delta_state: np.ndarray) -> np.ndarray:
+        """``xdot = f(x)`` of the position-augmented 12-state fast subsystem
+        (see :func:`nonlinear_rhs_aug_full`)."""
+        return nonlinear_rhs_aug_full(delta_state)["xdot"]
 
     # ---- Backward-compatible default decoupled blocks -------------------
     # Historical split (u, theta, q | phi, psi, p, r) with per-channel scalar
@@ -3317,6 +3700,29 @@ def compute_vsm_trim_stability_derivatives(
         # canonical state set.
         "eval_force_moment_fn": eval_force_moment,
     }
+
+    # ---- Position-augmented outputs (additive, position_states only) -----
+    if position_states:
+        result.update(
+            {
+                "J_aug": J_aug,
+                "A_aug": A_aug,
+                "eig_aug": eig_aug,
+                "vec_aug": vec_aug,
+                "Tfast_aug": _timescales_from_eigs(eig_aug),
+                "stable_aug": bool(np.all(np.real(eig_aug) < 0.0)),
+                "state_names_aug": list(AUG_STATE_NAMES),
+                # Positions are space-fixed in the frozen axes, so the
+                # co-rotating map extends with identity x/y rows.
+                "T_corotating_from_frozen_aug": corotating_state_transform(
+                    v_kite_trim_axes, omega_c_axes, AUG_STATE_NAMES
+                ),
+                "tether_position_model_aug": tether_position_model_aug,
+                "eps_position_lateral_used": float(lateral_eps),
+                "nonlinear_rhs_aug": nonlinear_rhs_aug,
+                "nonlinear_rhs_aug_full": nonlinear_rhs_aug_full,
+            }
+        )
 
     # ---- User-selected sub-block (custom state set / coupling) ----------
     if states is not None or coupled:

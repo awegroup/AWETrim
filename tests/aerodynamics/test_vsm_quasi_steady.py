@@ -29,6 +29,7 @@ from awetrim.aerodynamics.vsm_quasi_steady import (
     _strip_theory_added_mass,
     corotating_state_transform,
     ALL_STATE_NAMES,
+    AUG_STATE_NAMES,
     DEFAULT_AXES,
 )
 
@@ -880,3 +881,306 @@ def test_compatibility_aliases_point_to_canonical_functions():
     assert solve_quasi_steady_state is solve_vsm_quasi_steady_trim
     assert run_quasi_steady_sweep is run_vsm_quasi_steady_sweep
     assert compute_stability_derivatives is compute_vsm_trim_stability_derivatives
+
+
+# ---------------------------------------------------------------------------
+# Position-augmented 12-state block (position_states=True)
+# ---------------------------------------------------------------------------
+
+
+class _MockUniformWind:
+    wind_model = "uniform"
+    direction_wind = 0.0
+    z0 = 0.0
+
+    def speed_wind_at_height(self, height):
+        return 8.0
+
+
+class _MockShearWind(_MockUniformWind):
+    """Linear profile U(h) = U0 + k h — nonzero dU/dh everywhere."""
+
+    wind_model = "tabulated"
+    U0 = 6.0
+    k = 0.02
+
+    def speed_wind_at_height(self, height):
+        return self.U0 + self.k * float(height)
+
+
+class _MockPositionSystemModel:
+    """Bare system model for the position-state prerequisites: window angles,
+    a wind with ``speed_wind_at_height``, and settable course rate / speed.
+    Deliberately has no ``speed_radial`` and no
+    ``velocity_rotation_course_frame`` — tests run with ``full_omega_c=False``
+    (reduced transport rate) and ``include_gravity=False``."""
+
+    def __init__(self, wind=None, elevation=0.0):
+        self.wind = wind if wind is not None else _MockUniformWind()
+        self.angle_azimuth = 0.0
+        self.angle_elevation = float(elevation)
+        self.angle_course = 0.0
+        self.timeder_angle_course = 0.0
+        self.speed_tangential = 0.0
+
+
+_POSITION_COMMON = dict(
+    center_of_gravity=np.zeros(3),  # cg at B: block-diagonal mass matrix
+    reference_point=np.zeros(3),
+    x_trim=_X_TRIM,
+    trim_result=_TRIM_RESULT,
+    mass=15.0,
+    inertia_xx=100.0,
+    inertia_yy=20.0,
+    inertia_zz=100.0,
+    include_gravity=False,
+    full_omega_c=False,
+    distance_radial=250.0,
+)
+
+
+def test_position_states_default_off_is_backward_compatible():
+    """No aug keys by default, and an explicit False call is identical."""
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(), solver=_MockSolver(), **_POSITION_COMMON
+    )
+    explicit = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=False,
+        **_POSITION_COMMON,
+    )
+    assert all(not k.endswith("_aug") for k in result)
+    assert result["A_full"].shape == (10, 10)
+    assert np.allclose(result["A_full"], explicit["A_full"])
+
+
+def test_position_states_prerequisites_raise():
+    """Missing system model, radius, or wind interface fails fast."""
+    with pytest.raises(ValueError, match="position_states"):
+        compute_vsm_trim_stability_derivatives(
+            body_aero=_MockBody(),
+            solver=_MockSolver(),
+            position_states=True,
+            **_POSITION_COMMON,
+        )
+    no_radius = {k: v for k, v in _POSITION_COMMON.items() if k != "distance_radial"}
+    with pytest.raises(ValueError, match="position_states"):
+        compute_vsm_trim_stability_derivatives(
+            body_aero=_MockBody(),
+            solver=_MockSolver(),
+            position_states=True,
+            system_model=_MockPositionSystemModel(),
+            **no_radius,
+        )
+
+    class _NoHeightWind:
+        direction_wind = 0.0
+
+    with pytest.raises(ValueError, match="position_states"):
+        compute_vsm_trim_stability_derivatives(
+            body_aero=_MockBody(),
+            solver=_MockSolver(),
+            position_states=True,
+            system_model=_MockPositionSystemModel(wind=_NoHeightWind()),
+            **_POSITION_COMMON,
+        )
+
+
+def test_position_states_output_shapes_and_names():
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=_MockPositionSystemModel(),
+        **_POSITION_COMMON,
+    )
+    assert result["state_names_aug"] == list(AUG_STATE_NAMES)
+    assert result["J_aug"].shape == (6, 12)
+    assert result["A_aug"].shape == (12, 12)
+    assert result["eig_aug"].shape == (12,)
+    assert result["vec_aug"].shape == (12, 12)
+    # 10-state outputs keep the historical contract.
+    assert result["A_full"].shape == (10, 10)
+    assert result["state_names_full"] == list(ALL_STATE_NAMES)
+    # No Williams tether in the mock -> analytic straight-tether model.
+    assert result["tether_position_model_aug"] == "straight_tether_analytic"
+    # Co-rotating transform extends with identity position rows.
+    T_aug = np.asarray(result["T_corotating_from_frozen_aug"], dtype=float)
+    assert T_aug.shape == (12, 12)
+    names = result["state_names_aug"]
+    for s in ("x", "y"):
+        row = names.index(s)
+        expected = np.zeros(12)
+        expected[row] = 1.0
+        assert np.allclose(T_aug[row], expected)
+
+
+def test_position_states_straight_tether_stiffness():
+    """The x/y columns carry the spherical-pendulum stiffness -(T/r) on the
+    tangential diagonal, no moment content (tether acts through B), and the
+    acceleration row A[u, x] = -(T/r)/m with the CG at the attachment. Holds
+    at nonzero window elevation — the projector maps back to the tangential
+    plane of the stability axes exactly."""
+    T0, r = 500.0, 250.0
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=_MockPositionSystemModel(elevation=np.deg2rad(30.0)),
+        **_POSITION_COMMON,
+    )
+    names = result["state_names_aug"]
+    ix, iy = names.index("x"), names.index("y")
+    stiffness = T0 / r
+    J_x, J_y = result["J_aug"][:, ix], result["J_aug"][:, iy]
+    assert J_x[0] == pytest.approx(-stiffness, rel=1e-4)
+    assert J_y[1] == pytest.approx(-stiffness, rel=1e-4)
+    # Radial force response and every moment row vanish; cross terms too.
+    assert np.allclose(J_x[[1, 2, 3, 4, 5]], 0.0, atol=1e-6 * stiffness)
+    assert np.allclose(J_y[[0, 2, 3, 4, 5]], 0.0, atol=1e-6 * stiffness)
+    # And the fallback has zero radial stiffness: the aug z column equals the
+    # constant-force z column of the 10-state block (uniform wind => no shear).
+    iz = names.index("z")
+    assert np.allclose(result["J_aug"][:, iz], result["J_full"][:, iz])
+    A = result["A_aug"]
+    iu = names.index("u")
+    assert A[iu, ix] == pytest.approx(-stiffness / 15.0, rel=1e-4)
+
+
+def test_position_states_transport_kinematic_rows():
+    """delta_r_dot = delta_v - Omega_C x delta_r with the reduced transport
+    rate Omega_C = -course_rate * e_radial."""
+    course_rate = 0.3
+    x_trim = np.array([20.0, 0.0, 0.0, 0.0, course_rate])
+    common = {**_POSITION_COMMON, "x_trim": x_trim}
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=_MockPositionSystemModel(),
+        **common,
+    )
+    names = result["state_names_aug"]
+    idx = {s: names.index(s) for s in names}
+    A = result["A_aug"]
+    W_r = -course_rate  # omega_c_axes = (0, 0, -course_rate)
+    assert A[idx["x"], idx["u"]] == pytest.approx(1.0)
+    assert A[idx["y"], idx["v"]] == pytest.approx(1.0)
+    assert A[idx["z"], idx["w"]] == pytest.approx(1.0)
+    # x_dot += W_r * y, y_dot -= W_r * x (from -Omega_C x delta_r).
+    assert A[idx["x"], idx["y"]] == pytest.approx(W_r)
+    assert A[idx["y"], idx["x"]] == pytest.approx(-W_r)
+    # No transport coupling into z from x/y at zero normal transport rate.
+    assert A[idx["z"], idx["x"]] == pytest.approx(0.0)
+    assert A[idx["z"], idx["y"]] == pytest.approx(0.0)
+    # The 10-state z-row is untouched: pure z_dot = w.
+    A10 = result["A_full"]
+    z_row = np.zeros(10)
+    z_row[list(ALL_STATE_NAMES).index("w")] = 1.0
+    assert np.allclose(A10[list(ALL_STATE_NAMES).index("z")], z_row)
+
+
+def test_position_states_top_block_identity_and_shear():
+    """With no shear (uniform wind) the augmented block restricts exactly to
+    the 10-state one: A_aug[:10, :10] == A_full. The identity needs (i) zero
+    shear and (ii) matching radial tether stiffness — true here because the
+    straight-tether fallback is radially rigid like the constant-force model.
+    With a sheared wind at nonzero elevation, only the z column moves."""
+    sm_uniform = _MockPositionSystemModel(elevation=np.deg2rad(30.0))
+    result_u = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=sm_uniform,
+        **_POSITION_COMMON,
+    )
+    assert np.allclose(result_u["A_aug"][:10, :10], result_u["A_full"])
+
+    sm_shear = _MockPositionSystemModel(
+        wind=_MockShearWind(), elevation=np.deg2rad(30.0)
+    )
+    result_s = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=sm_shear,
+        **_POSITION_COMMON,
+    )
+    # The mock solver ignores the inflow, so the shear cannot reach the
+    # forces; the recomputed z column must still equal the historical one.
+    d = np.abs(result_s["J_aug"][:, :10] - result_s["J_full"])
+    assert np.allclose(d, 0.0)
+
+
+def test_position_states_shear_reaches_the_inflow():
+    """The displaced-height wind perturbation must reach va_initialize: with
+    a linear profile and the kite at 30 deg elevation, a radial offset dz
+    changes the height by dz*sin(elev)... in the wind frame, and the recorded
+    inflow magnitude shifts by k * dh (the wind is along +x of the wind frame
+    while va_trim is course-aligned; the mock records the magnitude)."""
+
+    class _RecordingBody(_MockBody):
+        # Class-level so the deep copy made by the linearisation
+        # (working_body) records into the same list.
+        umags: list = []
+
+        def va_initialize(self, **kwargs):
+            _RecordingBody.umags.append(float(kwargs["Umag"]))
+
+    body = _RecordingBody()
+    sm = _MockPositionSystemModel(wind=_MockShearWind(), elevation=np.deg2rad(30.0))
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=body,
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=sm,
+        **_POSITION_COMMON,
+    )
+    fn = result["eval_force_moment_fn"]
+    zero3 = np.zeros(3)
+    _RecordingBody.umags.clear()
+    fn(zero3, zero3, 0.0, 0.0, 0.0, 0.0)  # historical positional call works
+    fn(
+        zero3,
+        zero3,
+        position_offset_axes=10.0 * DEFAULT_AXES.radial,
+        position_feedback=True,
+    )
+    fn(
+        zero3,
+        zero3,
+        position_offset_axes=10.0 * DEFAULT_AXES.radial,
+        position_feedback=False,
+    )
+    u_base, u_shear, u_frozen = body.umags
+    assert u_frozen == pytest.approx(u_base)
+    assert u_shear != pytest.approx(u_base)
+    # |dU| bounded by k * |offset| (the height change is a projection).
+    assert abs(u_shear - u_base) <= _MockShearWind.k * 10.0 + 1e-9
+
+
+def test_position_states_nonlinear_rhs_aug_consistency():
+    """f_aug(0) vanishes at the anchored trim and central differences of the
+    independent 12-state field reproduce the x/y columns of A_aug."""
+    course_rate = 0.2
+    x_trim = np.array([20.0, 0.0, 0.0, 0.0, course_rate])
+    common = {**_POSITION_COMMON, "x_trim": x_trim}
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=_MockPositionSystemModel(elevation=np.deg2rad(30.0)),
+        **common,
+    )
+    rhs = result["nonlinear_rhs_aug"]
+    assert np.allclose(rhs(np.zeros(12)), 0.0, atol=1e-9)
+    A = np.asarray(result["A_aug"], dtype=float)
+    eps = float(result["eps_position_lateral_used"])
+    names = result["state_names_aug"]
+    for state in ("x", "y"):
+        k = names.index(state)
+        e = np.zeros(12)
+        e[k] = eps
+        col_fd = (rhs(e) - rhs(-e)) / (2.0 * eps)
+        assert np.allclose(col_fd, A[:, k], rtol=1e-6, atol=1e-9)
