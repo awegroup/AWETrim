@@ -1048,6 +1048,45 @@ def test_position_states_straight_tether_stiffness():
     assert A[iu, ix] == pytest.approx(-stiffness / 15.0, rel=1e-4)
 
 
+def test_tether_lateral_feedback_off_zeroes_the_xy_columns():
+    """``tether_lateral_feedback=False``: the tether translates WITH the kite.
+
+    Only the radial component of a position offset reaches the tether model, so
+    a tangential displacement produces no tether force and no re-solve. Under a
+    uniform wind nothing else responds to a tangential displacement either --
+    the aerodynamics see the same inflow, gravity is unchanged, and the
+    centrifugal term is radial -- so the ``x`` and ``y`` columns must vanish
+    IDENTICALLY, not merely become small. That removes the spherical-pendulum
+    stiffness asserted in ``test_position_states_straight_tether_stiffness``.
+
+    The radial (``z``) channel must be untouched: the projection keeps the
+    radial component, so the tether still responds along ``e_r``.
+    """
+    common = dict(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=_MockPositionSystemModel(elevation=np.deg2rad(30.0)),
+        **_POSITION_COMMON,
+    )
+    free = compute_vsm_trim_stability_derivatives(**common)
+    frozen = compute_vsm_trim_stability_derivatives(
+        tether_lateral_feedback=False, **common
+    )
+
+    names = frozen["state_names_aug"]
+    ix, iy, iz = names.index("x"), names.index("y"), names.index("z")
+    assert np.array_equal(frozen["J_aug"][:, ix], np.zeros(6))
+    assert np.array_equal(frozen["J_aug"][:, iy], np.zeros(6))
+    # ...whereas the default carries the pendulum stiffness -(T/r).
+    assert free["J_aug"][0, ix] == pytest.approx(-500.0 / 250.0, rel=1e-4)
+    # Radial channel and the whole 10-state block are unaffected.
+    assert np.allclose(frozen["J_aug"][:, iz], free["J_aug"][:, iz])
+    assert np.allclose(frozen["J_full"], free["J_full"])
+    assert frozen["tether_lateral_feedback"] is False
+    assert frozen["tether_position_model_aug"].endswith("_radial_only")
+
+
 def test_position_states_transport_kinematic_rows():
     """delta_r_dot = delta_v - Omega_C x delta_r with the reduced transport
     rate Omega_C = -course_rate * e_radial."""
@@ -1184,3 +1223,359 @@ def test_position_states_nonlinear_rhs_aug_consistency():
         e[k] = eps
         col_fd = (rhs(e) - rhs(-e)) / (2.0 * eps)
         assert np.allclose(col_fd, A[:, k], rtol=1e-6, atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Course-rate block: algebraic chi_dot_turn replacing the lateral velocity
+# ---------------------------------------------------------------------------
+
+_CHI_COMMON = dict(
+    center_of_gravity=np.array([0.1, 0.0, -0.4]),
+    reference_point=np.zeros(3),
+    x_trim=_X_TRIM,
+    trim_result=_TRIM_RESULT,
+    mass=15.0,
+    inertia_xx=100.0,
+    inertia_yy=20.0,
+    inertia_zz=100.0,
+    include_gravity=False,
+    full_omega_c=False,
+)
+
+
+class _RecordingMockBody(_MockBody):
+    """Mock body that keeps the inflow state handed to ``va_initialize``."""
+
+    va_state: dict = {}
+
+    def va_initialize(self, **kwargs):
+        self.va_state = kwargs
+
+
+class _RateResponsiveMockSolver:
+    """Aerodynamics linear in the body rate.
+
+    The constant ``_MockSolver`` gives the normal-force channel no response to
+    any state, so the eliminated turn rate comes out identically zero. A side
+    force and yaw moment proportional to the yaw rate are the minimum needed
+    to exercise the closure: they make ``d(a_normal)/d(r)`` — and hence the
+    gain row — non-trivial.
+    """
+
+    rho: float = 1.225
+
+    def solve(self, body) -> dict:
+        state = getattr(body, "va_state", {}) or {}
+        rates = float(state.get("body_rates", 0.0))
+        axis = np.asarray(state.get("body_axis", [0.0, 0.0, 1.0]), dtype=float)
+        omega = rates * axis
+        return {
+            "Fx": 0.0,
+            "Fy": -30.0 * omega[2] - 5.0 * omega[0],
+            "Fz": -500.0,
+            "cmx": -0.01 * omega[0],
+            "cmy": 0.0,
+            "cmz": -0.02 * omega[2],
+        }
+
+
+def _chi_result(responsive: bool = False, **kwargs):
+    merged = dict(_CHI_COMMON)
+    merged.update(kwargs)
+    body = _RecordingMockBody() if responsive else _MockBody()
+    solver = _RateResponsiveMockSolver() if responsive else _MockSolver()
+    return compute_vsm_trim_stability_derivatives(
+        body_aero=body, solver=solver, **merged
+    )
+
+
+def test_course_rate_state_default_off_is_backward_compatible():
+    """No course-rate keys by default; an explicit False call is identical."""
+    result = _chi_result()
+    explicit = _chi_result(course_rate_state=False)
+    assert "A_chi" not in result
+    assert "J_course_rate" not in result
+    assert "nonlinear_rhs_chi" not in result
+    assert result["A_full"].shape == (10, 10)
+    assert np.allclose(result["A_full"], explicit["A_full"])
+
+
+def test_course_rate_state_output_shapes_and_names():
+    from awetrim.aerodynamics.vsm_quasi_steady import CHI_STATE_NAMES
+
+    result = _chi_result(course_rate_state=True)
+    # The canonical 10-state contract is untouched.
+    assert result["A_full"].shape == (10, 10)
+    assert result["state_names_full"] == list(ALL_STATE_NAMES)
+    # ...and the course-rate block sits alongside it.
+    assert CHI_STATE_NAMES == tuple(s for s in ALL_STATE_NAMES if s != "v")
+    assert result["state_names_chi"] == list(CHI_STATE_NAMES)
+    assert result["A_chi"].shape == (9, 9)
+    assert result["eig_chi"].shape == (9,)
+    assert result["vec_chi"].shape == (9, 9)
+    assert result["J_course_rate"].shape == (6,)
+    assert result["chi_turn_gain_row"].shape == (9,)
+    assert result["chi_turn_closure_singular"] is False
+
+
+def test_course_rate_column_is_the_transport_derivative():
+    """Sign anchor for the chi_dot_turn perturbation.
+
+    With the constant mock solver the aerodynamic force does not respond to
+    the body rate, so the only chi_dot_turn dependence left in the normal
+    force channel is the transport term ``f_transport[1] = -m v_tau chi_dot``.
+    That pins the perturbation direction: ``d F_normal / d chi_dot_turn`` must
+    come out as ``-m v_tau``, i.e. ``+m u0`` in the stability-axes sign
+    convention where the kite flies along ``-e_course``.
+    """
+    result = _chi_result(course_rate_state=True)
+    mass, v_tau = 15.0, 20.0
+    assert result["J_course_rate"][1] == pytest.approx(-mass * v_tau, rel=1e-6)
+    # The closure denominator d(a_normal)/d(chi_dot_turn) inherits it.
+    assert result["chi_turn_denominator"] == pytest.approx(-v_tau, rel=1e-3)
+
+
+def test_cg_eom_eval_delta_course_rate_is_transport_only():
+    """The CG-form evaluator routes ``delta_course_rate`` like the B form.
+
+    A chi_dot_turn perturbation is trajectory curvature: it may move the
+    transport inertial force ``-m Omega_C x v_cg`` and nothing else. The
+    rate-responsive solver makes any leakage into the aerodynamic body rate
+    visible (``Fy``/``cmz`` respond to ``omega``), so the aero rows staying
+    identical is a real routing check, not vacuous.
+    """
+    result = _chi_result(responsive=True)
+    ev = result["cg_eom_eval"]
+    base = ev()
+    delta = 0.02
+    pert = ev(delta_course_rate=delta)
+    # No leakage: aero, tether, gyroscopic and body-rate outputs unchanged.
+    for key in (
+        "F_aero",
+        "M_aero_cg",
+        "F_tether",
+        "M_tether_cg",
+        "M_gyro_cg",
+        "omega_total_world",
+        "moment_cg_net",
+    ):
+        assert np.allclose(pert[key], base[key], atol=1e-12), key
+    # The transport delta is analytic: dOmega = -delta * e_radial, so
+    # dF = -m (dOmega x v_cg); force_net moves by exactly the same amount.
+    mass = 15.0
+    d_omega = -delta * base["axes_radial"]
+    expected = -mass * np.cross(d_omega, base["v_cg_world"])
+    assert np.allclose(pert["F_transport"] - base["F_transport"], expected, atol=1e-9)
+    assert np.allclose(pert["force_net"] - base["force_net"], expected, atol=1e-9)
+    assert np.allclose(pert["accel_cg"] - base["accel_cg"], expected / mass, atol=1e-9)
+    # Default 0.0 leaves the historical evaluation unchanged.
+    again = ev(delta_course_rate=0.0)
+    assert np.allclose(again["force_net"], base["force_net"], atol=1e-12)
+    assert np.allclose(again["moment_cg_net"], base["moment_cg_net"], atol=1e-12)
+
+
+def test_static_slopes_summary_structure_and_chi_dot_decomposition():
+    """cg_eom.static_slopes_summary: schema, additivity, and the kinematic
+    chi_dot part pinned analytically.
+
+    The B-form course-rate column carries the transport force's CG-arm
+    moment about B, ``J_course_rate[5] = cross(c, dF)[2] = -c_x m v_tau``;
+    transporting to the CG cancels it exactly, so the kinematic z-moment
+    slope is identically ZERO — a chi_dot perturbation produces no moment
+    about the CG (the transport force acts there).
+    """
+    from awetrim.aerodynamics.cg_eom import static_slopes_summary
+
+    result = _chi_result(responsive=True, course_rate_state=True)
+    summary = static_slopes_summary(result)
+    slopes = summary["slopes_SI"]
+    assert set(slopes) == {"roll", "pitch", "yaw", "v_tau", "chi_dot", "radial"}
+    assert all(np.isfinite(v) for v in slopes.values())
+    assert set(summary["restoring"]) == {"roll", "pitch", "yaw", "v_tau", "radial"}
+    for channel, restoring in summary["restoring"].items():
+        assert restoring == (slopes[channel] < 0.0)
+    parts = summary["chi_dot_parts"]
+    assert slopes["chi_dot"] == pytest.approx(
+        parts["kinematic"] + parts["body_rate"]
+    )
+    assert summary["chi_dot_damping"] == (slopes["chi_dot"] > 0.0)
+    mass, v_tau, c_x = 15.0, 20.0, 0.1
+    assert result["J_course_rate"][5] == pytest.approx(
+        -c_x * mass * v_tau, rel=1e-6
+    )
+    assert parts["kinematic"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_course_rate_closure_zeroes_the_normal_acceleration():
+    """The eliminated variable is exactly the one that kills a_normal.
+
+    ``v_n == 0`` is the defining property of the course frame, so its
+    frame-relative rate must vanish for every perturbation once
+    ``delta_chi_dot_turn = chi_turn_gain_row @ delta_state_9`` is substituted.
+    """
+    from awetrim.aerodynamics.vsm_quasi_steady import CHI_STATE_NAMES
+
+    result = _chi_result(responsive=True, course_rate_state=True)
+    cols = [list(ALL_STATE_NAMES).index(s) for s in CHI_STATE_NAMES]
+    J_9 = result["J_full"][:, cols]
+    M = result["mass_matrix_axes"]
+    accel_9 = np.linalg.solve(M, J_9)
+    accel_chi = np.linalg.solve(M, result["J_course_rate"])
+    normal_row = accel_9[1, :] + accel_chi[1] * result["chi_turn_gain_row"]
+    assert np.allclose(normal_row, 0.0, atol=1e-9)
+
+
+def test_course_rate_F_Omega_vanishes_on_every_differential_row():
+    """``F_Omega = 0``, so the algebraic elimination is a no-op: ``A_f = F_x``.
+
+    chi_dot_turn is a trajectory-CURVATURE term, not a body rate: it changes no
+    apparent wind, so it reaches the equations of motion only through the
+    transport inertial force ``-m (Omega_C x v)``. Two exact facts follow:
+
+    1. ``d(Omega_C x v)/d(chi_dot_turn)`` is purely NORMAL -- with
+       ``Omega_C = [0, v_tau/r, -chi_dot_turn]`` and ``v = [v_tau, 0, v_r]``
+       the cross product is ``[w_n v_r, w_r v_tau, -w_n v_tau]``, and
+       chi_dot_turn sits in the middle slot alone (paper Eq.
+       ``acceleration_course_paper``).
+    2. That force acts at the CG, so its right-hand side is the pair
+       ``[P, c x P]`` -- and the coupled B-point mass matrix maps such a pair
+       to ``[P/m, 0]``: pure translation, ZERO angular acceleration.
+
+    So the only nonzero entry of the chi_dot_turn column is the constraint row
+    itself (``G_Omega``), every differential row of ``F_Omega`` is zero, and
+    ``A_f = F_x - F_Omega G_Omega^-1 G_x`` collapses to ``F_x``. The 9-state
+    DAE block is therefore IDENTICAL to the 10-state block with ``v`` pinned.
+
+    ``G_Omega`` itself must come out as the pure kinematic ``-v_tau`` (no
+    aerodynamic content) -- that is the sharpest check that chi_dot_turn is not
+    leaking into the body rate.
+    """
+    from awetrim.aerodynamics.vsm_quasi_steady import CHI_STATE_NAMES
+
+    result = _chi_result(responsive=True, course_rate_state=True)
+    accel_chi = np.linalg.solve(result["mass_matrix_axes"], result["J_course_rate"])
+
+    # G_Omega = -v_tau exactly: no aerodynamic response to the turn rate.
+    assert result["chi_turn_denominator"] == pytest.approx(-20.0, rel=1e-9)
+    assert accel_chi[1] == pytest.approx(-20.0, rel=1e-9)
+    # F_Omega: every other force/moment row vanishes.
+    for row in (0, 2, 3, 4, 5):
+        assert abs(accel_chi[row]) < 1e-12
+
+    # ...hence A_chi is exactly the v-pinned 10-state block.
+    cols = [list(ALL_STATE_NAMES).index(s) for s in CHI_STATE_NAMES]
+    A_dropped = result["A_full"][np.ix_(cols, cols)]
+    assert np.allclose(A_dropped, result["A_chi"], rtol=0.0, atol=1e-12)
+    # The gain row is still meaningful as an OUTPUT (turn rate per unit state).
+    assert np.any(result["chi_turn_gain_row"] != 0.0)
+
+
+def test_course_rate_v_retained_variant():
+    """``A_chi10``: the same closure read as ``v_dot = 0`` instead of ``v = 0``.
+
+    One normal momentum equation, two unknowns — either the frame is frozen and
+    it integrates ``v_dot``, or the frame follows the velocity direction and it
+    determines ``chi_dot_turn``. This is the second reading WITHOUT also
+    forbidding a standing normal offset, so ``v`` stays a state with a zero
+    row. That makes the matrix block upper triangular in (others | v):
+
+    * spectrum = ``spec(A_chi)`` plus exactly one structural zero (the neutral
+      constant-sideslip mode);
+    * the ``v`` COLUMN survives, so a standing sideslip still drives the other
+      nine equations aerodynamically — the difference from the pinned block
+      lives in the eigenvectors, not the eigenvalues.
+    """
+    result = _chi_result(responsive=True, course_rate_state=True)
+    names = list(ALL_STATE_NAMES)
+    iv = names.index("v")
+    A10 = np.asarray(result["A_chi10"], dtype=float)
+
+    assert result["state_names_chi10"] == names
+    assert np.array_equal(A10[iv, :], np.zeros(len(names)))
+    # The v COLUMN is carried over UNCHANGED from the baseline block (the
+    # rank-1 substitution is F_Omega = 0), so a standing sideslip drives the
+    # other nine rows exactly as it does there — that is what this variant
+    # keeps and the pinned block throws away. Asserted as preservation, not
+    # magnitude: this mock's aerodynamics are rate-only, so the column is in
+    # fact zero here.
+    expected_col = np.asarray(result["A_full"], dtype=float)[:, iv].copy()
+    expected_col[iv] = 0.0
+    assert np.allclose(A10[:, iv], expected_col, rtol=0.0, atol=1e-12)
+
+    eig10 = np.asarray(result["eig_chi10"], dtype=complex)
+    izero = int(np.argmin(np.abs(eig10)))
+    assert abs(eig10[izero]) < 1e-9
+    rest = np.sort_complex(np.delete(eig10, izero))
+    assert np.allclose(rest, np.sort_complex(result["eig_chi"]), atol=1e-9)
+
+    # The elimination gain over 10 states is the always-present output row.
+    assert np.allclose(
+        result["chi10_gain_row"], result["chi_turn_gain_row_full"], atol=1e-12
+    )
+
+
+def test_turn_rate_output_row_of_the_baseline_block():
+    """The 10-state block reports the turn rate as an OUTPUT, for free.
+
+    chi_dot_turn is not a state there, but it is a linear functional of the
+    state: the same normal equation ``a_n = -v_tau chi_dot_turn`` read on the
+    FREE-``v`` block gives ``delta_chi_dot_turn = -(normal acceleration row) /
+    G_Omega``, i.e. one row of ``A_full`` divided by the closure denominator.
+
+    Two things are pinned here:
+
+    1. the denominator is the kinematic ``u0 = -v_tau`` when the course-rate
+       block did not run, and the FD-measured ``G_Omega`` when it did (the two
+       agree for the rigid mass matrix, cf.
+       ``test_course_rate_F_Omega_vanishes_on_every_differential_row``);
+    2. restricting the row to the 9 differential states — which is what pinning
+       ``v`` does to a linear functional — reproduces the course-rate block's
+       own ``chi_turn_gain_row`` exactly. The two code paths must not drift.
+    """
+    from awetrim.aerodynamics.vsm_quasi_steady import CHI_STATE_NAMES
+
+    plain = _chi_result(responsive=True)
+    assert plain["chi_turn_denominator_source"] == "kinematic"
+    u0 = float(np.asarray(plain["v_kite_trim_axes"], dtype=float)[0])
+    assert plain["chi_turn_denominator_full"] == pytest.approx(u0, rel=1e-12)
+    expected = -plain["A_full"][list(ALL_STATE_NAMES).index("v"), :] / u0
+    assert np.allclose(plain["chi_turn_gain_row_full"], expected, rtol=0.0, atol=0.0)
+
+    result = _chi_result(responsive=True, course_rate_state=True)
+    assert result["chi_turn_denominator_source"] == "finite-difference"
+    cols = [list(ALL_STATE_NAMES).index(s) for s in CHI_STATE_NAMES]
+    assert np.allclose(
+        np.asarray(result["chi_turn_gain_row_full"])[cols],
+        np.asarray(result["chi_turn_gain_row"]),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
+def test_nonlinear_rhs_chi_reproduces_A_chi():
+    """Independent cross-check: central-differencing the 9-state nonlinear
+    field must reproduce A_chi, exactly as nonlinear_rhs does for A_full."""
+    from awetrim.aerodynamics.vsm_quasi_steady import CHI_STATE_NAMES
+
+    result = _chi_result(responsive=True, course_rate_state=True)
+    rhs = result["nonlinear_rhs_chi"]
+    A = result["A_chi"]
+    assert np.allclose(rhs(np.zeros(9)), 0.0, atol=1e-8)
+    for k in range(len(CHI_STATE_NAMES)):
+        eps = 1e-4
+        e = np.zeros(9)
+        e[k] = eps
+        col_fd = (rhs(e) - rhs(-e)) / (2.0 * eps)
+        assert np.allclose(col_fd, A[:, k], rtol=1e-5, atol=1e-8)
+
+
+def test_nonlinear_rhs_chi_solves_the_normal_equation():
+    """Each evaluation drives the frame-relative normal acceleration to zero
+    and reports the turn rate it took to do so."""
+    result = _chi_result(responsive=True, course_rate_state=True)
+    full = result["nonlinear_rhs_chi_full"]
+    perturbed = np.zeros(9)
+    perturbed[7] = 0.05  # q
+    out = full(perturbed)
+    assert abs(out["normal_residual"]) < 1e-8
+    assert np.isfinite(out["delta_chi_dot_turn"])

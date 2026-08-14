@@ -107,6 +107,11 @@ Primitives kept here for AWEDesign (and general use):
   law in `awetrim.system.kite`.
 - `vsm_quasi_steady.compute_vsm_trim_stability_derivatives` — the trim
   linearisation AWEDesign interprets into named derivatives and eigen-modes.
+  Takes the same optional `gamma_seed` as the Williams trim solver: it seeds
+  the BASELINE solve at the trim state (branch selection); the baseline's
+  converged circulation then warm-starts every finite-difference solve as
+  before. Pass the seed the trim was solved with, so the linearisation sits
+  on the same gamma branch as the equilibrium it linearises.
   Inertia enters either as principal scalars `inertia_xx/yy/zz` or as the full
   3x3 CG tensor `inertia_cg` (zero-attitude geometry basis, same convention as
   `solve_vsm_quasi_steady_trim`'s `inertia_cg`), which overrides the scalars
@@ -156,6 +161,203 @@ Primitives kept here for AWEDesign (and general use):
   `participation_aug`, `alpha_lon_aug`, `alpha_lat_aug`) and
   `run_modal_stability.py` (`--position-states`, default on: 10-vs-12
   comparison table, `modal_stability_position_states.pdf`).
+
+  `tether_lateral_feedback` (default `True`) governs whether a LATERAL offset
+  reaches the tether at all. Set `False` and the tether translates WITH the
+  kite: only the RADIAL component of the position offset is passed to the
+  tether model, so the `x`/`y` columns carry no tether force and need no
+  re-solve, while the `z` channel is untouched. Under a uniform wind those
+  columns then vanish IDENTICALLY (aerodynamics, gravity and the centrifugal
+  term are all blind to a tangential displacement), which removes the
+  spherical-pendulum restoring term `~T/r` and with it the position-born
+  pendulum modes. Use it when the pendulum is taken to belong to the slow
+  trajectory subsystem, which this frozen-slow-state block would otherwise
+  double-count. The projection sits in `eval_force_moment`, so the FD columns
+  and `nonlinear_rhs_aug` stay consistent by construction. Recorded as
+  `tether_lateral_feedback` and as a `_radial_only` suffix on
+  `tether_position_model_aug`; `run_modal_stability.py
+  --frozen-lateral-tether`.
+
+- `vsm_quasi_steady` course-rate block (`course_rate_state=True`, keyword of
+  `compute_vsm_trim_stability_derivatives`): the **index-1 DAE** form of the
+  fast subsystem. The course frame is defined by the velocity direction, so the
+  kite velocity is `[v_tau, 0, v_r]` by construction and has no normal
+  component to integrate; the lateral DOF is the relative turn rate
+  `chi_dot_turn`, which is an *algebraic* variable, not a state — `a_n =
+  -v_tau chi_dot_turn` determines it and the rigid-body equations produce no
+  `chi_ddot_turn`. States are `CHI_STATE_NAMES = ALL_STATE_NAMES` minus `v`
+  (9 differential). One extra FD column `J_course_rate = d(F, M) /
+  d(chi_dot_turn)` is taken by perturbing the trim course rate, which moves
+  `Omega_C`'s RADIAL entry only (it is exactly `-chi_dot_turn`; the normal
+  great-circle entry `v_tau/r` is untouched at fixed `v_tau, r, beta, chi`).
+  **That perturbation must reach the transport inertial force `-m (Omega_C x
+  v)` and NOTHING else** — `Omega_C` is the rate of the course FRAME, and the
+  body rate equals it only AT TRIM; `chi_dot_turn` is a trajectory-curvature
+  term that changes no apparent wind, so it must not enter the aerodynamic
+  body rate, the gyroscopic couple, or the centripetal CG-offset force.
+  (Routing it into `omega_total` inflates `G_Omega` by 32-350 % of pure
+  aerodynamic garbage and fabricates a spectrum shift.) The constraint is the
+  vanishing frame-relative normal acceleration, eliminated as
+  `delta_chi_dot_turn = chi_turn_gain_row @ delta_x` (`= -G_Omega^-1 G_x`) and
+  substituted back to give `A_chi = F_x - F_Omega G_Omega^-1 G_x`.
+
+  **Two exact results, both verified in the tests.** (1) `G_Omega = -v_tau`
+  exactly — pure kinematics, no aerodynamic content; that is the sharpest
+  check that the turn rate is not leaking into the body rate. (2) `F_Omega`
+  VANISHES on every differential row, so the elimination is a no-op and
+  `A_chi` is identical to the 10-state block with `v` pinned to zero. Reason:
+  `d(Omega_C x v)/d(chi_dot_turn)` is purely NORMAL, and that force acts at
+  the CG, so its right-hand side is the pair `[P, x_cg x P]` which the coupled
+  rigid B-point mass matrix maps to `[P/m, 0]` — pure translation, zero
+  angular acceleration. Note the raw column's MOMENT rows are *not* zero
+  (`J_course_rate = [0, -m v_tau, 0, ...]` with `x_cg x P` moments); they
+  cancel against the `-m[c]x` coupling in `M`. Equivalently: about the CG the
+  d'Alembert force has zero moment arm. Only `include_added_mass=True` breaks
+  the cancellation (M is then not the rigid B-point matrix).
+
+  **Two readings of the same closure, both built.** One normal momentum
+  equation, two unknowns `(v_dot, chi_dot_turn)`: either the frame is frozen
+  and the equation integrates `v_dot` (the baseline 10-state block, where
+  `chi_dot_turn` is only an output — see `chi_turn_gain_row_full`), or the
+  frame FOLLOWS the velocity direction and the equation determines
+  `chi_dot_turn`. The latter splits again on whether a standing normal offset
+  is also forbidden. `A_chi` (9 states) closes on `v = 0`; **`A_chi10`
+  (10 states, the default reported by `run_modal_stability
+  --course-rate-state`)** closes on `v_dot = 0` only, so the frame carries an
+  initial offset along. Its `v` ROW is identically zero ⇒ block upper
+  triangular ⇒ `spec(A_chi10) = spec(A_chi)` plus one structural zero (the
+  neutral constant-sideslip mode), while the `v` COLUMN survives so a standing
+  sideslip still drives the other nine rows aerodynamically — the difference
+  is in the eigenVECTORS, not the spectrum. Extra outputs `A_chi10`,
+  `eig_chi10`, `vec_chi10`, `Tfast_chi10`, `state_names_chi10`,
+  `chi10_gain_row` (== `chi_turn_gain_row_full`). `--course-rate-pin-v`
+  reports the 9-state block instead.
+
+  So the block's value is that it is the *correct* 9-state model and that
+  `chi_turn_gain_row` is the per-mode turn-rate OUTPUT — not a feedback.
+  Contrast with substituting `delta_chi` for `v`: that is an exact change of
+  coordinates (`delta_chi = delta_v/u0`, absorbed by yaw, `psi_free =
+  psi_frozen - delta_chi`) and leaves every eigenvalue invariant. The tether
+  is held at its baseline across the column, which is exact for a straight
+  tether: it runs along `e_r` and the perturbation is a rotation ABOUT `e_r`,
+  moving no node (only sag responds, at second order). Outputs: `J_course_rate`, `A_chi`, `eig_chi`, `vec_chi`,
+  `Tfast_chi`, `stable_chi`, `state_names_chi`, `chi_turn_gain_row`,
+  `chi_turn_denominator`, `chi_turn_closure_singular`, `eps_course_rate`
+  (default `0.02` rad/s), plus the independent verification fields
+  `nonlinear_rhs_chi` / `nonlinear_rhs_chi_full` (the 9-state field that
+  Newton-solves the normal equation per evaluation and reports
+  `delta_chi_dot_turn` / `normal_residual`). Default `False` leaves every
+  historical output byte-identical; `ALL_STATE_NAMES` is unchanged.
+  Sign note: `chi_dot_turn` is in the trim vector's `timeder_angle_course`
+  convention. The post-processing helper `stability_common.course_vs_yaw_ratio`
+  defines `delta_chi = dv/u0`, which is the **opposite** radial sense —
+  magnitudes agree, signs do not. Do not mix the two.
+
+- `vsm_quasi_steady` transport-rate convention (`transport_rate_follows_states`,
+  keyword of `compute_vsm_trim_stability_derivatives`, **default `True`**):
+  `Omega_C = [0, v_tau/r, -chi_dot_turn]` in course components. The **normal**
+  entry `v_tau/r` is a KINEMATIC IDENTITY — the rate at which `e_r` tilts as
+  the kite flies along the sphere — so it follows the fast states `v_tau`
+  (state `u`) and `r` (state `z`) in every column. It used to be frozen at the
+  trim value, which set the derivative of the centrifugal term
+  `m v_tau^2 / r` w.r.t. those states to exactly ZERO; it is now the correct
+  `2 m v_tau / r`. Eigenvalue impact measured at LEI-V3 states A/B/C: 0.1-0.6 %
+  on `alpha_lon` / `alpha_lat` / `tau_fast`. Pass `False` (or
+  `--frozen-transport-rate` in `run_modal_stability.py`) to reproduce pre-2026-08-13
+  results. The **radial** entry is dynamics (the turn rate) and stays frozen
+  unless `course_rate_state=True` solves for it.
+  Two implementation traps: (1) `_omega_c_for` rebuilds the components directly
+  from the trim vector — re-calling `_course_transport_rate_axes` with a
+  perturbed speed would ALSO move the radial entry via `chi_dot_gc(v_tau, r)`
+  and contaminate the turn rate, so the two entries must be perturbed
+  independently; (2) the perturbed `Omega_C` feeds the transport inertial force
+  ONLY, never the aerodynamic body rate / gyroscopic couple / centripetal
+  CG-offset force. The reduced (radial-only, no-`system_model`) branch kept one
+  factor of `f_transport[2] = m v_tau^2 / r` frozen at the trim speed — halving
+  that derivative relative to the full branch — and was fixed 2026-08-13; all
+  three branches now agree. It is unreachable in production (every script
+  passes a `SystemModel`) and was reached only by test mocks.
+
+- `vsm_quasi_steady` turn rate as an OUTPUT of the baseline block
+  (`chi_turn_gain_row_full`, **always present**, no keyword, no extra solve).
+  `chi_dot_turn` is not a state of the 10-state block, but it is a linear
+  functional of one: the same normal equation read on the FREE-`v` block gives
+  `delta_chi_dot_turn = -(normal acceleration row) / G_Omega`, i.e. one row of
+  `A_full` scaled — equivalently `delta_v_dot / u0`, so on an eigenmode it is
+  `lambda * delta_chi`, the mode's course excursion times its own rate. The
+  denominator is the FD-measured `G_Omega` when the course-rate block ran and
+  the exact kinematic `u0 = -v_tau` otherwise; `chi_turn_denominator_source`
+  records which (they agree for the rigid mass matrix but **not** under
+  `include_added_mass=True`, where only the measured one is right). Because it
+  is a functional and not a state, it slices under a DOF reduction (pinned
+  states drop out) and transforms with `inv(T)` under the co-rotating change of
+  basis — `stability_common.linearise_trim` does both and adds the per-mode
+  magnitude `chi_turn_content_full` (rad/s per unit-norm eigenvector, printed
+  by `run_modal_stability.py` and annotated under the participation matrix).
+  Restricting the row to `CHI_STATE_NAMES` reproduces `chi_turn_gain_row`
+  exactly; the test pins that so the two paths cannot drift. Same sign
+  convention caveat as above.
+
+- `cg_eom.py` — the CG-form equations of motion: EoM written at the centre of
+  gravity, attitude perturbations rotating **about the CG** so the tether
+  attachment B swings and the tether (length measured to B) is re-solved at
+  the displaced attachment, supplying the restoring moment through its arm
+  `-c_att x F_t`. Mass matrix is block-diagonal `diag(m 1, I_cg)`; the B-form's
+  centripetal offset force is absorbed in the transport term via
+  `v_cg = v_B + omega x c_att`; gravity/transport carry no moment. A B trim is
+  a CG trim identically (`sum F = 0` makes the moment transport exact). The
+  evaluator itself is a closure of `compute_vsm_trim_stability_derivatives`
+  (result key `"cg_eom_eval"`, lazy — no cost unless called) so it shares the
+  trim frame chain, VSM warm start and Williams tether closure with the B
+  form; `cg_eom.py` holds the docs plus `verify_cg_trim`, `pitch_sweep`,
+  `plot_cg_pitch_forces`, `plot_pitch_moment_sweep`. Driven by
+  `run_modal_stability.py --cg-eom-check` (side/front-view force figures +
+  pitch/roll moment breakdowns per state; sweeps are channel-generic).
+
+  `cg_eom_eval` also takes `delta_course_rate` (default `0.0`), with the same
+  routing rule as the B-form `eval_force_moment`: it perturbs `chi_dot_turn`
+  in the **transport inertial force** `-m (Omega_C x v_cg)` only — never the
+  aerodynamic body rate, never the gyroscopic couple (see the two
+  implementation traps above). Because the CG transport acts on the full
+  `v_cg`, its force response differs from the B form's by
+  `-m dOmega x (Omega_C x c_att)` (a few percent for LEI-V3). Same
+  `timeder_angle_course` sign convention as the course-rate block (see the
+  sign note there — do not mix with `delta_chi = dv/u0`). A coordinated turn
+  perturbation composes it with `omega_perturb = -delta_course_rate *
+  e_radial`. Consumer: `scripts/personal/wes-quasi-steady/
+  run_static_stability.py` (six-channel static-stability sweeps).
+
+  `static_slopes_summary(stability)` — the cheap static-stability verdict
+  (~20 warm VSM solves via `linearise_cg_eom`, no sweeps): six tangent
+  slopes (roll/pitch/yaw stiffness, v_tau speed stability, radial tether
+  stiffness, coordinated chi_dot turn damping with its kinematic/body-rate
+  decomposition) plus restoring/damping booleans. Restoring iff slope < 0;
+  chi_dot damping iff slope > 0 (`timeder_angle_course` sense — a positive
+  turn rate rotates about `-e_radial`). Attitude axes default to the course
+  frame; pass principal body axes (rows, world components) for the
+  body-axes trio. Helpers: `attitude_moment_matrix` (K [3x3], world moment
+  per rad about each frame axis — contract with any rotation axis for
+  first-order tangents) and `attitude_slope_from_lin` (one column in moment
+  units; also valid on the rate columns, e.g. the yaw-damping reference).
+  Consumers: `scripts/aerodynamics/compute_stability_derivatives.py` and
+  the wes-quasi-steady static pipeline.
+
+  `linearise_cg_eom(stability)` linearises the CG form over `CG_STATE_NAMES`
+  = 9 states (no `v` — the normal momentum row is the chi_dot_turn closure,
+  `chi_turn_gain_row_cg`; no `x`/`y` — the CG is pinned tangentially, a REAL
+  constraint, not a coordinate change). Central differences through
+  `cg_eom_eval`, which takes `delta_v_cg` / `omega_perturb` /
+  `radial_position_offset` as well as attitude: the state is **v_cg**, so
+  rate/attitude columns carry the induced attachment-velocity change
+  `delta_v_B = -delta_omega x c` into the apparent wind, and the attitude
+  columns carry the swinging-B tether stiffness the B-form ones do not.
+  Block-diagonal mass matrix — rows are `F/m` and `I_cg^-1 M_cg`, no coupled
+  solve; `F_Omega = 0` holds by construction. Driven by
+  `run_modal_stability.py --cg-modes` (per-mode table, CG-vs-B pairing,
+  `cg_eom_modes_<state>.pdf`). Measured at state C: longitudinal modes move
+  <=1.4% vs B-pinned; the lateral pairs move 21-30% — the unstable pair goes
+  +0.425 -> +0.057 1/s (T2x 1.6 s -> 12 s), the tether roll stiffness of the
+  swinging attachment being the mechanism.
 
 These use the **VSM axis convention** (matches the LEI-V3 reference): chord along
 `+x` (LE forward at smaller x, `+x` is **aft**), `+y` spanwise, `+z` up; anhedral
@@ -255,6 +457,27 @@ Public functions should use these names:
   convergence makes its tolerance-terminated `gamma` non-smooth in `x`, which
   corrupts that Jacobian at loose tolerance and yields wrong trims. `"base"` is
   the safe default and the only correct choice at the sweeps' loose `1e-4`.
+  Both trim solvers additionally take `is_with_artificial_viscosity`
+  (default `False`) and `artificial_viscosity_factor` (default `0.035`),
+  forwarded to `_default_vsm_solver` → VSM `Solver`: the parameter-free
+  Li/Gaunaa spanwise artificial viscosity that stabilises the gamma loop
+  around stall (same option the aerostructural side exposes via as_config
+  `aerodynamic.is_with_artificial_viscosity`). Enable it for trims within
+  ~1 deg of the stall margin, where the base loop can oscillate without
+  converging and the unconverged gamma corrupts the outer trim residuals.
+  Ignored when an explicit `solver` is passed.
+  `solve_vsm_qs_trim_with_williams_tether` additionally takes `gamma_seed`
+  (optional, one circulation value per panel): an initial guess passed to
+  EVERY inner VSM solve, with a cold retry when the seeded loop fails to
+  converge. Near stall the circulation is multi-valued and a cold-started
+  loop can converge onto a different branch than the one a deformed geometry
+  was produced with; seeding each evaluation from the same fixed vector
+  (e.g. the coupled solver's converged `gamma_distribution`, which
+  `scripts/aerostructural/run_simulation_PSM.py` exports as
+  `gamma_distribution.npy` next to the geometry snapshot) selects the
+  intended branch while staying deterministic and smooth in the trim
+  unknowns — unlike history-dependent warm chaining, which would corrupt the
+  FD outer Jacobian the same way Anderson does at loose tolerance.
 - `turn_radius_vs_steer_moment` (roll-steering turn map: prescribed KCU roll
   moment → bank, `phi_a`, turn radius, effective `k_steering`)
 - `compute_vsm_trim_stability_derivatives`
