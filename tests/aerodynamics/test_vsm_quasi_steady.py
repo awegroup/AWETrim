@@ -1374,6 +1374,26 @@ def test_cg_eom_eval_delta_course_rate_is_transport_only():
     assert np.allclose(again["moment_cg_net"], base["moment_cg_net"], atol=1e-12)
 
 
+def test_eval_force_moment_with_contributions_sums_to_net():
+    """The optional B-point breakdown reproduces the net rows exactly and
+    the default call keeps the historical 3-tuple."""
+    result = _chi_result(responsive=True)
+    fn = result["eval_force_moment_fn"]
+    zero3 = np.zeros(3)
+    out_default = fn(zero3, zero3)
+    assert len(out_default) == 3
+    force, moment, _res, contrib = fn(zero3, zero3, with_contributions=True)
+    assert np.allclose(force, out_default[0]) and np.allclose(
+        moment, out_default[1]
+    )
+    f_sum = (contrib["F_aero"] + contrib["F_tether"] + contrib["F_gravity"]
+             + contrib["F_transport"] + contrib["F_centripetal"])
+    m_sum = (contrib["M_aero_B"] + contrib["M_gravity_B"]
+             + contrib["M_transport_B"] + contrib["M_gyro_B"])
+    assert np.allclose(f_sum, force, atol=1e-12)
+    assert np.allclose(m_sum, moment, atol=1e-12)
+
+
 def test_static_slopes_summary_structure_and_chi_dot_decomposition():
     """cg_eom.static_slopes_summary: schema, additivity, and the kinematic
     chi_dot part pinned analytically.

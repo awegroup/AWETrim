@@ -3348,8 +3348,14 @@ def compute_vsm_trim_stability_derivatives(
         position_offset_axes: np.ndarray | None = None,
         position_feedback: bool = False,
         delta_course_rate: float = 0.0,
-    ) -> tuple[np.ndarray, np.ndarray]:
+        with_contributions: bool = False,
+    ) -> tuple:
         """Complete B-point right-hand side at a perturbed state.
+
+        ``with_contributions=True`` appends a fourth element: the
+        per-contributor breakdown of the B-point rows (forces in world
+        components; moments about B — the tether carries none, it acts
+        through B). Default ``False`` keeps the historical 3-tuple.
 
         ``delta_course_rate`` perturbs the relative turn rate ``chi_dot_turn``
         (see :func:`_omega_c_for`). It moves the course-frame transport rate
@@ -3581,6 +3587,20 @@ def compute_vsm_trim_stability_derivatives(
             + np.cross(cg_world, f_transport)
             - np.cross(omega_total, inertia_b_world @ omega_total)
         )
+        if with_contributions:
+            contributions = {
+                "F_aero": np.asarray(f_aero, dtype=float),
+                "F_tether": np.asarray(f_tether_eff, dtype=float),
+                "F_gravity": np.asarray(gravity_force_stab, dtype=float),
+                "F_transport": np.asarray(f_transport, dtype=float),
+                "F_centripetal": np.asarray(f_centripetal, dtype=float),
+                "M_aero_B": np.asarray(moment_aero_at_ref, dtype=float),
+                "M_gravity_B": np.cross(cg_world, gravity_force_stab),
+                "M_transport_B": np.cross(cg_world, f_transport),
+                "M_gyro_B": -np.cross(omega_total, inertia_b_world @ omega_total),
+                "cg_world": np.asarray(cg_world, dtype=float),
+            }
+            return force, moment_b, res, contributions
         return force, moment_b, res
 
     zero3 = np.zeros(3, dtype=float)

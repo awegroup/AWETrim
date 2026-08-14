@@ -247,6 +247,7 @@ def static_slopes_summary(
     stability: dict[str, Any],
     base: dict[str, Any] | None = None,
     attitude_axes: dict[str, np.ndarray] | None = None,
+    euler_rate_matrix: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Six static-stability tangents from the linearisation alone (no sweeps).
 
@@ -256,7 +257,13 @@ def static_slopes_summary(
     when the stability dict was built with ``course_rate_state=True``) and
     the yaw-rate column give the chi_dot decomposition. Attitude axes
     default to the course frame — pass body axes (rows, world components)
-    for the body-axes trio.
+    for the body-axes trio, together with ``euler_rate_matrix``: the
+    linearisation's attitude columns are per EULER ANGLE of the
+    ``R_yaw R_pitch R_roll`` composition, so a rotation about a non-frame
+    axis ``b`` has Euler tangents ``E^-1 b`` (columns of E:
+    ``[R_yaw R_pitch e_x, R_yaw e_y, e_z]`` at the trim attitude). Omitting
+    E for body axes misattributes part of the pitch column into roll/yaw
+    once the trim attitude is nonzero.
 
     Sign conventions: restoring iff slope < 0 for the five stiffness
     channels; chi_dot damping iff the coordinated slope > 0 — the slope is
@@ -278,8 +285,14 @@ def static_slopes_summary(
     mass = float(stability["mass"])
     names9 = lin["state_names_cg9"]
     J9 = np.asarray(lin["J_cg9"], dtype=float)
+    def _components(axis: np.ndarray) -> np.ndarray:
+        axis = np.asarray(axis, dtype=float)
+        if euler_rate_matrix is None:
+            return rows_axes @ axis
+        return np.linalg.solve(np.asarray(euler_rate_matrix, dtype=float), axis)
+
     slopes = {
-        channel: float(axis @ (K @ (rows_axes @ np.asarray(axis, dtype=float))))
+        channel: float(axis @ (K @ _components(axis)))
         for channel, axis in attitude_axes.items()
     }
     slopes["v_tau"] = mass * J9[0, names9.index("u")]

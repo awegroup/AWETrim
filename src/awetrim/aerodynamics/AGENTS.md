@@ -335,12 +335,22 @@ Primitives kept here for AWEDesign (and general use):
   chi_dot damping iff slope > 0 (`timeder_angle_course` sense — a positive
   turn rate rotates about `-e_radial`). Attitude axes default to the course
   frame; pass principal body axes (rows, world components) for the
-  body-axes trio. Helpers: `attitude_moment_matrix` (K [3x3], world moment
-  per rad about each frame axis — contract with any rotation axis for
-  first-order tangents) and `attitude_slope_from_lin` (one column in moment
-  units; also valid on the rate columns, e.g. the yaw-damping reference).
-  Consumers: `scripts/aerodynamics/compute_stability_derivatives.py` and
-  the wes-quasi-steady static pipeline.
+  body-axes trio TOGETHER WITH `euler_rate_matrix`: the attitude columns
+  are per EULER ANGLE of the `R_yaw R_pitch R_roll` composition, so a
+  rotation about a non-frame axis `b` has Euler tangents `E^-1 b` (columns
+  of E: `[R_yaw R_pitch e_x, R_yaw e_y, e_z]` at trim attitude); raw axis
+  components misattribute the pitch column into roll/yaw at nonzero trim
+  attitude (35% on the B-form roll at state A). Helpers:
+  `attitude_moment_matrix` (K [3x3], world moment per rad about each frame
+  axis) and `attitude_slope_from_lin` (one column in moment units; also
+  valid on the rate columns, e.g. the yaw-damping reference).
+  `eval_force_moment(..., with_contributions=True)` appends a 4th return
+  element: the per-contributor B-point breakdown (F_aero/F_tether/
+  F_gravity/F_transport/F_centripetal; M_aero_B/M_gravity_B/M_transport_B/
+  M_gyro_B — the tether has no moment about B), consumed by the pivot-B
+  static sweeps. Consumers:
+  `scripts/aerodynamics/compute_stability_derivatives.py` and the
+  wes-quasi-steady static pipeline.
 
   `linearise_cg_eom(stability)` linearises the CG form over `CG_STATE_NAMES`
   = 9 states (no `v` — the normal momentum row is the chi_dot_turn closure,
