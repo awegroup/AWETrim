@@ -487,13 +487,16 @@ Public functions should use these names:
 
 ## Stability Script Configuration
 
-`scripts/aerodynamics/compute_stability_derivatives.py` accepts an optional
-YAML stability config with:
-
-- `states`: list or comma-separated string of stability state names, or `all`
-- `coupled`: boolean selecting coupled vs longitudinal/lateral block assembly
-- `frame`: `course` or `body`; course is the default, body requires an
-  identified rigid-body result so principal body axes are available
+`scripts/aerodynamics/compute_stability_derivatives.py` is the STATIC
+stability driver: trim → `compute_vsm_trim_stability_derivatives` (always
+course-frame `DEFAULT_AXES`, always `course_rate_state=True`) →
+`static_slopes_summary` verdict table + `J_full`/`J_course_rate` diagnostics
+and JSON. No modal/eigenmode analysis (the modal version is recoverable from
+git history). `--stability-frame body` no longer changes the linearisation
+axes — it additionally reports the attitude slopes about the principal body
+axes at trim (`rigid_body_axes` cloud, rotated by the trim attitude) via the
+`attitude_axes=` argument of `static_slopes_summary`; the old
+`stability_config.yaml` (`states`/`coupled`/`frame`) is gone.
 
 ## Trim State Convention
 

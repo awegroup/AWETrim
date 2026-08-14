@@ -15,7 +15,7 @@ By default each script writes to `results/aerodynamics/<script_name>/`.
 | Script | What it does | Key outputs |
 |--------|--------------|-------------|
 | [`solve_single_state.py`](solve_single_state.py) | Solves one VSM quasi-steady trim state for the kite at a chosen operating point. Optionally trims on a **deformed** shape from an aerostructural run (`--deformed-from <case_dir>`) and can close the trim with the distributed-mass `WilliamsTether`. | Trim summary (α, pitch, force coefficients), kite+tether 3-D figure, optional `--output-json`. |
-| [`compute_stability_derivatives.py`](compute_stability_derivatives.py) | Computes the longitudinal and lateral aerodynamic stability derivatives about a trim point by finite-differencing the VSM trim, then assembles the linearised system to extract the flight-dynamic eigenmodes. Animates each eigenmode and draws its (non-dimensional) mode shape. | Stability-derivative JSON, eigenvalue/mode-shape figures, per-mode animated GIFs. |
+| [`compute_stability_derivatives.py`](compute_stability_derivatives.py) | Computes the aerodynamic stability derivatives about a trim point by finite-differencing the VSM trim (the raw `J_full` columns), then reports the six-channel **static-stability** verdict via `static_slopes_summary` (roll/pitch/yaw/v_tau/radial stiffness + chi_dot turn damping). `--stability-frame body` additionally reports the attitude slopes about the identified principal body axes at trim. The previous modal/eigenmode version is recoverable from git history. | Static-verdict table on stdout, stability-derivative JSON (trim + `J_full` + static summary), FD-Jacobian heatmap figure. |
 
 ### `parametric_shapes/`
 
@@ -28,9 +28,9 @@ Design-study scripts that morph the baseline geometry and re-evaluate it with VS
 
 ## Example outputs
 
-<img src="../../docs/img/kite_tether_states.png" alt="Single trim state: kite and tether" width="300"> <img src="../../docs/img/stability_eigenvalues.png" alt="VSM trim stability eigenvalues" width="300">
+<img src="../../docs/img/kite_tether_states.png" alt="Single trim state: kite and tether" width="300">
 
-*Left: `solve_single_state.py` — kite and tether at two trim states in the wind frame. Right: `compute_stability_derivatives.py` — longitudinal and lateral trim eigenvalues in the course frame.*
+*`solve_single_state.py` — kite and tether at two trim states in the wind frame.*
 
 <img src="../../docs/img/shape_comparison.png" alt="Parametric wing shape variations" width="320"> <img src="../../docs/img/aero_comparison.png" alt="Aero comparison of wing variants" width="520">
 
