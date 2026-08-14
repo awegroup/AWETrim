@@ -60,6 +60,7 @@ from awetrim.aerodynamics.vsm_quasi_steady import (
     ALL_STATE_NAMES,
     DEFAULT_AXES,
     _compose_attitude_rotation,
+    _system_model_mass_total,
     compute_vsm_trim_stability_derivatives,
     solve_vsm_qs_trim_with_williams_tether,
     solve_vsm_quasi_steady_trim,
@@ -81,12 +82,16 @@ from awetrim.identification.rigid_body_axes import (
 # defaults, so the matching CLI flags (--elevation-deg, --azimuth-deg,
 # --course-deg, --wind-speed, --radial-speed, --distance-radial) still
 # override them when provided.
+#: Default operating condition: the validated powered reel-out crosswind
+#: state (state A of the wes-quasi-steady representative states) — with the
+#: Williams joint solve, gravity on, and the powered_2019 deformed shape it
+#: trims physically (moment residuals ~1e-13).
 OPERATING_CONDITION = {
     "elevation_deg": 30.0,
-    "azimuth_deg": 10.0,
+    "azimuth_deg": 0.0,
     "course_deg": 90.0,
-    "wind_speed": 8.0,
-    "radial_speed": 1.5,
+    "wind_speed": 12.0,
+    "radial_speed": 1.0,
     "distance_radial": 250.0,
 }
 
@@ -243,6 +248,16 @@ def main() -> None:
     add_common_arguments(parser)
     # Apply the script-level operating condition as defaults (CLI still overrides).
     parser.set_defaults(**OPERATING_CONDITION)
+    # Gravity ON by default (common.py's --include-gravity flag is a
+    # store_true whose default is off; a gravity-free "trim" leaves the
+    # weight unbalanced and every static verdict off-equilibrium).
+    parser.set_defaults(include_gravity=True)
+    parser.add_argument(
+        "--no-gravity",
+        action="store_true",
+        help="Solve trim and linearise without the kite weight "
+        "(overrides the gravity-on default).",
+    )
     parser.add_argument(
         "--deformed-case",
         default=None,
@@ -315,6 +330,8 @@ def main() -> None:
         help="struc_geometry.yaml to use with --rigid-body-result (auto-detected if omitted).",
     )
     args = parser.parse_args()
+    if args.no_gravity:
+        args.include_gravity = False
 
     # Resolve the deformed-results case selection (--deformed-case / --list-cases).
     kite_name = Path(args.config_folder).name
@@ -466,6 +483,11 @@ def main() -> None:
     print("  linearisation axes: course (always)")
 
     system_model = build_system_model(args, mass_wing=mass_wing)
+    # Linearisation mass must be the mass the trim balanced: wing + KCU (the
+    # system.yaml KCU mass joins mass_wing inside the system model). Passing
+    # mass_wing alone leaves the KCU weight/inertial force out of the
+    # linearisation base and the trim point sits ~m_kcu*g off equilibrium.
+    mass_kite = float(_system_model_mass_total(system_model))
     # Robust Williams detection: ``isinstance`` can miss it when ``awetrim`` is
     # importable via two paths (the src path injected by common.py and an
     # installed copy), giving two distinct class objects.
@@ -516,7 +538,7 @@ def main() -> None:
         x_trim=np.asarray(result["opt_x"], dtype=float),
         trim_result=result,
         system_model=system_model,
-        mass=mass_wing,
+        mass=mass_kite,
         # Full CG tensor (zero-attitude geometry basis).
         inertia_cg=inertia_cg,
         axes=DEFAULT_AXES,
@@ -527,6 +549,10 @@ def main() -> None:
         eps_position=args.eps_position,
         eps_course_rate=args.eps_course_rate,
         course_rate_state=True,
+        # Must match the trim's gravity setting: the library defaults to
+        # gravity ON, which puts the linearisation base off-equilibrium
+        # (net force = the unbalanced weight) after a gravity-off trim.
+        include_gravity=args.include_gravity,
     )
 
     # --- Diagnostic: course-frame transport rate used for the gyroscopic term --
@@ -691,7 +717,8 @@ def main() -> None:
                 ),
             },
             "inertia": {
-                "mass": mass_wing,
+                "mass": mass_kite,
+                "mass_wing": mass_wing,
                 "inertia_xx": inertia_xx,
                 "inertia_yy": inertia_yy,
                 "inertia_zz": inertia_zz,
