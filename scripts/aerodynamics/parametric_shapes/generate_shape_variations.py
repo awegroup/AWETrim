@@ -120,7 +120,7 @@ def parse_args() -> argparse.Namespace:
         "figures. Use --no-run-vsm to skip (default: on).",
     )
     parser.add_argument("--vsm-src", default=str(DEFAULT_VSM_SRC))
-    parser.add_argument("--n-panels", type=int, default=18)
+    parser.add_argument("--n-panels", type=int, default=27)
     parser.add_argument("--spanwise-panel-distribution", default="uniform")
     parser.add_argument("--umag", type=float, default=20.0, help="Apparent wind [m/s].")
     parser.add_argument(

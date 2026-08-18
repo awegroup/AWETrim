@@ -60,7 +60,7 @@ class VSMAeroModelAdapter:
         self,
         config_folder: Path | str,
         *,
-        n_panels: int = 18,
+        n_panels: int = 27,
         center_of_gravity: Optional[np.ndarray] = None,
         reference_point: Optional[np.ndarray] = None,
         x_guess: Optional[np.ndarray] = None,

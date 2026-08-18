@@ -60,7 +60,9 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
             "shape."
         ),
     )
-    parser.add_argument("--n-panels", type=int, default=18)
+    # 27 matches the coupled aerostructural solver's mesh for the LEI-V3 struc
+    # geometry ((10 ribs - 1) x 3 panels/section).
+    parser.add_argument("--n-panels", type=int, default=27)
     parser.add_argument("--spanwise-panel-distribution", default="uniform")
     parser.add_argument("--reference-point", default="0,0,0")
     parser.add_argument("--center-of-gravity", default="0.5,0,5")
@@ -86,7 +88,7 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--course-deg", type=float, default=90.0)
     parser.add_argument("--radial-speed", type=float, default=0.0)
     parser.add_argument("--distance-radial", type=float, default=200.0)
-    parser.add_argument("--x-guess", default="20,0,0,0,0")
+    parser.add_argument("--x-guess", default="40,0,0,0,0")
     parser.add_argument("--bounds-lower", default="-2,-15,-15,-15,-5")
     parser.add_argument("--bounds-upper", default="80,15,15,15,5")
     parser.add_argument(
