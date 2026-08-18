@@ -93,8 +93,10 @@ components:
         id: T2
     structure:
       length: 350.0        # m  (max operational reference length)
-      diameter: 0.010      # m  (10 mm)
-      density: 970.0       # kg/m³  (Dyneema SK78)
+      diameter: 0.004      # m  (4 mm) — as flown; drag area scales with this
+      density: 724.0       # kg/m³  effective density of the braided rope, not of
+                           # the SK78 fibre (970): with the rope's own diameter it
+                           # is the rope's mass per metre that has to come out right
       max_tether_force: 8400.0  # N
       conductive: false
       material:
