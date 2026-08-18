@@ -123,14 +123,24 @@ def _run_vsm_direct_fallback(body_aero, solver, system_model, current_guess):
     mass_total = float(system_model.kite.mass_wing) + float(
         getattr(system_model.kite, "mass_kcu", 0.0)
     )
-    inertial_force = -mass_total * np.asarray(
-        trans @ np.asarray(system_model.acceleration_course_body, dtype=float),
-        dtype=float,
-    ).reshape(3)
-    gravity_force = np.asarray(
-        trans @ np.asarray(system_model.force_gravity, dtype=float),
-        dtype=float,
-    ).reshape(3)
+    # SystemModel does not expose these as plain numeric attributes (they live
+    # in the CasADi expression registry); a missing one must not crash the
+    # fallback -- this path already reports success=False, and the coupled loop
+    # only needs F_distribution to keep stepping. Zero is the QS assumption.
+    def _course_vector(attribute):
+        value = getattr(system_model, attribute, None)
+        if value is None:
+            print(
+                f"WARNING: system_model has no numeric {attribute!r}; "
+                "fallback uses zeros."
+            )
+            return np.zeros(3)
+        return np.asarray(
+            trans @ np.asarray(value, dtype=float), dtype=float
+        ).reshape(3)
+
+    inertial_force = -mass_total * _course_vector("acceleration_course_body")
+    gravity_force = _course_vector("force_gravity")
 
     guess = np.asarray(current_guess, dtype=float).reshape(5)
     fallback_opt_x = np.array(DEFAULT_GUESS_QS, dtype=float)
