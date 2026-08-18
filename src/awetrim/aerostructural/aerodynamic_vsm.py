@@ -63,6 +63,7 @@ def _alpha_stall_from_polar(polar_data: np.ndarray) -> float:
     stall is not detectable from this polar and the panel is never flagged.
     """
     import math
+
     polar = np.asarray(polar_data)
     cl = polar[:, 1]
     alpha = polar[:, 0]
@@ -192,9 +193,7 @@ def initialize(
         is_with_artificial_viscosity=aero_cfg.get(
             "is_with_artificial_viscosity", False
         ),
-        artificial_viscosity_factor=aero_cfg.get(
-            "artificial_viscosity_factor", 0.035
-        ),
+        artificial_viscosity_factor=aero_cfg.get("artificial_viscosity_factor", 0.035),
     )
 
     # For QSM, wind speed comes from system model configuration (wind_speed_wind_ref).
@@ -536,8 +535,13 @@ def plot_aero_forces_with_frames(
         ax.plot(xs, ys, zs, color="dimgrey", linewidth=0.8, alpha=0.6)
 
     ax.scatter(
-        struc_nodes[:, 0], struc_nodes[:, 1], struc_nodes[:, 2],
-        s=10, c="dimgrey", alpha=0.5, zorder=2,
+        struc_nodes[:, 0],
+        struc_nodes[:, 1],
+        struc_nodes[:, 2],
+        s=10,
+        c="dimgrey",
+        alpha=0.5,
+        zorder=2,
     )
 
     # ── aerodynamic force arrows at panel ACs ─────────────────────────────────
@@ -545,38 +549,82 @@ def plot_aero_forces_with_frames(
     for k in range(len(cp)):
         fvec = f_aero_panel[k] * force_scale
         ax.quiver(
-            cp[k, 0], cp[k, 1], cp[k, 2],
-            fvec[0], fvec[1], fvec[2],
-            color="tab:orange", linewidth=1.2, arrow_length_ratio=0.2,
+            cp[k, 0],
+            cp[k, 1],
+            cp[k, 2],
+            fvec[0],
+            fvec[1],
+            fvec[2],
+            color="tab:orange",
+            linewidth=1.2,
+            arrow_length_ratio=0.2,
         )
     # single legend proxy for forces
-    ax.quiver([], [], [], [], [], [], color="tab:orange", linewidth=1.2,
-              label=f"Aero force (max={f_max:.1f} N)")
+    ax.quiver(
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        color="tab:orange",
+        linewidth=1.2,
+        label=f"Aero force (max={f_max:.1f} N)",
+    )
 
     # ── frame triads: shared colours (x=red, y=green, z=blue) ────────────────
     frame_colors = ["tab:red", "tab:green", "tab:blue"]
 
     # course frame at origin (dashed, thinner)
-    course_axes = np.array([[-1., 0., 0.], [0., -1., 0.], [0., 0., 1.]])
+    course_axes = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]])
     course_labels = ["$X_C$", "$Y_C$", "$Z_C$"]
     for k, (col, lbl) in enumerate(zip(frame_colors, course_labels)):
         tip = course_axes[k] * frame_len * 0.6
-        ax.quiver(0, 0, 0, tip[0], tip[1], tip[2],
-                  color=col, linewidth=1.0, arrow_length_ratio=0.15,
-                  linestyle="dashed", alpha=0.55)
+        ax.quiver(
+            0,
+            0,
+            0,
+            tip[0],
+            tip[1],
+            tip[2],
+            color=col,
+            linewidth=1.0,
+            arrow_length_ratio=0.15,
+            linestyle="dashed",
+            alpha=0.55,
+        )
         ax.text(*(tip * 1.08), lbl, color=col, fontsize=7)
-    ax.plot([], [], color="grey", linestyle="dashed", linewidth=1.0,
-            label="Course frame $C$")
+    ax.plot(
+        [],
+        [],
+        color="grey",
+        linestyle="dashed",
+        linewidth=1.0,
+        label="Course frame $C$",
+    )
 
     # body frame at CG (solid, thicker)
     body_labels = ["$x_K$", "$y_K$", "$z_K$"]
     for k, (col, lbl) in enumerate(zip(frame_colors, body_labels)):
         tip = body_axes[k] * frame_len
-        ax.quiver(*cg, tip[0], tip[1], tip[2],
-                  color=col, linewidth=2.2, arrow_length_ratio=0.15)
+        ax.quiver(
+            *cg,
+            tip[0],
+            tip[1],
+            tip[2],
+            color=col,
+            linewidth=2.2,
+            arrow_length_ratio=0.15,
+        )
         ax.text(*(cg + tip * 1.08), lbl, color=col, fontsize=7)
-    ax.plot([], [], color="grey", linestyle="solid", linewidth=2.0,
-            label="Body frame $K$ (inertia)")
+    ax.plot(
+        [],
+        [],
+        color="grey",
+        linestyle="solid",
+        linewidth=2.0,
+        label="Body frame $K$ (inertia)",
+    )
 
     ax.scatter(*cg, s=80, c="black", marker="*", zorder=5, label="CG")
 

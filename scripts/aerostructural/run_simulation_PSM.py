@@ -722,23 +722,65 @@ def main():
     print("\n=== Bridle forces at KCU (node 0) ===")
     print(f"{'line':14s} {'ci':>4s}->{'cj':<4s} {'|T| [N]':>10s}   F [N]")
     for name, ci, cj, T, F in per_line:
-        print(f"{name:14s} {ci:>4d}->{cj:<4d} {T:>10.2f}   [{F[0]:+8.2f}, {F[1]:+8.2f}, {F[2]:+8.2f}]")
-    print(f"\nFront sum (A-side, amain):                |T|={T_front:.2f} N, F={F_front}")
+        print(
+            f"{name:14s} {ci:>4d}->{cj:<4d} {T:>10.2f}   [{F[0]:+8.2f}, {F[1]:+8.2f}, {F[2]:+8.2f}]"
+        )
+    print(
+        f"\nFront sum (A-side, amain):                |T|={T_front:.2f} N, F={F_front}"
+    )
     print(f"Back  sum (Power Tape + Steering Tape):   |T|={T_back:.2f} N, F={F_back}")
     print(f"Resultant at KCU:                         F={F_front + F_back}\n")
 
     bridle_csv_path = results_dir / "kcu_bridle_forces.csv"
     with bridle_csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["line", "ci", "cj", "side", "tension_N", "Fx_N", "Fy_N", "Fz_N"])
+        writer.writerow(
+            ["line", "ci", "cj", "side", "tension_N", "Fx_N", "Fy_N", "Fz_N"]
+        )
         for name, ci, cj, T, F in per_line:
-            side = "front" if name in front_line_names else ("back" if name in back_line_names else "other")
-            writer.writerow([name, ci, cj, side, f"{T:.6f}", f"{F[0]:.6f}", f"{F[1]:.6f}", f"{F[2]:.6f}"])
-        writer.writerow(["FRONT_SUM", "", "", "front", f"{T_front:.6f}", f"{F_front[0]:.6f}", f"{F_front[1]:.6f}", f"{F_front[2]:.6f}"])
-        writer.writerow(["BACK_SUM", "", "", "back", f"{T_back:.6f}", f"{F_back[0]:.6f}", f"{F_back[1]:.6f}", f"{F_back[2]:.6f}"])
+            side = (
+                "front"
+                if name in front_line_names
+                else ("back" if name in back_line_names else "other")
+            )
+            writer.writerow(
+                [
+                    name,
+                    ci,
+                    cj,
+                    side,
+                    f"{T:.6f}",
+                    f"{F[0]:.6f}",
+                    f"{F[1]:.6f}",
+                    f"{F[2]:.6f}",
+                ]
+            )
+        writer.writerow(
+            [
+                "FRONT_SUM",
+                "",
+                "",
+                "front",
+                f"{T_front:.6f}",
+                f"{F_front[0]:.6f}",
+                f"{F_front[1]:.6f}",
+                f"{F_front[2]:.6f}",
+            ]
+        )
+        writer.writerow(
+            [
+                "BACK_SUM",
+                "",
+                "",
+                "back",
+                f"{T_back:.6f}",
+                f"{F_back[0]:.6f}",
+                f"{F_back[1]:.6f}",
+                f"{F_back[2]:.6f}",
+            ]
+        )
     print(f"Saved KCU bridle force distribution to {bridle_csv_path}")
 
 
 if __name__ == "__main__":
     main()
-
