@@ -279,6 +279,8 @@ def main(
         initial_polar_data=initial_polar_data,
         include_gravity=config["is_with_gravity"],
         is_with_plot=config["is_with_aero_plot_per_iteration"],
+        # Trim search bounds come from config["quasi_steady_trim"].
+        config=config,
     )
     logging.debug(
         f"Aero symmetry check, f_aero_y: {np.sum([force[1] for force in f_aero_wing_vsm_format])}"
@@ -447,6 +449,8 @@ def main(
                     initial_polar_data=initial_polar_data,
                     include_gravity=config["is_with_gravity"],
                     is_with_plot=config["is_with_aero_plot_per_iteration"],
+                    # Trim search bounds come from config["quasi_steady_trim"].
+                    config=config,
                 )
             )
             logging.debug(
@@ -866,6 +870,16 @@ def main(
         "converged": is_convergence,
         "qs_success": bool(results_aero.get("success", False)),
         "opt_x": opt_x,
+        # The gravity flag this solve actually ran with: it gates BOTH the
+        # structural weight and the internal trim, so callers audit it rather
+        # than trust whatever the kite's as_config.yaml said at launch time.
+        "is_with_gravity": bool(config["is_with_gravity"]),
+        # The internal trim's own moment residuals at opt_x. In deep stall
+        # least_squares can park on a residual plateau (|cmx| ~ 5e-2 observed)
+        # while still reporting success -- downstream re-solves of the same
+        # model converge tighter, so keep the evidence of how converged THIS
+        # trim actually was.
+        "qs_cm": np.asarray(results_aero.get("cm", [np.nan] * 3), dtype=float),
         "aero_roll_deg": float(results_aero.get("aero_roll_deg", np.nan)),
         "aoa_deg": float(results_aero.get("aoa_deg", np.nan)),
         # Freestream angle of attack atan2(va_z, va_x). This is the value the trim

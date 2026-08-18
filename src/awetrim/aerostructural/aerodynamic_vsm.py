@@ -35,7 +35,7 @@ from awetrim.aerodynamics.vsm_quasi_steady import (
 )
 
 # Bounds and defaults (aoa, sideslip, course_rate_body)
-kite_speed_bounds = (1.0, 50.0)  # m/s
+kite_speed_bounds = (-2.0, 50.0)  # m/s
 pitch_bounds = (-10, 10)  # deg
 yaw_bounds = (-10, 10)  # deg
 course_rate_bounds = (
@@ -50,6 +50,46 @@ roll_bounds = (
 DEFAULT_GUESS_QS = np.array(
     [30.0, 0.0, 0.0, 0.0, -0.0]
 )  # [kite_speed, roll, pitch, yaw, course_rate_body]
+
+
+#: Trim-state names, for the on-bound diagnostic below.
+_QS_STATE_NAMES = ("kite_speed", "roll", "pitch", "yaw", "course_rate")
+
+
+def _warn_if_trim_on_bounds(opt_x, bounds_lower, bounds_upper, rel_tol=1e-6) -> list:
+    """Warn for each trim unknown that ended on its search bound.
+
+    ``least_squares`` reports ``success=True`` for a constrained optimum, so a
+    trim pinned against a bound looks converged while being no equilibrium at
+    all -- the force balance wanted a value the box forbade. Returns the list of
+    ``(name, value, "lower"/"upper")`` that are pinned (empty if none).
+    """
+    if opt_x is None:
+        return []
+    x = np.asarray(opt_x, dtype=float).ravel()
+    lo = np.asarray(bounds_lower, dtype=float).ravel()
+    hi = np.asarray(bounds_upper, dtype=float).ravel()
+    if x.size != lo.size or x.size != hi.size:
+        return []
+    pinned = []
+    for i, name in enumerate(_QS_STATE_NAMES[: x.size]):
+        span = max(abs(hi[i] - lo[i]), 1e-12)
+        if abs(x[i] - lo[i]) <= rel_tol * span:
+            pinned.append((name, float(x[i]), "lower"))
+        elif abs(x[i] - hi[i]) <= rel_tol * span:
+            pinned.append((name, float(x[i]), "upper"))
+    for name, value, which in pinned:
+        logging.warning(
+            "Quasi-steady trim is pinned on its %s bound: %s = %.6g. This is a "
+            "constrained optimum, NOT an equilibrium -- widen the bound "
+            "(quasi_steady.%s_bounds* in the config) or the deformed shape and "
+            "everything downstream describe a state the kite cannot fly.",
+            which,
+            name,
+            value,
+            name,
+        )
+    return pinned
 
 
 def _alpha_stall_from_polar(polar_data: np.ndarray) -> float:
@@ -256,6 +296,7 @@ def run_vsm_package(
     include_gravity=False,
     is_with_plot=False,
     current_guess=None,
+    config=None,
 ):
     """
     Run quasi-steady aerodynamic solve for the current structural geometry.
@@ -289,23 +330,29 @@ def run_vsm_package(
     # So we call the underlying setter method directly using the descriptor protocol
     # type(body_aero).va.fset(body_aero, va_vector)
 
+    # Trim search bounds. The module constants above are the defaults; a
+    # ``config`` with a ``quasi_steady`` block overrides them. Those YAML keys
+    # (kite_speed_bounds_ms, roll_bounds_deg, ...) already existed in
+    # as_config.yaml and read as if they configured this solve, but nothing
+    # consulted them -- so the hard-coded values silently won. That matters for
+    # near-stationary states: a kite whose trim speed is below
+    # kite_speed_bounds[0] cannot be represented at all, and the optimiser
+    # returns a bound-constrained point that is NOT an equilibrium.
+    # The kite configs name this block ``quasi_steady_trim``; ``quasi_steady``
+    # is accepted as an alias so either spelling works.
+    _cfg = config or {}
+    qs_cfg = _cfg.get("quasi_steady_trim") or _cfg.get("quasi_steady") or {}
+    speed_b = tuple(qs_cfg.get("kite_speed_bounds_ms", kite_speed_bounds))
+    roll_b = tuple(qs_cfg.get("roll_bounds_deg", roll_bounds))
+    pitch_b = tuple(qs_cfg.get("pitch_bounds_deg", pitch_bounds))
+    yaw_b = tuple(qs_cfg.get("yaw_bounds_deg", yaw_bounds))
+    rate_b = tuple(qs_cfg.get("course_rate_bounds_rad_s", course_rate_bounds))
+
     bounds_lower = np.array(
-        [
-            kite_speed_bounds[0],
-            roll_bounds[0],
-            pitch_bounds[0],
-            yaw_bounds[0],
-            course_rate_bounds[0],
-        ]
+        [speed_b[0], roll_b[0], pitch_b[0], yaw_b[0], rate_b[0]]
     )
     bounds_upper = np.array(
-        [
-            kite_speed_bounds[1],
-            roll_bounds[1],
-            pitch_bounds[1],
-            yaw_bounds[1],
-            course_rate_bounds[1],
-        ]
+        [speed_b[1], roll_b[1], pitch_b[1], yaw_b[1], rate_b[1]]
     )
     if current_guess is None:
         current_guess = DEFAULT_GUESS_QS
@@ -336,6 +383,13 @@ def run_vsm_package(
                 system_model=system_model,
                 current_guess=current_guess,
             )
+        else:
+            # A trim sitting ON a search bound is a constrained optimum, not an
+            # equilibrium: the solution the force balance wants lies outside the
+            # box. ``success`` is still True there, so this would otherwise pass
+            # silently and every downstream result would inherit a state the
+            # kite cannot actually fly.
+            _warn_if_trim_on_bounds(results.get("opt_x"), bounds_lower, bounds_upper)
     except ValueError as exc:
         # Typical case: non-finite residual in initial optimizer point.
         print(
