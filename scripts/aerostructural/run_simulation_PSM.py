@@ -645,10 +645,44 @@ def solve_deformation(
         else tether_struct["diameter"]
     )
     _tether_rho = tether_struct.get("density", 970.0)
-    tether = RigidLumpedTether(diameter=_tether_d, density=_tether_rho)
+    # Tether class from the config's ``tether.model`` (diameter/density still
+    # come from system.yaml). This only affects the trim when
+    # ``tether.include_in_trim`` is set -- the tetherless trim never reads
+    # system_model.tether, so the choice is inert otherwise.
+    _tether_cfg = config.get("tether", {}) or {}
+    _tether_model = str(_tether_cfg.get("model", "rigid_lumped")).lower()
+    if _tether_model == "williams":
+        from awetrim.system.williams_tether import WilliamsTether
+
+        tether = WilliamsTether(
+            diameter=_tether_d,
+            density=_tether_rho,
+            n_elements=int(_tether_cfg.get("n_elements", 10)),
+            elastic=bool(_tether_cfg.get("is_elastic", False)),
+            cf=float(_tether_cfg.get("cf", 0.01)),
+        )
+    else:
+        tether = RigidLumpedTether(diameter=_tether_d, density=_tether_rho)
+    logging.info(
+        "Tether model for the deformation: %s (d=%.4f m, rho=%.1f kg/m3), "
+        "include_in_trim=%s",
+        type(tether).__name__,
+        _tether_d,
+        _tether_rho,
+        bool(_tether_cfg.get("include_in_trim", False)),
+    )
     mass_total = float(np.sum(m_arr))
     print(f"Total structural mass (sum of particle masses): {mass_total:.3f} kg")
     system_model = build_system_model(system_config_path, tether, m_arr, config)
+    # Report the tether the system model ACTUALLY ends up with. The factory
+    # inside build_system_model prints the tether it built from system.yaml and
+    # is then overwritten by ``tether`` -- so that earlier line is stale and
+    # reads as if rigid-lumped were in use even when it is not.
+    print(
+        f"  -> system model tether in use: {type(system_model.tether).__name__} "
+        f"(diameter={system_model.tether.diameter_tether:g}, "
+        f"in trim={bool(_tether_cfg.get('include_in_trim', False))})"
+    )
 
     ########################################
     ### AEROSTUCTURAL COUPLED SIMULATION ###
@@ -695,6 +729,12 @@ def solve_deformation(
 
     # Save results
     h5_path = save_sim_output(tracking_data, meta, results_dir)
+    # The final coupled trim's converged circulation, as a plain .npy next to
+    # the geometry snapshot: snapshot re-solves seed their gamma loop with it
+    # (branch selection near stall) without having to open the h5.
+    gamma_final = np.asarray(meta.get("gamma_distribution", []), dtype=float)
+    if gamma_final.size:
+        np.save(Path(results_dir) / "gamma_distribution.npy", gamma_final)
     final_nodes = np.asarray(tracking_data["positions"][meta["n_iter"] - 1])
     save_geometry_snapshot(
         config,

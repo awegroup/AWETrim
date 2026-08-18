@@ -31,6 +31,7 @@ from VSM.core.Solver import Solver
 from VSM.plot_geometry_matplotlib import plot_geometry
 from awetrim.aerodynamics.vsm_quasi_steady import (
     solve_quasi_steady_state,
+    solve_vsm_qs_trim_with_williams_tether,
     DEFAULT_TRANSFORMATION_C_FROM_VSM,
 )
 
@@ -346,6 +347,7 @@ def run_vsm_package(
     config=None,
     struc_nodes=None,
     bridle_line_specs=None,
+    gamma_seed=None,
 ):
     """
     Run quasi-steady aerodynamic solve for the current structural geometry.
@@ -415,21 +417,58 @@ def run_vsm_package(
     if current_guess is None:
         current_guess = DEFAULT_GUESS_QS
 
+    # Tether in the trim (opt-in). The default trim is TETHERLESS: its residuals
+    # are the tangential force balance only, so the tether is implicitly
+    # massless, dragless and perfectly radial. With
+    # ``config["tether"]["include_in_trim"]`` true the tether-aware trim is used
+    # instead, which carries the tether's off-radial drag and weight:
+    #   'rigid_lumped' -- lumped drag + half weight at the kite, 6th unknown is
+    #                     the radial tension. Needs only diameter/density.
+    #   'williams'     -- full distributed shape with ground closure, 6th
+    #                     unknown is the tether length. Needs a WilliamsTether
+    #                     on the system model, and costs a nested tether solve
+    #                     per residual evaluation.
+    # Default False keeps every existing aerostructural run bit-identical.
+    tether_cfg = (config or {}).get("tether", {}) or {}
+    include_tether_in_trim = bool(tether_cfg.get("include_in_trim", False))
+    tether_model = str(tether_cfg.get("model", "rigid_lumped")).lower()
+
     # Primary path: quasi-steady trim solve.
     try:
         # Preserve the pre-trim body state in case we need direct-solve fallback.
         body_fallback = copy.deepcopy(body_aero)
-        results, body_aero = solve_quasi_steady_state(
-            body_aero=body_aero,
-            center_of_gravity=center_of_gravity,
-            reference_point=reference_point,
-            system_model=system_model,
-            x_guess=current_guess,
-            solver=solver,
-            bounds_lower=bounds_lower,
-            bounds_upper=bounds_upper,
-            include_gravity=include_gravity,
-        )
+        if include_tether_in_trim:
+            results, body_aero = solve_vsm_qs_trim_with_williams_tether(
+                body_aero=body_aero,
+                center_of_gravity=center_of_gravity,
+                reference_point=reference_point,
+                system_model=system_model,
+                x_guess=current_guess,
+                solver=solver,
+                bounds_lower=bounds_lower,
+                bounds_upper=bounds_upper,
+                include_gravity=include_gravity,
+                tether_model=tether_model,
+                # Warm continuation across coupling iterations: the previous
+                # iteration's converged circulation seeds every inner solve of
+                # this trim. In deep stall a cold-started gamma loop is noisy
+                # enough that least_squares parks on a residual plateau
+                # (qs_cm ~ 3e-2 observed) and burns minutes per aero call; the
+                # fixed per-solve seed removes both while staying FD-smooth.
+                gamma_seed=gamma_seed,
+            )
+        else:
+            results, body_aero = solve_quasi_steady_state(
+                body_aero=body_aero,
+                center_of_gravity=center_of_gravity,
+                reference_point=reference_point,
+                system_model=system_model,
+                x_guess=current_guess,
+                solver=solver,
+                bounds_lower=bounds_lower,
+                bounds_upper=bounds_upper,
+                include_gravity=include_gravity,
+            )
         if not results.get("success", False):
             print(
                 "Quasi-steady optimization did not converge to a valid trim state. "

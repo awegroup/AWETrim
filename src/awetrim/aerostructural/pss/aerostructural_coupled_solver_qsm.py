@@ -272,6 +272,10 @@ def main(
 
     cg = calculate_cg(struc_nodes=struc_nodes, m_arr=m_arr)
     ### AERO
+    # Warm gamma continuation across the coupling iterations (see
+    # run_vsm_package): the pre-loop solve is cold, every later trim seeds
+    # from the previous iteration's converged circulation.
+    gamma_seed_prev = None
     f_aero_wing_vsm_format, body_aero, results_aero = aerodynamic_vsm.run_vsm_package(
         body_aero=body_aero,
         solver=vsm_solver,
@@ -279,6 +283,7 @@ def main(
         center_of_gravity=cg,
         struc_nodes=struc_nodes,
         bridle_line_specs=bridle_line_specs,
+        gamma_seed=gamma_seed_prev,
         le_arr=le_arr,
         te_arr=te_arr,
         # va_vector=vel_app,
@@ -286,7 +291,8 @@ def main(
         initial_polar_data=initial_polar_data,
         include_gravity=config["is_with_gravity"],
         is_with_plot=config["is_with_aero_plot_per_iteration"],
-        # Trim search bounds come from config["quasi_steady_trim"].
+        # Lets the trim carry the tether when
+        # config["tether"]["include_in_trim"] is set.
         config=config,
     )
     logging.debug(
@@ -297,6 +303,7 @@ def main(
         results_aero.get("alpha_at_ac"),
         results_aero.get("stall_mask"),
     )
+    gamma_seed_prev = results_aero.get("gamma_distribution", gamma_seed_prev)
     roll, pitch, yaw = results_aero["opt_x"][1:4]
     struc_nodes = rotate_geometry(struc_nodes, angle_deg=[roll, pitch, yaw])
     ### AERO --> STRUC
@@ -444,6 +451,7 @@ def main(
                     center_of_gravity=cg,
                     struc_nodes=struc_nodes,
                     bridle_line_specs=bridle_line_specs,
+                    gamma_seed=gamma_seed_prev,
                     le_arr=le_arr,
                     te_arr=te_arr,
                     current_guess=[
@@ -458,7 +466,8 @@ def main(
                     initial_polar_data=initial_polar_data,
                     include_gravity=config["is_with_gravity"],
                     is_with_plot=config["is_with_aero_plot_per_iteration"],
-                    # Trim search bounds come from config["quasi_steady_trim"].
+                    # Lets the trim carry the tether when
+                    # config["tether"]["include_in_trim"] is set.
                     config=config,
                 )
             )
@@ -498,6 +507,7 @@ def main(
                             qs_stag_n_iter,
                             qs_opt_current_rounded,
                         )
+            gamma_seed_prev = results_aero.get("gamma_distribution", gamma_seed_prev)
             roll, pitch, yaw = results_aero["opt_x"][1:4]
             struc_nodes = rotate_geometry(struc_nodes, angle_deg=[roll, pitch, yaw])
             ### AERO --> STRUC
@@ -907,6 +917,13 @@ def main(
         "cd": float(cd),
         "tether_force": float(tether_force),
         "rest_lengths": rest_lengths,
+        # Converged circulation of the FINAL coupled trim. Downstream re-solves
+        # of the snapshot seed their gamma loop with it (branch selection near
+        # stall); it cannot be reconstructed later -- it is the product of the
+        # warm continuation along the coupled iterations.
+        "gamma_distribution": np.asarray(
+            results_aero.get("gamma_distribution", []), dtype=float
+        ),
         "panel_cp_locations": np.asarray(results_aero.get("panel_cp_locations", []), dtype=float),
         "f_aero_panel": np.asarray(f_aero_wing_vsm_format, dtype=float),
         # Convert kite_connectivity to a numeric array for HDF5 compatibility
