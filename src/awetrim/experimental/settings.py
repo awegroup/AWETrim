@@ -55,10 +55,14 @@ def load_config(project_dir: Path | None = None) -> dict:
 
     Prompts the user for a folder path and loads both:
     - ekf_config.yaml (simulation_parameters, tuning_parameters)
-    - system.yaml or system.yml (physical properties from system structure)
+    - a system YAML chosen from the folder's ``system*.yaml`` files (physical
+      properties from the system structure). With several candidates (e.g.
+      ``system.yaml`` with the 8.4 kg optimisation KCU vs ``system_flown_2019.yaml``
+      with the 22.75 kg flown one) the user picks which system the EKF should
+      assume; a single candidate is used directly.
 
     Merges them into a single config dict with kite, kcu, tether properties
-    automatically extracted from system.yaml.
+    automatically extracted from the chosen system YAML.
 
     Injects _awetrim_kite_name into the returned dict so save_ekf_results can
     place output under results/<kite_name>/ekf/ without extra arguments.
@@ -82,13 +86,26 @@ def load_config(project_dir: Path | None = None) -> dict:
     if not ekf_config_path.exists():
         raise FileNotFoundError(f"ekf_config.yaml not found in {config_folder}")
 
-    system_yaml_path = config_folder / "system.yaml"
-    if not system_yaml_path.exists():
-        system_yaml_path = config_folder / "system.yml"
-    if not system_yaml_path.exists():
-        raise FileNotFoundError(
-            f"system.yaml or system.yml not found in {config_folder}"
+    # Every system variant in the folder is a candidate (system.yaml,
+    # system_flown_2019.yaml, ...); the physical properties the EKF assumes -- KCU
+    # mass above all -- depend on which one is chosen.
+    candidates = sorted(
+        set(config_folder.glob("system*.yaml")) | set(config_folder.glob("system*.yml"))
+    )
+    if not candidates:
+        raise FileNotFoundError(f"No system*.yaml / system*.yml in {config_folder}")
+    if len(candidates) == 1:
+        system_yaml_path = candidates[0]
+    else:
+        print("Available system configuration files:")
+        for index, path in enumerate(candidates, start=1):
+            print(f"{index}: {path.name}")
+        selection = (
+            input(f"Select a system file (1-{len(candidates)}) [default: 1]: ").strip()
+            or "1"
         )
+        system_yaml_path = candidates[int(selection) - 1]
+    print(f"Using system config: {system_yaml_path.name}")
 
     # Load EKF config
     with ekf_config_path.open("r", encoding="utf-8") as fh:
@@ -153,6 +170,9 @@ def load_config(project_dir: Path | None = None) -> dict:
     # Derive kite name from folder name (e.g., data/LEI-V3-KITE → LEI-V3-KITE)
     kite_name = config_folder.name
     config_data[_KITE_NAME_KEY] = kite_name
+    # Record WHICH system variant the EKF assumed; it ends up in the results
+    # h5 config_data group, so a flown-vs-optimisation run is identifiable.
+    config_data["system_yaml_used"] = system_yaml_path.name
 
     print(f"EKF config loaded from: {ekf_config_path}")
     print(f"System config loaded from: {system_yaml_path}")
@@ -199,6 +219,7 @@ def save_ekf_results(
             .str.replace("(", "")
             .str.replace(")", "")
             .str.replace("/", "_")
+            .str.replace("°", "deg")
         )
         return df
 

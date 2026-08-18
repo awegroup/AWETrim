@@ -1,6 +1,8 @@
-# As-flown configuration: KCU mass 22.75 kg (total ~36.33 kg), matching the
-# hardware of the specific flight reproduced in the validation scripts.
-# For optimization studies use system.yaml (KCU 8.4 kg) instead.
+# As-flown configuration of the 2019-10-08 flight: KCU mass 22.75 kg
+# (total ~36.33 kg), 10 mm tether.
+# The 2025-10-09 flight used a different KCU and tether -- see
+# system_flown_2025.yaml. For optimization studies use system.yaml
+# (KCU 8.4 kg) instead.
 metadata:
   name: LEI-V3-KITE
   description: LEI V3 soft kite pumping ground gen system (TU Delft / Kitepower

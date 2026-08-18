@@ -48,7 +48,7 @@ pytestmark = pytest.mark.slow
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 KITE_DIR = REPO_ROOT / "data" / "LEI-V3-KITE"
-SYSTEM_CONFIG_PATH = KITE_DIR / "system_flown.yaml"
+SYSTEM_CONFIG_PATH = KITE_DIR / "system_flown_2019.yaml"
 
 if not KITE_DIR.exists():
     pytest.skip(f"kite data dir missing: {KITE_DIR}", allow_module_level=True)
