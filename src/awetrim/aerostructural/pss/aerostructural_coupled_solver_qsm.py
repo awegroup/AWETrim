@@ -142,6 +142,11 @@ def main(
     vel_app=None,
     initial_polar_data=None,
     bridle_diameter_arr=None,
+    # (node_i, node_j, diameter) segments of the VSM bridle-line drag system
+    # (aerodynamic_vsm.parse_bridle_line_specs); when given, the bridle drag
+    # inside the VSM solve tracks the deforming structure instead of keeping
+    # the initial geometry (update_from_points refreshes wings only).
+    bridle_line_specs=None,
     ### AERO --> STRUC
     aero2struc_mapping=None,
     power_tape_index=None,
@@ -272,6 +277,8 @@ def main(
         solver=vsm_solver,
         system_model=system_model,
         center_of_gravity=cg,
+        struc_nodes=struc_nodes,
+        bridle_line_specs=bridle_line_specs,
         le_arr=le_arr,
         te_arr=te_arr,
         # va_vector=vel_app,
@@ -435,6 +442,8 @@ def main(
                     solver=vsm_solver,
                     system_model=system_model,
                     center_of_gravity=cg,
+                    struc_nodes=struc_nodes,
+                    bridle_line_specs=bridle_line_specs,
                     le_arr=le_arr,
                     te_arr=te_arr,
                     current_guess=[

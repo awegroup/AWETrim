@@ -68,6 +68,15 @@ aero_geometry.yaml
 Fixed-point loop (pss/coupling.PssQsmCoupler.solve  or  pss/aerostructural_coupled_solver_qsm.main):
   1. mapping.LinearStructuralToAeroMapper.map(nodes) → LE/TE points          [common]
   2. body_aero.update_from_points(LE, TE, polar_data)
+     + aerodynamic_vsm.rebuild_bridle_line_system(body, struc_nodes, specs):
+     update_from_points refreshes WINGS only, so the VSM bridle-line drag
+     segments are rebuilt from the live struc_nodes per aero call (specs =
+     aerodynamic_vsm.parse_bridle_line_specs(struc_geometry), the same parse
+     VSM's instantiate(bridle_path=...) does but with node indices). Without
+     this the coupled trim flies the INITIAL symmetric bridle for the whole
+     loop; on actuated shapes the missing asymmetric bridle drag mis-trims
+     roll (measured: cmx ~0.075, phi_a off by ~0.8 deg at 0.2 m steering
+     tape). qsm driver passes bridle_line_specs; coupling.py not yet wired.
   3. aerodynamic_vsm.run_vsm_package() → panel forces + trim state           [common]
   4. mapping.BilinearAeroToStructuralLoadMapper.map_loads(panel_forces) → nodal aero forces  [common]
   5. forces.distribute_total_force_by_particle_mass(inertial+gravity) → nodal inertial forces [common]

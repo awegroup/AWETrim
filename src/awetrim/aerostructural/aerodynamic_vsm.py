@@ -282,6 +282,53 @@ def plot_vsm_geometry(body_aero):
     )
 
 
+def parse_bridle_line_specs(struc_geometry: dict) -> list:
+    """``(node_i, node_j, diameter)`` rows of the VSM bridle-line system.
+
+    Replicates exactly the parse ``BodyAerodynamics.instantiate(bridle_path=...)``
+    performs (``bridle_connections`` rows against the ``bridle_lines`` table,
+    one extra segment for 3-node pulley rows), but keeps NODE INDICES instead
+    of baked-in coordinates -- so the segments can be rebuilt from the live
+    ``struc_nodes`` as the structure deforms. Node ids match the structural
+    array (0 = KCU/bridle point).
+    """
+    if "bridle_connections" not in struc_geometry or "bridle_lines" not in struc_geometry:
+        return []
+    headers = struc_geometry["bridle_lines"]["headers"][1:]
+    lines = {
+        row[0]: dict(zip(headers, row[1:]))
+        for row in struc_geometry["bridle_lines"]["data"]
+    }
+    specs = []
+    for row in struc_geometry["bridle_connections"]["data"]:
+        diameter = float(lines[row[0]]["d"])
+        specs.append((int(row[1]), int(row[2]), diameter))
+        if len(row) == 4:
+            specs.append((int(row[2]), int(row[3]), diameter))
+    return specs
+
+
+def rebuild_bridle_line_system(body_aero, struc_nodes, bridle_line_specs) -> None:
+    """Point the body's bridle-line drag system at the CURRENT node positions.
+
+    ``BodyAerodynamics.update_from_points`` refreshes the wings only; the
+    bridle segments built at ``instantiate`` keep their initial coordinates.
+    On an actuated (steered/depowered) kite the deformed bridle is asymmetric,
+    and its drag carries a roll moment the static initial bridle misses -- the
+    coupled trim then converges to a slightly wrong roll state. Rebuilding the
+    segment list per aero call keeps the bridle drag consistent with the
+    structure the loads come from.
+    """
+    body_aero._bridle_line_system = [
+        [
+            np.asarray(struc_nodes[i], dtype=float).copy(),
+            np.asarray(struc_nodes[j], dtype=float).copy(),
+            diameter,
+        ]
+        for i, j, diameter in bridle_line_specs
+    ]
+
+
 def run_vsm_package(
     body_aero,
     solver,
@@ -297,6 +344,8 @@ def run_vsm_package(
     is_with_plot=False,
     current_guess=None,
     config=None,
+    struc_nodes=None,
+    bridle_line_specs=None,
 ):
     """
     Run quasi-steady aerodynamic solve for the current structural geometry.
@@ -325,6 +374,15 @@ def run_vsm_package(
         aero_input_type=aero_input_type,
         initial_polar_data=initial_polar_data,
     )
+    # update_from_points refreshes wings only; keep the bridle-line drag
+    # segments tracking the deforming structure too (see
+    # rebuild_bridle_line_system). Only when the body was built WITH bridles.
+    if (
+        bridle_line_specs
+        and struc_nodes is not None
+        and getattr(body_aero, "_bridle_line_system", None) is not None
+    ):
+        rebuild_bridle_line_system(body_aero, struc_nodes, bridle_line_specs)
     # set again where velocity vector is coming from
     # The VSM va setter accepts keyword arguments but properties don't support that in Python
     # So we call the underlying setter method directly using the descriptor protocol
