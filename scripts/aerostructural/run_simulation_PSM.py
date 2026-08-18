@@ -402,28 +402,48 @@ def _append_row_to_csv(csv_path, row):
         writer.writerow(row)
 
 
-def main():
-    args = _build_arg_parser().parse_args()
+def solve_deformation(
+    config: dict | None = None,
+    *,
+    config_overrides: dict | None = None,
+    kite_name: str = DEFAULT_KITE_NAME,
+    project_dir=None,
+    results_dir=None,
+    tether_diameter: float | None = None,
+    system_config_path=None,
+) -> dict:
+    """Run one PSS/QSM aerostructural deformation and snapshot the result.
 
-    is_sweep_requested = (
-        args.steering_sweep_start is not None
-        or args.steering_sweep_end is not None
-        or args.steering_sweep_step is not None
+    This is the whole coupled pipeline: resolve the kite's config/geometry,
+    initialise the VSM body and the PSS structure, run the fixed-point
+    aero-structural loop (which converges the VSM quasi-steady trim against the
+    deforming structure), then write ``sim_output.h5`` and -- when the config
+    sets ``is_save_geometry_snapshots`` -- the deformed ``struc_geometry.yaml``
+    / ``aero_geometry.yaml`` / ``system.yaml`` into the results directory.
+
+    Extracted from ``main()`` so callers other than the CLI can drive a
+    deformation at a chosen flight condition and then reuse the deformed shape
+    (e.g. the representative-state stability pipeline, which linearises about
+    the deformed geometry). ``main()`` calls this function, so there is a single
+    code path.
+
+    ``config_overrides`` is merged over the kite's ``config.yaml`` -- use it to
+    set the flight condition (``angle_elevation_deg``, ``angle_azimuth_deg``,
+    ``angle_course_deg``, ``speed_radial``, ``distance_radial``,
+    ``wind_speed_wind_ref``) and ``is_save_geometry_snapshots``.
+
+    ``system_config_path`` overrides the kite's ``system.yaml`` (default
+    ``data/<kite_name>/system.yaml``), e.g. to deform with the as-flown KCU
+    mass in ``system_flown_2019.yaml``.
+
+    Returns a dict with the results directory, the deformed nodes, the solver
+    tracking data/meta, and the pieces the caller needs for reporting.
+    """
+    PROJECT_DIR = (
+        Path(project_dir)
+        if project_dir is not None
+        else (Path(__file__).resolve().parents[2])
     )
-    if is_sweep_requested:
-        if (
-            args.steering_sweep_start is None
-            or args.steering_sweep_end is None
-            or args.steering_sweep_step is None
-        ):
-            raise ValueError(
-                "Provide all sweep args: --steering-sweep-start, --steering-sweep-end, --steering-sweep-step"
-            )
-        _run_steering_sweep(args)
-        return
-
-    PROJECT_DIR = Path(__file__).resolve().parents[2]
-    kite_name = DEFAULT_KITE_NAME
 
     # Resolve standard kite paths (config, aero_geometry, struc_geometry)
     config_path, aero_geometry_path, struc_geometry_path = resolve_kite_paths(
@@ -431,7 +451,17 @@ def main():
     )
 
     # Load and validate the awesIO system config (single source of truth for physical params)
-    system_config_path = Path(PROJECT_DIR) / "data" / kite_name / "system.yaml"
+    # ``system_config_path`` lets a caller drive the deformation with a variant
+    # of the kite's system.yaml -- e.g. system_flown_2019.yaml, whose KCU mass is the
+    # as-flown 22.75 kg rather than the 8.4 kg optimisation value. The KCU mass
+    # is read from here (see fem.read_struc_geometry_yaml._resolve_kcu_mass) and
+    # again by build_system_model below, so overriding the path is the only way
+    # to keep the structural cloud and the coupled QSM trim on the same mass.
+    system_config_path = (
+        Path(system_config_path)
+        if system_config_path is not None
+        else Path(PROJECT_DIR) / "data" / kite_name / "system_flown_2019.yaml"
+    )
     import yaml as _yaml
 
     with system_config_path.open("r", encoding="utf-8") as _f:
@@ -439,13 +469,16 @@ def main():
     awesio_validate(system_config, restrictive=False)
 
     # Load config.yaml & geometry files
-    config = load_yaml(config_path)
-    if args.steering_final_extension is not None:
-        config["steering_tape_final_extension"] = float(args.steering_final_extension)
+    if config is None:
+        config = load_yaml(config_path)
+    if config_overrides:
+        config = {**config, **config_overrides}
 
     case_folder = build_actuation_case_folder(config)
     results_root = aerostructural_results_root(PROJECT_DIR, kite_name)
-    results_dir = results_root / case_folder
+    results_dir = (
+        Path(results_dir) if results_dir is not None else results_root / case_folder
+    )
     struc_geometry = load_yaml(struc_geometry_path)
     aero_geometry = load_yaml(aero_geometry_path)
     results_dir = save_input_snapshot(
@@ -602,10 +635,17 @@ def main():
     # AWETRIM SYSTEM MODEL
     ########################################
     tether_struct = get_tether(system_config)["structure"]
-    tether = RigidLumpedTether(
-        diameter=tether_struct["diameter"],
-        density=tether_struct.get("density", 970.0),
+    # ``tether_diameter`` lets a caller analyse the deformation with the same
+    # tether it will use downstream; without it the deformation silently runs on
+    # system.yaml's diameter while the caller's trim uses another one, and the
+    # shape is then produced under loads that do not match the analysis.
+    _tether_d = (
+        float(tether_diameter)
+        if tether_diameter is not None
+        else tether_struct["diameter"]
     )
+    _tether_rho = tether_struct.get("density", 970.0)
+    tether = RigidLumpedTether(diameter=_tether_d, density=_tether_rho)
     mass_total = float(np.sum(m_arr))
     print(f"Total structural mass (sum of particle masses): {mass_total:.3f} kg")
     system_model = build_system_model(system_config_path, tether, m_arr, config)
@@ -656,10 +696,81 @@ def main():
     save_geometry_snapshot(
         config,
         build_deformed_struc_geometry(struc_geometry, final_nodes),
-        build_deformed_aero_geometry(aero_geometry, final_nodes, struc_node_le_indices, struc_node_te_indices),
+        build_deformed_aero_geometry(
+            aero_geometry, final_nodes, struc_node_le_indices, struc_node_te_indices
+        ),
         results_dir,
         system_yaml_path=system_config_path,
     )
+
+    return {
+        "results_dir": results_dir,
+        "results_root": results_root,
+        "case_folder": case_folder,
+        "config": config,
+        "h5_path": h5_path,
+        "tracking_data": tracking_data,
+        "meta": meta,
+        "final_nodes": final_nodes,
+        "m_arr": m_arr,
+        "struc_geometry": struc_geometry,
+        "aero_geometry": aero_geometry,
+        "kite_connectivity_arr": kite_connectivity_arr,
+        "l0_arr": l0_arr,
+        "k_arr": k_arr,
+        "struc_node_le_indices": struc_node_le_indices,
+        "struc_node_te_indices": struc_node_te_indices,
+        "power_tape_index": power_tape_index,
+        "steering_tape_indices": steering_tape_indices,
+        "system_model": system_model,
+        "system_config_path": system_config_path,
+    }
+
+
+def main():
+    args = _build_arg_parser().parse_args()
+
+    is_sweep_requested = (
+        args.steering_sweep_start is not None
+        or args.steering_sweep_end is not None
+        or args.steering_sweep_step is not None
+    )
+    if is_sweep_requested:
+        if (
+            args.steering_sweep_start is None
+            or args.steering_sweep_end is None
+            or args.steering_sweep_step is None
+        ):
+            raise ValueError(
+                "Provide all sweep args: --steering-sweep-start, --steering-sweep-end, --steering-sweep-step"
+            )
+        _run_steering_sweep(args)
+        return
+
+    overrides = {}
+    if args.steering_final_extension is not None:
+        overrides["steering_tape_final_extension"] = float(
+            args.steering_final_extension
+        )
+    deformation = solve_deformation(config_overrides=overrides or None)
+    config = deformation["config"]
+    results_root = deformation["results_root"]
+    results_dir = deformation["results_dir"]
+    case_folder = deformation["case_folder"]
+    h5_path = deformation["h5_path"]
+    power_tape_index = deformation["power_tape_index"]
+    steering_tape_indices = deformation["steering_tape_indices"]
+    meta = deformation["meta"]
+    struc_geometry = deformation["struc_geometry"]
+    kite_connectivity_arr = deformation["kite_connectivity_arr"]
+    k_arr = deformation["k_arr"]
+    # Tape rest lengths are actuated during the run, so ``l0_arr`` (the starting
+    # values) would over/under-state the tape tensions below. Prefer the rest
+    # lengths the particle system ends with; they share the connectivity order.
+    l0_arr = np.asarray(deformation["l0_arr"], dtype=float)
+    rest_lengths_final = np.asarray(meta.get("rest_lengths", []), dtype=float)
+    if rest_lengths_final.shape == l0_arr.shape:
+        l0_arr = rest_lengths_final
 
     summary_csv_name = config.get("qsm_summary_csv_name", "qsm_summary.csv")
     summary_csv_path = results_root / summary_csv_name
