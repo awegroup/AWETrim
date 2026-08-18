@@ -14,7 +14,14 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Rigid-body principal axis identification from a PSM mass distribution."""
+"""Rigid-body principal axis identification from a PSM mass distribution.
+
+Body-axis convention: aircraft **FRD** — x forward (along the flight
+direction), y to the right wing (starboard), z down (from canopy toward the
+bridle/ground station). Each principal axis is sign-matched to the closest of
+these three directions, so the textbook static-stability criteria apply
+directly: C_m_alpha < 0, C_n_beta > 0, C_l_beta < 0.
+"""
 
 from __future__ import annotations
 
@@ -29,9 +36,16 @@ from awetrim.aerostructural.utils import (
 )
 
 
+# Canonical aircraft body directions (rows: forward, right, down) in the
+# structural / VSM frame. See ``compute_rigid_body_axes``.
+FRD_IN_STRUC = np.array([[-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]])
+
+
 @dataclass
 class RigidBodyAxes:
     """Principal body axes derived from inertia tensor eigendecomposition.
+
+    Body axes are FRD (x forward, y right, z down); see the module docstring.
 
     Attributes:
         cg: Center of gravity in the structural frame, shape (3,).
@@ -66,9 +80,10 @@ def compute_rigid_body_axes(
        principal-axis directions (eigenvectors) and the corresponding principal
        moments (eigenvalues).
     4. Assign each principal axis to the body axis (x, y, or z) whose canonical
-       direction it is most closely aligned with, using a greedy max-alignment
-       strategy.  Each axis is flipped when its dot product with the
-       corresponding canonical direction is negative.
+       FRD direction it is most closely aligned with, using a greedy
+       max-alignment strategy.  Each axis is flipped when its dot product with
+       the corresponding canonical direction is negative, so the result is
+       always a right-handed forward / right / down triad.
 
     Args:
         struc_nodes: Particle positions, shape (n_nodes, 3).
@@ -99,18 +114,19 @@ def compute_rigid_body_axes(
         abs_dots[i, :] = -1.0  # mark eigenvec i as consumed
         abs_dots[:, j] = -1.0  # mark canonical axis j as consumed
 
-    # Course-frame unit vectors expressed in the structural frame.
-    # The structural frame has X and Y negated relative to the course frame:
-    #   T_structural_from_C = diag(-1, -1, 1)
-    # so the course canonical directions in structural coordinates are:
-    #   X_C → [-1, 0, 0],  Y_C → [0, -1, 0],  Z_C → [0, 0, 1]
-    _COURSE_IN_STRUC = np.array([[-1., 0., 0.], [0., -1., 0.], [0., 0., 1.]])
-
+    # Canonical FRD directions expressed in the structural frame. The
+    # structural frame has X and Y negated relative to the course frame
+    # (T_structural_from_C = diag(-1, -1, 1)); the course frame is
+    # X_C = flight direction (forward), Z_C = radial outward (up), and hence
+    # Y_C = Z_C x X_C = left. So, in structural coordinates:
+    #   forward = +X_C -> [-1, 0, 0]
+    #   right   = -Y_C -> [ 0, 1, 0]
+    #   down    = -Z_C -> [ 0, 0,-1]
     body_axes = np.zeros((3, 3))
     principal_moments = np.zeros(3)
     for body_j, eigen_i in enumerate(assigned):
         axis = eigenvectors[:, eigen_i].copy()
-        if np.dot(axis, _COURSE_IN_STRUC[body_j]) < 0:  # flip to match course-frame sense
+        if np.dot(axis, FRD_IN_STRUC[body_j]) < 0:  # flip to the FRD sense
             axis = -axis
         body_axes[body_j] = axis
         principal_moments[body_j] = eigenvalues[eigen_i]

@@ -23,7 +23,22 @@ import numpy as np
 # Flight KCU convention used by the 2019 LEI-V3 logs:
 #   steering: positive KCU steering corresponds to negative u_s.
 #   depower: kcu=22 is powered, kcu=30 is depowered.
-FLIGHT_STEERING_KCU_NORM: float = 100.0
+#
+# Steering norms are PER FLIGHT (standardised u_s, calibrated 2026-08-12):
+# u_s is defined so that the nominal 1.4 m gain times u_s IS the
+# steering-tape half-difference. The 2019 KCU's kcu/100 command moves only
+# HALF the nominal tape (its 1.4 m corresponds to the TOTAL left-right
+# difference), so the 2019 logs divide by 200. Evidence: with this scaling
+# the aerostructural trim grids reproduce the flight turn-rate channel
+# across the turn states and the full right-lobe cloud (gk 0.314 identified
+# vs 0.285 model, 1/m); the raw kcu/100 reading overstated the physical
+# steering 2x. The 2025 rig is hypothesised to already be on the
+# standardised scale (unverified). There is deliberately NO ambient default:
+# every caller states which flight's convention it is converting.
+FLIGHT_STEERING_KCU_NORM_2019: float = 200.0
+FLIGHT_STEERING_KCU_NORM_2025: float = 100.0
+# Deprecated alias (pre-calibration name); kept for old callers, 2019 value.
+FLIGHT_STEERING_KCU_NORM: float = FLIGHT_STEERING_KCU_NORM_2019
 
 FLIGHT_DEPOWER_POWERED_KCU: float = 22.0
 FLIGHT_DEPOWER_POWERED_LDP_M: float = 1.7
@@ -44,8 +59,16 @@ ROM_DEPOWERED_INPUT_DEPOWER: float = FLIGHT_DEPOWER_DEPOWERED_LDP_M
 ROM_NEUTRAL_INPUT_STEERING: float = 0.0
 
 
-def flight_steering_to_us(kcu_actual_steering, norm: float = FLIGHT_STEERING_KCU_NORM):
-    """Map flight ``kcu_actual_steering`` to identification steering ``u_s``."""
+def flight_steering_to_us(
+    kcu_actual_steering, norm: float = FLIGHT_STEERING_KCU_NORM_2019
+):
+    """Map flight ``kcu_actual_steering`` to standardised steering ``u_s``.
+
+    ``norm`` is PER FLIGHT: 2019 logs divide by 200
+    (``FLIGHT_STEERING_KCU_NORM_2019``, see the calibration note above); pass
+    ``FLIGHT_STEERING_KCU_NORM_2025`` (=100) for the 2025 logs. The default is
+    the 2019 convention, matching this module's 2019-anchored depower maps.
+    """
     return -np.asarray(kcu_actual_steering, dtype=float) / float(norm)
 
 
@@ -75,12 +98,19 @@ def flight_dataframe_depower_to_power_tape_length(flight_data):
     )
 
 
-def flight_dataframe_steering_to_us(flight_data):
-    """Map a flight-data table to ROM steering input ``u_s``."""
+def flight_dataframe_steering_to_us(
+    flight_data, norm: float = FLIGHT_STEERING_KCU_NORM_2019
+):
+    """Map a flight-data table to ROM steering input ``u_s``.
+
+    Defaults to the 2019 steering norm -- consistent with the 2019-anchored
+    depower map of :func:`flight_dataframe_depower_to_power_tape_length`.
+    Pass ``norm=FLIGHT_STEERING_KCU_NORM_2025`` for 2025 tables.
+    """
     if "kcu_actual_steering" in flight_data:
-        return flight_steering_to_us(flight_data["kcu_actual_steering"])
+        return flight_steering_to_us(flight_data["kcu_actual_steering"], norm=norm)
     if "kcu_set_steering" in flight_data:
-        return flight_steering_to_us(flight_data["kcu_set_steering"])
+        return flight_steering_to_us(flight_data["kcu_set_steering"], norm=norm)
     raise KeyError(
         "Need kcu_actual_steering or kcu_set_steering to build physical ROM steering."
     )

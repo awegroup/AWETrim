@@ -43,7 +43,8 @@ src/awetrim/
                          (aero_dataset.py, AS + EKF sources, shared schema),
                          BIC forward-stepwise polynomial fit with k-fold CV
                          (aero_polynomial.py → rom_config "coeffs"), control
-                         conventions (controls.py), rigid_body_axes.py.
+                         conventions (controls.py), rigid_body_axes.py
+                         (principal axes in aircraft FRD sense).
                          Regressors: alpha, u_s, u_p, v_a; targets CL/CD/phi_a.
                          (aero LUT guide is outdated and needs revising)
 ```
