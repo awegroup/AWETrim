@@ -92,7 +92,11 @@ components:
       lower_tether_joint:
         id: T2
     structure:
-      length: 350.0        # m  (max operational reference length)
+      length: 415.0        # m  (max operational reference length) — must exceed
+                           # the run's reelout_l_max plus one lap's reel-out
+                           # (~35 m), or the lap cannot complete: at r0 = 340 m
+                           # a lap ends near 375 m and the 350 cap forced short,
+                           # over-tight patterns or outright failures.
       diameter: 0.004      # m  (4 mm) — as flown; drag area scales with this
       density: 724.0       # kg/m³  effective density of the braided rope, not of
                            # the SK78 fibre (970): with the rope's own diameter it

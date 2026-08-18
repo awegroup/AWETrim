@@ -152,7 +152,7 @@ DEFAULT_OPTI_LIMITS = {
     "beta_coeffs": (-1, 1),  # Range for beta coefficients: -1 to 1
     "az_coeffs": (-1, 1),  # Range for azimuth coefficients: -1 to 1
     "speed_radial": (-10, 10),
-    "distance_radial": (100, 360),
+    "distance_radial": (100, 415),
     "k_vr": (0.5, 1.5),
     "slope_winch_ro": (3000, 30000),  # Range for slope in winch model
     "offset_winch_ro": (-6, 0),  # Range for offset in winch model
