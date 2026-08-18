@@ -344,6 +344,30 @@ Primitives kept here for AWEDesign (and general use):
   `attitude_moment_matrix` (K [3x3], world moment per rad about each frame
   axis) and `attitude_slope_from_lin` (one column in moment units; also
   valid on the rate columns, e.g. the yaw-damping reference).
+  `pitch_neutral_point(dM_dtheta, dF_dtheta, pitch_axis=, x_axis=,
+  cg_offset=, chord=)` — pure moment-transfer helper (numpy only, no VSM):
+  from one ANGLE-OF-ATTACK-perturbation response pair (moment about B +
+  force, world components per rad of aoa, any contributor subset) it
+  returns the neutral point `x_np = S_B/D` along the `x_axis` line through
+  B (`S(d) = S_B - d D`, `D = e_p . (x_hat x dF)`) and the pitch stability
+  margins of B and of the CG, signed positive = restoring,
+  `margin(pivot) = -S(pivot)/|D|` (metres, plus chord fractions). The aoa
+  perturbation is an apparent-wind tilt at frozen attitude (`delta_v` =
+  `va - R(e_p, -eps) va` through `eval_force_moment` for alpha = +eps),
+  NOT a body rotation: a body rotation gives the same pitch-axis moment
+  slope (`e_p x M0` is orthogonal to the readout) but adds the rotating
+  trim force `e_p x F0` to the force slope, corrupting `D`. Alpha is
+  sense-matched to the readout axis (the body-equivalent rotation about
+  `pitch_axis`), so restoring iff slope < 0 and all outputs are invariant
+  under flipping `pitch_axis`. A pure aoa disturbance moves ONLY the aero
+  rows (gravity/tether/gyro/transport are blind to the apparent wind at
+  frozen attitude and kite velocity), so the consumer feeds the
+  `F_aero`/`M_aero_B` contributor slopes — never the net rows, whose
+  `delta_v`-route transport response is a kite-velocity gust artefact. Aero-only inputs give the classic
+  aerodynamic neutral point / static margin; net inputs add the transport
+  response to the tilted kite velocity (gravity/gyro arms do not respond
+  to aoa at frozen attitude). The kite margin is the B one — consumer:
+  `scripts/personal/wes-quasi-steady/run_static_stability.py`.
   `eval_force_moment(..., with_contributions=True)` appends a 4th return
   element: the per-contributor B-point breakdown (F_aero/F_tether/
   F_gravity/F_transport/F_centripetal; M_aero_B/M_gravity_B/M_transport_B/
@@ -504,7 +528,8 @@ course-frame `DEFAULT_AXES`, always `course_rate_state=True`) →
 and JSON. No modal/eigenmode analysis (the modal version is recoverable from
 git history). `--stability-frame body` no longer changes the linearisation
 axes — it additionally reports the attitude slopes about the principal body
-axes at trim (`rigid_body_axes` cloud, rotated by the trim attitude) via the
+axes at trim (`rigid_body_axes` cloud — aircraft FRD sense: x forward, y
+right, z down — rotated by the trim attitude) via the
 `attitude_axes=` argument of `static_slopes_summary`; the old
 `stability_config.yaml` (`states`/`coupled`/`frame`) is gone.
 

@@ -61,6 +61,7 @@ __all__ = [
     "attitude_moment_matrix",
     "attitude_slope_from_lin",
     "static_slopes_summary",
+    "pitch_neutral_point",
     "CG_STATE_NAMES",
 ]
 
@@ -325,6 +326,104 @@ def static_slopes_summary(
         ),
         "eps": lin["eps"],
     }
+
+
+def pitch_neutral_point(
+    dM_dtheta: np.ndarray,
+    dF_dtheta: np.ndarray,
+    *,
+    pitch_axis: np.ndarray,
+    x_axis: np.ndarray,
+    cg_offset: np.ndarray | None = None,
+    chord: float | None = None,
+) -> dict[str, Any]:
+    """Neutral point along ``x_axis`` and pitch stability margins from B / CG.
+
+    Inputs are the responses of one ANGLE-OF-ATTACK perturbation — a tilt
+    of the apparent wind about ``pitch_axis`` at frozen attitude:
+    ``dM_dtheta`` is the moment slope about the tether attachment B and
+    ``dF_dtheta`` the force slope, both 3-vectors in world components per
+    rad of alpha, with alpha sense-matched to the readout axis (alpha =
+    the body-equivalent rotation about ``pitch_axis``; wind tilted by
+    ``-theta`` == body pitched by ``+theta``). Every output is then
+    invariant under ``pitch_axis -> -pitch_axis`` (perturbation and
+    readout flip together), and restoring means slope < 0. (A body rotation at frozen inflow gives the same
+    pitch-axis MOMENT slope — the trim-moment rotation term is orthogonal
+    to the readout axis — but adds the rotating trim force ``e_p x F0`` to
+    the FORCE slope, corrupting the pivot-transfer coupling ``D`` below;
+    do not feed body-rotation slopes here.) Because moment transfer is
+    linear, the pitch stiffness about a pivot displaced ``d`` along the
+    unit ``x_axis`` from B is exactly
+
+        S(d) = e_p . (dM - d x_hat x dF) = S_B - d D,   D = e_p . (x_hat x dF)
+
+    for ANY contributor subset of the force system. Under a pure aoa
+    disturbance only the AERO rows respond (gravity, tether, gyro and
+    transport are blind to the apparent wind at frozen attitude and kite
+    velocity), so the aero slopes are the physical input and give the
+    classic aerodynamic neutral point. The NEUTRAL POINT is the zero
+    crossing ``x_np = S_B / D`` — the pivot position on the ``x_axis`` line
+    through B at which the pitch stiffness vanishes. The STABILITY MARGIN of
+    a pivot is its signed distance to that zero, normalised so positive =
+    restoring (slope < 0 there):
+
+        margin(pivot) = -S(pivot) / |D|
+
+    — the aircraft static margin (in metres) when the pivot is the CG and
+    the inputs are aero-only; the kite-relevant number is the margin of the
+    tether attachment B itself. With ``cg_offset`` (trim CG offset from B,
+    world components) the CG numbers are included; its off-``x_axis``
+    components shift the CG-line stiffness by ``-e_p . (c x dF)``, so the
+    two neutral points live on parallel lines and generally differ by more
+    than the projected offset — both are reported. ``chord`` additionally
+    expresses the margins as fractions of that reference length.
+
+    Note the transfer keeps the PERTURBATION fixed (the aoa tilt): the
+    zero crossing marks where the supplied force system's pitch slope
+    vanishes. For the aero rows that is the classic neutral point exactly
+    (aero is translation-invariant at frozen inflow); for pivot-motion-
+    dependent contributors (tether, gravity arms under a genuine rotation
+    about the shifted pivot) it is a moment transfer, not a re-solved
+    pivot sweep.
+    """
+    e_p = np.asarray(pitch_axis, dtype=float).reshape(3)
+    e_p = e_p / np.linalg.norm(e_p)
+    x_hat = np.asarray(x_axis, dtype=float).reshape(3)
+    x_hat = x_hat / np.linalg.norm(x_hat)
+    dM = np.asarray(dM_dtheta, dtype=float).reshape(3)
+    dF = np.asarray(dF_dtheta, dtype=float).reshape(3)
+
+    slope_b = float(e_p @ dM)
+    coupling = float(e_p @ np.cross(x_hat, dF))
+    degenerate = abs(coupling) < 1e-12 * max(1.0, float(np.linalg.norm(dF)))
+    result: dict[str, Any] = {
+        "pitch_axis": e_p,
+        "x_axis": x_hat,
+        "slope_B_Nm_per_rad": slope_b,
+        "coupling_N_per_rad": coupling,
+        "coupling_degenerate": bool(degenerate),
+        "x_np_from_B_m": None if degenerate else slope_b / coupling,
+        "margin_B_m": None if degenerate else -slope_b / abs(coupling),
+        "restoring_B": bool(slope_b < 0.0),
+    }
+    if cg_offset is not None:
+        c = np.asarray(cg_offset, dtype=float).reshape(3)
+        slope_cg = float(e_p @ (dM - np.cross(c, dF)))
+        result.update({
+            "cg_offset_world": c,
+            "cg_offset_along_x_m": float(c @ x_hat),
+            "slope_CG_Nm_per_rad": slope_cg,
+            "x_np_from_CG_m": None if degenerate else slope_cg / coupling,
+            "margin_CG_m": None if degenerate else -slope_cg / abs(coupling),
+            "restoring_CG": bool(slope_cg < 0.0),
+        })
+    if chord is not None:
+        c_ref = float(chord)
+        result["chord_ref_m"] = c_ref
+        for key in ("margin_B_m", "margin_CG_m"):
+            if result.get(key) is not None:
+                result[key.replace("_m", "_frac")] = result[key] / c_ref
+    return result
 
 
 def verify_cg_trim(stability: dict[str, Any]) -> dict[str, Any]:
