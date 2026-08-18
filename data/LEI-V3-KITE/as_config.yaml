@@ -3,7 +3,7 @@
 # starting_from_sim_subdir: depower_p0000mm_steer_p0000mm
 is_with_gravity: !!bool false
 is_with_aero_bridle: !!bool true
-is_with_aero_tether: !!bool false
+is_with_aero_tether: !!bool true
 is_run_only_1_time_step: !!bool false
 is_with_initial_point_velocity: !!bool false
 is_with_forcing_symmetry: !!bool false
@@ -14,21 +14,21 @@ angle_elevation_deg: !!float 0.0
 angle_azimuth_deg: !!float 0.0
 angle_course_deg: !!float 90.0
 speed_radial: !!float 1.5
-distance_radial: !!float 250.0
-wind_speed_wind_ref: !!float 7
+distance_radial: !!float 300.0
+wind_speed_wind_ref: !!float 8
 timeder_speed_tangential: !!float 0.0
 timeder_speed_radial: !!float 0.0
 
 ## actuation settings
 power_tape_extension_step: !!float 0.05 
-power_tape_final_extension: !!float 0.0 #0.3 #0.05
+power_tape_final_extension: !!float 0.2 #0.3 #0.05
 steering_tape_extension_step: !!float 0.05
-steering_tape_final_extension: !!float 0.0
+steering_tape_final_extension: !!float 0.3
 
 ## output settings
 is_with_initial_structure_plot: !!bool false
 is_with_coupling_plot_per_iteration: !!bool false
-is_with_struc_plot_per_iteration: !!bool true
+is_with_struc_plot_per_iteration: !!bool false
 is_with_aero_plot_per_iteration: !!bool false
 is_with_final_plot: !!bool false
 is_with_aero_frame_final_plot: !!bool false
@@ -66,7 +66,7 @@ quasi_steady_trim:
   # These define the feasible region for the optimizer to explore.
   # Narrower bounds = fewer evaluations, faster convergence, but risk missing solutions.
   # Wider bounds = more thorough search but slower optimization.
-  kite_speed_bounds_ms: !!seq [5.0, 50.0]      # m/s - apparent wind relative speed
+  kite_speed_bounds_ms: !!seq [-2.0, 50.0]      # m/s - apparent wind relative speed
   roll_bounds_deg: !!seq [-4.0, 4.0]            # degrees - wing roll angle
   pitch_bounds_deg: !!seq [-4.0, 4.0]           # degrees - pitch angle
   yaw_bounds_deg: !!seq [-4.0, 4.0]             # degrees - yaw angle
@@ -125,6 +125,18 @@ mu: !!float 1.789e-05 # dynamic viscosity in kg/(m*s)
 #                          three unknowns: elevation_last, azimuth_last,
 #                          tether_length; ground anchor pinned at origin)
 tether:
+  # include_in_trim: carry the tether in the aerostructural QSM trim.
+  # false (default) = the historical TETHERLESS trim: its residuals are the
+  # tangential force balance only, so the tether is implicitly massless,
+  # dragless and perfectly radial.
+  # true = the tether-aware trim, which adds the tether's off-radial drag and
+  # weight to the kite force balance. 'model' below selects which:
+  #   'rigid_lumped' - lumped drag + half weight at the kite; 6th unknown is the
+  #                    radial tension. Cheap.
+  #   'williams'     - full distributed shape with ground closure; 6th unknown
+  #                    is the tether length. Costs a nested tether solve per
+  #                    residual evaluation, so the coupled loop gets much slower.
+  include_in_trim: !!bool true
   model: !!str 'williams'
   n_elements: !!int 10
   is_elastic: !!bool false
