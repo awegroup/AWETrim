@@ -120,3 +120,31 @@ def test_depower_reply_carries_profile():
     assert reply.profile is None
     profiled = DepowerReply(mode="profile", value=1.4, profile=[1.3, 1.5])
     assert profiled.profile == [1.3, 1.5]
+
+
+def test_min_turn_radius_is_optional_and_non_negative():
+    assert InitRequest(wind={"model_type": "uniform", "U_ref": 8.0}).min_turn_radius is None
+    assert StepRequest().min_turn_radius is None
+    req = InitRequest(wind={"model_type": "uniform", "U_ref": 8.0}, min_turn_radius=11.35)
+    assert req.min_turn_radius == pytest.approx(11.35)
+    # 0 is the explicit "remove the constraint" value on /step
+    assert StepRequest(min_turn_radius=0).min_turn_radius == 0
+    with pytest.raises(ValidationError):
+        StepRequest(min_turn_radius=-1.0)
+
+
+def test_replies_and_metrics_carry_the_turn_radius():
+    from awetrim.server.schemas import InitReply, SolveMetrics, StepReply
+
+    traj = {"azimuth": [0.0] * 8, "elevation": [20.0] * 8}
+    init = InitReply(name="x", trajectory=traj, state="ready")
+    assert init.min_turn_radius is None
+    metrics = SolveMetrics(energy_J=1.0, total_time_s=1.0, avg_power_W=1.0)
+    assert metrics.turn_radius_min_m is None
+    step = StepReply(
+        trajectory=traj, state="converged", step_index=1,
+        metrics=dict(metrics.model_dump(), turn_radius_min_m=12.3),
+        min_turn_radius=11.35,
+    )
+    assert step.min_turn_radius == pytest.approx(11.35)
+    assert step.metrics.turn_radius_min_m == pytest.approx(12.3)

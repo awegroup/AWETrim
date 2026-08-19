@@ -317,3 +317,31 @@ def test_unknown_depower_mode_is_rejected(client):
     payload = dict(client.init_payload)
     payload["depower"] = {"mode": "auto", "value": 1.6}
     assert client.post("/init", json=payload).status_code == 422
+
+
+def test_min_turn_radius_round_trips_through_init_and_step(client):
+    payload = dict(client.init_payload)
+    payload["min_turn_radius"] = 11.35
+    reply = client.post("/init", json=payload)
+    assert reply.status_code == 200
+    assert reply.json()["min_turn_radius"] == pytest.approx(11.35)
+
+    phase = StubPhase.latest
+    result = _fake_result()
+    result.optimized_trajectory["turn_radius"] = np.full(N_NODES, 13.0)
+    result.turn_radius_min = 12.4
+    # first constrained solve is staged (two solves): script both, keep released
+    phase.results.extend([_fake_result(), result])
+    phase.release.set()
+    phase.release.clear = lambda: None
+    step = client.post("/step", json={}).json()
+    assert step["min_turn_radius"] == pytest.approx(11.35)
+    assert step["metrics"]["turn_radius_min_m"] == pytest.approx(12.4)
+    table = client.get("/trajectory").json()["table"]
+    assert table["turn_radius"] == pytest.approx([13.0] * N_NODES)
+
+    phase.results.append(_fake_result())
+    phase.release.set()
+    step = client.post("/step", json={"min_turn_radius": 0}).json()
+    assert step["min_turn_radius"] is None
+    assert client.post("/step", json={"min_turn_radius": -1}).status_code == 422

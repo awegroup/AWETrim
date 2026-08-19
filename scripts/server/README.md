@@ -84,6 +84,7 @@ default:
 | `initial_guess.M` | 10 | B-spline control points — the optimizer's shape freedom |
 | `n_points` | 100 | optimization grid nodes (also the reply-table resolution unless you send a trajectory — then replies match your resolution) |
 | `depower` | `{"mode":"optimize"}` | how the depower input l_dp is handled, see below |
+| `min_turn_radius` | none | minimum physical turn radius [m] the path must respect, see below |
 | `optimization_params` | `["C_phi","C_beta","input_depower"]` | what the optimizer is allowed to change |
 | `sim_parameters` | `{}` | solver knobs, see below |
 
@@ -135,6 +136,49 @@ mid-session. The older combination of `optimization_params` +
 `sim_parameters.input_depower` / `optimize_depower_profile` still works
 unchanged when `depower` is omitted.
 
+### Minimum turn radius — if your kite cannot turn as tightly as the optimizer's
+
+The optimizer's kite model already limits how tightly the path can turn (its
+steering saturates at the actuator range in `system.yaml`), but that limit is
+the point-mass model's, not your kite's. If your controller or simulator has
+its own limit — e.g. `1/(c1*u_s_max)` for a kite steered by
+`psi_dot = c1*v_a*u_s` — send it and the optimizer will not return anything
+tighter:
+
+```json
+{"min_turn_radius": 11.35}
+```
+
+What is enforced: the **physical geodesic turn radius on the tether sphere**,
+`r/|kappa|`, at the tether length `r` at which each part of the path is flown
+(the lap reels out tens of metres, so a loop near the end of the lap is flown
+at a larger radius than `distance_radial` — convert with the `distance_radial`
+column of `GET /trajectory`, not with the initial length, when you check the
+path yourself). It is enforced densely along the path (4 samples per node
+interval, together with a floor on the spline's parametric speed so the path
+cannot hide a millimetre-long kink in a hesitation point of the parametrization),
+which also rules out the cusps and near-degenerate tiny loops that cold solves
+occasionally converge to. Purely geometric — it does not change the kite model.
+Cycle-config knobs, if ever needed: `sim_parameters.turn_radius_subsamples`
+(4) and `turn_radius_sigma_floor` (0.2, fraction of the mean parametric speed).
+
+Both replies echo the limit (`min_turn_radius`, `null` when unconstrained), and
+`metrics.turn_radius_min_m` reports the tightest radius the returned path
+actually has (from the optimizer's own curvature expression, sampled densely);
+the per-node values are the `turn_radius` column of `GET /trajectory`. Those
+two numbers are exact for the returned spline, so a client-side curvature gate
+is no longer needed. `POST /step` accepts `min_turn_radius` too (omit = keep,
+`0` = remove the constraint).
+
+Measured on the LEI-V3 reference winch/wind: on the normal branch the limit is
+inactive (the model's own optimum has ~12.3–13 m loops); it removes the sporadic
+tight/cusped basins of cold solves. Because a cold *constrained* solve finds the
+best branch less often than an unconstrained one, the first solve of a session
+with a limit is staged — cold without the limit, then a warm re-solve with it
+(fallback: cold with it) — so expect the first `/step` to take about twice as
+long; later steps solve once. Cold solves remain path-sensitive: prefer stepping
+sequentially (see below).
+
 The initial guess is only a starting shape — the optimizer reshapes the curve
 freely; a rough guess is fine. Wind can alternatively be a measured/forecast
 profile:
@@ -160,7 +204,16 @@ Input — empty `{}` for the first solve; on refreshes send what changed:
 ```
 
 `distance_radial` is the **current tether length** from your simulator; the
-refreshed pattern is re-anchored there. All fields are optional.
+refreshed pattern is re-anchored there. All fields are optional
+(`min_turn_radius` and `depower` may also be updated here).
+
+**Step sequentially.** Each `/step` warm-starts from the previous optimum
+(node-wise), so a reel-out driven as one session — `/init` once, then `/step`
+with the current `distance_radial` (and the previous reply's `trajectory`, or
+no trajectory at all) — follows one smooth branch. Solving cold at each length
+(a fresh `/init` + `/step` from a rough guess) is what produces the occasional
+422 at isolated lengths and the odd tight-looped or cusped path: those are
+different local optima of the cold start, not properties of the length.
 
 **Blocking by default:** the call returns when the solve finishes (~10-20 s)
 and the reply contains the StepParams struct — `winch_params`, the
@@ -193,6 +246,9 @@ Add `"wait": false` to get the old asynchronous behavior instead
   JSON fields, since the optimizer cannot work without wind.
 - `StepParams {winch_params, trajectory, depower}` — the `/step` request and
   reply.
+- `min_turn_radius` [m] travels as a sibling JSON field of both structs
+  (request and reply); `metrics.turn_radius_min_m` is what the returned path
+  achieves.
 
 See [`client_example.jl`](client_example.jl) for the exact structs in Julia.
 
@@ -201,7 +257,8 @@ See [`client_example.jl`](client_example.jl) for the exact structs in Julia.
 ```json
 {
   "state": "converged",
-  "metrics": {"energy_J": 85636.5, "total_time_s": 14.82, "avg_power_W": 5776.7},
+  "metrics": {"energy_J": 85636.5, "total_time_s": 14.82, "avg_power_W": 5776.7,
+              "turn_radius_min_m": 12.6},
   "last_error": null
 }
 ```
@@ -225,6 +282,7 @@ The path as a table of 100 points (`table.<column>[i]` = node i), real output:
 | `speed_radial` | 1.24, 1.25, ... | reel-out speed r_dot [m/s] |
 | `tension_tether_ground` | 3715, 3779, ... | ground tether tension [N] |
 | `input_depower` | 1.5173, 1.5173, ... | depower the path assumes — constant in `fixed`/`optimize` mode, per-node in `profile` mode |
+| `turn_radius` | 46.2, 38.9, ... | physical turn radius of the path at the node [m] (geodesic, at that node's `distance_radial`); the tightest value along the whole path is `metrics.turn_radius_min_m` |
 | `s_dot`, `input_steering` | ... | path speed, steering input |
 
 Plus `spline` (the B-spline coefficients defining the same curve continuously),

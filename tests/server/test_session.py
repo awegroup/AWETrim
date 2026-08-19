@@ -495,3 +495,98 @@ def test_step_can_switch_the_depower_mode(patched_session):
     reply = sess.step_blocking(depower={"mode": "fixed", "value": 1.3})
     assert reply["depower"] == {"mode": "fixed", "value": 1.3, "profile": None}
     assert "input_depower" not in sess._optimization_params
+
+
+def test_apply_min_turn_radius_sets_clears_and_keeps():
+    sim = {}
+    ReeloutSession._apply_min_turn_radius(sim, None)
+    assert "min_turn_radius" not in sim  # omitted -> untouched
+    ReeloutSession._apply_min_turn_radius(sim, 11.35)
+    assert sim["min_turn_radius"] == pytest.approx(11.35)
+    ReeloutSession._apply_min_turn_radius(sim, None)
+    assert sim["min_turn_radius"] == pytest.approx(11.35)  # still kept
+    ReeloutSession._apply_min_turn_radius(sim, 0)
+    assert "min_turn_radius" not in sim  # 0 removes it
+    with pytest.raises(ValueError, match="min_turn_radius"):
+        ReeloutSession._apply_min_turn_radius(sim, -2.0)
+
+
+def test_min_turn_radius_round_trips_init_step_and_replies(patched_session):
+    sess, config = patched_session
+    sess.init(dict(config, min_turn_radius=11.35))
+    sim = sess.phase.pattern_config["sim_parameters"]
+    assert sim["min_turn_radius"] == pytest.approx(11.35)
+    assert sess.init_reply()["min_turn_radius"] == pytest.approx(11.35)
+
+    # the stub result carries the NLP's own diagnostics. The first constrained
+    # solve is staged (unconstrained cold, then constrained warm): two solves.
+    phase = sess.phase
+    result = _fake_result()
+    result.optimized_trajectory["turn_radius"] = np.linspace(12.0, 40.0, N_NODES)
+    result.turn_radius_min = 11.7
+    phase.results.extend([_fake_result(), result])
+    phase.release.set()
+    phase.release.clear = lambda: None  # let both inline solves pass
+    reply = sess.step_blocking()
+    assert [c["warm_start"] for c in phase.calls] == [False, True]
+    assert reply["min_turn_radius"] == pytest.approx(11.35)
+    assert reply["metrics"]["turn_radius_min_m"] == pytest.approx(11.7)
+    table = sess.trajectory()["table"]
+    assert len(table["turn_radius"]) == N_NODES
+    assert table["turn_radius"][0] == pytest.approx(12.0)
+
+    # /step can change or remove the limit mid-session
+    phase.results.append(_fake_result())
+    phase.release.set()
+    reply = sess.step_blocking(min_turn_radius=0)
+    assert reply["min_turn_radius"] is None
+    assert "min_turn_radius" not in sess.phase.pattern_config["sim_parameters"]
+    # a result without diagnostics leaves the metric null
+    assert reply["metrics"]["turn_radius_min_m"] is None
+
+
+def test_first_constrained_solve_is_staged(patched_session):
+    """With min_turn_radius set and no previous success, the session solves
+    cold WITHOUT the constraint, then warm WITH it; later steps solve once.
+    If a stage fails it falls back to one constrained cold solve from the
+    original configuration."""
+    sess, config = patched_session
+    sess.init(dict(config, min_turn_radius=11.35))
+    phase = sess.phase
+    seen = []
+
+    def _run(**kwargs):
+        seen.append(
+            (kwargs["warm_start"], phase.pattern_config["sim_parameters"].get("min_turn_radius"))
+        )
+        return StubPhase.run_simulation_opti(phase, **kwargs)
+
+    phase.run_simulation_opti = _run
+    phase.results.extend([_fake_result(), _fake_result()])
+    phase.release.set()
+    phase.release.clear = lambda: None
+    sess.step_blocking()
+    assert seen == [(False, None), (True, 11.35)]
+
+    # second step: a single warm, constrained solve
+    phase.results.append(_fake_result())
+    sess.step_blocking()
+    assert seen[-1] == (True, 11.35)
+    assert len(seen) == 3
+
+    # a failing unconstrained stage -> fallback: constrained cold solve on a
+    # rebuilt Phase carrying the same config (still with the constraint)
+    sess2, config2 = patched_session[0].__class__(), config
+    sess2.init(dict(config2, min_turn_radius=11.35))
+    phase2 = sess2.phase
+    phase2.results.extend([None])  # stage 1 fails
+    phase2.release.set()
+    phase2.release.clear = lambda: None
+    fallback = sess2.phase  # replaced by the fallback below
+    from awetrim.server.session import SolveFailedError
+    # the rebuilt Phase is a fresh StubPhase with no scripted result -> it
+    # raises inside the worker, which the session reports as a failed step
+    with pytest.raises(SolveFailedError):
+        sess2.step_blocking()
+    assert sess2.phase is not fallback  # rebuilt for the fallback stage
+    assert sess2.phase.pattern_config["sim_parameters"]["min_turn_radius"] == pytest.approx(11.35)

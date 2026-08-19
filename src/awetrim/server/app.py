@@ -107,6 +107,7 @@ def create_app(
             else None,
             depower=request.depower.model_dump() if request.depower else None,
             distance_radial=request.distance_radial,
+            min_turn_radius=request.min_turn_radius,
             max_iter=request.max_iter,
         )
         try:

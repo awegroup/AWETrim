@@ -43,7 +43,8 @@ class ReeloutClient:
     def init(self, wind: dict, **options) -> dict:
         """POST /init. `options` maps to the InitRequest fields, e.g.
         initial_guess=..., n_points=..., sim_parameters={...},
-        depower={"mode": "fixed"|"optimize"|"profile", "value": 1.6}."""
+        depower={"mode": "fixed"|"optimize"|"profile", "value": 1.6},
+        min_turn_radius=11.35 (metres; the path will not turn tighter)."""
         return self._request("POST", "/init", json={"wind": wind, **options})
 
     def step(
@@ -52,8 +53,11 @@ class ReeloutClient:
         distance_radial: Optional[float] = None,
         max_iter: Optional[int] = None,
         depower: Optional[dict] = None,
+        min_turn_radius: Optional[float] = None,
     ) -> dict:
-        """POST /step (non-blocking). Returns the 202 acknowledgement."""
+        """POST /step (non-blocking). Returns the 202 acknowledgement.
+        ``min_turn_radius`` [m] updates the path's minimum turn radius
+        (0 removes the constraint); omit to keep the /init setting."""
         payload = {"wait": False}  # keep this client's step/wait split
         if wind is not None:
             payload["wind"] = wind
@@ -63,6 +67,8 @@ class ReeloutClient:
             payload["max_iter"] = max_iter
         if depower is not None:
             payload["depower"] = depower
+        if min_turn_radius is not None:
+            payload["min_turn_radius"] = min_turn_radius
         return self._request("POST", "/step", json=payload)
 
     def trajectory(self, resimulate: bool = False) -> dict:

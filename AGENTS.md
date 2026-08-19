@@ -34,7 +34,11 @@ src/awetrim/
                          DepowerParams {mode: fixed|optimize|profile, value},
                          InitParams, StepParams. Replies always echo the
                          depower the returned path assumes — it is not
-                         flyable without it.
+                         flyable without it. Optional client-supplied
+                         min_turn_radius [m] (init/step; echoed) maps to
+                         sim_parameters.min_turn_radius, a dense geometric
+                         curvature constraint in opti_phase; replies carry
+                         metrics.turn_radius_min_m + a turn_radius column.
                          Launcher: scripts/server/run_reelout_server.py
   experimental/      ✅  EKF flight-data analysis pipeline (+ data_preprocessors/)
   plotting/          ✅  shared plotting helpers — see src/awetrim/plotting/AGENTS.md

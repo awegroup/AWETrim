@@ -101,15 +101,20 @@ def init(
     *,
     wind: dict,
     distance_radial: Optional[float] = None,
+    min_turn_radius: Optional[float] = None,
     **extra,
 ) -> InitParams:
-    """Send InitParams (+ wind, tether length, solver knobs) -> InitParams."""
+    """Send InitParams (+ wind, tether length, solver knobs) -> InitParams.
+    ``min_turn_radius`` [m]: the optimized path will not turn tighter than
+    this (e.g. 1/(c1*u_s_max) for a kite steered by psi_dot = c1*v_a*u_s)."""
     payload = asdict(params)
     payload["wind"] = wind  # required by the optimizer
     if params.depower is None:
         payload.pop("depower")  # let the server keep its default
     if distance_radial is not None:
         payload["distance_radial"] = distance_radial
+    if min_turn_radius is not None:
+        payload["min_turn_radius"] = min_turn_radius
     payload.update(extra)  # e.g. sim_parameters={...}
     reply = _post("/init", payload)
     return InitParams(

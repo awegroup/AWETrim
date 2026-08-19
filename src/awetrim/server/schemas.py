@@ -256,6 +256,17 @@ class InitRequest(BaseModel):
         description="Initial tether length / pattern sphere radius r0 [m]; "
         "defaults to the value in the kite's cycle config",
     )
+    min_turn_radius: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Minimum physical turn radius [m] the optimized path must "
+        "respect everywhere (geodesic radius on the tether sphere, r/|kappa|, "
+        "evaluated at the tether length at which each part of the path is "
+        "flown). Client-defined, e.g. 1/(c1*u_s_max) for a kite steered by "
+        "psi_dot = c1*v_a*u_s. Omitted/0 = no constraint (only the kite "
+        "model's own steering limits apply). Enforced densely along the "
+        "path, so it also rules out cusps and degenerate collapsed shapes.",
+    )
     system_config_path: Optional[str] = None
     cycle_config_path: Optional[str] = None
     optimization_params: List[str] = Field(
@@ -290,6 +301,12 @@ class StepRequest(BaseModel):
         gt=0,
         description="Current tether length [m]; re-anchors the pattern radius r0",
     )
+    min_turn_radius: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="Updated minimum turn radius [m] for this and later steps; "
+        "omit to keep the value set at /init, send 0 to remove the constraint",
+    )
     max_iter: Optional[int] = Field(default=None, ge=1)
     wait: bool = Field(
         default=True,
@@ -306,6 +323,14 @@ class SolveMetrics(BaseModel):
     energy_J: float
     total_time_s: float
     avg_power_W: float
+    turn_radius_min_m: Optional[float] = Field(
+        default=None,
+        description="Tightest physical turn radius [m] of the returned path "
+        "(geodesic radius r/|kappa| on the tether sphere at the length where "
+        "that part is flown, from the optimizer's own curvature expression, "
+        "sampled densely along the path); >= min_turn_radius when that "
+        "constraint is on. Null if it could not be evaluated.",
+    )
 
 
 class StatusResponse(BaseModel):
@@ -337,6 +362,11 @@ class InitReply(BaseModel):
     winch_params: Optional[WinchParams] = None
     trajectory: TrajectoryAngles
     depower: Optional[DepowerReply] = None
+    min_turn_radius: Optional[float] = Field(
+        default=None,
+        description="Minimum turn radius [m] the optimizer will enforce "
+        "(null = unconstrained)",
+    )
     state: str
     n_points: Optional[int] = None
     session_id: str = "default"
@@ -351,6 +381,12 @@ class StepReply(BaseModel):
     winch_params: Optional[WinchParams] = None
     trajectory: TrajectoryAngles
     depower: Optional[DepowerReply] = None
+    min_turn_radius: Optional[float] = Field(
+        default=None,
+        description="Minimum turn radius [m] the returned path was optimized "
+        "under (null = unconstrained); metrics.turn_radius_min_m is what the "
+        "path actually achieves",
+    )
     state: str
     step_index: int
     metrics: SolveMetrics
@@ -372,9 +408,11 @@ class TrajectoryResponse(BaseModel):
     n_points: int
     # Dense per-node guidance table. Columns: t, s, azimuth, elevation,
     # azimuth_dot, elevation_dot, distance_radial, speed_radial, s_dot,
-    # tension_tether_ground, input_steering, input_depower. The
+    # tension_tether_ground, input_steering, input_depower, turn_radius. The
     # input_depower column is always present: constant in fixed/optimize
-    # mode, the per-node profile in profile mode.
+    # mode, the per-node profile in profile mode. turn_radius [m] is the
+    # physical turn radius of the path at each node (r/|kappa|, geodesic on
+    # the tether sphere at that node's distance_radial).
     table: Dict[str, List[Optional[float]]]
     spline: SplineBlock
     metrics: SolveMetrics

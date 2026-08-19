@@ -280,6 +280,7 @@ class ReeloutSession:
         depower_mode = self._apply_depower(
             sim_parameters, optimization_params, config.get("depower")
         )
+        self._apply_min_turn_radius(sim_parameters, config.get("min_turn_radius"))
 
         wind_spec = dict(config["wind"])
         system_model.wind = self._build_wind(wind_spec)
@@ -413,6 +414,36 @@ class ReeloutSession:
         return {"mode": self._depower_mode, "value": value, "profile": None}
 
     @staticmethod
+    def _apply_min_turn_radius(
+        sim_parameters: Dict[str, Any], min_turn_radius: Optional[float]
+    ) -> None:
+        """Set/clear the optimizer's minimum-turn-radius constraint.
+
+        ``None`` leaves the current setting (request field omitted); a positive
+        value writes ``sim_parameters["min_turn_radius"]`` [m], read by
+        ``PhaseParameterized.opti_phase``; ``0`` removes it. A cycle-config
+        value stays in force until a request changes it.
+        """
+        if min_turn_radius is None:
+            return
+        value = float(min_turn_radius)
+        if value < 0.0:
+            raise ValueError(f"min_turn_radius must be >= 0, got {value}")
+        if value > 0.0:
+            sim_parameters["min_turn_radius"] = value
+        else:
+            sim_parameters.pop("min_turn_radius", None)
+
+    def min_turn_radius(self) -> Optional[float]:
+        """The minimum turn radius [m] the optimizer enforces (None = off)."""
+        if self.phase is None:
+            return None
+        value = self.phase.pattern_config.get("sim_parameters", {}).get(
+            "min_turn_radius"
+        )
+        return float(value) if value else None
+
+    @staticmethod
     def _apply_winch_params(
         radial_parameters: Dict[str, Any],
         sim_parameters: Dict[str, Any],
@@ -525,6 +556,7 @@ class ReeloutSession:
         winch_params: Optional[Dict[str, Any]],
         trajectory: Optional[Dict[str, Any]],
         depower: Optional[Dict[str, Any]] = None,
+        min_turn_radius: Optional[float] = None,
     ) -> int:
         """Validate, apply the updated inputs and transition to SOLVING."""
         with self._lock:
@@ -561,6 +593,8 @@ class ReeloutSession:
                     sim_parameters, self._optimization_params, depower
                 )
 
+            self._apply_min_turn_radius(sim_parameters, min_turn_radius)
+
             if distance_radial is not None:
                 path_parameters = pattern_config["path_parameters"]
                 old_r0 = float(path_parameters["r0"])
@@ -589,10 +623,12 @@ class ReeloutSession:
         winch_params: Optional[Dict[str, Any]] = None,
         trajectory: Optional[Dict[str, Any]] = None,
         depower: Optional[Dict[str, Any]] = None,
+        min_turn_radius: Optional[float] = None,
     ) -> int:
         """Launch one warm-started re-optimization in a background thread."""
         step_index = self._prepare_step(
-            wind, distance_radial, winch_params, trajectory, depower
+            wind, distance_radial, winch_params, trajectory, depower,
+            min_turn_radius,
         )
         self._thread = threading.Thread(
             target=self._solve, args=(step_index, max_iter), daemon=True
@@ -608,17 +644,19 @@ class ReeloutSession:
         winch_params: Optional[Dict[str, Any]] = None,
         trajectory: Optional[Dict[str, Any]] = None,
         depower: Optional[Dict[str, Any]] = None,
+        min_turn_radius: Optional[float] = None,
     ) -> Dict[str, Any]:
         """One warm-started re-optimization, solved in the calling thread.
 
         Returns a StepParams-shaped dict: the (possibly updated) winch
-        parameters, the OPTIMIZED trajectory in degrees and the depower the
-        path was optimized for. Raises SolveFailedError if the solve does not
-        converge (the last good trajectory remains available via
-        :meth:`trajectory`).
+        parameters, the OPTIMIZED trajectory in degrees, the depower the path
+        was optimized for and the minimum turn radius it was optimized under.
+        Raises SolveFailedError if the solve does not converge (the last good
+        trajectory remains available via :meth:`trajectory`).
         """
         step_index = self._prepare_step(
-            wind, distance_radial, winch_params, trajectory, depower
+            wind, distance_radial, winch_params, trajectory, depower,
+            min_turn_radius,
         )
         self._solve(step_index, max_iter)
         with self._lock:
@@ -634,19 +672,66 @@ class ReeloutSession:
             else None,
             "trajectory": self.trajectory_degrees(),
             "depower": self.depower_state(),
+            "min_turn_radius": self.min_turn_radius(),
             "state": state,
             "step_index": step_index,
             "metrics": metrics,
         }
 
+    def _run_opti(self, warm_start: bool, max_iter: Optional[int]) -> Any:
+        return self.phase.run_simulation_opti(
+            optimization_params=self._optimization_params,
+            target=self._target,
+            warm_start=warm_start,
+            max_iter=max_iter,
+        )
+
+    def _first_solve_staged(self, max_iter: Optional[int]) -> Any:
+        """Cold start with a minimum-turn-radius constraint: stage it.
+
+        A cold constrained solve lands on the best branch less often than an
+        unconstrained one (measured on the LEI-V3 reference: 11/18 lengths vs
+        16/18; the rest go to a "binding" branch with the loops exactly at
+        R_min and a few percent less power, or into low-power basins), and
+        every later warm ``/step`` follows whatever branch the first solve
+        found. So: (1) solve cold WITHOUT the constraint -- its optimum usually
+        already respects R_min; (2) re-solve warm WITH it, which then only
+        verifies (or nudges) that optimum; (3) if either stage fails, solve
+        cold with the constraint from the original starting point exactly as
+        an unstaged solve would. Same contract, better odds.
+        """
+        pattern_config = self.phase.pattern_config
+        sim_parameters = pattern_config.setdefault("sim_parameters", {})
+        min_turn_radius = sim_parameters.get("min_turn_radius")
+        if not min_turn_radius or self.successful_steps > 0:
+            return self._run_opti(warm_start=self.successful_steps > 0, max_iter=max_iter)
+
+        config_0 = copy.deepcopy(pattern_config)
+        start_state_0 = copy.deepcopy(self.phase.start_state)
+
+        sim_parameters.pop("min_turn_radius")
+        try:
+            result = self._run_opti(warm_start=False, max_iter=max_iter)
+        finally:
+            sim_parameters["min_turn_radius"] = min_turn_radius
+        if result is not None:
+            result = self._run_opti(warm_start=True, max_iter=max_iter)
+            if result is not None:
+                return result
+
+        # Fallback: the plain constrained cold solve, from the untouched start.
+        phase = Phase(
+            system_model=self.system_model,
+            pattern_config=config_0,
+            start_state=start_state_0,
+        )
+        phase._plot_failed_iterate = lambda *args, **kwargs: None
+        self.phase = phase
+        return self._run_opti(warm_start=False, max_iter=max_iter)
+
     def _solve(self, step_index: int, max_iter: Optional[int]) -> None:
         try:
-            result = self.phase.run_simulation_opti(
-                optimization_params=self._optimization_params,
-                target=self._target,
-                warm_start=self.successful_steps > 0,
-                max_iter=max_iter,
-            )
+            result = self._first_solve_staged(max_iter)
             if result is None:
                 self._finish_failed("optimization did not converge (IPOPT failure)")
                 return
@@ -685,7 +770,7 @@ class ReeloutSession:
         table["distance_radial"] = arrays["distance_radial"]
         table["speed_radial"] = arrays["speed_radial"]
         for key in ("s", "s_dot", "tension_tether_ground", "input_steering",
-                    "input_depower"):
+                    "input_depower", "turn_radius"):
             if key in arrays:
                 table[key] = arrays[key]
 
@@ -746,10 +831,16 @@ class ReeloutSession:
         energy = _numeric(result.energy_objective)
         total_time = _numeric(result.total_time)
         avg_power = energy / total_time if total_time else float("nan")
+        # Tightest turn radius of the returned path, from the NLP's own
+        # sub-sampled curvature expression (None if not evaluated).
+        turn_radius_min = getattr(result, "turn_radius_min", None)
+        if turn_radius_min is not None and not np.isfinite(turn_radius_min):
+            turn_radius_min = None
         return {
             "energy_J": energy,
             "total_time_s": total_time,
             "avg_power_W": avg_power,
+            "turn_radius_min_m": turn_radius_min,
         }
 
     # ------------------------------------------------------------------
@@ -781,6 +872,7 @@ class ReeloutSession:
             else None,
             "trajectory": self.trajectory_degrees(),
             "depower": self.depower_state(),
+            "min_turn_radius": self.min_turn_radius(),
             "state": self.state.value,
             "n_points": self._n_points,
             "session_id": self.session_id,
