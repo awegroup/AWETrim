@@ -64,6 +64,17 @@ class DepowerParams:
 
 
 @dataclass
+class PatternLimits:
+    """Optional box on where the optimized path may go, all in degrees.
+    Omitted fields keep the optimizer's defaults; on /step the struct
+    replaces the session's limits as a whole (send PatternLimits() to clear)."""
+    azimuth_max: Optional[float] = None            # |azimuth| <= this
+    elevation_min: Optional[float] = None          # elevation >= this
+    elevation_max: Optional[float] = None          # elevation <= this
+    azimuth_amplitude_min: Optional[float] = None  # figure half-width >= this
+
+
+@dataclass
 class Trajectory:
     azimuth: List[float]    # [deg], azimuth 0 = downwind
     elevation: List[float]  # [deg], from the ground plane
@@ -81,6 +92,7 @@ class InitParams:
     detect_simple_bounds: bool = True    # solver flag
     depower: Optional[DepowerParams] = None     # whether/how depower is optimized
     min_turn_radius: Optional[float] = None     # [m], path never turns tighter
+    pattern_limits: Optional[PatternLimits] = None  # [deg] box on the path
 
 
 @dataclass
@@ -90,6 +102,7 @@ class StepParams:
     trajectory: Trajectory
     depower: Optional[DepowerParams] = None     # reply: the depower the path assumes
     min_turn_radius: Optional[float] = None     # reply: the limit it was optimized under
+    pattern_limits: Optional[PatternLimits] = None  # reply: the limits in force
 
 
 # ---------------------------------------------------------------------------
@@ -107,7 +120,7 @@ def _payload(params) -> dict:
         for key, value in asdict(params).items()
         if value is not None
     }
-    for key in ("winch_params", "depower"):
+    for key in ("winch_params", "depower", "pattern_limits"):
         if isinstance(payload.get(key), dict):
             payload[key] = {k: v for k, v in payload[key].items() if v is not None}
     if "depower" in payload:
@@ -118,6 +131,11 @@ def _payload(params) -> dict:
 def _depower(reply: dict) -> Optional[DepowerParams]:
     block = reply.get("depower")
     return DepowerParams(**block) if block else None
+
+
+def _pattern_limits(reply: dict) -> Optional[PatternLimits]:
+    block = reply.get("pattern_limits")
+    return PatternLimits(**block) if block else None
 
 
 def _post(path: str, payload: dict) -> dict:
@@ -140,6 +158,7 @@ def _init_params(reply: dict) -> InitParams:
         detect_simple_bounds=reply["detect_simple_bounds"],
         depower=_depower(reply),
         min_turn_radius=reply.get("min_turn_radius"),
+        pattern_limits=_pattern_limits(reply),
     )
 
 
@@ -168,6 +187,7 @@ def step(
         trajectory=Trajectory(**reply["trajectory"]),
         depower=_depower(reply),
         min_turn_radius=reply.get("min_turn_radius"),
+        pattern_limits=_pattern_limits(reply),
     )
 
 

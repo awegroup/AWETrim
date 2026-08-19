@@ -1805,6 +1805,58 @@ class PhaseParameterized(TimeSeries):
         opti.subject_to(height <= limits["height"][1])
         _report_ineq("height", height, limits["height"], "m")
 
+        # --- Optional azimuth-amplitude floor
+        # ``sim_parameters["min_azimuth_amplitude"]`` [rad] guards the degenerate
+        # C_phi -> 0 collapse (a zero-width, reversing "figure" on which the
+        # dynamics are infeasible) with ONE smooth row: the mean square of the
+        # azimuth over the nodes must be >= a^2/2. A figure-eight or helix of
+        # azimuth half-width A has mean(phi^2) = A^2/2, so this reads "the
+        # figure's azimuth half-width stays >= a". Off by default: the NLP is
+        # unchanged when the key is absent or 0. (Box limits on where the path
+        # may go are the C_phi / C_beta coefficient bounds -- convex hull of the
+        # B-spline -- set via ``opti_limits_override``.)
+        min_azimuth_amplitude = float(
+            sim_params.get("min_azimuth_amplitude") or 0.0
+        )
+        if min_azimuth_amplitude < 0.0:
+            raise ValueError(
+                f"min_azimuth_amplitude must be >= 0, got {min_azimuth_amplitude}"
+            )
+        if min_azimuth_amplitude > 0.0:
+            azimuth_nodes = pattern.azimuth(
+                opti_vars["distance_radial"], s_grid[:-1]
+            )  # N entries
+            azimuth_ms = ca.sumsqr(azimuth_nodes) / azimuth_nodes.numel()
+            amplitude_row = 2.0 * azimuth_ms - min_azimuth_amplitude**2
+            # (``ca.depends_on(expr, opti.x)`` is False for Opti variables --
+            # opti.x is a view, not the symbols -- so test for free symbols.)
+            if isinstance(amplitude_row, ca.MX) and ca.symvar(amplitude_row):
+                opti.subject_to(amplitude_row >= 0.0)
+                _report_ineq(
+                    "azimuth_amplitude (rms*sqrt2)",
+                    ca.sqrt(2.0 * azimuth_ms + 1e-12),
+                    (min_azimuth_amplitude, np.inf),
+                    "rad",
+                )
+                print(
+                    "Azimuth amplitude floor: "
+                    f"{np.degrees(min_azimuth_amplitude):.1f} deg"
+                )
+            else:
+                # C_phi is not an optimization parameter: the pattern's azimuth
+                # is fixed, so the floor is a plain check on the given shape.
+                value = (
+                    float(ca.evalf(amplitude_row))
+                    if isinstance(amplitude_row, ca.MX)
+                    else float(amplitude_row)
+                )
+                if value < 0.0:
+                    raise ValueError(
+                        "min_azimuth_amplitude "
+                        f"({np.degrees(min_azimuth_amplitude):.1f} deg) is "
+                        "violated by the fixed pattern and C_phi is not optimized"
+                    )
+
         # Constraint init and end azimuth
         # azimuth = pattern.azimuth(opti_vars["distance_radial"], s_grid[:-1])
         # opti.subject_to(azimuth[0] == 0)

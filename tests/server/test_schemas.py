@@ -155,3 +155,30 @@ def test_replies_and_metrics_carry_depower_and_turn_radius():
     assert step.depower.value == pytest.approx(1.52)
     assert step.min_turn_radius == pytest.approx(11.35)
     assert step.metrics.turn_radius_min_m == pytest.approx(12.3)
+
+
+def test_pattern_limits_struct_validates_and_is_optional():
+    from awetrim.server.schemas import InitReply, PatternLimits, StepReply
+
+    assert InitRequest(**_init_kwargs()).pattern_limits is None
+    assert StepRequest().pattern_limits is None
+    lim = PatternLimits(azimuth_max=35.0, elevation_max=45.0, azimuth_amplitude_min=5.0)
+    assert lim.elevation_min is None
+    req = InitRequest(**_init_kwargs(pattern_limits=lim.model_dump()))
+    assert req.pattern_limits.azimuth_max == pytest.approx(35.0)
+    # {} on /step is a valid "clear" request and survives as an (empty) struct
+    assert StepRequest(pattern_limits={}).pattern_limits is not None
+    with pytest.raises(ValidationError):
+        PatternLimits(elevation_min=40.0, elevation_max=30.0)
+    with pytest.raises(ValidationError):
+        PatternLimits(azimuth_max=0.0)
+    with pytest.raises(ValidationError):
+        PatternLimits(unknown=1.0)
+    traj = {"azimuth": [0.0] * 8, "elevation": [20.0] * 8}
+    assert InitReply(name="x", trajectory=traj, state="ready").pattern_limits is None
+    step = StepReply(
+        trajectory=traj, state="converged", step_index=1,
+        metrics={"energy_J": 1.0, "total_time_s": 1.0, "avg_power_W": 1.0},
+        pattern_limits={"azimuth_max": 35.0},
+    )
+    assert step.pattern_limits.azimuth_max == pytest.approx(35.0)

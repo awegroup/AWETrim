@@ -115,6 +115,7 @@ field; everything else has a default:
 | `detect_simple_bounds` | from config | IPOPT speed-up |
 | `depower` | `{"mode":"optimize"}` | whether depower is optimized and how, see [Depower](#depower--read-this-before-flying-a-returned-path) |
 | `min_turn_radius` | none | minimum physical turn radius [m] the path must respect, see [Minimum turn radius](#minimum-turn-radius--if-your-kite-cannot-turn-as-tightly-as-the-optimizers) |
+| `pattern_limits` | none | box on where the path may go, in degrees: `{azimuth_max, elevation_min, elevation_max, azimuth_amplitude_min}`, see [Pattern limits](#pattern-limits--keeping-the-optimizer-out-of-shapes-you-do-not-want) |
 
 `input_depower`, `reg_weight` and `detect_simple_bounds` are the complete set
 of solver knobs `InitParams` exposes; there is no generic overrides dict.
@@ -202,6 +203,33 @@ with it (fallback: cold with it) — so expect the first `/step` to take about
 twice as long; later steps solve once. Cold solves remain path-sensitive:
 prefer stepping sequentially (see below).
 
+### Pattern limits — keeping the optimizer out of shapes you do not want
+
+By default the optimizer may put the figure anywhere in |azimuth| ≤ 45.8°,
+0.6° ≤ elevation ≤ 51.6° (the bounds on the pattern's B-spline coefficients),
+and a cold start occasionally converges to a degenerate shape there: a figure
+run away to the top of that elevation range where the tension collapses, or a
+zero-width "figure" (`C_phi → 0`) on which the dynamics are infeasible. If your
+controller has its own envelope, send it and the optimizer stays inside it:
+
+```json
+{"pattern_limits": {"azimuth_max": 35, "elevation_min": 10, "elevation_max": 45,
+                    "azimuth_amplitude_min": 5}}
+```
+
+All fields in **degrees**, all optional (an omitted field keeps the default).
+`azimuth_max` / `elevation_min` / `elevation_max` bound the spline's control
+coefficients, and a B-spline never leaves the hull of its coefficients, so they
+hold for the whole continuous path, not just at the nodes. `azimuth_amplitude_min`
+is a floor on the figure's azimuth half-width (one smooth constraint:
+mean over the path of azimuth² ≥ value²/2, which a figure-eight or helix of
+half-width A satisfies with A ≥ value) — the guard against the zero-width
+collapse. Both replies echo the limits in force (`pattern_limits`, `null` =
+defaults). `POST /step` accepts the struct too: omit = keep, a struct replaces
+the limits as a whole, `{}` clears them. Purely shape limits — the kite model
+is unchanged — and the normal optimum (figures of ~25–35° half-width at 20–35°
+elevation) is well inside the defaults, so they only act on the bad basins.
+
 The trajectory you send is only a starting shape — the optimizer reshapes the
 curve freely; a rough guess is fine.
 
@@ -264,8 +292,8 @@ Input — empty `{}` for the first solve; on refreshes send what changed:
 ```
 
 `length` is the **current tether length** from your simulator; the
-refreshed pattern is re-anchored there. All fields are optional (`depower`
-and `min_turn_radius` may also be updated here).
+refreshed pattern is re-anchored there. All fields are optional (`depower`,
+`min_turn_radius` and `pattern_limits` may also be updated here).
 
 **Step sequentially.** Each `/step` warm-starts from the previous optimum
 (node-wise), so a reel-out driven as one session — `/init` once, then `/step`
@@ -307,17 +335,21 @@ Add `"wait": false` to get the old asynchronous behavior instead
 - `DepowerParams {mode, value}` on requests, `{mode, value, profile}` on
   replies — whether/how depower is optimized and the value the returned path
   assumes; see the depower section above.
+- `PatternLimits {azimuth_max, elevation_min, elevation_max,
+  azimuth_amplitude_min}` [deg], all optional — a box on where the path may
+  go plus an azimuth-amplitude floor; see the pattern-limits section above.
 - `InitParams {name, length, winch_params, inflow_conditions, trajectory,
-  input_depower, reg_weight, detect_simple_bounds, depower, min_turn_radius}`
-  — the `/init` request and reply carry these fields (reply trajectory =
-  fitted starting path, `inflow_conditions` echoed with the defaults filled
-  in, `depower` echoed as mode + starting value). `length` is the initial
-  tether length; the three solver knobs default to `1.6`, `1.0` and `true`;
-  `depower` and `min_turn_radius` are optional.
-- `StepParams {length, winch_params, trajectory, depower, min_turn_radius}` —
-  the `/step` request and reply, `length` being the current tether length;
-  on the reply `depower` is the setting the optimized path assumes and
-  `min_turn_radius` the limit it was optimized under.
+  input_depower, reg_weight, detect_simple_bounds, depower, min_turn_radius,
+  pattern_limits}` — the `/init` request and reply carry these fields (reply
+  trajectory = fitted starting path, `inflow_conditions` echoed with the
+  defaults filled in, `depower` echoed as mode + starting value). `length` is
+  the initial tether length; the three solver knobs default to `1.6`, `1.0`
+  and `true`; `depower`, `min_turn_radius` and `pattern_limits` are optional.
+- `StepParams {length, winch_params, trajectory, depower, min_turn_radius,
+  pattern_limits}` — the `/step` request and reply, `length` being the
+  current tether length; on the reply `depower` is the setting the optimized
+  path assumes, `min_turn_radius` the limit and `pattern_limits` the box it
+  was optimized under.
 - The struct fields go on the wire as they are — the clients do no mapping.
   The three solver knobs are sent flat; the server merges them into the cycle
   config it solves with. Both replies echo `length`, `/init` also echoes the knobs.

@@ -46,7 +46,9 @@ class ReeloutClient:
         """POST /init. `options` maps to the InitRequest fields, e.g.
         initial_guess=..., n_points=..., length=..., input_depower=...,
         depower={"mode": "fixed"|"optimize"|"profile", "value": 1.6},
-        min_turn_radius=11.35 (metres; the path will not turn tighter)."""
+        min_turn_radius=11.35 (metres; the path will not turn tighter),
+        pattern_limits={"azimuth_max": 35, "elevation_max": 45,
+        "azimuth_amplitude_min": 5} (degrees; box on where the path may go)."""
         return self._request(
             "POST", "/init",
             json={"inflow_conditions": inflow_conditions, **options},
@@ -59,10 +61,12 @@ class ReeloutClient:
         max_iter: Optional[int] = None,
         depower: Optional[dict] = None,
         min_turn_radius: Optional[float] = None,
+        pattern_limits: Optional[dict] = None,
     ) -> dict:
         """POST /step (non-blocking). Returns the 202 acknowledgement.
         ``depower`` changes mode/value mid-session; ``min_turn_radius`` [m]
-        updates the limit (0 removes it); omit both to keep the /init setting."""
+        updates the limit (0 removes it); ``pattern_limits`` [deg] replaces the
+        box on the path ({} clears it); omit them to keep the /init setting."""
         payload = {"wait": False}  # keep this client's step/wait split
         if inflow_conditions is not None:
             payload["inflow_conditions"] = inflow_conditions
@@ -74,6 +78,8 @@ class ReeloutClient:
             payload["depower"] = depower
         if min_turn_radius is not None:
             payload["min_turn_radius"] = min_turn_radius
+        if pattern_limits is not None:
+            payload["pattern_limits"] = pattern_limits
         return self._request("POST", "/step", json=payload)
 
     def trajectory(self, resimulate: bool = False) -> dict:

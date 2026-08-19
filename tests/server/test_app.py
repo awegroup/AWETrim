@@ -380,3 +380,26 @@ def test_min_turn_radius_round_trips_through_init_and_step(client):
     step = client.post("/step", json={"min_turn_radius": 0}).json()
     assert step["min_turn_radius"] is None
     assert client.post("/step", json={"min_turn_radius": -1}).status_code == 422
+
+
+def test_pattern_limits_round_trip_through_init_and_step(client):
+    payload = dict(client.init_payload)
+    payload["pattern_limits"] = {"azimuth_max": 35.0, "elevation_max": 45.0}
+    reply = client.post("/init", json=payload)
+    assert reply.status_code == 200
+    assert reply.json()["pattern_limits"]["azimuth_max"] == pytest.approx(35.0)
+    assert reply.json()["pattern_limits"]["elevation_max"] == pytest.approx(45.0)
+
+    phase = StubPhase.latest
+    phase.results.append(_fake_result())
+    phase.release.set()
+    step = client.post("/step", json={}).json()  # omitted -> kept
+    assert step["pattern_limits"]["azimuth_max"] == pytest.approx(35.0)
+
+    phase.results.append(_fake_result())
+    phase.release.set()
+    step = client.post("/step", json={"pattern_limits": {}}).json()  # {} clears
+    assert step["pattern_limits"] is None
+    assert client.post(
+        "/step", json={"pattern_limits": {"elevation_min": 40, "elevation_max": 30}}
+    ).status_code == 422

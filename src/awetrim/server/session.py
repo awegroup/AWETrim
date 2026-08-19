@@ -289,6 +289,7 @@ class ReeloutSession:
             sim_parameters, optimization_params, config.get("depower")
         )
         self._apply_min_turn_radius(sim_parameters, config.get("min_turn_radius"))
+        self._apply_pattern_limits(sim_parameters, config.get("pattern_limits"))
 
         inflow = config.get("inflow_conditions")
         wind_spec = self._resolve_wind_spec(inflow)
@@ -468,6 +469,78 @@ class ReeloutSession:
         return float(value) if value else None
 
     @staticmethod
+    def _apply_pattern_limits(
+        sim_parameters: Dict[str, Any], limits: Optional[Dict[str, Any]]
+    ) -> None:
+        """Map the degree-valued ``PatternLimits`` struct onto the optimizer.
+
+        ``None`` (field omitted) leaves the current setting; a dict replaces
+        the pattern limits as a whole (``{}`` clears them). ``azimuth_max`` /
+        ``elevation_min`` / ``elevation_max`` become ``opti_limits_override``
+        entries for the spline control coefficients ``C_phi`` / ``C_beta``
+        [rad] -- the B-spline stays inside the hull of its coefficients, so
+        these bound the whole path; a missing side falls back to
+        ``DEFAULT_OPTI_LIMITS``. ``azimuth_amplitude_min`` becomes
+        ``sim_parameters["min_azimuth_amplitude"]`` [rad], the one-row
+        amplitude floor in ``PhaseParameterized.opti_phase``. Other override
+        entries (e.g. ``speed_radial`` from the winch params) are untouched.
+        """
+        if limits is None:
+            return
+        override = dict(sim_parameters.get("opti_limits_override") or {})
+
+        azimuth_max = limits.get("azimuth_max")
+        if azimuth_max is not None:
+            half = float(np.radians(azimuth_max))
+            override["C_phi"] = [-half, half]
+        else:
+            override.pop("C_phi", None)
+
+        el_min = limits.get("elevation_min")
+        el_max = limits.get("elevation_max")
+        if el_min is not None or el_max is not None:
+            lb_default, ub_default = DEFAULT_OPTI_LIMITS["C_beta"]
+            lb = float(np.radians(el_min)) if el_min is not None else lb_default
+            ub = float(np.radians(el_max)) if el_max is not None else ub_default
+            if ub <= lb:
+                raise ValueError("elevation_max must be greater than elevation_min")
+            override["C_beta"] = [lb, ub]
+        else:
+            override.pop("C_beta", None)
+
+        if override:
+            sim_parameters["opti_limits_override"] = override
+        else:
+            sim_parameters.pop("opti_limits_override", None)
+
+        amplitude = limits.get("azimuth_amplitude_min")
+        if amplitude:
+            if float(amplitude) < 0.0:
+                raise ValueError("azimuth_amplitude_min must be >= 0")
+            sim_parameters["min_azimuth_amplitude"] = float(np.radians(amplitude))
+        else:
+            sim_parameters.pop("min_azimuth_amplitude", None)
+
+    def pattern_limits(self) -> Optional[Dict[str, float]]:
+        """The pattern limits in force, as the degree-valued struct
+        (None when none of them is set -- optimizer defaults apply)."""
+        if self.phase is None:
+            return None
+        sim_parameters = self.phase.pattern_config.get("sim_parameters", {})
+        override = sim_parameters.get("opti_limits_override") or {}
+        out: Dict[str, float] = {}
+        if "C_phi" in override:
+            out["azimuth_max"] = float(np.degrees(abs(override["C_phi"][1])))
+        if "C_beta" in override:
+            lb, ub = override["C_beta"]
+            out["elevation_min"] = float(np.degrees(lb))
+            out["elevation_max"] = float(np.degrees(ub))
+        amplitude = sim_parameters.get("min_azimuth_amplitude")
+        if amplitude:
+            out["azimuth_amplitude_min"] = float(np.degrees(amplitude))
+        return out or None
+
+    @staticmethod
     def _apply_winch_params(
         radial_parameters: Dict[str, Any],
         sim_parameters: Dict[str, Any],
@@ -593,6 +666,7 @@ class ReeloutSession:
         inflow_conditions: Optional[Dict[str, Any]] = None,
         depower: Optional[Dict[str, Any]] = None,
         min_turn_radius: Optional[float] = None,
+        pattern_limits: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Validate, apply the updated inputs and transition to SOLVING."""
         with self._lock:
@@ -631,6 +705,7 @@ class ReeloutSession:
                 )
 
             self._apply_min_turn_radius(sim_parameters, min_turn_radius)
+            self._apply_pattern_limits(sim_parameters, pattern_limits)
 
             if distance_radial is not None:
                 path_parameters = pattern_config["path_parameters"]
@@ -661,11 +736,12 @@ class ReeloutSession:
         inflow_conditions: Optional[Dict[str, Any]] = None,
         depower: Optional[Dict[str, Any]] = None,
         min_turn_radius: Optional[float] = None,
+        pattern_limits: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Launch one warm-started re-optimization in a background thread."""
         step_index = self._prepare_step(
             distance_radial, winch_params, trajectory, inflow_conditions,
-            depower, min_turn_radius,
+            depower, min_turn_radius, pattern_limits,
         )
         self._thread = threading.Thread(
             target=self._solve, args=(step_index, max_iter), daemon=True
@@ -682,6 +758,7 @@ class ReeloutSession:
         inflow_conditions: Optional[Dict[str, Any]] = None,
         depower: Optional[Dict[str, Any]] = None,
         min_turn_radius: Optional[float] = None,
+        pattern_limits: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """One warm-started re-optimization, solved in the calling thread.
 
@@ -693,7 +770,7 @@ class ReeloutSession:
         """
         step_index = self._prepare_step(
             distance_radial, winch_params, trajectory, inflow_conditions,
-            depower, min_turn_radius,
+            depower, min_turn_radius, pattern_limits,
         )
         self._solve(step_index, max_iter)
         with self._lock:
@@ -711,6 +788,7 @@ class ReeloutSession:
             "trajectory": self.trajectory_degrees(),
             "depower": self.depower_state(),
             "min_turn_radius": self.min_turn_radius(),
+            "pattern_limits": self.pattern_limits(),
             "state": state,
             "step_index": step_index,
             "metrics": metrics,
@@ -917,6 +995,7 @@ class ReeloutSession:
             "detect_simple_bounds": sim_parameters.get("detect_simple_bounds"),
             "depower": self.depower_state(),
             "min_turn_radius": self.min_turn_radius(),
+            "pattern_limits": self.pattern_limits(),
             "state": self.state.value,
             "n_points": self._n_points,
             "session_id": self.session_id,

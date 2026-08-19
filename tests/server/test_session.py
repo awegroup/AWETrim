@@ -631,3 +631,53 @@ def test_first_constrained_solve_is_staged(patched_session):
         sess2.step_blocking()
     assert sess2.phase is not fallback  # rebuilt for the fallback stage
     assert sess2.phase.pattern_config["sim_parameters"]["min_turn_radius"] == pytest.approx(11.35)
+
+
+def test_apply_pattern_limits_maps_degrees_onto_coefficient_bounds():
+    sim = {"opti_limits_override": {"speed_radial": [-10.0, 5.0]}}
+    ReeloutSession._apply_pattern_limits(sim, None)
+    assert sim == {"opti_limits_override": {"speed_radial": [-10.0, 5.0]}}  # omitted -> untouched
+    ReeloutSession._apply_pattern_limits(
+        sim, {"azimuth_max": 35.0, "elevation_max": 45.0, "azimuth_amplitude_min": 5.0}
+    )
+    override = sim["opti_limits_override"]
+    assert override["speed_radial"] == [-10.0, 5.0]  # winch entry preserved
+    assert override["C_phi"] == pytest.approx([-np.radians(35.0), np.radians(35.0)])
+    assert override["C_beta"][0] == pytest.approx(0.01)  # default lower side
+    assert override["C_beta"][1] == pytest.approx(np.radians(45.0))
+    assert sim["min_azimuth_amplitude"] == pytest.approx(np.radians(5.0))
+    # {} clears the pattern limits but not the winch entry
+    ReeloutSession._apply_pattern_limits(sim, {})
+    assert sim == {"opti_limits_override": {"speed_radial": [-10.0, 5.0]}}
+    with pytest.raises(ValueError, match="elevation_max"):
+        ReeloutSession._apply_pattern_limits(sim, {"elevation_min": 40.0, "elevation_max": 30.0})
+
+
+def test_pattern_limits_round_trip_init_step_and_replies(patched_session):
+    sess, config = patched_session
+    sess.init(dict(config, pattern_limits={"azimuth_max": 35.0, "elevation_max": 45.0}))
+    sim = sess.phase.pattern_config["sim_parameters"]
+    assert sim["opti_limits_override"]["C_phi"] == pytest.approx([-np.radians(35.0), np.radians(35.0)])
+    echoed = sess.init_reply()["pattern_limits"]
+    assert echoed["azimuth_max"] == pytest.approx(35.0)
+    assert echoed["elevation_max"] == pytest.approx(45.0)
+    assert echoed["elevation_min"] == pytest.approx(np.degrees(0.01))
+    assert "azimuth_amplitude_min" not in echoed
+
+    phase = sess.phase
+    phase.results.append(_fake_result())
+    phase.release.set()
+    reply = sess.step_blocking()  # omitted -> kept
+    assert reply["pattern_limits"]["azimuth_max"] == pytest.approx(35.0)
+
+    phase.results.append(_fake_result())
+    phase.release.set()
+    reply = sess.step_blocking(pattern_limits={"azimuth_amplitude_min": 5.0})  # replaced as a whole
+    assert reply["pattern_limits"] == {"azimuth_amplitude_min": pytest.approx(5.0)}
+    assert "C_phi" not in sess.phase.pattern_config["sim_parameters"].get("opti_limits_override", {})
+
+    phase.results.append(_fake_result())
+    phase.release.set()
+    reply = sess.step_blocking(pattern_limits={})  # cleared
+    assert reply["pattern_limits"] is None
+    assert "min_azimuth_amplitude" not in sess.phase.pattern_config["sim_parameters"]

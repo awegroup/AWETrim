@@ -39,6 +39,11 @@ src/awetrim/
                          sim_parameters.min_turn_radius, a dense geometric
                          curvature constraint in opti_phase; replies carry
                          metrics.turn_radius_min_m + a turn_radius column.
+                         Optional pattern_limits {azimuth_max, elevation_min,
+                         elevation_max, azimuth_amplitude_min} [deg]
+                         (init/step; echoed) -> opti_limits_override C_phi/
+                         C_beta (B-spline hull) + sim_parameters.
+                         min_azimuth_amplitude (one smooth row in opti_phase).
                          Launcher: scripts/server/run_reelout_server.py
   experimental/      ✅  EKF flight-data analysis pipeline (+ data_preprocessors/)
   plotting/          ✅  shared plotting helpers — see src/awetrim/plotting/AGENTS.md

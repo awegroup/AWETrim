@@ -269,6 +269,62 @@ class TrajectoryAngles(BaseModel):
 # ---------------------------------------------------------------------------
 # Requests
 # ---------------------------------------------------------------------------
+class PatternLimits(BaseModel):
+    """Optional box on where the optimized pattern may go, in DEGREES.
+
+    The pattern is a periodic cubic B-spline in azimuth/elevation; bounding
+    its control coefficients bounds the whole continuous curve (convex-hull
+    property), so these limits hold everywhere along the path, not only at the
+    nodes. Use them to keep the optimizer out of shapes your controller or
+    simulator should not fly -- e.g. an ``elevation_max`` ceiling against the
+    run-away-to-zenith basin, or an ``azimuth_amplitude_min`` floor against
+    the zero-width collapse of a cold start. Every field is optional; an
+    omitted field keeps the optimizer's default for it (|azimuth| <= 45.8 deg,
+    0.6 <= elevation <= 51.6 deg, no amplitude floor). On /step the struct
+    replaces the session's limits as a whole (send ``{}`` to clear them).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    azimuth_max: Optional[float] = Field(
+        default=None,
+        gt=0,
+        le=90,
+        description="|azimuth| of the path stays <= this [deg]",
+    )
+    elevation_min: Optional[float] = Field(
+        default=None,
+        ge=0,
+        lt=90,
+        description="elevation of the path stays >= this [deg]",
+    )
+    elevation_max: Optional[float] = Field(
+        default=None,
+        gt=0,
+        le=90,
+        description="elevation of the path stays <= this [deg]",
+    )
+    azimuth_amplitude_min: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=90,
+        description="The figure's azimuth half-width stays >= this [deg] "
+        "(one smooth constraint: mean over the path of azimuth^2 >= value^2/2, "
+        "which a figure-eight or helix of half-width A satisfies with A >= "
+        "value). Guards the degenerate zero-width collapse. 0/omitted = off.",
+    )
+
+    @model_validator(mode="after")
+    def _check_elevation_band(self):
+        if (
+            self.elevation_min is not None
+            and self.elevation_max is not None
+            and self.elevation_max <= self.elevation_min
+        ):
+            raise ValueError("elevation_max must be greater than elevation_min")
+        return self
+
+
 class InitRequest(BaseModel):
     # Unknown keys are rejected: a client still sending a removed name (e.g.
     # the old "distance_radial") gets a 422 instead of a silently ignored field.
@@ -339,6 +395,12 @@ class InitRequest(BaseModel):
         "model's own steering limits apply). Enforced densely along the path, "
         "so it also rules out cusps and near-degenerate tiny loops.",
     )
+    pattern_limits: Optional[PatternLimits] = Field(
+        default=None,
+        description="Optional box on the path's azimuth/elevation range and "
+        "an azimuth-amplitude floor, in degrees; omitted = the optimizer's "
+        "defaults (plus whatever the cycle config sets).",
+    )
 
 
 class StepRequest(BaseModel):
@@ -372,6 +434,11 @@ class StepRequest(BaseModel):
         ge=0,
         description="Updated minimum turn radius [m] for this and later steps; "
         "omit to keep the value set at /init, send 0 to remove the constraint",
+    )
+    pattern_limits: Optional[PatternLimits] = Field(
+        default=None,
+        description="Updated pattern limits for this and later steps; omit to "
+        "keep the current ones, send {} to clear them",
     )
     max_iter: Optional[int] = Field(default=None, ge=1)
     wait: bool = Field(
@@ -446,6 +513,10 @@ class InitReply(BaseModel):
         description="Minimum turn radius [m] the optimizer will enforce "
         "(null = unconstrained)",
     )
+    pattern_limits: Optional[PatternLimits] = Field(
+        default=None,
+        description="Pattern limits in force [deg] (null = optimizer defaults)",
+    )
     state: str
     n_points: Optional[int] = None
     session_id: str = "default"
@@ -466,6 +537,11 @@ class StepReply(BaseModel):
     trajectory: TrajectoryAngles
     depower: Optional[DepowerReply] = None
     min_turn_radius: Optional[float] = None
+    pattern_limits: Optional[PatternLimits] = Field(
+        default=None,
+        description="Pattern limits the path was optimized under [deg] "
+        "(null = optimizer defaults)",
+    )
     state: str
     step_index: int
     metrics: SolveMetrics

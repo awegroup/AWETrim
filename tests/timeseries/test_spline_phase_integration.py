@@ -458,3 +458,41 @@ def test_min_turn_radius_adds_dense_rows_and_diagnostics():
 
     with pytest.raises(ValueError, match="min_turn_radius"):
         _build(min_turn_radius=-1.0)
+
+    # sim_parameters["min_azimuth_amplitude"] (the PatternLimits azimuth
+    # amplitude floor) is ONE smooth row when C_phi is optimized; with a fixed
+    # pattern it is only a check on the given shape; negative values rejected.
+    def _build_cphi(**sim_overrides):
+        config = _reelout_config("lissajous", n_points=n_points)
+        config["sim_parameters"]["input_depower"] = 1.6
+        config["sim_parameters"].update(sim_overrides)
+        phase = PhaseParameterized(
+            system_model, quasi_steady=True, pattern_config=config
+        )
+        opti = ca.Opti()
+        phase.pattern_config_opti = copy.deepcopy(config)
+        c_phi = opti.variable(len(config["path_parameters"]["C_phi"]))
+        phase.pattern_config_opti["path_parameters"]["C_phi"] = c_phi
+        start_state = {
+            "t": 0.0, "s": _S_INIT, "s_dot": 3.0, "input_steering": 0.0,
+            "tension_tether_ground": 8.4e4, "speed_radial": 0.0,
+            "distance_radial": config["path_parameters"]["r0"],
+        }
+        opti, _, objective_dict = phase.opti_phase(
+            start_state=start_state, opti=opti, opti_params={"C_phi": c_phi}
+        )
+        return opti, objective_dict
+
+    opti_c_off, od_c_off = _build_cphi()
+    opti_amp, od_amp = _build_cphi(min_azimuth_amplitude=np.radians(5.0))
+    assert opti_amp.g.numel() - opti_c_off.g.numel() == 1
+    row = od_amp["constraint_report"]["azimuth_amplitude (rms*sqrt2)"]
+    assert row["lb"] == pytest.approx(np.radians(5.0)) and row["ub"] == float("inf")
+    assert "azimuth_amplitude (rms*sqrt2)" not in od_c_off["constraint_report"]
+    # fixed pattern: satisfied -> no row; violated -> error
+    opti_fixed, _ = _build(min_azimuth_amplitude=np.radians(5.0))
+    assert opti_fixed.g.numel() == opti_off.g.numel()
+    with pytest.raises(ValueError, match="min_azimuth_amplitude"):
+        _build(min_azimuth_amplitude=np.radians(89.0))
+    with pytest.raises(ValueError, match="min_azimuth_amplitude"):
+        _build(min_azimuth_amplitude=-0.1)

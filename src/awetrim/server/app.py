@@ -111,6 +111,10 @@ def create_app(
             distance_radial=request.length,
             depower=request.depower.model_dump() if request.depower else None,
             min_turn_radius=request.min_turn_radius,
+            # {} must reach the session as {} (= clear), hence "is not None"
+            pattern_limits=request.pattern_limits.model_dump()
+            if request.pattern_limits is not None
+            else None,
             max_iter=request.max_iter,
         )
         try:

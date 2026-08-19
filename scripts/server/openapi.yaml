@@ -402,6 +402,11 @@ components:
           - type: 'null'
           title: Min Turn Radius
           description: Minimum turn radius [m] the optimizer will enforce (null = unconstrained)
+        pattern_limits:
+          anyOf:
+          - $ref: '#/components/schemas/PatternLimits'
+          - type: 'null'
+          description: Pattern limits in force [deg] (null = optimizer defaults)
         state:
           type: string
           title: State
@@ -529,6 +534,13 @@ components:
             steered by psi_dot = c1*v_a*u_s. Omitted/0 = no constraint (only the kite model's
             own steering limits apply). Enforced densely along the path, so it also rules
             out cusps and near-degenerate tiny loops.
+        pattern_limits:
+          anyOf:
+          - $ref: '#/components/schemas/PatternLimits'
+          - type: 'null'
+          description: Optional box on the path's azimuth/elevation range and an azimuth-amplitude
+            floor, in degrees; omitted = the optimizer's defaults (plus whatever the cycle
+            config sets).
       additionalProperties: false
       type: object
       required:
@@ -592,6 +604,59 @@ components:
           default: true
       type: object
       title: InitialGuess
+    PatternLimits:
+      properties:
+        azimuth_max:
+          anyOf:
+          - type: number
+            maximum: 90.0
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Azimuth Max
+          description: '|azimuth| of the path stays <= this [deg]'
+        elevation_min:
+          anyOf:
+          - type: number
+            exclusiveMaximum: 90.0
+            minimum: 0.0
+          - type: 'null'
+          title: Elevation Min
+          description: elevation of the path stays >= this [deg]
+        elevation_max:
+          anyOf:
+          - type: number
+            maximum: 90.0
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Elevation Max
+          description: elevation of the path stays <= this [deg]
+        azimuth_amplitude_min:
+          anyOf:
+          - type: number
+            maximum: 90.0
+            minimum: 0.0
+          - type: 'null'
+          title: Azimuth Amplitude Min
+          description: 'The figure''s azimuth half-width stays >= this [deg] (one smooth constraint:
+            mean over the path of azimuth^2 >= value^2/2, which a figure-eight or helix of
+            half-width A satisfies with A >= value). Guards the degenerate zero-width collapse.
+            0/omitted = off.'
+      additionalProperties: false
+      type: object
+      title: PatternLimits
+      description: |-
+        Optional box on where the optimized pattern may go, in DEGREES.
+
+        The pattern is a periodic cubic B-spline in azimuth/elevation; bounding
+        its control coefficients bounds the whole continuous curve (convex-hull
+        property), so these limits hold everywhere along the path, not only at the
+        nodes. Use them to keep the optimizer out of shapes your controller or
+        simulator should not fly -- e.g. an ``elevation_max`` ceiling against the
+        run-away-to-zenith basin, or an ``azimuth_amplitude_min`` floor against
+        the zero-width collapse of a cold start. Every field is optional; an
+        omitted field keeps the optimizer's default for it (|azimuth| <= 45.8 deg,
+        0.6 <= elevation <= 51.6 deg, no amplitude floor). On /step the struct
+        replaces the session's limits as a whole (send ``{}`` to clear them).
     SolveMetrics:
       properties:
         energy_J:
@@ -760,6 +825,12 @@ components:
           - type: number
           - type: 'null'
           title: Min Turn Radius
+        pattern_limits:
+          anyOf:
+          - $ref: '#/components/schemas/PatternLimits'
+          - type: 'null'
+          description: Pattern limits the path was optimized under [deg] (null = optimizer
+            defaults)
         state:
           type: string
           title: State
@@ -822,6 +893,12 @@ components:
           title: Min Turn Radius
           description: Updated minimum turn radius [m] for this and later steps; omit to keep
             the value set at /init, send 0 to remove the constraint
+        pattern_limits:
+          anyOf:
+          - $ref: '#/components/schemas/PatternLimits'
+          - type: 'null'
+          description: Updated pattern limits for this and later steps; omit to keep the current
+            ones, send {} to clear them
         max_iter:
           anyOf:
           - type: integer
