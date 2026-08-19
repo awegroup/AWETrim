@@ -29,6 +29,7 @@ raised here into HTTP status codes.
 """
 
 import copy
+import logging
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -40,6 +41,7 @@ import casadi as ca
 import numpy as np
 
 from awetrim.environment.wind_factory import create_wind_model
+from awetrim.environment.wind_profiles import wind_kwargs_from_inflow
 from awetrim.kinematics.parametrized_patterns import (
     create_pattern_from_dict,
     fit_bspline_pattern_to_trajectory,
@@ -53,6 +55,8 @@ from awetrim.utils.config_paths import (
     LEI_V3_SYSTEM_CONFIG,
 )
 from awetrim.utils.utils import load_cycle_config_from_yaml
+
+logger = logging.getLogger(__name__)
 
 # Timeseries variables returned by /trajectory?resimulate=true
 RESIM_VARIABLES = [
@@ -194,12 +198,12 @@ class ReeloutSession:
         self.successful_steps = 0
         self.last_step_started: Optional[datetime] = None
         self.last_step_finished: Optional[datetime] = None
+        self._inflow: Optional[dict] = None
         self._wind_spec: Optional[dict] = None
         self._optimization_params: List[str] = []
         self._target: str = "power"
         self._n_points: Optional[int] = None
         self._name: str = "reelout-optimization"
-        self._max_time: Optional[float] = None
         self._winch_params: Optional[dict] = None
         self._depower_mode: str = "optimize"
         # Resolution of the degree-table replies: matches the client-sent
@@ -236,8 +240,7 @@ class ReeloutSession:
 
         # Pattern sphere radius: request override, else the cycle-config value.
         r0 = float(
-            config.get("distance_radial")
-            or reelout_config["path_parameters"]["r0"]
+            config.get("length") or reelout_config["path_parameters"]["r0"]
         )
         reelout_config["path_parameters"]["r0"] = r0
 
@@ -269,10 +272,15 @@ class ReeloutSession:
 
         n_points = int(config.get("n_points", 100))
         sim_parameters["n_points"] = n_points
-        sim_parameters.update(config.get("sim_parameters") or {})
+        # The flat InitParams solver knobs; unset ones keep the cycle-config value.
+        for key in ("input_depower", "reg_weight", "detect_simple_bounds"):
+            value = config.get(key)
+            if value is not None:
+                sim_parameters[key] = value
 
-        # Depower last: the explicit spec wins over the legacy
-        # optimization_params / sim_parameters.input_depower combination.
+        # Depower last: the explicit {mode, value} struct wins over the legacy
+        # optimization_params / input_depower combination (which still works
+        # unchanged when the struct is omitted).
         optimization_params = list(
             config.get("optimization_params")
             or ["C_phi", "C_beta", "input_depower"]
@@ -282,17 +290,18 @@ class ReeloutSession:
         )
         self._apply_min_turn_radius(sim_parameters, config.get("min_turn_radius"))
 
-        wind_spec = dict(config["wind"])
+        inflow = config.get("inflow_conditions")
+        wind_spec = self._resolve_wind_spec(inflow)
         system_model.wind = self._build_wind(wind_spec)
         sim_parameters["expand_nlp"] = wind_spec["model_type"] != "tabulated"
 
         start_state = {
             "t": 0,
             "s": 0,
-            "s_dot": 1,
+            "s_dot": 0.1,
             "input_steering": 0,
-            "tension_tether_ground": 8.4e5,
-            "speed_radial": 1,
+            "tension_tether_ground": 8.4e3,
+            "speed_radial": 0,
             "distance_radial": r0,
         }
         phase = Phase(
@@ -309,17 +318,32 @@ class ReeloutSession:
             self._clear()
             self.system_model = system_model
             self.phase = phase
+            self._inflow = dict(inflow) if inflow else None
             self._wind_spec = wind_spec
             self._optimization_params = optimization_params
             self._depower_mode = depower_mode
             self._target = config.get("target", "power")
             self._n_points = n_points
             self._name = config.get("name") or "reelout-optimization"
-            self._max_time = config.get("max_time")
             self._winch_params = dict(winch) if winch else None
             if trajectory:
                 self._trajectory_points = len(trajectory["azimuth"])
             self.state = SessionState.READY
+
+    @staticmethod
+    def _resolve_wind_spec(inflow: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """InflowConditions -> ``create_wind_model`` kwargs."""
+        if inflow is None:
+            raise ValueError("no wind given: inflow_conditions is required")
+        turbulence = inflow.get("turbulence") or 0.0
+        if turbulence > 0.0:
+            logger.warning(
+                "inflow_conditions.turbulence=%g is ignored: the "
+                "trajectory optimization is deterministic and uses the "
+                "mean wind profile",
+                turbulence,
+            )
+        return wind_kwargs_from_inflow(inflow)
 
     @staticmethod
     def _build_wind(spec: Dict[str, Any]) -> Any:
@@ -455,7 +479,10 @@ class ReeloutSession:
         quadratic force model T = slope*(v_r - offset)^2 with offset 0, so
         the optimizer assumes the same radial behavior the client's winch
         controller produces. f_min/f_max become the (softly clamped) force
-        limits and v_max bounds the speed_radial NLP variable.
+        limits. Past f_max the controller holds the force while the reel
+        speed keeps rising up to the winch's power limit, so the speed cap
+        is an input: ``v_max`` (or ``p_max`` / f_max) bounds the speed_radial
+        NLP variable; without either the optimizer's default bound stays.
         """
         if winch["mode"] != "reelout":
             raise ValueError(
@@ -477,12 +504,21 @@ class ReeloutSession:
         )
         radial_parameters.setdefault("softplus_beta", 1e-3)
         radial_parameters.setdefault("softminus_beta", 1e-3)
+        v_max = winch.get("v_max")
+        if v_max is None and winch.get("p_max") is not None:
+            v_max = float(winch["p_max"]) / float(winch["f_max"])
         override = dict(sim_parameters.get("opti_limits_override") or {})
-        override["speed_radial"] = [
-            DEFAULT_OPTI_LIMITS["speed_radial"][0],
-            float(winch["v_max"]),
-        ]
-        sim_parameters["opti_limits_override"] = override
+        if v_max is not None:
+            override["speed_radial"] = [
+                DEFAULT_OPTI_LIMITS["speed_radial"][0],
+                float(v_max),
+            ]
+        else:
+            override.pop("speed_radial", None)
+        if override:
+            sim_parameters["opti_limits_override"] = override
+        else:
+            sim_parameters.pop("opti_limits_override", None)
 
     @staticmethod
     def _fit_trajectory_into_path(
@@ -551,10 +587,10 @@ class ReeloutSession:
     # ------------------------------------------------------------------
     def _prepare_step(
         self,
-        wind: Optional[Dict[str, Any]],
         distance_radial: Optional[float],
         winch_params: Optional[Dict[str, Any]],
         trajectory: Optional[Dict[str, Any]],
+        inflow_conditions: Optional[Dict[str, Any]] = None,
         depower: Optional[Dict[str, Any]] = None,
         min_turn_radius: Optional[float] = None,
     ) -> int:
@@ -567,13 +603,14 @@ class ReeloutSession:
 
             pattern_config = self.phase.pattern_config
             sim_parameters = pattern_config.setdefault("sim_parameters", {})
-            if wind is not None:
-                wind_spec = dict(wind)
+            if inflow_conditions is not None:
+                wind_spec = self._resolve_wind_spec(inflow_conditions)
                 self.system_model.wind = self._build_wind(wind_spec)
                 sim_parameters["expand_nlp"] = (
                     wind_spec["model_type"] != "tabulated"
                 )
                 self._wind_spec = wind_spec
+                self._inflow = dict(inflow_conditions)
 
             if winch_params is not None:
                 self._apply_winch_params(
@@ -617,18 +654,18 @@ class ReeloutSession:
 
     def step(
         self,
-        wind: Optional[Dict[str, Any]] = None,
         distance_radial: Optional[float] = None,
         max_iter: Optional[int] = None,
         winch_params: Optional[Dict[str, Any]] = None,
         trajectory: Optional[Dict[str, Any]] = None,
+        inflow_conditions: Optional[Dict[str, Any]] = None,
         depower: Optional[Dict[str, Any]] = None,
         min_turn_radius: Optional[float] = None,
     ) -> int:
         """Launch one warm-started re-optimization in a background thread."""
         step_index = self._prepare_step(
-            wind, distance_radial, winch_params, trajectory, depower,
-            min_turn_radius,
+            distance_radial, winch_params, trajectory, inflow_conditions,
+            depower, min_turn_radius,
         )
         self._thread = threading.Thread(
             target=self._solve, args=(step_index, max_iter), daemon=True
@@ -638,11 +675,11 @@ class ReeloutSession:
 
     def step_blocking(
         self,
-        wind: Optional[Dict[str, Any]] = None,
         distance_radial: Optional[float] = None,
         max_iter: Optional[int] = None,
         winch_params: Optional[Dict[str, Any]] = None,
         trajectory: Optional[Dict[str, Any]] = None,
+        inflow_conditions: Optional[Dict[str, Any]] = None,
         depower: Optional[Dict[str, Any]] = None,
         min_turn_radius: Optional[float] = None,
     ) -> Dict[str, Any]:
@@ -655,8 +692,8 @@ class ReeloutSession:
         trajectory remains available via :meth:`trajectory`).
         """
         step_index = self._prepare_step(
-            wind, distance_radial, winch_params, trajectory, depower,
-            min_turn_radius,
+            distance_radial, winch_params, trajectory, inflow_conditions,
+            depower, min_turn_radius,
         )
         self._solve(step_index, max_iter)
         with self._lock:
@@ -667,6 +704,7 @@ class ReeloutSession:
             metrics = dict(self.last_record.metrics)
             state = self.state.value
         return {
+            "length": self._length(),
             "winch_params": dict(self._winch_params)
             if self._winch_params
             else None,
@@ -855,6 +893,7 @@ class ReeloutSession:
                 "successful_steps": self.successful_steps,
                 "last_error": self.last_error,
                 "metrics": dict(record.metrics) if record else None,
+                "inflow_conditions": dict(self._inflow) if self._inflow else None,
                 "wind": dict(self._wind_spec) if self._wind_spec else None,
                 "n_points": self._n_points,
                 "last_step_started": self.last_step_started,
@@ -864,19 +903,28 @@ class ReeloutSession:
 
     def init_reply(self) -> Dict[str, Any]:
         """InitParams-shaped reply: session config + fitted starting path."""
+        sim_parameters = self.phase.pattern_config.get("sim_parameters", {})
         return {
             "name": self._name,
-            "max_time": self._max_time,
+            "length": self._length(),
             "winch_params": dict(self._winch_params)
             if self._winch_params
             else None,
+            "inflow_conditions": dict(self._inflow) if self._inflow else None,
             "trajectory": self.trajectory_degrees(),
+            "input_depower": sim_parameters.get("input_depower"),
+            "reg_weight": sim_parameters.get("reg_weight"),
+            "detect_simple_bounds": sim_parameters.get("detect_simple_bounds"),
             "depower": self.depower_state(),
             "min_turn_radius": self.min_turn_radius(),
             "state": self.state.value,
             "n_points": self._n_points,
             "session_id": self.session_id,
         }
+
+    def _length(self) -> float:
+        """Tether length the pattern is currently anchored to [m]."""
+        return float(self.phase.pattern_config["path_parameters"]["r0"])
 
     def trajectory(self, resimulate: bool = False) -> Dict[str, Any]:
         with self._lock:

@@ -3,19 +3,16 @@
 # Dependencies:  ] add HTTP JSON3 StructTypes
 #
 # Contract: POST /init receives and replies InitParams; POST /step receives
-# and replies StepParams (both blocking — the reply contains the result).
+# and replies StepParams (blocking by default — the reply contains the result).
 # The reply trajectory is CLOSED (last point == first) with the same number
-# of points you sent. Angles in DEGREES here; the server also carries wind
-# and tether length as extra JSON fields next to the structs.
+# of points you sent. Angles in DEGREES here; the physical state travels in the
+# structs — the tether length is the `length` field of InitParams / StepParams,
+# the wind is the `inflow_conditions` field of InitParams. Call-mode knobs are
+# keyword arguments instead: `step(params; wait = false)` returns as soon as the
+# solve is queued, so the caller keeps running while the server optimizes.
 #
 # Winch coupling: the optimizer maps v_set = k_v*sqrt(force) onto its radial
 # force model, so the optimized path assumes exactly your winch behavior.
-#
-# Depower: the returned path is only flyable at the depower it was optimized
-# for, so the reply carries it. Send DepowerParams("fixed", 1.6) to keep YOUR
-# setting, or the default ("optimize") to let the optimizer pick and then
-# apply reply.depower.value to your kite — flying an optimized path at a
-# different depower loses ~10% of the reported power.
 #
 # Infeasibility: an impossible request (too much force demanded, too little
 # wind, ...) returns HTTP 422 with the solver message; the previous
@@ -26,10 +23,23 @@ using HTTP, JSON3, StructTypes
 # ---------------------------------------------------------------------------
 # The shared structs (as agreed)
 # ---------------------------------------------------------------------------
+Base.@kwdef struct InflowConditions
+    wind_speed::Float64      # in m/s at 6 m height
+    wind_direction::Float64  # in degrees, 0 = North, 90 = East
+    profile_law::Int64       # 0=CONST, 1=EXP, 2=LOG, 3=EXPLOG, 4=CUSTOM_LOG, 5=CUSTOM_EXP, 6=CUSTOM_JET
+    # the custom profiles are fitted using the heights and speeds given in the heights and speeds fields
+    # CUSTOM_JET: u(z) = u_bg(z) + U_J * exp(-(z - z_c)^2 / (2*sigma^2))
+    # the following fields are optional; the defaults given below are the server defaults
+    alpha::Float64 = 0.08163                # exponent of the wind profile law
+    z0::Float64 = 0.0002                    # surface roughness                                     [m]
+    turbulence::Float64 = 0.0               # in [0, 1], 0 = no turbulence, 1 = full turbulence
+    heights::Vector{Float64} = [6.0]        # heights at which the wind speed is given
+    speeds::Vector{Float64} = [wind_speed]  # wind speeds at the given heights
+end
+
 struct WinchParams
     mode::String      # "reelout" ("reelin" not supported yet)
     k_v::Float64      # v_set = k_v * sqrt(force)
-    v_max::Float64    # maximum winch speed [m/s]
     f_min::Float64    # minimum winch force [N]
     f_max::Float64    # maximum winch force [N]
 end
@@ -39,31 +49,26 @@ struct Trajectory
     elevation::Vector{Float64}  # [deg], from the ground plane
 end
 
-Base.@kwdef struct DepowerParams
-    mode::String = "optimize"   # "fixed" | "optimize" | "profile"
-    value::Float64 = 1.6        # fixed value, or starting value when optimized
-    # Replies in "profile" mode add the per-node schedule, aligned with the
-    # reply trajectory; it stays `nothing` on the request side.
-    profile::Union{Vector{Float64},Nothing} = nothing
-end
-
 Base.@kwdef struct InitParams
     name::String
-    max_time::Float64
+    length::Float64                    # initial length of the tether
     winch_params::WinchParams
+    inflow_conditions::InflowConditions
     trajectory::Trajectory
-    depower::DepowerParams = DepowerParams()
+    input_depower::Float64 = 1.6       # depower setting
+    reg_weight::Float64 = 1.0          # regularization weight
+    detect_simple_bounds::Bool = true  # solver flag
 end
 
-Base.@kwdef struct StepParams
+struct StepParams
+    length::Float64                    # current length of the tether
     winch_params::WinchParams
     trajectory::Trajectory
-    depower::DepowerParams = DepowerParams()
 end
 
+StructTypes.StructType(::Type{InflowConditions}) = StructTypes.Struct()
 StructTypes.StructType(::Type{WinchParams}) = StructTypes.Struct()
 StructTypes.StructType(::Type{Trajectory}) = StructTypes.Struct()
-StructTypes.StructType(::Type{DepowerParams}) = StructTypes.Struct()
 StructTypes.StructType(::Type{InitParams}) = StructTypes.Struct()
 StructTypes.StructType(::Type{StepParams}) = StructTypes.Struct()
 
@@ -73,32 +78,65 @@ StructTypes.StructType(::Type{StepParams}) = StructTypes.Struct()
 const BASE = "http://127.0.0.1:8000"
 
 function post(path, payload; timeout = 600)
+    # retry_non_idempotent: the server drops idle keep-alive connections, so a pooled
+    # socket can be dead by the next call; HTTP.jl only retries POST if it asked for it
+    # (safe: it retries only when no response bytes arrived, i.e. the server never saw it)
     response = HTTP.post(BASE * path, ["Content-Type" => "application/json"];
-                         body = JSON3.write(payload), readtimeout = timeout)
+                         body = JSON3.write(payload), read_idle_timeout = timeout,
+                         retry_non_idempotent = true)
     return response.body
 end
 
+get_json(path) = JSON3.read(HTTP.get(BASE * path).body, Dict{String,Any})
+
 as_dict(x) = JSON3.read(JSON3.write(x), Dict{String,Any})
+as_winch(d) = WinchParams(d["mode"], d["k_v"], d["f_min"], d["f_max"])
+as_traj(d) = Trajectory(Float64.(d["azimuth"]), Float64.(d["elevation"]))
 
-"""init: send InitParams (+ wind, tether length, solver knobs) -> InitParams."""
-function init(params::InitParams; wind, distance_radial = nothing,
-              extras = Dict{String,Any}())
-    payload = as_dict(params)
-    payload["wind"] = wind                       # required by the optimizer
-    distance_radial !== nothing && (payload["distance_radial"] = distance_radial)
-    merge!(payload, extras)                      # e.g. "sim_parameters"
-    return JSON3.read(post("/init", payload), InitParams)
+function as_inflow(d)
+    # the server echoes heights/speeds only if the request carried them
+    samples = d["heights"] === nothing ? (;) :
+              (; heights = Float64.(d["heights"]), speeds = Float64.(d["speeds"]))
+    return InflowConditions(; wind_speed = d["wind_speed"], wind_direction = d["wind_direction"],
+                            profile_law = d["profile_law"], alpha = d["alpha"], z0 = d["z0"],
+                            turbulence = d["turbulence"], samples...)
 end
 
-"""step: send StepParams (+ optional wind / tether length) -> receive
-StepParams with the OPTIMIZED trajectory and the depower it assumes.
-Blocks ~10-20 s."""
-function step(params::StepParams; wind = nothing, distance_radial = nothing)
-    payload = as_dict(params)
-    wind !== nothing && (payload["wind"] = wind)
-    distance_radial !== nothing && (payload["distance_radial"] = distance_radial)
-    return JSON3.read(post("/step", payload), StepParams)
+function as_init_params(reply)
+    return InitParams(reply["name"], reply["length"],
+                      as_winch(reply["winch_params"]),
+                      as_inflow(reply["inflow_conditions"]),
+                      as_traj(reply["trajectory"]),
+                      reply["input_depower"], reply["reg_weight"],
+                      reply["detect_simple_bounds"])
 end
+
+"""init: send InitParams (incl. tether length, inflow conditions and solver
+knobs) -> InitParams."""
+function init(params::InitParams)
+    return as_init_params(JSON3.read(post("/init", params), Dict{String,Any}))
+end
+
+"""step: send StepParams (incl. the current tether length, + optional new
+inflow) -> receive StepParams with the OPTIMIZED trajectory. Blocks ~10-20 s.
+
+With `wait = false` the server accepts the job and replies immediately; this
+returns the step index instead of StepParams. Poll `status()` until its
+"state" leaves "solving", then fetch the result with `get_json("/trajectory")`
+(that table is in RADIANS, unlike the degrees of the blocking reply)."""
+function step(params::StepParams; inflow_conditions = nothing, wait = true)
+    payload = as_dict(params)
+    inflow_conditions !== nothing && (payload["inflow_conditions"] = as_dict(inflow_conditions))
+    payload["wait"] = wait
+    reply = JSON3.read(post("/step", payload), Dict{String,Any})
+    wait || return reply["step_index"]::Int
+    return StepParams(reply["length"], as_winch(reply["winch_params"]),
+                      as_traj(reply["trajectory"]))
+end
+
+"""status: server state ("uninitialized"/"ready"/"solving"/"converged"/"failed"),
+step counters and the metrics of the last solve."""
+status() = get_json("/status")
 
 # ---------------------------------------------------------------------------
 # Demo
@@ -110,40 +148,32 @@ guess = Trajectory(20.0 .* sin.(s), 22.0 .+ 8.0 .* sin.(2 .* s))
 # k_v example: v = k_v*sqrt(F) -> at 8400 N this winch reels ~10 m/s.
 # Too-stiff values (e.g. 0.02 -> ~1.8 m/s at max force) make the optimization
 # infeasible and the server replies 422.
-winch = WinchParams("reelout", 0.11, 8.0, 1000.0, 8400.0)
+winch = WinchParams("reelout", 0.11, 1000.0, 8400.0)
 
-# Depower: "optimize" (the default) lets the solver pick l_dp — worth ~9%
-# power, but you MUST then fly the value it returns. Use
-# DepowerParams(mode = "fixed", value = 1.6) if your simulator cannot command
-# depower, or "profile" for a per-node schedule (worth ~12%, needs an actuator
-# that can follow it).
-depower = DepowerParams(mode = "optimize", value = 1.6)
+# 5.2 m/s at 6 m height, wind from the west, logarithmic profile
+# (~8 m/s at 100 m with this roughness).
+inflow = InflowConditions(wind_speed = 5.2, wind_direction = 270.0, profile_law = 2, z0 = 0.03)
 
-reply = init(InitParams(name = "uwe-sim-1", max_time = 600.0,
-                        winch_params = winch, trajectory = guess,
-                        depower = depower);
-             wind = Dict("model_type" => "logarithmic", "U_ref" => 8.0,
-                         "z_ref" => 100.0, "z0" => 0.03),
-             distance_radial = 200.0,
-             extras = Dict("sim_parameters" => Dict(
-                 "reg_weight" => 1.0, "detect_simple_bounds" => true)))
+# 200 m of tether; the solver knobs are left at their defaults
+reply = init(InitParams(name = "uwe-sim-1", length = 200.0,
+                        winch_params = winch, inflow_conditions = inflow,
+                        trajectory = guess))
 println("init ok: $(reply.name), starting path $(length(reply.trajectory.azimuth)) pts")
 
 # First optimization (blocking; reply contains the optimized path)
-result = step(StepParams(winch_params = winch, trajectory = reply.trajectory))
+result = step(StepParams(200.0, winch, reply.trajectory))
 println("optimized: $(length(result.trajectory.azimuth)) pts, ",
         "elevation $(round(minimum(result.trajectory.elevation); digits=1))° – ",
         "$(round(maximum(result.trajectory.elevation); digits=1))°")
-println("  fly it at depower $(round(result.depower.value; digits=4)) ",
-        "(mode $(result.depower.mode))")
 
-# ... fly the kite along result.trajectory, at result.depower.value ...
+# ... fly the kite along result.trajectory ...
 
-# Later, refresh with the current conditions from your simulation:
-result = step(StepParams(winch_params = winch, trajectory = result.trajectory);
-              wind = Dict("model_type" => "tabulated",
-                          "heights" => [10.0, 100.0, 300.0],
-                          "speeds" => [5.5, 8.0, 9.3]),
-              distance_radial = 220.0)   # current tether length
-println("refreshed trajectory received, ",
-        "depower $(round(result.depower.value; digits=4))")
+# Later, refresh with the current conditions from your simulation. A measured
+# profile is sent as a CUSTOM_* law: the heights/speeds samples are fitted
+# (here: log law + Gaussian jet).
+result = step(StepParams(220.0, winch, result.trajectory);   # current length
+              inflow_conditions = InflowConditions(wind_speed = 8.4, wind_direction = 265.0,
+                                                   profile_law = 6,
+                                                   heights = [10.0, 50.0, 100.0, 200.0, 300.0],
+                                                   speeds = [5.5, 7.4, 8.0, 9.3, 8.6]))
+println("refreshed trajectory received")

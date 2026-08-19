@@ -9,17 +9,11 @@ is self-contained and can be copied into any project.
 Contract: POST /init receives and replies InitParams; POST /step receives and
 replies StepParams (blocking — the reply contains the OPTIMIZED trajectory).
 Reply trajectories are CLOSED (last point == first) with the same number of
-points you sent. Angles in DEGREES; wind and tether length travel as sibling
-JSON fields next to the structs.
+points you sent. Angles in DEGREES; the tether length is the `length` field of
+InitParams / StepParams.
 
 Winch coupling: the optimizer maps v_set = k_v*sqrt(force) onto its radial
 force model, so the optimized path assumes exactly your winch behavior.
-
-Depower: the returned path is only flyable at the depower it was optimized
-for, so the reply carries it. Send DepowerParams("fixed", 1.6) to keep YOUR
-setting, or the default ("optimize") to let the optimizer pick and then apply
-reply.depower.value to your kite — flying an optimized path at a different
-depower loses ~10% of the reported power.
 
 Infeasibility: an impossible request returns HTTP 422 with the solver
 message; the previous trajectory remains available under GET /trajectory.
@@ -34,15 +28,39 @@ import httpx
 # ---------------------------------------------------------------------------
 # The shared structs (as agreed)
 # ---------------------------------------------------------------------------
+@dataclass
+class InflowConditions:
+    wind_speed: float                   # in m/s at 6 m height
+    wind_direction: float=270.0         # in degrees, 0 = North, 90 = East
+    profile_law: int                    # 0=CONST, 1=EXP, 2=LOG, 3=EXPLOG, 4=CUSTOM_LOG, 5=CUSTOM_EXP, 6=CUSTOM_JET
+    # the custom profiles are fitted using the heights and speeds given in the heights and speeds fields
+    # CUSTOM_JET: u(z) = u_bg(z) + U_J * exp(-(z - z_c)^2 / (2*sigma^2))
+    # the following fields are optional; leave them at None to get the server
+    # defaults given in the comments
+    alpha: Optional[float] = None       # exponent of the wind profile law, default: 0.08163
+    z0: Optional[float] = None          # surface roughness [m], default: 0.0002
+    turbulence: Optional[float] = None  # in [0, 1], 0 = no turbulence, 1 = full turbulence, default: 0.0
+    heights: Optional[List[float]] = None  # heights at which the wind speed is given, default: [6.0]
+    speeds: Optional[List[float]] = None   # wind speeds at the given heights, default: [wind_speed]
 
 
 @dataclass
 class WinchParams:
     mode: str        # "reelout" ("reelin" not supported yet)
     k_v: float       # v_set = k_v * sqrt(force)
-    v_max: float     # maximum winch speed [m/s]
     f_min: float     # minimum winch force [N]
     f_max: float     # maximum winch force [N]
+    # speed cap past the force limit: give ONE of the two (v_max = p_max/f_max);
+    # None = the optimizer's default reel-speed bound
+    v_max: Optional[float] = None   # maximum reel-out speed [m/s]
+    p_max: Optional[float] = None   # maximum winch power [W]
+
+
+@dataclass
+class DepowerParams:
+    mode: str                # "fixed" | "optimize" | "profile"
+    value: Optional[float] = None          # fixed value / starting value
+    profile: Optional[List[float]] = None  # replies only, profile mode
 
 
 @dataclass
@@ -52,28 +70,26 @@ class Trajectory:
 
 
 @dataclass
-class DepowerParams:
-    """Depower handling. Requests carry mode + value; replies add profile."""
-
-    mode: str                  # "fixed" | "optimize" (default) | "profile"
-    value: float               # fixed value, or starting value when optimized
-    profile: Optional[List[float]] = None  # per-node, profile mode replies only
-
-
-@dataclass
 class InitParams:
     name: str
-    max_time: float
+    length: float      # initial length of the tether
     winch_params: WinchParams
+    inflow_conditions: InflowConditions
     trajectory: Trajectory
-    depower: Optional[DepowerParams] = None
+    input_depower: float = 1.6           # depower setting (starting value)
+    reg_weight: float = 1.0              # regularization weight
+    detect_simple_bounds: bool = True    # solver flag
+    depower: Optional[DepowerParams] = None     # whether/how depower is optimized
+    min_turn_radius: Optional[float] = None     # [m], path never turns tighter
 
 
 @dataclass
 class StepParams:
+    length: float      # current length of the tether
     winch_params: WinchParams
     trajectory: Trajectory
-    depower: Optional[DepowerParams] = None
+    depower: Optional[DepowerParams] = None     # reply: the depower the path assumes
+    min_turn_radius: Optional[float] = None     # reply: the limit it was optimized under
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +97,27 @@ class StepParams:
 # ---------------------------------------------------------------------------
 BASE = "http://127.0.0.1:8000"
 _http = httpx.Client(base_url=BASE, timeout=600.0)  # blocking solves
+
+
+def _payload(params) -> dict:
+    """dataclass -> JSON dict, dropping unset optional fields so the server
+    applies its documented defaults."""
+    payload = {
+        key: value
+        for key, value in asdict(params).items()
+        if value is not None
+    }
+    for key in ("winch_params", "depower"):
+        if isinstance(payload.get(key), dict):
+            payload[key] = {k: v for k, v in payload[key].items() if v is not None}
+    if "depower" in payload:
+        payload["depower"].pop("profile", None)  # request side carries mode + value
+    return payload
+
+
+def _depower(reply: dict) -> Optional[DepowerParams]:
+    block = reply.get("depower")
+    return DepowerParams(**block) if block else None
 
 
 def _post(path: str, payload: dict) -> dict:
@@ -91,64 +128,46 @@ def _post(path: str, payload: dict) -> dict:
     return response.json()
 
 
-def _depower(reply: dict) -> Optional[DepowerParams]:
-    block = reply.get("depower")
-    return DepowerParams(**block) if block else None
-
-
-def init(
-    params: InitParams,
-    *,
-    wind: dict,
-    distance_radial: Optional[float] = None,
-    min_turn_radius: Optional[float] = None,
-    **extra,
-) -> InitParams:
-    """Send InitParams (+ wind, tether length, solver knobs) -> InitParams.
-    ``min_turn_radius`` [m]: the optimized path will not turn tighter than
-    this (e.g. 1/(c1*u_s_max) for a kite steered by psi_dot = c1*v_a*u_s)."""
-    payload = asdict(params)
-    payload["wind"] = wind  # required by the optimizer
-    if params.depower is None:
-        payload.pop("depower")  # let the server keep its default
-    if distance_radial is not None:
-        payload["distance_radial"] = distance_radial
-    if min_turn_radius is not None:
-        payload["min_turn_radius"] = min_turn_radius
-    payload.update(extra)  # e.g. sim_parameters={...}
-    reply = _post("/init", payload)
+def _init_params(reply: dict) -> InitParams:
     return InitParams(
         name=reply["name"],
-        max_time=reply["max_time"],
+        length=reply["length"],
         winch_params=WinchParams(**reply["winch_params"]),
+        inflow_conditions=InflowConditions(**reply["inflow_conditions"]),
         trajectory=Trajectory(**reply["trajectory"]),
+        input_depower=reply["input_depower"],
+        reg_weight=reply["reg_weight"],
+        detect_simple_bounds=reply["detect_simple_bounds"],
         depower=_depower(reply),
+        min_turn_radius=reply.get("min_turn_radius"),
     )
+
+
+def init(params: InitParams) -> InitParams:
+    """Send InitParams (incl. tether length and solver knobs) -> InitParams."""
+    payload = _payload(params)
+    payload["inflow_conditions"] = _payload(params.inflow_conditions)
+    return _init_params(_post("/init", payload))
 
 
 def step(
     params: StepParams,
     *,
-    wind: Optional[dict] = None,
-    distance_radial: Optional[float] = None,
+    inflow_conditions: Optional[InflowConditions] = None,
 ) -> StepParams:
-    """Send StepParams (+ optional wind / tether length) -> receive
-    StepParams with the OPTIMIZED trajectory and the depower it assumes.
+    """Send StepParams (incl. the current tether length, + optional new
+    inflow) -> receive StepParams with the OPTIMIZED trajectory.
     Blocks ~10 s - 2 min."""
-    payload = asdict(params)
-    if params.depower is None:
-        payload.pop("depower")  # keep the mode set at /init
-    else:
-        payload["depower"].pop("profile")  # request side carries mode + value
-    if wind is not None:
-        payload["wind"] = wind
-    if distance_radial is not None:
-        payload["distance_radial"] = distance_radial
+    payload = _payload(params)
+    if inflow_conditions is not None:
+        payload["inflow_conditions"] = _payload(inflow_conditions)
     reply = _post("/step", payload)
     return StepParams(
+        length=reply["length"],
         winch_params=WinchParams(**reply["winch_params"]),
         trajectory=Trajectory(**reply["trajectory"]),
         depower=_depower(reply),
+        min_turn_radius=reply.get("min_turn_radius"),
     )
 
 
@@ -167,42 +186,36 @@ if __name__ == "__main__":
     # k_v example: v = k_v*sqrt(F) -> at 8400 N this winch reels ~10 m/s.
     # Too-stiff values (e.g. 0.02 -> only ~1.8 m/s at max force) make the
     # optimization infeasible and the server replies 422.
-    winch = WinchParams(mode="reelout", k_v=0.11, v_max=8.0,
+    winch = WinchParams(mode="reelout", k_v=0.11,
                         f_min=1000.0, f_max=8400.0)
 
-    # Depower: "optimize" (the default) lets the solver pick l_dp — worth ~9%
-    # power, but you MUST then fly the value it returns. Use
-    # DepowerParams("fixed", 1.6) if your simulator cannot command depower, or
-    # "profile" for a per-node depower schedule (worth ~12%, needs an actuator
-    # that can follow it).
-    depower = DepowerParams(mode="optimize", value=1.6)
+    # 5.2 m/s at 6 m height, wind from the west, logarithmic profile
+    # (~8 m/s at 100 m with this roughness).
+    inflow = InflowConditions(wind_speed=5.2, wind_direction=270.0,
+                              profile_law=2, z0=0.03)
 
-    reply = init(
-        InitParams("python-sim-1", 600.0, winch, guess, depower),
-        wind={"model_type": "logarithmic", "U_ref": 8.0,
-              "z_ref": 100.0, "z0": 0.03},
-        distance_radial=200.0,
-        sim_parameters={"reg_weight": 1.0, "detect_simple_bounds": True},
-    )
+    # 200 m of tether; the solver knobs are left at their defaults
+    reply = init(InitParams("python-sim-1", 600.0, 200.0, winch, inflow, guess))
     print(f"init ok: {reply.name}, "
           f"starting path {len(reply.trajectory.azimuth)} pts")
 
     # First optimization (blocking; reply contains the optimized path)
-    result = step(StepParams(winch, reply.trajectory))
+    result = step(StepParams(200.0, winch, reply.trajectory))
     elevation = result.trajectory.elevation
     print(f"optimized: {len(result.trajectory.azimuth)} pts, "
           f"elevation {min(elevation):.1f} - {max(elevation):.1f} deg")
-    print(f"  fly it at depower {result.depower.value:.4f} "
-          f"(mode {result.depower.mode})")
 
-    # ... fly the kite along result.trajectory, at result.depower.value ...
+    # ... fly the kite along result.trajectory ...
 
-    # Later, refresh with the current conditions from your simulation:
+    # Later, refresh with the current conditions from your simulation. A
+    # measured profile is sent as a CUSTOM_* law: the heights/speeds samples
+    # are fitted (here: log law + Gaussian jet).
     result = step(
-        StepParams(winch, result.trajectory),
-        wind={"model_type": "tabulated",
-              "heights": [10.0, 100.0, 300.0],
-              "speeds": [5.5, 8.0, 9.3]},
-        distance_radial=220.0,  # current tether length
+        StepParams(220.0, winch, result.trajectory),  # current tether length
+        inflow_conditions=InflowConditions(
+            wind_speed=8.4, wind_direction=265.0, profile_law=6,
+            heights=[10.0, 50.0, 100.0, 200.0, 300.0],
+            speeds=[5.5, 7.4, 8.0, 9.3, 8.6],
+        ),
     )
-    print(f"refreshed trajectory received, depower {result.depower.value:.4f}")
+    print("refreshed trajectory received")

@@ -1,0 +1,998 @@
+# Generated file — do not edit by hand.
+# Regenerate with: python scripts/server/generate_openapi.py
+openapi: 3.1.0
+info:
+  title: AWETrim reelout optimization server
+  description: |
+    FastAPI application exposing the reelout trajectory optimization.
+
+    Endpoints (see ``schemas.py`` for units and reference-frame conventions):
+
+    - ``POST /init`` — build the session (system model, pattern, inflow
+      conditions, initial guess). Synchronous, does not solve.
+    - ``POST /step`` — one warm-started re-optimization (optionally with updated
+      inflow conditions and/or tether length). Blocking by default; with
+      ``wait=false`` it returns 202 immediately and ``/status`` is polled.
+    - ``GET /status`` — session state machine + last solve metrics.
+    - ``GET /trajectory`` — dense guidance table from the last successful solve
+      (kept available while a new solve runs and after a failed one).
+    - ``POST /reset``, ``GET /health``.
+
+    Run with a single worker process — the session lives in process memory.
+  version: 0.1.0
+servers:
+- url: http://127.0.0.1:8000
+  description: Local server as started by scripts/server/run_reelout_server.py
+paths:
+  /health:
+    get:
+      summary: Health
+      operationId: health_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                additionalProperties: true
+                type: object
+                title: Response Health Health Get
+  /init:
+    post:
+      summary: Init
+      description: |-
+        Set up the session. The reply contains the InitParams struct
+        (name, winch_params, inflow_conditions, trajectory); the
+        trajectory is the fitted STARTING path — call /step to optimize it.
+      operationId: init_init_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InitReply'
+        '400':
+          description: 'Bad configuration: unknown config path, or a value the session model
+            rejects.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDetail'
+        '409':
+          description: A solve is still running — wait for /status to leave 'solving'.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDetail'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /status:
+    get:
+      summary: Status
+      operationId: status_status_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+  /step:
+    post:
+      summary: Step
+      description: |-
+        One warm-started re-optimization.
+
+        Default (wait=true): blocks until the solve finishes and the reply
+        contains the StepParams struct (winch_params + OPTIMIZED trajectory
+        + the depower it assumes + the turn-radius limit it respects).
+        With wait=false: returns 202 immediately; poll /status and fetch
+        /trajectory. An infeasible request returns 422 with the solver
+        message; the previous trajectory stays available.
+      operationId: step_step_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StepRequest'
+        required: true
+      responses:
+        '200':
+          description: 'Solve finished (wait=true): the optimized StepParams struct.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StepReply'
+        '202':
+          description: 'Solve accepted (wait=false): poll /status, then fetch /trajectory.'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StepAccepted'
+        '400':
+          description: A value the session model rejects, e.g. winch mode 'reelin'.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDetail'
+        '409':
+          description: Called before /init, or while a solve is running.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDetail'
+        '422':
+          description: Request validation failed, or the optimization was infeasible / did
+            not converge. The previous trajectory stays available from /trajectory.
+          content:
+            application/json:
+              schema:
+                anyOf:
+                - $ref: '#/components/schemas/HTTPValidationError'
+                - $ref: '#/components/schemas/ErrorDetail'
+  /trajectory:
+    get:
+      summary: Trajectory
+      operationId: trajectory_trajectory_get
+      parameters:
+      - name: resimulate
+        in: query
+        required: false
+        schema:
+          type: boolean
+          description: Also re-fly the optimized pattern for a full timeseries (x/y/z, power,
+            ...). Slower; rejected while solving.
+          default: false
+          title: Resimulate
+        description: Also re-fly the optimized pattern for a full timeseries (x/y/z, power,
+          ...). Slower; rejected while solving.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrajectoryResponse'
+        '404':
+          description: No successful solve yet.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDetail'
+        '409':
+          description: A solve is running — the re-simulation is rejected meanwhile.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDetail'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+        '500':
+          description: The optional forward re-simulation failed; retry with resimulate=false
+            for the plain guidance table.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDetail'
+  /reset:
+    post:
+      summary: Reset
+      operationId: reset_reset_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusResponse'
+        '409':
+          description: A solve is running and cannot be interrupted.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorDetail'
+components:
+  schemas:
+    DepowerReply:
+      properties:
+        mode:
+          type: string
+          enum:
+          - fixed
+          - optimize
+          - profile
+          title: Mode
+        value:
+          type: number
+          title: Value
+          description: Scalar depower setting l_dp
+        profile:
+          anyOf:
+          - items:
+              type: number
+            type: array
+          - type: 'null'
+          title: Profile
+          description: Per-node depower, aligned with the reply trajectory (profile mode only;
+            null otherwise)
+      type: object
+      required:
+      - mode
+      - value
+      title: DepowerReply
+      description: |-
+        The depower the returned trajectory was optimized for — fly this.
+
+        In 'profile' mode ``profile`` holds the per-node values, index-aligned with
+        the reply trajectory's azimuth/elevation; ``value`` is then its mean.
+    DepowerSpec:
+      properties:
+        mode:
+          type: string
+          enum:
+          - fixed
+          - optimize
+          - profile
+          title: Mode
+          description: '''fixed'': l_dp stays at value (the client''s setting is honoured).
+            ''optimize'': one scalar l_dp is optimized (default). ''profile'': l_dp is optimized
+            per node, giving a depower time-profile.'
+          default: optimize
+        value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Value
+          description: 'Depower setting: the FIXED value in ''fixed'' mode, the starting value
+            in ''optimize''/''profile'' mode. Defaults to the input_depower knob, else the
+            kite cycle config''s value.'
+      additionalProperties: false
+      type: object
+      title: DepowerSpec
+      description: |-
+        How the depower input l_dp is handled during the optimization.
+
+        Depower changes the kite's angle of attack, so the optimized path is only
+        flyable at the depower setting it was optimized for. Clients that cannot
+        command depower should send ``mode="fixed"`` with the value their own
+        simulator flies; clients that can should read the value back from the
+        ``depower`` field of the /init and /step replies and apply it.
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          type: array
+          title: Detail
+      type: object
+      title: HTTPValidationError
+    InflowConditions:
+      properties:
+        wind_speed:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Wind Speed
+          description: Wind speed [m/s] at 6 m height
+        wind_direction:
+          type: number
+          title: Wind Direction
+          description: Direction the wind comes FROM [deg], 0 = North, 90 = East. Only orients
+            the result in the world frame — the path is optimized in the wind-aligned frame
+            (azimuth 0 = downwind).
+          default: 0.0
+        profile_law:
+          type: integer
+          enum:
+          - 0
+          - 1
+          - 2
+          - 3
+          - 4
+          - 5
+          - 6
+          title: Profile Law
+          description: 0=CONST, 1=EXP, 2=LOG, 3=EXPLOG, 4=CUSTOM_LOG, 5=CUSTOM_EXP, 6=CUSTOM_JET;
+            the CUSTOM_* laws are least-squares fits of the heights/speeds table
+        alpha:
+          type: number
+          title: Alpha
+          description: Exponent of the power-law profile (EXP, EXPLOG)
+          default: 0.08163
+        z0:
+          type: number
+          exclusiveMinimum: 0.0
+          title: Z0
+          description: Surface roughness [m] (LOG, EXPLOG)
+          default: 0.0002
+        turbulence:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Turbulence
+          description: '0 = no turbulence, 1 = full turbulence. Accepted and echoed, but NOT
+            used: the optimizer is deterministic and works on the mean profile.'
+          default: 0.0
+        heights:
+          anyOf:
+          - items:
+              type: number
+            type: array
+          - type: 'null'
+          title: Heights
+          description: Sample heights [m] for the CUSTOM_* laws, default [6]
+        speeds:
+          anyOf:
+          - items:
+              type: number
+            type: array
+          - type: 'null'
+          title: Speeds
+          description: Wind speeds [m/s] at heights, default [wind_speed]
+      additionalProperties: false
+      type: object
+      required:
+      - wind_speed
+      - profile_law
+      title: InflowConditions
+      description: |-
+        Wind seen by the kite, as sent by the simulator (shared struct).
+
+        Mirrors the ``InflowConditions`` struct of the Julia/MATLAB/Python
+        clients: a reference speed at 6 m plus a profile law. The profile laws
+        are those of AtmosphericModels.jl; laws 4-6 ignore ``wind_speed``,
+        ``alpha`` and ``z0`` and are fitted to ``heights``/``speeds`` instead.
+    InitReply:
+      properties:
+        name:
+          type: string
+          title: Name
+        length:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Length
+          description: Accepted tether length / sphere radius [m]
+        winch_params:
+          anyOf:
+          - $ref: '#/components/schemas/WinchParams'
+          - type: 'null'
+        inflow_conditions:
+          anyOf:
+          - $ref: '#/components/schemas/InflowConditions'
+          - type: 'null'
+        trajectory:
+          $ref: '#/components/schemas/TrajectoryAngles'
+        input_depower:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Input Depower
+        reg_weight:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Reg Weight
+        detect_simple_bounds:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Detect Simple Bounds
+        depower:
+          anyOf:
+          - $ref: '#/components/schemas/DepowerReply'
+          - type: 'null'
+        min_turn_radius:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Min Turn Radius
+          description: Minimum turn radius [m] the optimizer will enforce (null = unconstrained)
+        state:
+          type: string
+          title: State
+        n_points:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: N Points
+        session_id:
+          type: string
+          title: Session Id
+          default: default
+      type: object
+      required:
+      - name
+      - trajectory
+      - state
+      title: InitReply
+      description: |-
+        Reply of POST /init — contains the InitParams struct (name, length,
+        winch_params, inflow_conditions, trajectory + the solver knobs)
+        plus server state. The trajectory is the fitted starting path (closed:
+        last point equals the first, degrees); inflow_conditions echoes the
+        accepted inflow; ``depower`` echoes the mode and starting value (no solve
+        has run yet) and ``min_turn_radius`` the limit the optimizer will enforce.
+    InitRequest:
+      properties:
+        inflow_conditions:
+          $ref: '#/components/schemas/InflowConditions'
+          description: Wind seen by the kite (shared client struct); required, the optimizer
+            cannot work without wind
+        name:
+          type: string
+          title: Name
+          description: Name of the simulation
+          default: reelout-optimization
+        winch_params:
+          anyOf:
+          - $ref: '#/components/schemas/WinchParams'
+          - type: 'null'
+          description: Ground-station winch law; mapped onto the optimizer's radial force
+            model so the optimized pattern matches the client's winch behavior
+        trajectory:
+          anyOf:
+          - $ref: '#/components/schemas/TrajectoryAngles'
+          - type: 'null'
+          description: Starting flight path in degrees; fitted to the pattern B-spline. Takes
+            precedence over initial_guess.
+        initial_guess:
+          anyOf:
+          - $ref: '#/components/schemas/InitialGuess'
+          - type: 'null'
+        length:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Length
+          description: Initial tether length / pattern sphere radius r0 [m]; defaults to the
+            value in the kite's cycle config
+        system_config_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: System Config Path
+        cycle_config_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cycle Config Path
+        optimization_params:
+          items:
+            type: string
+          type: array
+          title: Optimization Params
+        target:
+          type: string
+          enum:
+          - power
+          - energy
+          title: Target
+          default: power
+        n_points:
+          type: integer
+          maximum: 1000.0
+          minimum: 10.0
+          title: N Points
+          default: 100
+        input_depower:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Input Depower
+          description: 'Depower setting l_dp: the starting value when depower is optimized
+            (the default), the fixed value otherwise. Prefer the ``depower`` struct, which
+            also says whether it is optimized.'
+        reg_weight:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Reg Weight
+          description: Regularization weight
+        detect_simple_bounds:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Detect Simple Bounds
+          description: Solver flag
+        depower:
+          anyOf:
+          - $ref: '#/components/schemas/DepowerSpec'
+          - type: 'null'
+          description: Depower handling {mode, value}. Takes precedence over input_depower
+            / optimization_params when given; when omitted the mode is derived from optimization_params
+            (input_depower listed = optimize) and the value from input_depower.
+        min_turn_radius:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Min Turn Radius
+          description: Minimum physical turn radius [m] the optimized path must respect everywhere
+            (geodesic radius on the tether sphere, r/|kappa|, at the tether length at which
+            each part of the path is flown). Client-defined, e.g. 1/(c1*u_s_max) for a kite
+            steered by psi_dot = c1*v_a*u_s. Omitted/0 = no constraint (only the kite model's
+            own steering limits apply). Enforced densely along the path, so it also rules
+            out cusps and near-degenerate tiny loops.
+      additionalProperties: false
+      type: object
+      required:
+      - inflow_conditions
+      title: InitRequest
+    InitialGuess:
+      properties:
+        curve_type:
+          type: string
+          enum:
+          - lissajous
+          - lemniscate
+          - helix
+          title: Curve Type
+          description: 'Shape family of the starting curve: lissajous/lemniscate = figure-eight,
+            helix = circular loops'
+          default: lissajous
+        M:
+          type: integer
+          minimum: 4.0
+          title: M
+          description: Number of B-spline control points (more = more shape freedom for the
+            optimizer, slower solve)
+          default: 10
+        n_fit:
+          type: integer
+          minimum: 10.0
+          title: N Fit
+          description: Samples used to fit the spline
+          default: 400
+        s_init:
+          type: number
+          title: S Init
+          description: Path-parameter start
+          default: 0.0
+        s_final:
+          type: number
+          title: S Final
+          description: Path-parameter end (2*pi = one figure)
+          default: 6.283185307179586
+        az_amp0:
+          type: number
+          title: Az Amp0
+          description: Azimuth half-width of the figure [rad]
+          default: 0.3
+        beta0:
+          type: number
+          title: Beta0
+          description: Mean elevation of the figure [rad]
+          default: 0.35
+        beta_amp0:
+          type: number
+          title: Beta Amp0
+          description: Elevation half-height of the figure [rad]
+          default: 0.12
+        downloops:
+          type: boolean
+          title: Downloops
+          description: True = kite turns downward through the loops (downloop), False = upward
+            (uploop)
+          default: true
+      type: object
+      title: InitialGuess
+    SolveMetrics:
+      properties:
+        energy_J:
+          type: number
+          title: Energy J
+        total_time_s:
+          type: number
+          title: Total Time S
+        avg_power_W:
+          type: number
+          title: Avg Power W
+        turn_radius_min_m:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Turn Radius Min M
+          description: Tightest physical turn radius [m] of the returned path (geodesic radius
+            r/|kappa| on the tether sphere at the length where that part is flown, from the
+            optimizer's own curvature expression, sampled densely along the path); >= min_turn_radius
+            when that constraint is on. Null if it could not be evaluated.
+      type: object
+      required:
+      - energy_J
+      - total_time_s
+      - avg_power_W
+      title: SolveMetrics
+    SplineBlock:
+      properties:
+        spline_type:
+          type: string
+          title: Spline Type
+          default: periodic
+        M:
+          type: integer
+          title: M
+        C_phi:
+          items:
+            type: number
+          type: array
+          title: C Phi
+        C_beta:
+          items:
+            type: number
+          type: array
+          title: C Beta
+        r0:
+          type: number
+          title: R0
+        s_init:
+          type: number
+          title: S Init
+        s_final:
+          type: number
+          title: S Final
+        downloops:
+          type: boolean
+          title: Downloops
+          default: true
+      type: object
+      required:
+      - M
+      - C_phi
+      - C_beta
+      - r0
+      - s_init
+      - s_final
+      title: SplineBlock
+    StatusResponse:
+      properties:
+        state:
+          type: string
+          enum:
+          - uninitialized
+          - ready
+          - solving
+          - converged
+          - failed
+          title: State
+        step_count:
+          type: integer
+          title: Step Count
+          default: 0
+        successful_steps:
+          type: integer
+          title: Successful Steps
+          default: 0
+        last_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error
+        metrics:
+          anyOf:
+          - $ref: '#/components/schemas/SolveMetrics'
+          - type: 'null'
+        inflow_conditions:
+          anyOf:
+          - $ref: '#/components/schemas/InflowConditions'
+          - type: 'null'
+        wind:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Wind
+          description: 'Read-only diagnostics: the Wind model the optimizer built from inflow_conditions'
+        n_points:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: N Points
+        last_step_started:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Step Started
+        last_step_finished:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Step Finished
+        session_id:
+          type: string
+          title: Session Id
+          default: default
+      type: object
+      required:
+      - state
+      title: StatusResponse
+    StepAccepted:
+      properties:
+        state:
+          type: string
+          const: solving
+          title: State
+          default: solving
+        step_index:
+          type: integer
+          title: Step Index
+      type: object
+      required:
+      - step_index
+      title: StepAccepted
+    StepReply:
+      properties:
+        length:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Length
+          description: Tether length the pattern is anchored to [m]
+        winch_params:
+          anyOf:
+          - $ref: '#/components/schemas/WinchParams'
+          - type: 'null'
+        trajectory:
+          $ref: '#/components/schemas/TrajectoryAngles'
+        depower:
+          anyOf:
+          - $ref: '#/components/schemas/DepowerReply'
+          - type: 'null'
+        min_turn_radius:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Min Turn Radius
+        state:
+          type: string
+          title: State
+        step_index:
+          type: integer
+          title: Step Index
+        metrics:
+          $ref: '#/components/schemas/SolveMetrics'
+      type: object
+      required:
+      - trajectory
+      - state
+      - step_index
+      - metrics
+      title: StepReply
+      description: |-
+        Reply of POST /step with wait=true — contains the StepParams struct
+        (length, winch_params, trajectory, depower) plus solve metadata. The
+        trajectory is the OPTIMIZED path (closed, degrees) and ``depower`` is the
+        setting it was optimized for: fly BOTH, or the reported metrics are not
+        achievable. ``min_turn_radius`` is the limit the path was optimized under
+        (null = unconstrained); metrics.turn_radius_min_m is what it achieves.
+    StepRequest:
+      properties:
+        inflow_conditions:
+          anyOf:
+          - $ref: '#/components/schemas/InflowConditions'
+          - type: 'null'
+          description: Updated wind for this re-optimization; the inflow of /init keeps being
+            used when it is omitted
+        winch_params:
+          anyOf:
+          - $ref: '#/components/schemas/WinchParams'
+          - type: 'null'
+          description: Updated winch law for this re-optimization
+        trajectory:
+          anyOf:
+          - $ref: '#/components/schemas/TrajectoryAngles'
+          - type: 'null'
+          description: Current flight path in degrees, used as the starting guess for the
+            re-optimization
+        length:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Length
+          description: Current tether length [m]; re-anchors the pattern radius r0
+        depower:
+          anyOf:
+          - $ref: '#/components/schemas/DepowerSpec'
+          - type: 'null'
+          description: Updated depower handling for this and later steps; omit to keep the
+            mode and value set at /init
+        min_turn_radius:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Min Turn Radius
+          description: Updated minimum turn radius [m] for this and later steps; omit to keep
+            the value set at /init, send 0 to remove the constraint
+        max_iter:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Max Iter
+        wait:
+          type: boolean
+          title: Wait
+          description: 'True (default): block until the solve finishes and return the optimized
+            trajectory in the reply. False: return 202 immediately and poll /status.'
+          default: true
+      additionalProperties: false
+      type: object
+      title: StepRequest
+    TrajectoryAngles:
+      properties:
+        azimuth:
+          items:
+            type: number
+          type: array
+          minItems: 8
+          title: Azimuth
+          description: '[deg]'
+        elevation:
+          items:
+            type: number
+          type: array
+          minItems: 8
+          title: Elevation
+          description: '[deg]'
+      type: object
+      required:
+      - azimuth
+      - elevation
+      title: TrajectoryAngles
+      description: |-
+        Flight path as azimuth/elevation samples in DEGREES.
+
+        Periodic: the last point may repeat the first (it is dropped before
+        fitting). Responses are always closed (last point equals the first).
+    TrajectoryResponse:
+      properties:
+        step_index:
+          type: integer
+          title: Step Index
+        n_points:
+          type: integer
+          title: N Points
+        table:
+          additionalProperties:
+            items:
+              anyOf:
+              - type: number
+              - type: 'null'
+            type: array
+          type: object
+          title: Table
+        spline:
+          $ref: '#/components/schemas/SplineBlock'
+        metrics:
+          $ref: '#/components/schemas/SolveMetrics'
+        optimized_parameters:
+          additionalProperties: true
+          type: object
+          title: Optimized Parameters
+        timeseries:
+          anyOf:
+          - additionalProperties:
+              items:
+                anyOf:
+                - type: number
+                - type: 'null'
+              type: array
+            type: object
+          - type: 'null'
+          title: Timeseries
+        energy_metrics:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Energy Metrics
+      type: object
+      required:
+      - step_index
+      - n_points
+      - table
+      - spline
+      - metrics
+      - optimized_parameters
+      title: TrajectoryResponse
+    ValidationError:
+      properties:
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          type: array
+          title: Location
+        msg:
+          type: string
+          title: Message
+        type:
+          type: string
+          title: Error Type
+        input:
+          title: Input
+        ctx:
+          type: object
+          title: Context
+      type: object
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+    WinchParams:
+      properties:
+        mode:
+          type: string
+          enum:
+          - reelout
+          - reelin
+          title: Mode
+          description: Phase to optimize; only 'reelout' is supported for now
+          default: reelout
+        k_v:
+          type: number
+          exclusiveMinimum: 0.0
+          title: K V
+          description: 'Winch law gain: v_set = k_v * sqrt(force)'
+        f_min:
+          type: number
+          minimum: 0.0
+          title: F Min
+          description: Minimum winch force [N]
+        f_max:
+          type: number
+          exclusiveMinimum: 0.0
+          title: F Max
+          description: Maximum winch force [N]
+        v_max:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: V Max
+          description: Maximum reel-out speed [m/s]
+        p_max:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: P Max
+          description: Maximum winch power [W]; alternative to v_max (v_max = p_max / f_max)
+      additionalProperties: false
+      type: object
+      required:
+      - k_v
+      - f_min
+      - f_max
+      title: WinchParams
+      description: 'Ground-station winch controller: v_set = k_v * sqrt(force).'
+    ErrorDetail:
+      title: ErrorDetail
+      type: object
+      properties:
+        detail:
+          title: Detail
+          type: string
+      required:
+      - detail

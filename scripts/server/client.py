@@ -6,13 +6,15 @@ with HTTP or polling directly:
     from client import ReeloutClient
 
     client = ReeloutClient("http://127.0.0.1:8000")
-    client.init(wind={"model_type": "logarithmic", "U_ref": 8.0})
+    client.init(inflow_conditions={"wind_speed": 5.2, "profile_law": 2})
     trajectory = client.optimize()                      # step + wait, one call
     ...
     trajectory = client.optimize(                       # later: refresh
-        wind={"model_type": "tabulated",
-              "heights": [10, 100, 300], "speeds": [5.5, 8.0, 9.3]},
-        distance_radial=220.0,
+        inflow_conditions={"wind_speed": 8.4, "wind_direction": 265.0,
+                           "profile_law": 6,
+                           "heights": [10, 50, 100, 200, 300],
+                           "speeds": [5.5, 7.4, 8.0, 9.3, 8.6]},
+        length=220.0,
     )
 
 Requires only httpx (installed with the [dev] or [server] extras); runnable
@@ -40,29 +42,32 @@ class ReeloutClient:
     def status(self) -> dict:
         return self._request("GET", "/status")
 
-    def init(self, wind: dict, **options) -> dict:
+    def init(self, inflow_conditions: dict, **options) -> dict:
         """POST /init. `options` maps to the InitRequest fields, e.g.
-        initial_guess=..., n_points=..., sim_parameters={...},
+        initial_guess=..., n_points=..., length=..., input_depower=...,
         depower={"mode": "fixed"|"optimize"|"profile", "value": 1.6},
         min_turn_radius=11.35 (metres; the path will not turn tighter)."""
-        return self._request("POST", "/init", json={"wind": wind, **options})
+        return self._request(
+            "POST", "/init",
+            json={"inflow_conditions": inflow_conditions, **options},
+        )
 
     def step(
         self,
-        wind: Optional[dict] = None,
-        distance_radial: Optional[float] = None,
+        inflow_conditions: Optional[dict] = None,
+        length: Optional[float] = None,
         max_iter: Optional[int] = None,
         depower: Optional[dict] = None,
         min_turn_radius: Optional[float] = None,
     ) -> dict:
         """POST /step (non-blocking). Returns the 202 acknowledgement.
-        ``min_turn_radius`` [m] updates the path's minimum turn radius
-        (0 removes the constraint); omit to keep the /init setting."""
+        ``depower`` changes mode/value mid-session; ``min_turn_radius`` [m]
+        updates the limit (0 removes it); omit both to keep the /init setting."""
         payload = {"wait": False}  # keep this client's step/wait split
-        if wind is not None:
-            payload["wind"] = wind
-        if distance_radial is not None:
-            payload["distance_radial"] = distance_radial
+        if inflow_conditions is not None:
+            payload["inflow_conditions"] = inflow_conditions
+        if length is not None:
+            payload["length"] = length
         if max_iter is not None:
             payload["max_iter"] = max_iter
         if depower is not None:
@@ -93,11 +98,9 @@ class ReeloutClient:
     def optimize(self, timeout: float = 600.0, **step_kwargs) -> dict:
         """step + wait + trajectory in one blocking call.
 
-        Returns the TrajectoryResponse dict. Its ``table["input_depower"]``
-        column and ``optimized_parameters["input_depower"]`` give the depower
-        the path was optimized for — fly it, or the reported power is not
-        achievable. Raises SolveFailedError if the solve fails (the previous
-        trajectory, if any, remains available via .trajectory()).
+        Returns the TrajectoryResponse dict. Raises SolveFailedError if the
+        solve fails (the previous trajectory, if any, remains available via
+        .trajectory()).
         """
         self.step(**step_kwargs)
         status = self.wait(timeout=timeout)
@@ -120,10 +123,11 @@ if __name__ == "__main__":
 
     print("initializing session ...")
     client.init(
-        wind={"model_type": "logarithmic", "U_ref": 8.0, "z_ref": 100.0, "z0": 0.03},
+        # 5.2 m/s at 6 m height, wind from the west, logarithmic profile
+        inflow_conditions={"wind_speed": 5.2, "wind_direction": 270.0,
+                           "profile_law": 2, "z0": 0.03},
         initial_guess={"curve_type": "lissajous"},
-        depower={"mode": "optimize", "value": 1.6},
-        sim_parameters={"reg_weight": 1.0, "detect_simple_bounds": True},
+        input_depower=1.6, reg_weight=1.0, detect_simple_bounds=True,
     )
 
     print("optimizing (cold start) ...")
@@ -132,20 +136,15 @@ if __name__ == "__main__":
     print(f"  step {trajectory['step_index']}: "
           f"{metrics['avg_power_W'] / 1e3:.2f} kW average power, "
           f"{metrics['total_time_s']:.1f} s pattern")
-    print(f"  fly it at depower "
-          f"{trajectory['optimized_parameters']['input_depower']:.4f}")
-
-    print("re-optimizing with depower pinned at the client's own setting ...")
-    trajectory = client.optimize(depower={"mode": "fixed", "value": 1.6})
-    print(f"  {trajectory['metrics']['avg_power_W'] / 1e3:.2f} kW at "
-          f"l_dp = {trajectory['table']['input_depower'][0]:.4f} "
-          f"(what a client that cannot command depower actually gets)")
 
     print("refreshing with new wind + tether length (warm start) ...")
     trajectory = client.optimize(
-        wind={"model_type": "tabulated",
-              "heights": [10.0, 100.0, 300.0], "speeds": [5.5, 8.0, 9.3]},
-        distance_radial=220.0,
+        # a measured profile: CUSTOM_JET fits the heights/speeds samples
+        inflow_conditions={"wind_speed": 8.4, "wind_direction": 265.0,
+                           "profile_law": 6,
+                           "heights": [10.0, 50.0, 100.0, 200.0, 300.0],
+                           "speeds": [5.5, 7.4, 8.0, 9.3, 8.6]},
+        length=220.0,
     )
     metrics = trajectory["metrics"]
     print(f"  step {trajectory['step_index']}: "

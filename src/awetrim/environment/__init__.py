@@ -15,3 +15,5 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .Wind import Wind
+from .wind_factory import create_wind_model
+from .wind_profiles import ProfileLaw, wind_kwargs_from_inflow

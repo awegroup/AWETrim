@@ -18,11 +18,11 @@
 
 Endpoints (see ``schemas.py`` for units and reference-frame conventions):
 
-- ``POST /init`` — build the session (system model, pattern, wind, initial
-  guess). Synchronous, does not solve.
-- ``POST /step`` — launch one warm-started re-optimization in the background
-  (optionally with a new wind profile and/or updated tether length). Returns
-  202 immediately; poll ``/status``.
+- ``POST /init`` — build the session (system model, pattern, inflow
+  conditions, initial guess). Synchronous, does not solve.
+- ``POST /step`` — one warm-started re-optimization (optionally with updated
+  inflow conditions and/or tether length). Blocking by default; with
+  ``wait=false`` it returns 202 immediately and ``/status`` is polled.
 - ``GET /status`` — session state machine + last solve metrics.
 - ``GET /trajectory`` — dense guidance table from the last successful solve
   (kept available while a new solve runs and after a failed one).
@@ -74,8 +74,8 @@ def create_app(
     @app.post("/init", response_model=InitReply)
     def init(request: InitRequest) -> InitReply:
         """Set up the session. The reply contains the InitParams struct
-        (name, max_time, winch_params, trajectory, depower); the trajectory is
-        the fitted STARTING path — call /step to optimize it."""
+        (name, winch_params, inflow_conditions, trajectory); the
+        trajectory is the fitted STARTING path — call /step to optimize it."""
         try:
             session().init(request.model_dump())
         except SessionBusyError as exc:
@@ -93,20 +93,23 @@ def create_app(
         """One warm-started re-optimization.
 
         Default (wait=true): blocks until the solve finishes and the reply
-        contains the StepParams struct (winch_params + OPTIMIZED trajectory +
-        the depower it assumes). With wait=false: returns 202 immediately;
-        poll /status and fetch /trajectory. An infeasible request returns 422
-        with the solver message; the previous trajectory stays available."""
+        contains the StepParams struct (winch_params + OPTIMIZED trajectory
+        + the depower it assumes + the turn-radius limit it respects).
+        With wait=false: returns 202 immediately; poll /status and fetch
+        /trajectory. An infeasible request returns 422 with the solver
+        message; the previous trajectory stays available."""
         kwargs = dict(
-            wind=request.wind.model_dump() if request.wind else None,
+            inflow_conditions=request.inflow_conditions.model_dump()
+            if request.inflow_conditions
+            else None,
             winch_params=request.winch_params.model_dump()
             if request.winch_params
             else None,
             trajectory=request.trajectory.model_dump()
             if request.trajectory
             else None,
+            distance_radial=request.length,
             depower=request.depower.model_dump() if request.depower else None,
-            distance_radial=request.distance_radial,
             min_turn_radius=request.min_turn_radius,
             max_iter=request.max_iter,
         )

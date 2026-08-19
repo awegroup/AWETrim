@@ -107,14 +107,14 @@ def patched_session(monkeypatch, tmp_path):
 
     sess = ReeloutSession()
     init_config = {
-        "wind": {"model_type": "uniform", "U_ref": 8.0, "direction_wind": 0.0},
+        "inflow_conditions": {"wind_speed": 8.0, "profile_law": 0},  # CONST
         "initial_guess": None,
         "system_config_path": str(system_yaml),
         "cycle_config_path": str(cycle_yaml),
         "optimization_params": ["C_phi", "C_beta", "input_depower"],
         "target": "power",
         "n_points": N_NODES,
-        "sim_parameters": {"input_depower": 1.6},
+        "input_depower": 1.6,
     }
     return sess, init_config
 
@@ -159,6 +159,50 @@ def test_init_builds_phase_and_ready_state(patched_session):
     status = sess.status()
     assert status["state"] == "ready"
     assert status["wind"]["model_type"] == "uniform"
+
+
+def test_init_from_inflow_conditions(patched_session):
+    """InflowConditions is resolved into the Wind model and echoed back."""
+    sess, config = patched_session
+    config = dict(config)
+    config["inflow_conditions"] = {
+        "wind_speed": 8.0, "wind_direction": 270.0, "profile_law": 3,
+        "alpha": 0.1, "z0": 0.01, "turbulence": 0.2,
+    }
+    sess.init(config)
+    assert sess.state == SessionState.READY
+    # EXPLOG is analytic -> SX expansion stays enabled
+    assert sess.phase.pattern_config["sim_parameters"]["expand_nlp"] is True
+    status = sess.status()
+    assert status["wind"]["model_type"] == "explog"
+    assert status["wind"]["z_ref"] == 6.0
+    assert status["inflow_conditions"]["profile_law"] == 3
+    assert sess.init_reply()["inflow_conditions"]["wind_speed"] == 8.0
+    # turbulence is accepted (and echoed) but does not reach the Wind model
+    assert "turbulence" not in status["wind"]
+
+
+def test_init_without_any_wind_raises(patched_session):
+    sess, config = patched_session
+    config = dict(config)
+    del config["inflow_conditions"]
+    with pytest.raises(ValueError, match="no wind given"):
+        sess.init(config)
+
+
+def test_step_updates_inflow_conditions(patched_session):
+    sess, config = patched_session
+    sess.init(config)
+    _run_step_to_success(
+        sess,
+        inflow_conditions={"wind_speed": 9.0, "profile_law": 1, "alpha": 0.12},
+    )
+    status = sess.status()
+    assert status["wind"] == {
+        "model_type": "power_law", "U_ref": 9.0, "alpha": 0.12,
+        "z_ref": 6.0, "direction_wind": pytest.approx(-math.pi / 2),
+    }
+    assert status["inflow_conditions"]["wind_speed"] == 9.0
 
 
 def test_step_success_produces_guidance_record(patched_session):
@@ -221,8 +265,7 @@ def test_second_step_warm_starts_and_updates_radius(patched_session):
     }
     phase.results.append(_fake_result())
     sess.step(
-        wind={"model_type": "tabulated", "heights": [10.0, 300.0],
-              "speeds": [5.0, 9.0], "direction_wind": 0.0},
+        inflow_conditions={"wind_speed": 9.0, "profile_law": 2, "z0": 0.03},
         distance_radial=R0 + 20.0,
     )
     assert phase.solve_started.wait(timeout=5.0)
@@ -235,9 +278,9 @@ def test_second_step_warm_starts_and_updates_radius(patched_session):
     np.testing.assert_allclose(
         phase._warm_start_trajectory["distance_radial"], R0 + 20.0
     )
-    # Tabulated wind must disable SX expansion
-    assert phase.pattern_config["sim_parameters"]["expand_nlp"] is False
-    assert sess.status()["wind"]["model_type"] == "tabulated"
+    # every InflowConditions law is analytic -> SX expansion stays enabled
+    assert phase.pattern_config["sim_parameters"]["expand_nlp"] is True
+    assert sess.status()["wind"]["model_type"] == "logarithmic"
 
 
 def test_failed_step_keeps_previous_record(patched_session):
@@ -280,9 +323,9 @@ def test_reset_clears_session(patched_session):
         sess.step()
 
 
-def test_init_distance_radial_overrides_r0(patched_session):
+def test_init_length_overrides_r0(patched_session):
     sess, config = patched_session
-    config["distance_radial"] = 250.0
+    config["length"] = 250.0
     config["initial_guess"] = {
         "curve_type": "lissajous",
         "M": 8,
@@ -302,7 +345,7 @@ def test_init_distance_radial_overrides_r0(patched_session):
 def test_winch_params_map_to_quadratic_force_law(patched_session):
     sess, config = patched_session
     config["winch_params"] = {
-        "mode": "reelout", "k_v": 0.02, "v_max": 8.0,
+        "mode": "reelout", "k_v": 0.02,
         "f_min": 1000.0, "f_max": 8400.0,
     }
     sess.init(config)
@@ -314,8 +357,6 @@ def test_winch_params_map_to_quadratic_force_law(patched_session):
     assert radial["offset_winch_ro"] == 0.0
     assert radial["min_tether_force"] == 1000.0
     assert radial["max_tether_force"] == 8400.0
-    sim = sess.phase.pattern_config["sim_parameters"]
-    assert sim["opti_limits_override"]["speed_radial"][1] == 8.0
 
     # reelin mode is rejected at init and at step
     config["winch_params"]["mode"] = "reelin"
