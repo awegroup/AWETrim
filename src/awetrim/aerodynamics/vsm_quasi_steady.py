@@ -27,6 +27,7 @@ import casadi as ca
 import numpy as np
 from scipy.optimize import least_squares
 
+from awetrim.environment.profile_laws import LOG_BASED_MODELS
 from awetrim.aerodynamics.protocols import (
     AWETrimSystemModel,
     AxisDefinition,
@@ -1419,11 +1420,11 @@ def solve_vsm_qs_trim_with_williams_tether(
     wind_z0 = getattr(wind, "z0", 0.07)
     if (
         wind is not None
-        and wind.wind_model == "logarithmic"
+        and wind.wind_model in LOG_BASED_MODELS
         and r_kite_wind[2] <= float(wind_z0)
     ):
         raise ValueError(
-            f"Williams tether (log-law wind) needs the kite above the wind "
+            f"Williams tether ({wind.wind_model} wind) needs the kite above the wind "
             f"roughness height z0={wind_z0:.4g} m, but r_kite_wind[z]"
             f"={r_kite_wind[2]:.4g} m (angle_elevation="
             f"{np.rad2deg(angle_elev):.2f} deg, distance_radial="

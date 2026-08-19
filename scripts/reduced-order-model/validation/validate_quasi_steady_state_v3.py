@@ -11,6 +11,7 @@ from awetrim.system.tether import (
 from awetrim.system.factory import load_aero_input_from_system_config
 from awetrim.system.williams_tether import WilliamsTether
 from awetrim.environment.Wind import Wind
+from awetrim.environment.profile_laws import friction_velocity, speed_from_friction_velocity
 from awetrim.identification.controls import (
     ROM_POWERED_INPUT_DEPOWER,
     ROM_DEPOWERED_INPUT_DEPOWER,
@@ -358,10 +359,8 @@ for cfg, label in zip(aero_cfgs, aero_labels):
         kite_model.setup_qs_solver(unknown_vars, solver_options=solver_options)
         qs_solver = kite_model._qs_solver
 
-    uf = (
-        results.wind_speed_horizontal
-        * kite_model.wind.kappa
-        / np.log(results.kite_position_z / kite_model.wind.z0)
+    uf = friction_velocity(
+        results.wind_speed_horizontal, results.kite_position_z, kite_model.wind.z0, xp=np
     )
     uf_mean = np.mean(uf)
 
@@ -369,11 +368,7 @@ for cfg, label in zip(aero_cfgs, aero_labels):
     for i, row in flight_data.iterrows():
         print(f"Processing row {i + 1}/{len(flight_data)}")
         # ...existing simulation loop code...
-        uf_window.append(
-            results.wind_speed_horizontal[i]
-            * kite_model.wind.kappa
-            / np.log(results.kite_position_z[i] / kite_model.wind.z0)
-        )
+        uf_window.append(float(uf[i]))
         wdir_window.append(results.wind_direction[i])
         if len(uf_window) > window_size:
             uf_window.pop(0)

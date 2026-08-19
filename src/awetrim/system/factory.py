@@ -15,12 +15,12 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
-import math
 from typing import Union
 
 import yaml
 
 from awetrim.environment.Wind import Wind
+from awetrim.environment.profile_laws import DEFAULT_POWER_LAW_ALPHA
 from awetrim.system.kite import Kite
 from awetrim.system.system_model import SystemModel
 from awetrim.system.tether import RigidLumpedTether
@@ -62,41 +62,47 @@ def create_tether_from_config(
 
 
 def create_wind_model_from_config(wind_cfg):
-    """Create a Wind model from a YAML wind section."""
+    """Create a :class:`Wind` from a YAML ``wind`` section.
+
+    Keys: ``model`` (or ``model_type``; any value in
+    :data:`awetrim.environment.profile_laws.ALL_MODELS`, default ``uniform``),
+    ``z0``, ``alpha``, ``jet_amplitude``/``jet_height``/``jet_width``,
+    ``tabulated_heights``/``tabulated_speeds``, ``direction_wind`` (default 0)
+    and exactly one amplitude:
+
+    - ``speed_wind_ref`` (+ optional ``height_ref``, default 6 m),
+    - ``speed_wind_at_100`` (shorthand for ``height_ref: 100``),
+    - ``speed_wind_at_ref`` (+ ``height_ref``),
+    - ``speed_friction`` (log-based models).
+
+    No profile formula is evaluated here: ``Wind`` converts between the
+    reference speed and the friction velocity through ``profile_laws``.
+    """
     if not wind_cfg:
         return None
 
     wind_model = Wind(
         wind_model=wind_cfg.get("model", wind_cfg.get("model_type", "uniform")),
         z0=wind_cfg.get("z0", 0.01),
+        alpha=wind_cfg.get("alpha", DEFAULT_POWER_LAW_ALPHA),
+        jet_amplitude=wind_cfg.get("jet_amplitude", 0.0),
+        jet_height=wind_cfg.get("jet_height"),
+        jet_width=wind_cfg.get("jet_width"),
         tabulated_heights=wind_cfg.get("tabulated_heights"),
         tabulated_speeds=wind_cfg.get("tabulated_speeds"),
         direction_wind=wind_cfg.get("direction_wind", 0),
         speed_wind_ref=wind_cfg.get("speed_wind_ref"),
     )
+    if "height_ref" in wind_cfg:
+        wind_model.height_ref = float(wind_cfg["height_ref"])
 
     if "speed_friction" in wind_cfg:
         wind_model.speed_friction = wind_cfg["speed_friction"]
     elif "speed_wind_at_100" in wind_cfg:
-        if wind_model.wind_model == "uniform":
-            wind_model.speed_wind_ref = wind_cfg["speed_wind_at_100"]
-        else:
-            wind_model.speed_friction = (
-                wind_model.kappa
-                * wind_cfg["speed_wind_at_100"]
-                / math.log(100 / wind_model.z0)
-            )
+        wind_model.height_ref = 100.0
+        wind_model.speed_wind_ref = wind_cfg["speed_wind_at_100"]
     elif "speed_wind_at_ref" in wind_cfg:
-        height_ref = wind_cfg.get("height_ref", wind_model.height_ref)
-        wind_model.height_ref = height_ref
-        if wind_model.wind_model == "uniform":
-            wind_model.speed_wind_ref = wind_cfg["speed_wind_at_ref"]
-        else:
-            wind_model.speed_friction = (
-                wind_model.kappa
-                * wind_cfg["speed_wind_at_ref"]
-                / math.log(height_ref / wind_model.z0)
-            )
+        wind_model.speed_wind_ref = wind_cfg["speed_wind_at_ref"]
 
     return wind_model
 

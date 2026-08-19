@@ -17,7 +17,7 @@ import argparse
 
 import numpy as np
 
-from awetrim.environment.Wind import Wind
+from awetrim.environment.wind_factory import create_wind_model
 from awetrim.system.factory import create_system_model_from_yaml
 from awetrim.timeseries.reelin_phase import ReelinSimple
 from awetrim.utils.config_paths import LEI_V3_SYSTEM_CONFIG
@@ -63,14 +63,14 @@ OPTIMIZATION_PARAMS = ["elevation_start_riro", "offset_winch_ri"]
 
 
 def build_wind_model(speed_wind_at_100=8, z0=0.01, model_type="logarithmic"):
-    """Create a wind model using the supplied parameters."""
-    wind_model = Wind(wind_model=model_type, z0=z0, direction_wind=0)
-    speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind_model.z0)
-    if model_type == "logarithmic":
-        wind_model.speed_friction = speed_friction
-    elif model_type == "uniform":
-        wind_model.speed_wind_ref = speed_wind_at_100
-    return wind_model
+    """Wind model with the reference speed given at 100 m (any analytic law)."""
+    return create_wind_model(
+        model_type,
+        U_ref=speed_wind_at_100,
+        z_ref=100.0,
+        z0=z0,
+        direction_wind=0,  # wind blowing along +x
+    )
 
 
 def main(run_plots: bool = False):

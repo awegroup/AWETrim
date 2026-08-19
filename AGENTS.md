@@ -23,8 +23,16 @@ src/awetrim/
                          chordwise force distribution still need improvement (see note)
   kinematics/        ✅  course-frame kinematics, B-spline path patterns
   timeseries/        ✅  PhaseParameterized, ReeloutSimple, ReelinSimple, Cycle
-  environment/       ✅  Wind (logarithmic / uniform / tabulated);
-                         wind_factory.create_wind_model builds fully numeric models
+  environment/       ✅  Wind (uniform / logarithmic / power_law / explog /
+                         jet / tabulated). profile_laws.py is the ONLY place the
+                         analytic formulas live (pure functions over an ``xp``
+                         math namespace: numpy for fits/scripts, casadi inside
+                         Wind); Wind stores one amplitude (speed_wind_ref at
+                         height_ref, or speed_friction for log-based models) and
+                         derives the other lazily. wind_factory.create_wind_model
+                         builds fully numeric models; wind_profiles.py maps the
+                         co-sim InflowConditions struct (laws 0-6, CUSTOM_* fits)
+                         onto create_wind_model kwargs.
   server/            ✅  REST API for reelout trajectory optimization
                          (FastAPI, optional [server] extra; endpoints
                          /init /status /step /trajectory /reset; one
@@ -32,6 +40,9 @@ src/awetrim/
                          clients, e.g. an external kite simulator).
                          Co-sim structs: WinchParams, Trajectory,
                          DepowerParams {mode: fixed|optimize|profile, value},
+                         InflowConditions {wind_speed @6 m, wind_direction
+                         (compass, FROM), profile_law 0-6, alpha, z0,
+                         heights/speeds, turbulence (ignored)},
                          InitParams, StepParams. Replies always echo the
                          depower the returned path assumes — it is not
                          flyable without it. Optional client-supplied
@@ -115,6 +126,12 @@ Every governing equation should trace back to one of:
 - Optimisation variable bounds live in `utils/defaults.py` (`DEFAULT_OPTI_LIMITS`).
   Add new variables there, not inline in module code.
 - In `SystemModel(quasi_steady=True)`, `timeder_speed_tangential = 0` must be enforced.
+- **Wind profiles:** never restate a profile law (log/power/explog/jet or the
+  `u* = κU/ln(z_ref/z0)` conversion). Build winds with
+  `environment.wind_factory.create_wind_model` (or the YAML `wind:` section via
+  `system.factory.create_wind_model_from_config`) and, when a NumPy evaluation
+  is needed, call the kernels in `environment/profile_laws.py`
+  (`log_law`, `friction_velocity`, `speed_from_friction_velocity`, ...).
 - Cross-module data uses plain dicts or `dataclass` — keep CasADi symbolics from
   crossing module boundaries unless explicitly decided.
 - **Tests:** one file per source module under `tests/`; assert CasADi expression

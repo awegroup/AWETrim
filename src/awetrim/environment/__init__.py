@@ -15,5 +15,13 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from .Wind import Wind
+from .profile_laws import (
+    ANALYTIC_MODELS,
+    KAPPA,
+    LOG_BASED_MODELS,
+    friction_velocity,
+    speed_from_friction_velocity,
+    speed_profile,
+)
 from .wind_factory import create_wind_model
 from .wind_profiles import ProfileLaw, wind_kwargs_from_inflow

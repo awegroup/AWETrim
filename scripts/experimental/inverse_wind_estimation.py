@@ -11,6 +11,7 @@ from awetrim.system.kite import Kite
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.system.factory import load_aero_input_from_system_config
 from awetrim.environment.Wind import Wind
+from awetrim.environment.profile_laws import friction_velocity, speed_from_friction_velocity
 import casadi as ca
 import time
 import yaml
@@ -239,10 +240,8 @@ def run_inverse_validation(cycle_num=65):
     aoa_func = kite_model.extract_function("angle_of_attack")
 
     # Calculate reference wind speed
-    uf = (
-        results.wind_speed_horizontal
-        * kite_model.wind.kappa
-        / np.log(results.kite_position_z / kite_model.wind.z0)
+    uf = friction_velocity(
+        results.wind_speed_horizontal, results.kite_position_z, kite_model.wind.z0, xp=np
     )
 
     # Run inverse solver
@@ -335,10 +334,9 @@ def run_inverse_validation(cycle_num=65):
             state_combined["direction_wind"] = solved_direction_wind
             state_combined["input_steering"] = solved_steering
             state_combined["speed_friction"] = solved_wind_speed
-            state_combined["speed_wind"] = (
-                solved_wind_speed
-                * np.log(row.kite_elevation * distance_radial[i] / kite_model.wind.z0)
-                / kite_model.wind.kappa
+            z_kite_i = row.kite_elevation * distance_radial[i]
+            state_combined["speed_wind"] = speed_from_friction_velocity(
+                solved_wind_speed, z_kite_i, kite_model.wind.z0, xp=np
             )
             state_combined["cl"] = float(
                 cl_func(*[state_combined[name] for name in cl_func.name_in()])
@@ -352,10 +350,9 @@ def run_inverse_validation(cycle_num=65):
             state_combined["tension_tether_ground"] = prescribed_force
             state_combined["time"] = row.time
             state_combined["index"] = i
-            state_combined["measured_wind_speed"] = (
-                measured_wind_speed
-                * np.log(row.kite_elevation * distance_radial[i] / kite_model.wind.z0)
-            ) / kite_model.wind.kappa
+            state_combined["measured_wind_speed"] = speed_from_friction_velocity(
+                measured_wind_speed, z_kite_i, kite_model.wind.z0, xp=np
+            )
             state_combined["measured_force"] = measured_force
             state_combined["measured_speed_tangential"] = speed_tangential[i]
             state_combined["assumed_wind_direction"] = assumed_wind_direction
@@ -410,22 +407,6 @@ if __name__ == "__main__":
     )
     df_inverse = df_inverse.merge(meas_df, on="time", how="left")
     df_inverse["aoa_deg"] = np.rad2deg(df_inverse["aoa"])
-
-    # Convert wind speeds from reference height (100m) to kite height
-    z0 = 0.1  # roughness length
-    z_ref = 100.0
-    z_kite = df_inverse["angle_elevation"].values * df_inverse["distance_radial"].values
-
-    # Avoid division by zero in log
-    z_kite = np.maximum(z_kite, 1.0)
-
-    # Convert to wind at kite height
-    df_inverse["measured_wind_at_kite"] = df_inverse["measured_wind_speed"] * np.log(
-        z_kite / z0
-    )
-    df_inverse["speed_friction_at_kite"] = (
-        df_inverse["speed_friction"] * np.log(z_kite / z0) / np.log(z_ref / z0)
-    )
 
     print("\n" + "=" * 80)
     print("INVERSE SOLUTION SUMMARY")

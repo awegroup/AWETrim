@@ -30,7 +30,7 @@ import argparse
 
 import numpy as np
 
-from awetrim.environment.Wind import Wind
+from awetrim.environment.wind_factory import create_wind_model
 from awetrim.identification.controls import ROM_DEPOWERED_INPUT_DEPOWER
 from awetrim.system.factory import create_system_model_from_yaml
 from awetrim.timeseries.phase import Phase
@@ -81,14 +81,14 @@ CYCLE_OPTIMIZATION_PARAMS = [
 
 
 def build_wind_model(speed_wind_at_100=8, z0=0.01, model_type="uniform"):
-    """Create a wind model using the supplied parameters."""
-    wind_model = Wind(wind_model=model_type, z0=z0, direction_wind=0)
-    speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind_model.z0)
-    if model_type == "logarithmic":
-        wind_model.speed_friction = speed_friction
-    elif model_type == "uniform":
-        wind_model.speed_wind_ref = speed_wind_at_100
-    return wind_model
+    """Wind model with the reference speed given at 100 m (any analytic law)."""
+    return create_wind_model(
+        model_type,
+        U_ref=speed_wind_at_100,
+        z_ref=100.0,
+        z0=z0,
+        direction_wind=0,  # wind blowing along +x
+    )
 
 
 def build_reelout_start_state(reelout_config):

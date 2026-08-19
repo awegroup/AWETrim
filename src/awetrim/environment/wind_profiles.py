@@ -57,10 +57,18 @@ from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
 import numpy as np
 
+from awetrim.environment.profile_laws import (
+    DEFAULT_POWER_LAW_ALPHA,
+    KAPPA,
+    jet_law,
+    log_law,
+    speed_from_friction_velocity,
+)
+
 # Height [m] at which InflowConditions.wind_speed is defined.
 REFERENCE_HEIGHT = 6.0
 
-DEFAULT_ALPHA = 0.08163
+DEFAULT_ALPHA = DEFAULT_POWER_LAW_ALPHA
 DEFAULT_Z0 = 0.0002
 
 # Plausibility clamps for a fitted roughness length [m].
@@ -148,7 +156,10 @@ def fit_log_law(
             "the given samples fit a non-increasing log law"
         )
     z0 = float(np.clip(math.exp(-intercept / slope), MIN_FITTED_Z0, MAX_FITTED_Z0))
-    u_ref = float(slope * math.log(REFERENCE_HEIGHT / z0))
+    # The fitted slope is u*/kappa; evaluate the law at the reference height.
+    u_ref = float(
+        speed_from_friction_velocity(slope * KAPPA, REFERENCE_HEIGHT, z0, xp=math)
+    )
     if u_ref <= 0.0:
         raise ValueError(
             "CUSTOM_LOG fit gives a non-positive wind speed at "
@@ -190,7 +201,7 @@ def fit_jet_profile(
         u_ref0, z0_0 = fit_log_law(z, u)
     except ValueError:
         u_ref0, z0_0 = float(np.max(u)), DEFAULT_Z0
-    residual = u - u_ref0 * np.log(z / z0_0) / math.log(REFERENCE_HEIGHT / z0_0)
+    residual = u - log_law(z, u_ref0, REFERENCE_HEIGHT, z0_0, xp=np)
     peak = int(np.argmax(residual))
     span = float(np.max(z) - np.min(z))
     x0 = [
@@ -206,9 +217,7 @@ def fit_jet_profile(
 
     def _residuals(p):
         u_ref, z0, u_jet, z_jet, sigma = p
-        background = u_ref * np.log(z / z0) / math.log(REFERENCE_HEIGHT / z0)
-        jet = u_jet * np.exp(-((z - z_jet) ** 2) / (2.0 * sigma**2))
-        return background + jet - u
+        return jet_law(z, u_ref, REFERENCE_HEIGHT, z0, u_jet, z_jet, sigma, xp=np) - u
 
     solution = least_squares(_residuals, x0, bounds=(lower, upper))
     u_ref, z0, u_jet, z_jet, sigma = (float(v) for v in solution.x)

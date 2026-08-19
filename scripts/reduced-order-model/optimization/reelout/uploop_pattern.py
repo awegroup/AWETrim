@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 
 from awetrim import SystemModel
-from awetrim.environment.Wind import Wind
+from awetrim.environment.wind_factory import create_wind_model
 from awetrim.system.kite import Kite
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.timeseries.phase import Phase
@@ -94,18 +94,14 @@ START_STATE = {
 
 
 def build_wind_model(speed_wind_at_100=8, z0=0.01, model_type="uniform"):
-    """Create a wind model using the supplied parameters."""
-    wind_model = Wind(
-        wind_model=model_type,
+    """Wind model with the reference speed given at 100 m (any analytic law)."""
+    return create_wind_model(
+        model_type,
+        U_ref=speed_wind_at_100,
+        z_ref=100.0,
         z0=z0,
-        direction_wind=0,
+        direction_wind=0,  # wind blowing along +x
     )
-    speed_friction = 0.41 * speed_wind_at_100 / np.log(100 / wind_model.z0)
-    if model_type == "logarithmic":
-        wind_model.speed_friction = speed_friction
-    elif model_type == "uniform":
-        wind_model.speed_wind_ref = speed_wind_at_100
-    return wind_model
 
 
 # TODO: Make sure it is the number of figure eights that I want

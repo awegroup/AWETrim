@@ -1,6 +1,9 @@
 import math
 
 import casadi as ca
+import pytest
+
+from awetrim.environment.profile_laws import explog_law, jet_law
 
 from awetrim.system import create_system_model_from_yaml
 
@@ -72,6 +75,65 @@ def test_factory_builds_uniform_wind_from_yaml(tmp_path):
 
     assert model.wind.wind_model == "uniform"
     assert model.wind.speed_wind_ref == 8
+
+
+def test_factory_power_law_speed_wind_at_100_is_the_speed_at_100_m(tmp_path):
+    """Regression: the old factory converted speed_wind_at_100 through the
+    log law for every non-uniform model, mis-scaling power_law."""
+    config_path = tmp_path / "kite.yaml"
+    _write_config(
+        config_path,
+        """  model: power_law
+  alpha: 0.2
+  direction_wind: 0
+  speed_wind_at_100: 10
+""",
+    )
+
+    model = create_system_model_from_yaml(config_path)
+
+    assert model.wind.wind_model == "power_law"
+    assert model.wind.alpha == 0.2
+    assert float(model.wind.speed_wind(100.0)) == pytest.approx(10.0)
+    assert float(model.wind.speed_wind(50.0)) == pytest.approx(10.0 * 0.5**0.2)
+
+
+def test_factory_builds_jet_and_explog_from_yaml(tmp_path):
+    config_path = tmp_path / "kite.yaml"
+    _write_config(
+        config_path,
+        """  model: jet
+  z0: 0.01
+  height_ref: 100
+  speed_wind_ref: 8
+  jet_amplitude: 3
+  jet_height: 150
+  jet_width: 40
+  direction_wind: 0
+""",
+    )
+    model = create_system_model_from_yaml(config_path)
+    assert model.wind.wind_model == "jet"
+    assert float(model.wind.speed_wind(100.0)) == pytest.approx(
+        jet_law(100.0, 8.0, 100.0, 0.01, 3.0, 150.0, 40.0)
+    )
+
+    _write_config(
+        config_path,
+        """  model: explog
+  z0: 0.0002
+  alpha: 0.08163
+  speed_wind_at_ref: 8
+  height_ref: 6
+  direction_wind: 0
+""",
+    )
+    model = create_system_model_from_yaml(config_path)
+    assert model.wind.wind_model == "explog"
+    assert float(model.wind.speed_wind(6.0)) == pytest.approx(8.0)
+    assert float(model.wind.speed_wind(120.0)) == pytest.approx(
+        explog_law(120.0, 8.0, 6.0, 0.0002, 0.08163)
+    )
 
 
 def test_system_model_exposes_named_expressions(tmp_path):

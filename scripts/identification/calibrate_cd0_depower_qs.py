@@ -41,6 +41,7 @@ from awetrim.system.kite import Kite
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.system.factory import load_aero_input_from_system_config
 from awetrim.environment.Wind import Wind
+from awetrim.environment.profile_laws import friction_velocity, speed_from_friction_velocity
 from awetrim.identification.controls import (
     ROM_POWERED_INPUT_DEPOWER,
     ROM_DEPOWERED_INPUT_DEPOWER,
@@ -201,10 +202,8 @@ def load_flight_data():
     course_rate = gaussian_filter1d(course_rate, sigma=1)
 
     wind = Wind(wind_model="logarithmic", z0=WIND_Z0, direction_wind=0)
-    uf_raw = (
-        results.wind_speed_horizontal
-        * wind.kappa
-        / np.log(results.kite_position_z / wind.z0)
+    uf_raw = friction_velocity(
+        results.wind_speed_horizontal, results.kite_position_z, wind.z0, xp=np
     ).to_numpy()
 
     df = pd.DataFrame(

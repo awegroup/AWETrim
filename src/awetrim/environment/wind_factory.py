@@ -21,20 +21,22 @@ Centralises the construction of the supported wind profiles so callers
 
 - ``direction_wind`` must be numeric, otherwise ``Wind`` leaves it as a free
   CasADi symbol and any NLP built on top becomes unsolvable.
-- ``height_ref`` defaults to 6 m and is read by the ``speed_wind_ref`` setter,
-  so it must be assigned *before* the reference speed.
+- the amplitude is the speed ``U_ref`` at ``z_ref``; ``Wind`` derives the
+  friction velocity lazily, so no ordering constraints apply.
 
-The profile laws of the client-facing ``InflowConditions`` struct
-(``power_law``, ``explog``, ``jet``) are built here too; see
-:mod:`awetrim.environment.wind_profiles` for the law -> kwargs translation.
+The formulas of every analytic law live in
+:mod:`awetrim.environment.profile_laws`; the client-facing
+``InflowConditions`` translation lives in
+:mod:`awetrim.environment.wind_profiles`.
 """
 
 from typing import Optional, Sequence
 
 from awetrim.environment.Wind import Wind
-
-#: Wind models parametrized by a reference speed at a reference height.
-_ANALYTIC_MODELS = ("logarithmic", "uniform", "power_law", "explog", "jet")
+from awetrim.environment.profile_laws import (
+    ANALYTIC_MODELS as _ANALYTIC_MODELS,
+    DEFAULT_POWER_LAW_ALPHA,
+)
 
 
 def create_wind_model(
@@ -43,7 +45,7 @@ def create_wind_model(
     U_ref: Optional[float] = None,
     z_ref: float = 100.0,
     z0: float = 0.03,
-    alpha: float = 0.08163,
+    alpha: float = DEFAULT_POWER_LAW_ALPHA,
     heights: Optional[Sequence[float]] = None,
     speeds: Optional[Sequence[float]] = None,
     direction_wind: float = 0.0,
@@ -90,8 +92,6 @@ def create_wind_model(
             jet_height=jet_height,
             jet_width=jet_width,
         )
-        # height_ref must be set before speed_wind_ref: the setter derives
-        # speed_friction from U_ref * kappa / ln(height_ref / z0).
         wind.height_ref = z_ref
         wind.speed_wind_ref = U_ref
         return wind
