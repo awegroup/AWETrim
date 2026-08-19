@@ -162,14 +162,20 @@ MAX_ITER = 1000
 N_POINTS = None
 
 
-def build_wind_model(speed_wind_at_100, z0, model_type):
-    """Wind model with the reference speed given at 100 m (any analytic law)."""
+def build_wind_model(speed_wind_at_100, z0, model_type, **profile_kwargs):
+    """Wind model with the reference speed given at 100 m.
+
+    ``model_type`` is any analytic law of ``awetrim.environment.profile_laws``
+    (uniform, logarithmic, power_law, explog, jet); extra keys such as
+    ``alpha``, ``jet_amplitude``/``jet_height``/``jet_width`` or
+    ``direction_wind`` are forwarded to ``create_wind_model``.
+    """
     return create_wind_model(
         model_type,
         U_ref=speed_wind_at_100,
         z_ref=100.0,
         z0=z0,
-        direction_wind=0,  # wind blowing along +x
+        **profile_kwargs,
     )
 
 

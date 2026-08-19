@@ -101,14 +101,20 @@ START_STATE = {
 }
 
 
-def build_wind_model(speed_wind_at_100=8, z0=0.01, model_type="uniform"):
-    """Wind model with the reference speed given at 100 m (any analytic law)."""
+def build_wind_model(speed_wind_at_100=8, z0=0.01, model_type="uniform", **profile_kwargs):
+    """Wind model with the reference speed given at 100 m.
+
+    ``model_type`` is any analytic law of ``awetrim.environment.profile_laws``
+    (uniform, logarithmic, power_law, explog, jet); extra keys such as
+    ``alpha``, ``jet_amplitude``/``jet_height``/``jet_width`` or
+    ``direction_wind`` are forwarded to ``create_wind_model``.
+    """
     return create_wind_model(
         model_type,
         U_ref=speed_wind_at_100,
         z_ref=100.0,
         z0=z0,
-        direction_wind=0,  # wind blowing along +x
+        **profile_kwargs,
     )
 
 
@@ -116,11 +122,7 @@ def main(run_plots=False):
 
     system_model = create_system_model_from_yaml(yaml_path=KITE_CONFIG_PATH)
 
-    wind_model = build_wind_model(
-        speed_wind_at_100=WIND_CONFIG["speed_wind_at_100"],
-        z0=WIND_CONFIG["z0"],
-        model_type=WIND_CONFIG["model_type"],
-    )
+    wind_model = build_wind_model(**WIND_CONFIG)
     system_model.wind = wind_model
     reelout = Phase(
         system_model=system_model,
