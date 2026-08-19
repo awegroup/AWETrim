@@ -399,3 +399,62 @@ def test_constraint_report_exposes_nlp_expressions():
     assert report["trim_residual (scaled)"]["expr"].numel() == 3 * n_points
     assert report["radial_continuity (scaled)"]["expr"].numel() == n_points - 1
     assert report["winch_tension_law (scaled)"]["expr"].numel() == n_points
+
+
+# --- slow: minimum turn-radius constraint --------------------------------------
+
+
+@pytest.mark.slow
+def test_min_turn_radius_adds_dense_rows_and_diagnostics():
+    """``sim_parameters["min_turn_radius"]`` adds three rows per sub-sample per
+    node (default 4 per interval), exports the ``turn_radius`` report row and
+    always exposes the per-node ``turn_radius`` / scalar ``turn_radius_min``
+    diagnostics; without it the constraint set is unchanged."""
+    import casadi as ca
+
+    from awetrim.timeseries.phase_parametrized import PhaseParameterized
+
+    n_points = 20
+    system_model = _v3_system_model()
+
+    def _build(**sim_overrides):
+        config = _reelout_config("lissajous", n_points=n_points)
+        config["sim_parameters"]["input_depower"] = 1.6
+        config["sim_parameters"].update(sim_overrides)
+        start_state = {
+            "t": 0.0,
+            "s": _S_INIT,
+            "s_dot": 3.0,
+            "input_steering": 0.0,
+            "tension_tether_ground": 8.4e4,
+            "speed_radial": 0.0,
+            "distance_radial": config["path_parameters"]["r0"],
+        }
+        phase = PhaseParameterized(
+            system_model, quasi_steady=True, pattern_config=config
+        )
+        opti, _, objective_dict = phase.opti_phase(
+            start_state=start_state, opti_params={}
+        )
+        return opti, objective_dict
+
+    opti_off, od_off = _build()
+    opti_on, od_on = _build(min_turn_radius=12.0)
+    opti_k1, _ = _build(min_turn_radius=12.0, turn_radius_subsamples=1)
+
+    # three rows per sample: -r s'^3 <= R_min kappa s'^3 <= r s'^3 and the
+    # parametric-speed floor s'/s'_ref >= turn_radius_sigma_floor
+    assert opti_on.g.numel() - opti_off.g.numel() == 3 * 4 * n_points
+    assert opti_k1.g.numel() - opti_off.g.numel() == 3 * n_points
+    assert "turn_radius" not in od_off["constraint_report"]
+    assert "path_param_speed (sigma'/ref)" in od_on["constraint_report"]
+    row = od_on["constraint_report"]["turn_radius"]
+    assert row["expr"].numel() == 4 * n_points
+    assert row["lb"] == 12.0 and row["ub"] == float("inf")
+    for od in (od_off, od_on):
+        assert isinstance(od["turn_radius"], ca.MX)
+        assert od["turn_radius"].numel() == n_points
+        assert od["turn_radius_min"].numel() == 1
+
+    with pytest.raises(ValueError, match="min_turn_radius"):
+        _build(min_turn_radius=-1.0)

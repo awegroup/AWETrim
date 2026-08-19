@@ -1689,6 +1689,99 @@ class PhaseParameterized(TimeSeries):
             + flat_syms,
             [km_copy.angle_course],
         )
+        # Geodesic curvature of the pattern on the unit sphere (a pure function
+        # of the spline coefficients and s; see
+        # ``ParametrizedKinematics.curvature_geodesic``). Same input list as the
+        # residual so it can be evaluated node-by-node with the same argument
+        # bundle; the speed/tension inputs are simply unused. Feeds the optional
+        # minimum-turn-radius constraint below and the per-node ``turn_radius``
+        # diagnostic exported through the objective dict.
+        path_kin = ParametrizedKinematics(pattern, self)
+        curvature_eq = ca.Function(
+            "path_curvature",
+            [
+                self.s,
+                self.s_dot,
+                km_copy.input_steering,
+                km_copy.tension_tether_ground,
+                km_copy.speed_radial,
+                km_copy.distance_radial,
+            ]
+            + flat_syms,
+            [
+                path_kin.curvature_geodesic,
+                path_kin.curvature_numerator,
+                path_kin.dsigma_ds,
+            ],
+        )
+        # Optional minimum physical turn radius R_min [m] of the flown path
+        # (``sim_parameters["min_turn_radius"]``; None/0 -> off, the NLP is
+        # unchanged), i.e. r / |kappa| >= R_min. Enforced on
+        # ``turn_radius_subsamples`` points per node interval (default 4, k = 0
+        # being the node itself, node states held over the interval): the
+        # spline can form a curvature peak or a cusp BETWEEN two nodes that no
+        # node-wise quantity sees, so node-only enforcement misses exactly the
+        # paths that matter. Written in the polynomial (cross-product) form
+        #     -r sigma'^3 <= R_min * (kappa sigma'^3) <= r sigma'^3
+        # rather than R_min |kappa| <= r: kappa ~ 1/sigma'^3 blows up near a
+        # cusp, and a cold IPOPT path that passes through a near-cusp shape then
+        # stalls on the exploding rows (300-340 m cold solves went from
+        # converged to 1000-iteration failures with the |kappa| form); the
+        # polynomial numerator is smooth and bounded there. Purely geometric,
+        # independent of the steering ROM: tight loops and near-cusps are
+        # infeasible by construction (an exactly straight, reversing path has
+        # zero curvature and is not excluded -- that collapse is caught by the
+        # dynamics being infeasible, not by geometry).
+        min_turn_radius = float(sim_params.get("min_turn_radius") or 0.0)
+        if min_turn_radius < 0.0:
+            raise ValueError(
+                f"sim_parameters['min_turn_radius'] must be >= 0, got {min_turn_radius}"
+            )
+        turn_radius_subsamples = int(sim_params.get("turn_radius_subsamples", 4))
+        if turn_radius_subsamples < 1:
+            raise ValueError("sim_parameters['turn_radius_subsamples'] must be >= 1")
+        # Companion floor on the parametric speed sigma'(s) >= floor * sigma_ref
+        # at the same samples (constraint active only). The periodic spline can
+        # otherwise form a HESITATION point -- sigma' -> 0 over a sliver of s,
+        # s_dot jumping up to compensate -- carrying a millimetre-long kink of
+        # tiny radius. That kink is physically meaningless but shows up as a
+        # sub-R_min sample in the returned path, and the sigma'^3-scaled rows
+        # above cannot see it (both sides vanish below IPOPT's tolerance).
+        # Legitimate optima have min sigma' >= ~0.4 sigma_ref; the artefacts
+        # sit at <= 0.1, so 0.2 separates them without touching real shapes.
+        turn_radius_sigma_floor = float(sim_params.get("turn_radius_sigma_floor", 0.2))
+        if not 0.0 <= turn_radius_sigma_floor < 1.0:
+            raise ValueError(
+                "sim_parameters['turn_radius_sigma_floor'] must be in [0, 1)"
+            )
+        _sigma_ref = 1.0  # typical unit-sphere arc rate sigma' of the pattern
+        if min_turn_radius > 0.0:
+            print(
+                f"NLP turn-radius constraint: R >= {min_turn_radius:g} m on "
+                f"{turn_radius_subsamples} sample(s) per node interval"
+            )
+            # sigma' scale from the numeric starting pattern: angular path
+            # length of one pass over [s0, s1] divided by the s-span.
+            try:
+                _pat0 = create_pattern_from_dict(
+                    self.pattern_config["pattern_type"],
+                    self.pattern_config["path_parameters"],
+                )
+                _s0 = float(self.pattern_config["sim_parameters"]["start_angle"])
+                _s1 = float(self.pattern_config["sim_parameters"]["end_angle"])
+                _ss = np.linspace(_s0, _s1, 400)
+                _r0 = float(self.pattern_config["path_parameters"].get("r0", 1.0))
+                _ph = np.asarray(_pat0.azimuth(_r0, _ss)).ravel()
+                _be = np.asarray(_pat0.elevation(_r0, _ss)).ravel()
+                _dsig = np.sqrt(
+                    np.diff(_be) ** 2 + (np.diff(_ph) * np.cos(_be[:-1])) ** 2
+                )
+                _sigma_ref = float(max(np.sum(_dsig) / max(_s1 - _s0, 1e-9), 1e-3))
+            except Exception:
+                _sigma_ref = 1.0
+        # Row scale for the polynomial constraint below: R_min * kappa * sigma'^3
+        # ~ r sigma'^3 at the bound, so divide both sides by R_SCALE sigma_ref^3.
+        _turn_scale = R_SCALE * _sigma_ref**3
         # Constrained NLP expressions collected for the post-solve constraint
         # report (``Phase._print_constraint_report``). Each row carries the
         # NLP's OWN expression plus the bounds actually applied, so the
@@ -1812,6 +1905,9 @@ class PhaseParameterized(TimeSeries):
         _rep_trim = []
         _rep_continuity = []
         _rep_tension = []  # force_law: scaled residuals; free_speed: node tension
+        _rep_turn_radius = []  # node-wise turn radius r/|kappa| [m] (k = 0 samples)
+        _rep_turn_radius_dense = []  # all sub-samples; the constrained set when active
+        _rep_sigma = []  # parametric speed sigma'/sigma_ref at the samples (floor rows)
 
         for i in range(N):
 
@@ -1916,6 +2012,44 @@ class PhaseParameterized(TimeSeries):
                 opti.subject_to(aoa_i <= limits["angle_of_attack"][1])
                 opti.subject_to(aoa_i >= limits["angle_of_attack"][0])
                 _rep_aoa.append(aoa_i)
+
+            # Turn radius of the pattern over this node's interval: R = r_i /
+            # |kappa(s)| with kappa the unit-sphere geodesic curvature (node
+            # states held; s_grid has N+1 entries so s_grid[i+1] exists for
+            # every node). k = 0 is the node itself (diagnostic column); the
+            # sub-samples feed the ``turn_radius_min`` diagnostic always and
+            # add constraint rows only when the constraint is active.
+            n_sub = turn_radius_subsamples
+            for k in range(n_sub):
+                s_ik = s_grid[i] + (k / n_sub) * (s_grid[i + 1] - s_grid[i])
+                kappa_ik, kappa_num_ik, dsigma_ik = curvature_eq(
+                    s_ik,
+                    opti_vars["s_dot"][i],
+                    opti_vars["input_steering"][i],
+                    T_i,
+                    opti_vars["speed_radial"][i],
+                    opti_vars["distance_radial"][i],
+                    *node_syms,
+                )
+                R_ik = opti_vars["distance_radial"][i] / ca.sqrt(kappa_ik**2 + 1e-6)
+                if k == 0:
+                    _rep_turn_radius.append(R_ik)
+                _rep_turn_radius_dense.append(R_ik)
+                if min_turn_radius > 0.0:
+                    # -r sigma'^3 <= R_min kappa sigma'^3 <= r sigma'^3, i.e.
+                    # r/|kappa| >= R_min without the 1/sigma'^3 blow-up; scaled
+                    # by the radius scale and the typical sigma'^3 to stay O(1).
+                    lhs = min_turn_radius * kappa_num_ik / _turn_scale
+                    rhs = distance_scaled[i] * dsigma_ik**3 / _sigma_ref**3
+                    opti.subject_to(lhs <= rhs)
+                    opti.subject_to(-lhs <= rhs)
+                    if turn_radius_sigma_floor > 0.0:
+                        # No hesitation points: keeps the rows above meaningful
+                        # and the returned point set free of micro-kinks.
+                        opti.subject_to(
+                            dsigma_ik / _sigma_ref >= turn_radius_sigma_floor
+                        )
+                        _rep_sigma.append(dsigma_ik / _sigma_ref)
 
         power = energy / (t_eff + 1e-12)
 
@@ -2104,6 +2238,21 @@ class PhaseParameterized(TimeSeries):
                 "equality": True,
             }
 
+        if min_turn_radius > 0.0 and _rep_turn_radius_dense:
+            _report_ineq(
+                "turn_radius",
+                ca.vertcat(*_rep_turn_radius_dense),
+                (min_turn_radius, np.inf),
+                "m",
+            )
+        if _rep_sigma:
+            _report_ineq(
+                "path_param_speed (sigma'/ref)",
+                ca.vertcat(*_rep_sigma),
+                (turn_radius_sigma_floor, np.inf),
+                "-",
+            )
+
         radial_closure = (distance_scaled[-1] - distance_scaled[0]) ** 2
         objective_dict = {
             "energy": energy,
@@ -2114,6 +2263,12 @@ class PhaseParameterized(TimeSeries):
             "angle_elevation_start": angle_elevation[0],
             "angle_elevation_end": angle_elevation[-1],
             "constraint_report": constraint_report,
+            # Per-node physical turn radius r/|kappa| [m] (N entries) and the
+            # tightest radius over the sub-sampled path (scalar); evaluated at
+            # the solution by ``Phase.run_simulation_opti`` into the optimized
+            # trajectory (``turn_radius`` column) and ``turn_radius_min``.
+            "turn_radius": ca.vertcat(*_rep_turn_radius),
+            "turn_radius_min": ca.mmin(ca.vertcat(*_rep_turn_radius_dense)),
         }
         return (
             opti,

@@ -58,6 +58,11 @@ class SimulationResult:
     # solve failed or the values could not be evaluated. Keys are the per-node
     # state/control names; each value is a length-``n_points`` numpy array.
     optimized_trajectory: Dict[str, np.ndarray] = field(default_factory=dict)
+    # Tightest physical turn radius r/|kappa| [m] of the optimized path, from
+    # the NLP's own sub-sampled curvature expression (``opti_phase``
+    # ``turn_radius_min``); None when it could not be evaluated. The per-node
+    # values are the ``turn_radius`` column of ``optimized_trajectory``.
+    turn_radius_min: Optional[float] = None
 
     def save_trajectory_csv(self, output_path: Union[str, Path]) -> None:
         """Save the optimizer's own per-node trajectory to a CSV file.
@@ -473,6 +478,28 @@ class Phase:
         self._update_start_state_from_solution(solution, opti_vars)
 
         optimized_trajectory = self._extract_optimized_trajectory(solution, opti_vars)
+        # Path-geometry diagnostics from the NLP's own expressions: the per-node
+        # physical turn radius r/|kappa| [m] as an extra trajectory column and
+        # the tightest radius over the sub-sampled path. Best-effort, like the
+        # trajectory extraction itself; ``turn_radius_min`` is None if unavailable.
+        turn_radius_min: Optional[float] = None
+        if optimized_trajectory:
+            n_points = len(optimized_trajectory.get("s", []))
+            expr = objective_dict.get("turn_radius")
+            if expr is not None:
+                try:
+                    values = np.asarray(solution.value(expr), dtype=float).ravel()
+                    optimized_trajectory["turn_radius"] = (
+                        values[:n_points] if n_points else values
+                    )
+                except Exception:
+                    pass
+            try:
+                turn_radius_min = float(
+                    solution.value(objective_dict["turn_radius_min"])
+                )
+            except Exception:
+                turn_radius_min = None
         if optimized_trajectory:
             # Seed the next staged solve from this optimum (see
             # initialize_phase): exact warm start, and no force-law
@@ -487,6 +514,7 @@ class Phase:
             optimized_trajectory=optimized_trajectory,
             energy_objective=objective_dict.get("energy", 0.0),
             total_time=objective_dict.get("total_time", 0.0),
+            turn_radius_min=turn_radius_min,
         )
 
     def _param_reference(self, name: str) -> Any:
@@ -590,7 +618,13 @@ class Phase:
                 lb, ub = spec["lb"] * scale, spec["ub"] * scale
                 vmin = float(values.min()) * scale
                 vmax = float(values.max()) * scale
-                tol = 1e-2 * (ub - lb)
+                # One-sided rows (e.g. turn_radius >= R_min, ub = inf): size the
+                # binding tolerance on the finite bound instead of the width.
+                tol = (
+                    1e-2 * (ub - lb)
+                    if np.isfinite(ub - lb)
+                    else 1e-2 * max(abs(lb) if np.isfinite(lb) else abs(ub), 1.0)
+                )
                 binding = [
                     tag
                     for tag, hit in (("lb", vmin <= lb + tol), ("ub", vmax >= ub - tol))
