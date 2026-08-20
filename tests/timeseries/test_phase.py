@@ -116,3 +116,32 @@ def test_save_trajectory_csv_empty_is_noop(tmp_path):
     out = tmp_path / "traj.csv"
     result.save_trajectory_csv(out)
     assert not out.exists()
+
+
+def test_trajectory_from_phase_trims_to_grid_and_rejects_truncated():
+    """``Phase._trajectory_from_phase`` turns a forward simulation into the
+    length-n_points seed dict opti_phase consumes, and returns {} (no seed)
+    when the march stopped short of the grid."""
+    import numpy as np
+
+    from awetrim.timeseries.phase import Phase
+
+    class _FakeTS:
+        def __init__(self, n):
+            self.n = n
+
+        def return_variable(self, name):
+            if name == "angle_course":
+                raise KeyError(name)  # not every model exposes every column
+            return np.arange(self.n, dtype=float) + hash(name) % 7
+
+    ph = Phase.__new__(Phase)  # no system model needed for this helper
+    ph.pattern_config = {"sim_parameters": {"n_points": 10}}
+
+    traj = ph._trajectory_from_phase(_FakeTS(11))  # march records N + 1
+    assert set(traj) == set(Phase._WARM_START_SEED_KEYS) - {"angle_course"}
+    assert all(v.shape == (10,) for v in traj.values())
+    assert traj["s"][0] == pytest.approx(hash("s") % 7)
+
+    assert ph._trajectory_from_phase(_FakeTS(7)) == {}  # truncated march
+

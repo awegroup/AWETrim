@@ -280,11 +280,17 @@ class Phase:
             pattern_config=self.pattern_config,
             pattern_config_opti=pattern_config_opti,
         )
-        # Previous NLP optimum, if any: exact pass-to-pass warm start for
-        # staged solves. opti_phase validates the grid per variable and falls
-        # back to the forward simulation where absent or mismatched.
+        # Stored warm-start trajectory, if any: the previous NLP optimum
+        # (exact pass-to-pass warm start for staged solves) or a forward
+        # simulation the caller flagged with ``run_simulation(...,
+        # seed_warm_start=True)``. opti_phase validates the grid per variable,
+        # skips its own forward march when every seed is covered, and falls
+        # back to the march where absent or mismatched.
         self._phase.warm_start_trajectory = getattr(
             self, "_warm_start_trajectory", None
+        )
+        self._phase.warm_start_is_optimum = (
+            getattr(self, "_warm_start_source", None) == "optimum"
         )
         self._opti, self._opti_vars, self._objective = self._phase.opti_phase(
             start_state=start_state,
@@ -502,9 +508,11 @@ class Phase:
                 turn_radius_min = None
         if optimized_trajectory:
             # Seed the next staged solve from this optimum (see
-            # initialize_phase): exact warm start, and no force-law
-            # re-simulation failure between passes in free_speed winch mode.
+            # initialize_phase): exact warm start, no warm-start forward
+            # march, and no force-law re-simulation failure between passes in
+            # free_speed winch mode.
             self._warm_start_trajectory = optimized_trajectory
+            self._warm_start_source = "optimum"
 
         return SimulationResult(
             solution=solution,
@@ -788,11 +796,24 @@ class Phase:
         elif warm_start_init_point is not None:
             ipopt_options["warm_start_init_point"] = warm_start_init_point
 
-        # SX expansion (expand=True) compiles the MX graph to scalar SX, a large
-        # per-evaluation speedup for the multi-variable ROM aero Jacobian (the
-        # bulk of the wall-time). It is unsupported when the NLP graph contains an
-        # interpolant/external (tabulated wind, custom_spline winch), so fall back
-        # to MX in that case. Toggle via sim_parameters["expand_nlp"].
+        # SX expansion (expand=True) compiles the WHOLE MX graph to scalar SX.
+        # The per-node Functions are SX-expanded once inside opti_phase
+        # (sim_parameters["expand_node_functions"], default on) and, when a
+        # periodic spline's coefficients are optimized, built per knot
+        # interval with LOCAL SUPPORT (each node couples to its 4+4 control
+        # points only). That is what keeps either mode cheap: before it, every
+        # node inlined the M+4-term spline, and the whole-graph expansion grew
+        # to ~24 MB/node (~9 GB and minutes of construction at ~400 nodes --
+        # paging on a 16 GB machine) with a Jacobian 6x DENSER than local
+        # support gives. Measured with local support, full cycle N=376, one
+        # stage pass: expand=True builds in ~15 s, 1.4 GB (~3.7 MB/node),
+        # 0.17 s/iteration; expand=False (MX outer graph calling the SX node
+        # functions) builds in ~20 s, 0.83 GB, 0.32 s/iteration. So True is
+        # the default (fastest per iteration); pick False when memory-bound
+        # (~40% less, flat in the per-node graph). Whole-graph expansion is
+        # unsupported when the graph contains an interpolant/external
+        # (tabulated wind, custom_spline winch): fall back to MX in that
+        # case. Toggle via sim_parameters["expand_nlp"].
         expand_nlp = bool(sim_parameters.get("expand_nlp", True))
 
         # Route simple variable box bounds (steering / depower / s_dot /
@@ -992,6 +1013,45 @@ class Phase:
         except Exception as plot_exc:
             print(f"(failed-iterate plot unavailable: {plot_exc})")
 
+    # Per-node histories a forward simulation must provide to seed the NLP
+    # without its own warm-start march (see PhaseParameterized.opti_phase);
+    # ``t`` feeds the free_speed v_r rate-limit clip, ``angle_course`` the
+    # printed course-angle check.
+    _WARM_START_SEED_KEYS = (
+        "s",
+        "s_dot",
+        "input_steering",
+        "speed_radial",
+        "distance_radial",
+        "tension_tether_ground",
+        "input_depower",
+        "t",
+        "angle_course",
+    )
+
+    def _trajectory_from_phase(self, phase_ts: Any) -> Dict[str, np.ndarray]:
+        """Per-node seed histories from a forward simulation, on the NLP grid.
+
+        Returns length-``n_points`` arrays (the march records the final grid
+        point too; it only feeds the unrecorded last step) or an empty dict
+        when the march was truncated (a failed node) -- a padded seed is
+        worse than letting the NLP re-march and pad itself.
+        """
+        try:
+            n_points = int(self.pattern_config["sim_parameters"]["n_points"])
+        except (KeyError, TypeError, ValueError):
+            return {}
+        trajectory: Dict[str, np.ndarray] = {}
+        for key in self._WARM_START_SEED_KEYS:
+            try:
+                values = np.asarray(phase_ts.return_variable(key), dtype=float).ravel()
+            except Exception:
+                continue
+            if values.size < n_points:
+                return {}
+            trajectory[key] = values[:n_points]
+        return trajectory
+
     def run_simulation(
         self,
         *,
@@ -1000,6 +1060,7 @@ class Phase:
         phase_sim: bool = True,
         start_state: Optional[Dict[str, Any]] = None,
         return_start_state: bool = False,
+        seed_warm_start: bool = False,
     ) -> None:
         """Execute the reel-out simulation.
 
@@ -1015,6 +1076,14 @@ class Phase:
                 simulation ended.
             return_final_state: When True, also return a compact final_state
                 dictionary suitable for warm-starting subsequent runs.
+            seed_warm_start: When True, keep this simulation's per-node
+                trajectory as the warm start of the next ``run_simulation_opti``
+                so the NLP does not re-run the identical forward march (the
+                baseline-then-optimize pattern). Opt-in: the seed is only valid
+                while the config / start state / wind stay as simulated, which
+                the caller knows and this method cannot. Replaces any stored
+                previous optimum. Ignored (with a note) when the march was
+                truncated at a failed node.
         """
 
         # self.system_model.input_depower = self.depower
@@ -1026,6 +1095,16 @@ class Phase:
             phase_sym=phase_sim,
             start_state=start_state,
         )
+        if seed_warm_start:
+            trajectory = self._trajectory_from_phase(phase)
+            if trajectory:
+                self._warm_start_trajectory = trajectory
+                self._warm_start_source = "simulation"
+            else:
+                print(
+                    "seed_warm_start: forward simulation did not cover the full "
+                    "grid; the optimizer will run its own warm-start march."
+                )
 
         if run_plots:
             if axes is not None:

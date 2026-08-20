@@ -70,7 +70,7 @@ RESULTS_DIR = (
 
 # Tunable constant logarithmic wind.
 WIND_CONFIG = {
-    "speed_wind_at_100": 14.0,  # m/s at 100 m
+    "speed_wind_at_100": 6.0,  # m/s at 100 m
     "z0": 0.03,  # roughness length (m)
     "model_type": "logarithmic",
 }
@@ -131,7 +131,7 @@ STAGES = [
         "hard_close": True,
         "trust_region_weight": 0.005,
         "warm_start": True,  # tight-barrier IPOPT start from the main optimum
-        "step_bounds": {"C_phi": 0.4, "C_beta": 0.4, "r0": 100.0},
+        "step_bounds": {"C_phi": 0.15, "C_beta": 0.15, "r0": 100.0},
     },
 ]
 
@@ -481,7 +481,12 @@ def main(run_plots: bool = False, optimize: bool = True) -> int:
 
     print("Simulating the experimental-fit cycle (baseline)...")
     try:
-        baseline_phase, _ = cycle.run_simulation(run_plots=run_plots, phase_sim=True)
+        # seed_warm_start: this march doubles as the NLP's warm start, so
+        # stage 1 does not re-run the identical (~0.35 s/node) simulation;
+        # later passes seed from the previous optimum and skip it as well.
+        baseline_phase, _ = cycle.run_simulation(
+            run_plots=run_plots, phase_sim=True, seed_warm_start=True
+        )
     except RuntimeError as exc:
         # require_full_trajectory: a node of the fitted cycle failed to trim.
         print(f"Baseline forward simulation failed: {exc}")

@@ -349,6 +349,124 @@ def test_warm_start_trajectory_seeds_decisions_over_forward_sim():
     assert not np.allclose(seeded_steering, marker_sdot)
 
 
+@pytest.mark.slow
+def test_complete_warm_start_trajectory_skips_forward_march(monkeypatch):
+    """When the stored trajectory covers every per-node seed, ``opti_phase``
+    does not run the forward march at all (its values were always overridden
+    by the stored ones); a partial one still triggers the march."""
+    import casadi as ca
+
+    from awetrim.timeseries import phase_parametrized as pp
+    from awetrim.timeseries.phase_parametrized import PhaseParameterized
+
+    n_points = 20
+    config = _reelout_config("lissajous", n_points=n_points)
+    system_model = _v3_system_model()
+    start_state = {
+        "t": 0.0,
+        "s": _S_INIT,
+        "s_dot": 3.0,
+        "input_steering": 0.0,
+        "tension_tether_ground": 8.4e4,
+        "speed_radial": 0.0,
+        "distance_radial": config["path_parameters"]["r0"],
+    }
+    r0 = float(config["path_parameters"]["r0"])
+    full = {
+        "s": np.linspace(0.0, 1.0, n_points, endpoint=False),
+        "s_dot": np.full(n_points, 3.0),
+        "input_steering": np.zeros(n_points),
+        "speed_radial": np.full(n_points, 0.5),
+        "distance_radial": np.full(n_points, r0),
+        "tension_tether_ground": np.full(n_points, 8.0e3),
+        "t": np.linspace(0.0, 10.0, n_points),
+        "angle_course": np.zeros(n_points),
+    }
+
+    calls = []
+    real_march = PhaseParameterized.run_simulation_phase
+
+    def counting_march(self, *args, **kwargs):
+        calls.append(1)
+        return real_march(self, *args, **kwargs)
+
+    monkeypatch.setattr(PhaseParameterized, "run_simulation_phase", counting_march)
+
+    # Complete seed (as a previous optimum or a flagged simulation): no march.
+    phase = PhaseParameterized(system_model, quasi_steady=True, pattern_config=config)
+    phase.warm_start_trajectory = dict(full)
+    phase.warm_start_is_optimum = True
+    opti, opti_vars, _ = phase.opti_phase(start_state=start_state, opti_params={})
+    assert calls == []
+    seeded_T = np.asarray(
+        opti.value(opti_vars["tension_tether_ground"], opti.initial())
+    ).ravel()
+    assert np.allclose(seeded_T, 8.0e3)
+
+    # Partial seed: the march runs and fills the missing variables.
+    partial = {k: v for k, v in full.items() if k != "input_steering"}
+    phase2 = PhaseParameterized(system_model, quasi_steady=True, pattern_config=config)
+    phase2.warm_start_trajectory = partial
+    phase2.opti_phase(start_state=start_state, opti_params={})
+    assert calls == [1]
+
+
+# --- slow: local-support node functions == dense ones, but sparse ------------
+
+
+@pytest.mark.slow
+def test_local_support_node_functions_match_dense_and_sparsify_jacobian():
+    """With the spline coefficients optimized, opti_phase builds its per-node
+    SX Functions per knot interval from truncated-support splines. The NLP
+    must be the SAME problem (identical constraint vector at the warm start)
+    with a Jacobian that only couples each node to its 4+4 supporting control
+    points (far fewer nonzeros than the shared dense-``s`` functions)."""
+    import casadi as ca
+
+    from awetrim.timeseries.phase import Phase
+
+    n_points = 24
+    start_state = {
+        "t": 0.0,
+        "s": _S_INIT,
+        "s_dot": 3.0,
+        "input_steering": 0.0,
+        "tension_tether_ground": 8.4e4,
+        "speed_radial": 0.0,
+        "distance_radial": None,
+    }
+
+    def build(expand_nodes):
+        config = _reelout_config("lissajous", n_points=n_points)
+        config["sim_parameters"]["expand_node_functions"] = expand_nodes
+        ss = dict(start_state)
+        ss["distance_radial"] = config["path_parameters"]["r0"]
+        phase = Phase(system_model=_v3_system_model(), pattern_config=config,
+                      start_state=ss)
+        phase.run_simulation(run_plots=False, phase_sim=True, seed_warm_start=True)
+        opti, _, _, _ = phase.get_opti_components(
+            optimization_params=["C_phi", "C_beta"]
+        )
+        g0 = np.asarray(opti.value(opti.g, opti.initial())).ravel()
+        jac = ca.jacobian(opti.g, opti.x)
+        # Structural coupling of the constraint rows to C_phi (the first M
+        # decision columns: C_phi is the first optimization parameter).
+        pattern01 = np.asarray(ca.DM(jac.sparsity(), 1.0).full())
+        M = int(config["path_parameters"]["M"])
+        max_row_coupling = int(pattern01[:, :M].sum(axis=1).max())
+        return g0, jac.nnz(), max_row_coupling, M
+
+    g_dense, nnz_dense, couple_dense, M = build(False)  # shared, symbolic s
+    g_local, nnz_local, couple_local, _ = build(True)  # per-interval, local
+    assert g_dense.shape == g_local.shape
+    assert np.allclose(g_dense, g_local, rtol=1e-7, atol=1e-6 * max(1.0, np.abs(g_dense).max()))
+    assert nnz_local < nnz_dense
+    # a node row sees all M control points with the shared function, but
+    # only the 4 that support its knot interval with local support
+    assert couple_dense == M
+    assert couple_local == 4
+
+
 # --- slow: constraint report exposes the NLP's constrained expressions ------
 
 

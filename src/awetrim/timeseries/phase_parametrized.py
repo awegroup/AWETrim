@@ -17,7 +17,10 @@
 from matplotlib import pyplot as plt
 from awetrim.timeseries.timeseries import TimeSeries
 from awetrim import SystemModel
-from awetrim.kinematics.parametrized_patterns import create_pattern_from_dict
+from awetrim.kinematics.parametrized_patterns import (
+    PeriodicBSpline,
+    create_pattern_from_dict,
+)
 from awetrim.kinematics.Kinematics import ParametrizedKinematics
 import casadi as ca
 import numpy as np
@@ -165,6 +168,27 @@ def _eval_path_kinematic(expr, s_value, state_obj, default=0.0):
         return float(fun(*values))
     except (RuntimeError, TypeError):
         return float(default)
+
+
+
+def _expand_node_function(fun):
+    """SX-expand a per-node CasADi Function used N times in the NLP graph.
+
+    The NLP calls the same trim-residual / AoA / curvature Function once per
+    node. Expanding each Function ONCE (MX -> SX) gives every call SX-fast
+    evaluation and derivatives while the outer graph stays MX -- the solver
+    then never has to SX-expand the whole N-node graph (``expand=True`` in
+    ``Phase.run_opti``), whose construction time and memory grow with N (the
+    inlined copies) and whose Jacobian sparsity pass scales ~N^2. Falls back
+    to the MX Function when the graph holds MX-only nodes (interpolant wind,
+    custom_spline winch, externals).
+    """
+    try:
+        return fun.expand()
+    except Exception as exc:  # MX-only nodes inside: keep the MX Function
+        first = str(exc).strip().splitlines()[0] if str(exc).strip() else exc
+        print(f"[nlp] {fun.name()}: SX expansion unsupported ({first}); keeping MX")
+        return fun
 
 
 class PhaseParameterized(TimeSeries):
@@ -1355,14 +1379,18 @@ class PhaseParameterized(TimeSeries):
         if not opti:
             opti = ca.Opti()
 
-        # Previous NLP optimum, injected by ``Phase.initialize_phase`` between
-        # staged solves. When a variable matches this grid it seeds the NLP
-        # instead of the forward simulation: pass-to-pass warm starts are then
-        # exact, and -- crucially for ``winch_mode: free_speed`` -- the
-        # force-law march is no longer a failure point between passes. The
-        # march always closes v_r with the winch tension curve, so it can fail
-        # to trim a shape that was optimized under free reel speed even though
-        # the NLP is perfectly solvable from the previous optimum.
+        # Stored warm-start trajectory, injected by ``Phase.initialize_phase``:
+        # the previous NLP optimum between staged solves, or a forward
+        # simulation the caller already ran (``Phase.run_simulation(...,
+        # seed_warm_start=True)``). When a variable matches this grid it seeds
+        # the NLP instead of the forward simulation: pass-to-pass warm starts
+        # are then exact, and -- crucially for ``winch_mode: free_speed`` --
+        # the force-law march is no longer a failure point between passes.
+        # The march always closes v_r with the winch tension curve, so it can
+        # fail to trim a shape that was optimized under free reel speed even
+        # though the NLP is perfectly solvable from the previous optimum.
+        # ``warm_start_is_optimum`` tells a previous optimum (used as-is) from
+        # a simulated seed (still rate-limited below in free_speed mode).
         n_grid = int(self.pattern_config["sim_parameters"]["n_points"])
         warm_traj = {
             key: np.asarray(values, dtype=float).ravel()
@@ -1371,26 +1399,56 @@ class PhaseParameterized(TimeSeries):
             ).items()
             if np.asarray(values).size == n_grid
         }
+        warm_is_optimum = bool(getattr(self, "warm_start_is_optimum", False))
 
         def _warm_hist(name):
-            """Warm-start history: previous NLP optimum, else the forward sim."""
+            """Warm-start history: stored trajectory, else the forward sim."""
             if name in warm_traj:
                 return warm_traj[name]
             return np.asarray(self.return_variable(name), dtype=float).ravel()
 
-        try:
-            self.run_simulation_phase(start_state)
-        except RuntimeError as exc:
-            if not warm_traj:
-                raise
-            print(
-                f"Warm-start forward simulation failed mid-cycle ({exc}); "
-                "seeding the NLP from the previous optimum's trajectory instead."
+        # The forward march is only needed for seeds the stored trajectory
+        # does not provide. When it covers every per-node decision the march
+        # would re-derive values that are never used (its result was always
+        # overridden by the stored trajectory) -- at ~0.3-0.4 s/node for a
+        # full cycle, so skip it. Missing/mismatched keys fall back to the
+        # march exactly as before.
+        seed_keys = {
+            "s",
+            "s_dot",
+            "input_steering",
+            "speed_radial",
+            "distance_radial",
+            "tension_tether_ground",
+        }
+        if bool(
+            self.pattern_config.get("sim_parameters", {}).get(
+                "optimize_depower_profile", False
             )
-        chi_hist = self.return_variable("angle_course")
+        ):
+            seed_keys.add("input_depower")
+        if seed_keys <= set(warm_traj):
+            self.states = []
+            print(
+                "Warm start: NLP seeded from the stored "
+                f"{'optimum' if warm_is_optimum else 'forward-simulation'} "
+                f"trajectory ({n_grid} nodes); warm-start forward simulation "
+                "skipped."
+            )
+        else:
+            try:
+                self.run_simulation_phase(start_state)
+            except RuntimeError as exc:
+                if not warm_traj:
+                    raise
+                print(
+                    f"Warm-start forward simulation failed mid-cycle ({exc}); "
+                    "seeding the NLP from the stored trajectory instead."
+                )
+        chi_hist = _warm_hist("angle_course")
         if len(chi_hist):
-            print(f"Initial course angle (chi) from simulation: {chi_hist[0]:.2f} rad")
-            print(f"Final course angle (chi) from simulation: {chi_hist[-1]:.2f} rad")
+            print(f"Initial course angle (chi) from warm start: {chi_hist[0]:.2f} rad")
+            print(f"Final course angle (chi) from warm start: {chi_hist[-1]:.2f} rad")
         self.kite_model.reset_solver()
 
         if start_state_opti:
@@ -1582,15 +1640,17 @@ class PhaseParameterized(TimeSeries):
         if optimize_depower_profile:
             # Seed from the (constant) depower used in the warm-start simulation.
             warm_starts["input_depower"] = _fit_len(_warm_hist("input_depower"), N)
-        if free_speed and "speed_radial" not in warm_traj:
+        if free_speed and ("speed_radial" not in warm_traj or not warm_is_optimum):
             # The force-law seed steps v_r sharply at the force-clamp corners,
             # violating the new winch-acceleration constraints from iteration 0
             # (a needless ~1-2 of initial primal infeasibility). Rate-limit the
             # seed with a forward-backward clip so those rows start feasible.
             # (A previous-optimum seed already satisfies the acceleration rows,
-            # so it is used as-is.)
+            # so it is used as-is; a stored forward-simulation seed is clipped
+            # like a fresh one.) The step times come from the stored
+            # trajectory when it carries ``t``, else from the march.
             vr = np.asarray(warm_starts["speed_radial"], dtype=float).copy()
-            dt = _fit_len(np.diff(self.return_variable("t")), max(N - 1, 1))
+            dt = _fit_len(np.diff(_warm_hist("t")), max(N - 1, 1))
             dt = np.clip(dt, 1e-3, None)
             for i in range(N - 1):
                 vr[i + 1] = min(
@@ -1714,6 +1774,121 @@ class PhaseParameterized(TimeSeries):
                 path_kin.dsigma_ds,
             ],
         )
+        # Per-node Functions: expand each ONCE to SX (see
+        # ``_expand_node_function``) so the N calls below evaluate and
+        # differentiate as compiled scalar code without the solver having to
+        # expand the whole N-node graph. ``sim_parameters
+        # ["expand_node_functions"]`` (default True) turns this off; combine
+        # with ``expand_nlp: false`` for linear-in-N construction time/memory.
+        expand_nodes = bool(sim_params.get("expand_node_functions", True))
+        if expand_nodes:
+            residual = _expand_node_function(residual)
+            aoa_eq = _expand_node_function(aoa_eq)
+            chi_eq = _expand_node_function(chi_eq)
+            curvature_eq = _expand_node_function(curvature_eq)
+
+        # --- Local-support node functions (periodic spline, coefficients
+        # optimized). A shared per-node Function takes ``s`` symbolically, so
+        # its graph references ALL M spline coefficients and its Jacobian is a
+        # dense M-wide block per node (~2x the NLP Jacobian nonzeros, ~10x
+        # the per-iteration derivative work at M~40) -- which is what
+        # whole-graph ``expand=True`` avoids by constant-folding each node's
+        # numeric ``s``. Instead, build the Functions per KNOT INTERVAL from a
+        # truncated-support copy of the spline (``PeriodicBSpline
+        # .local_support(k)``: only the 4 basis terms non-zero on that
+        # interval), lazily and cached: at most M copies of a ~0.1 s build,
+        # independent of n_points, and every node call depends structurally
+        # on exactly its 4+4 supporting control points. Exactness: the
+        # truncation is exact on the closed interval, so picking k by
+        # ``knot_interval(s_i)`` reproduces the full spline at every node and
+        # sub-sample. Only with SX node functions (where the dense block
+        # costs) and a periodic spline whose coefficients are decisions.
+        local_support = (
+            expand_nodes
+            and isinstance(pattern, PeriodicBSpline)
+            and pattern.support_interval is None
+            and any(name in (opti_params or {}) for name in ("C_phi", "C_beta"))
+        )
+        _node_fn_cache = {}
+        # Function INPUT symbols, captured now: the trailing flat_sym (the
+        # scalar depower) is pinned to a number just before the node loop, and
+        # the per-interval Functions are built lazily -- possibly after that.
+        _node_fn_syms = list(flat_syms)
+        _node_in_base = [
+            self.s,
+            self.s_dot,
+            km_copy.input_steering,
+            km_copy.tension_tether_ground,
+            km_copy.speed_radial,
+            km_copy.distance_radial,
+        ]
+
+        def _node_functions(k):
+            """(residual, aoa, curvature, path) SX Functions for knot interval k."""
+            fns = _node_fn_cache.get(k)
+            if fns is None:
+                pat_k = pattern.local_support(k)
+                km_k = self.substitute_parametrized_kinematics(pattern=pat_k)
+                km_k.establish_residual()
+                kin_k = ParametrizedKinematics(pat_k, self)
+                ins = _node_in_base + _node_fn_syms
+                fns = (
+                    _expand_node_function(
+                        ca.Function(f"residual_k{k}", ins, [km_k.residual])
+                    ),
+                    _expand_node_function(
+                        ca.Function(
+                            f"aoa_k{k}", ins, [km_k.expression("angle_of_attack")]
+                        )
+                    ),
+                    _expand_node_function(
+                        ca.Function(
+                            f"path_curvature_k{k}",
+                            ins,
+                            [
+                                kin_k.curvature_geodesic,
+                                kin_k.curvature_numerator,
+                                kin_k.dsigma_ds,
+                            ],
+                        )
+                    ),
+                    _expand_node_function(
+                        ca.Function(
+                            f"path_k{k}",
+                            [self.s] + _node_fn_syms,
+                            [
+                                pat_k.azimuth(km_k.distance_radial, self.s),
+                                pat_k.elevation(km_k.distance_radial, self.s),
+                            ],
+                        )
+                    ),
+                )
+                _node_fn_cache[k] = fns
+            return fns
+
+        def _knot_of(s_value):
+            return int(pattern.knot_interval(float(s_value)))
+
+        def _node_syms(i):
+            """Call-time argument bundle of node i: the profile depower swaps
+            in per node; a fixed scalar depower is its numeric value (the same
+            pin the node loop applies to ``flat_syms`` below)."""
+            syms = list(flat_syms)
+            if optimize_depower_profile:
+                syms[-1] = opti_vars["input_depower"][i]
+            elif "input_depower" not in opti_params:
+                syms[-1] = sim_params["input_depower"]
+            return syms
+
+        # Diagnostic flag (also lets callers pick expand_nlp per problem: with
+        # local support both modes are cheap -- True ~2x faster per iteration,
+        # False ~40% less memory; without it True is the only fast one).
+        self.nlp_local_support = bool(local_support)
+        if local_support:
+            print(
+                "NLP node functions: local-support periodic spline (per knot "
+                f"interval, M={pattern.M}) -- sparse coefficient Jacobian"
+            )
         # Optional minimum physical turn radius R_min [m] of the flown path
         # (``sim_parameters["min_turn_radius"]``; None/0 -> off, the NLP is
         # unchanged), i.e. r / |kappa| >= R_min. Enforced on
@@ -1800,7 +1975,22 @@ class PhaseParameterized(TimeSeries):
             }
 
         # --- Safety / geometry constraint
-        height = pattern.z(opti_vars["distance_radial"], s_grid[:-1])  # N entries
+        if local_support:
+            # Node elevations through the local-support path functions: the
+            # height rows then depend on each node's 4 supporting C_beta
+            # entries only (the dense N x M block of ``pattern.z`` on the
+            # full spline is what every other node row avoids).
+            elevation_nodes = ca.vertcat(
+                *[
+                    _node_functions(_knot_of(s_grid[i]))[3](
+                        s_grid[i], *_node_syms(i)
+                    )[1]
+                    for i in range(N)
+                ]
+            )
+            height = opti_vars["distance_radial"] * ca.sin(elevation_nodes)
+        else:
+            height = pattern.z(opti_vars["distance_radial"], s_grid[:-1])  # N entries
         opti.subject_to(height >= limits["height"][0])
         opti.subject_to(height <= limits["height"][1])
         _report_ineq("height", height, limits["height"], "m")
@@ -1980,6 +2170,13 @@ class PhaseParameterized(TimeSeries):
                     else sim_params["input_depower"]
                 )
 
+            # Local-support mode: this node's (and its sub-samples') functions
+            # come from the knot interval the sample falls in.
+            if local_support:
+                residual_i_fn, aoa_i_fn, _, _ = _node_functions(_knot_of(s_grid[i]))
+            else:
+                residual_i_fn, aoa_i_fn = residual, aoa_eq
+
             # The node tension is the decision variable itself, fed straight
             # into the trim residual below -- the radial force balance is what
             # determines it (same square per-node structure as the forward
@@ -2008,7 +2205,7 @@ class PhaseParameterized(TimeSeries):
                 _rep_tension.append((T_i - T_model) / S["T"])
 
             # Residual equations (scaled)
-            res_i = residual(
+            res_i = residual_i_fn(
                 s_grid[i],
                 opti_vars["s_dot"][i],
                 opti_vars["input_steering"][i],
@@ -2052,7 +2249,7 @@ class PhaseParameterized(TimeSeries):
                 t_eff += dt_i
 
                 # LImit angle of attack
-                aoa_i = aoa_eq(
+                aoa_i = aoa_i_fn(
                     s_grid[i],
                     opti_vars["s_dot"][i],
                     opti_vars["input_steering"][i],
@@ -2074,7 +2271,12 @@ class PhaseParameterized(TimeSeries):
             n_sub = turn_radius_subsamples
             for k in range(n_sub):
                 s_ik = s_grid[i] + (k / n_sub) * (s_grid[i + 1] - s_grid[i])
-                kappa_ik, kappa_num_ik, dsigma_ik = curvature_eq(
+                curvature_ik_fn = (
+                    _node_functions(_knot_of(s_ik))[2]
+                    if local_support
+                    else curvature_eq
+                )
+                kappa_ik, kappa_num_ik, dsigma_ik = curvature_ik_fn(
                     s_ik,
                     opti_vars["s_dot"][i],
                     opti_vars["input_steering"][i],
