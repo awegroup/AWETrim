@@ -2,8 +2,10 @@ import numpy as np
 import pytest
 
 from awetrim.kinematics.parametrized_patterns import (
+    LOBE_HANDOVER_PHASE,
     create_pattern_from_dict,
     full_cycle_angles,
+    full_cycle_n_loops_for_half_figures,
     make_bspline_path_parameters_from_named_curve,
     named_curve_angles,
     reelin_bump,
@@ -201,6 +203,131 @@ def test_full_cycle_angles_pinned_handover_phases_and_descent_bow():
         )
 
 
+def test_full_cycle_angles_lobe_bow_freezes_phase_and_lands_on_lobe():
+    """bow_shape="lobe": the reel-in is one giant lobe. The figure phase
+    freezes through the window (no wiggle: the plateau azimuth is pure bow,
+    monotone), the climb sits on the zero meridian, the whole window stays on
+    the az_reelin_amp side, the descent lands on the lobe extreme and the kite
+    then flies the LOWER half of that lobe, the curve is exactly periodic,
+    never stalls, and the shape needs both handover phases pinned."""
+    s = np.linspace(0.0, 1.0, 4000, endpoint=False)
+    f, rf, c = 0.65, 0.48, 0.0
+    h = 0.5 * (1.0 - f)
+    a, b, beta0 = 0.36, 0.14, 0.35
+    kwargs = dict(n_loops=4, reelout_fraction=f, beta0=beta0, beta_amp0=b,
+                  az_amp0=a, beta_reelin_peak=1.17, az_reelin_amp=-0.43,
+                  ramp_fraction=rf, reelin_center=c, downloops=True,
+                  psi_entry=2.0 * np.pi - 0.3, psi_exit=1.5 * np.pi,
+                  bow_shape="lobe")
+    az, el = full_cycle_angles(s, **kwargs)
+
+    # exactly periodic at the seam (inside the wrapped window)
+    az_seam, el_seam = full_cycle_angles(np.array([0.0, 1.0]), **kwargs)
+    assert np.isclose(az_seam[0], az_seam[1], atol=1e-9)
+    assert np.isclose(el_seam[0], el_seam[1], atol=1e-9)
+
+    d = (s - c + 0.5) % 1.0 - 0.5
+    window = np.abs(d) <= h
+    r_s = rf * (1.0 - f)
+    plateau = np.abs(d) < h - r_s
+    assert plateau.any()
+    # Frozen phase: in the plateau the figure term is exactly zero, so the
+    # azimuth is the bow alone -- monotone toward the -az side, no wiggle.
+    az_pl = az[plateau][np.argsort(d[plateau])]
+    assert np.all(np.diff(az_pl) <= 1e-12)
+    assert np.allclose(el[plateau], kwargs["beta_reelin_peak"])
+    # Whole window on the az_reelin_amp (negative) side; descent reaches
+    # the bow azimuth, and the climb starts on the meridian: where the
+    # elevation lift is half way up the entry ramp the azimuth is already
+    # within a quarter of the figure amplitude of zero.
+    assert az[window].max() < 1e-9
+    assert az[window].min() < -0.4
+    entry_ramp = window & (d < 0) & (np.abs(d) > h - r_s)
+    i_half = entry_ramp & (np.abs(el - 0.5 * (beta0 + kwargs["beta_reelin_peak"])) < 0.02)
+    assert i_half.any() and np.all(np.abs(az[i_half]) < 0.25 * a)
+
+    # Lands on the lobe: the descent heads DOWN onto the left extreme (az
+    # near -az_amp0 at the lobe mid-height) and the figure then continues
+    # through the lower half of the lobe -- right after the window exit the
+    # elevation is below the base elevation and the kite heads toward +az.
+    ds = s[1] - s[0]
+    i_out = int(round(((c + h) % 1.0) / ds))
+    i_after = i_out + int(0.01 / ds)
+    assert el[i_after] < beta0
+    assert az[i_after + 1] > az[i_after]
+    # figure phase at the exit edge = psi_exit + LOBE_HANDOVER_PHASE
+    psi_edge = kwargs["psi_exit"] + LOBE_HANDOVER_PHASE
+    assert np.isclose(az[i_out], a * np.sin(psi_edge), atol=2e-3)
+    assert np.isclose(el[i_out], beta0 + b * np.sin(2 * psi_edge), atol=2e-3)
+
+    # never stalls (the bow carries speed across the flat top)
+    q = np.column_stack(
+        (np.cos(az) * np.cos(el), np.sin(az) * np.cos(el), np.sin(el))
+    )
+    speed = np.linalg.norm(np.roll(q, -1, axis=0) - np.roll(q, 1, axis=0), axis=1)
+    assert speed.min() > 0.1 * speed.mean()
+
+    # needs both handover phases pinned
+    with pytest.raises(ValueError, match="lobe"):
+        full_cycle_angles(s, **{**kwargs, "psi_exit": None})
+
+
+def test_periodic_bspline_local_support_is_exact_on_its_interval_and_sparse():
+    """``PeriodicBSpline.local_support(k)`` keeps only the 4 basis terms of
+    knot interval k: exact (value, d/ds, d2/ds2) wherever
+    ``knot_interval(s) == k`` -- including on the knots, where neighbouring
+    truncations agree -- and structurally dependent on 4 coefficients
+    instead of M (the sparse-Jacobian property the NLP relies on)."""
+    import casadi as ca
+
+    from awetrim.kinematics.parametrized_patterns import PeriodicBSpline
+
+    M = 17
+    rng = np.random.default_rng(3)
+    C_phi = ca.DM(rng.normal(size=M))
+    C_beta = ca.DM(rng.normal(size=M))
+    for downloops in (True, False):
+        full = PeriodicBSpline(M=M, C_phi=C_phi, C_beta=C_beta, s_init=0.0,
+                               s_final=2.0, downloops=downloops)
+        s_sym = ca.MX.sym("s")
+
+        def _derivs(pat):
+            az = pat.azimuth(0.0, s_sym)
+            el = pat.elevation(0.0, s_sym)
+            return ca.Function("f", [s_sym], [
+                az, ca.gradient(az, s_sym), ca.hessian(az, s_sym)[0],
+                el, ca.gradient(el, s_sym), ca.hessian(el, s_sym)[0],
+            ])
+
+        f_full = _derivs(full)
+        knots = np.arange(M + 1) * (2.0 / M)  # s exactly on every knot
+        samples = np.r_[rng.uniform(0.0, 2.0, 120), knots, [0.0, 2.0, 3.7, -0.4]]
+        for s_val in samples:
+            k = full.knot_interval(s_val)
+            assert 0 <= k < M
+            loc = full.local_support(k)
+            assert loc.support_interval == k
+            a = np.asarray(f_full(s_val)).ravel()
+            b = np.asarray(_derivs(loc)(s_val)).ravel()
+            assert np.allclose(a, b, atol=1e-9), (downloops, s_val, k)
+
+    # vectorised knot lookup matches the scalar one
+    ks = full.knot_interval(samples)
+    assert ks.shape == samples.shape
+    assert all(int(ks[i]) == full.knot_interval(samples[i]) for i in range(len(samples)))
+
+    # structural sparsity: 4 coefficients per coordinate, wherever s is
+    Csym = ca.MX.sym("C", M)
+    loc = PeriodicBSpline(M=M, C_phi=Csym, C_beta=Csym, s_init=0.0, s_final=2.0,
+                          support_interval=0)  # wraps: C[M-1], C[0], C[1], C[2]
+    assert ca.jacobian(loc.azimuth(0.0, s_sym), Csym).nnz() == 4
+    dense = PeriodicBSpline(M=M, C_phi=Csym, C_beta=Csym, s_init=0.0, s_final=2.0)
+    assert ca.jacobian(dense.azimuth(0.0, s_sym), Csym).nnz() == M
+    with pytest.raises(ValueError, match="support_interval"):
+        PeriodicBSpline(M=M, C_phi=Csym, C_beta=Csym, s_init=0.0, s_final=2.0,
+                        support_interval=M)
+
+
 def test_create_pattern_from_dict_rejects_unsupported_type():
     """A type with no constructor (e.g. cst_helix, the cycle-config default)
     must raise a clear ValueError listing supported types, not a KeyError."""
@@ -355,3 +482,69 @@ def test_make_open_bspline_path_parameters_are_pattern_ready():
     pattern = create_pattern_from_dict("spline_open", path_parameters)
 
     assert pattern.M == 6
+
+
+def test_full_cycle_n_loops_for_half_figures_is_wysiwyg():
+    """The user-facing loop count is half figure-eights (lobes) VISIBLE during
+    reel-out: the helper inverts the pinned-phase snap (counting azimuth
+    centre crossings in the reel-out confirms it), flips psi_entry by pi for
+    odd counts (mirrored climb peel-off; the descent landing psi_exit is
+    never touched), and the returned non-integer n_loops keeps the curve
+    exactly periodic at the seam."""
+    f = 0.65
+    seed_entry = 2.0 * np.pi - 0.3
+    psi_exit = 1.5 * np.pi
+    shape = dict(reelout_fraction=f, beta0=0.35, beta_amp0=0.14, az_amp0=0.36,
+                 beta_reelin_peak=1.1, az_reelin_amp=-0.36, ramp_fraction=0.45,
+                 reelin_center=0.0, psi_exit=psi_exit, bow_shape="lobe",
+                 downloops=True)
+    s = np.linspace(0.0, 1.0, 6000, endpoint=False)
+    h = 0.5 * (1.0 - f)
+    reelout = (s > h) & (s < 1.0 - h)  # window is centred on the seam
+
+    for n_halves in range(1, 11):
+        n_loops, psi_entry = full_cycle_n_loops_for_half_figures(
+            n_halves, reelout_fraction=f, psi_entry=seed_entry,
+            psi_exit=psi_exit, bow_shape="lobe",
+        )
+        # parity: odd counts mirror the entry handover by pi, even keep it
+        expected = (seed_entry + (np.pi if n_halves % 2 else 0.0)) % (
+            2.0 * np.pi
+        )
+        assert np.isclose(psi_entry, expected)
+
+        az, _ = full_cycle_angles(s, n_loops=n_loops, psi_entry=psi_entry,
+                                  **shape)
+        # each half-figure is bounded by azimuth centre crossings
+        crossings = int(np.count_nonzero(np.diff(np.sign(az[reelout]))))
+        assert abs(crossings - n_halves) <= 1
+
+        az_seam, el_seam = full_cycle_angles(
+            np.array([0.0, 1.0]), n_loops=n_loops, psi_entry=psi_entry,
+            **shape,
+        )
+        assert np.isclose(az_seam[0], az_seam[1], atol=1e-9)
+        assert np.isclose(el_seam[0], el_seam[1], atol=1e-9)
+
+    # monotone: more requested halves never means fewer internal figures
+    fitted = [
+        full_cycle_n_loops_for_half_figures(
+            n, reelout_fraction=f, psi_entry=seed_entry, psi_exit=psi_exit,
+            bow_shape="lobe",
+        )[0]
+        for n in range(1, 11)
+    ]
+    assert np.all(np.diff(fitted) > 0)
+
+
+def test_full_cycle_n_loops_for_half_figures_free_phase_and_validation():
+    # free-phase fallback: integer n_loops (periodicity), psi_entry untouched
+    n_loops, entry = full_cycle_n_loops_for_half_figures(6, reelout_fraction=0.7)
+    assert n_loops == 4 and isinstance(n_loops, int) and entry is None
+    n_loops, entry = full_cycle_n_loops_for_half_figures(
+        1, reelout_fraction=0.7, psi_entry=0.3
+    )
+    assert n_loops == 1 and entry == 0.3
+
+    with pytest.raises(ValueError, match="positive"):
+        full_cycle_n_loops_for_half_figures(0, reelout_fraction=0.7)

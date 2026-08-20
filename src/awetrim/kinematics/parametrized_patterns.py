@@ -270,7 +270,9 @@ def periodic_bspline_basis_matrix(u_grid, M):
     return B
 
 
-def build_periodic_cubic_bspline_function(M, dim=1, name="per_bspline"):
+def build_periodic_cubic_bspline_function(
+    M, dim=1, name="per_bspline", support_interval=None
+):
     """
     Build a CasADi function S = spline(C, u) for a uniform periodic cubic B-spline.
 
@@ -278,6 +280,16 @@ def build_periodic_cubic_bspline_function(M, dim=1, name="per_bspline"):
     - dim: output dimension (1 for scalar, 2 for [phi,beta] etc.)
     - C: (M, dim)
     - u: scalar in [0,1] (you map s -> u outside)
+    - support_interval: None for the full periodic sum (valid for any u); an
+      integer k in [0, M) to keep ONLY the four basis terms that can be
+      non-zero on knot interval ``u*M in [k, k+1]`` (coefficients
+      ``C[(k-1..k+2) mod M]``). The truncated function is exact on that
+      closed interval (the dropped terms are identically zero there, with
+      zero derivatives) and WRONG elsewhere -- its point is structural
+      sparsity: a symbolic-``u`` graph then depends on 4 coefficients
+      instead of all M, so per-node NLP functions built from it keep the
+      sparse Jacobian that whole-graph SX expansion gets from constant
+      folding (see ``PhaseParameterized.opti_phase``).
 
     Returns:
       spline_fun(C, u) -> S (1, dim)
@@ -289,8 +301,17 @@ def build_periodic_cubic_bspline_function(M, dim=1, name="per_bspline"):
 
     S = ca.MX.zeros(1, dim)
 
-    # Sum from i=-2..M+1; wrap coefficient index with python int modulo
-    for i in range(-2, M + 2):
+    if support_interval is None:
+        # Sum from i=-2..M+1; wrap coefficient index with python int modulo
+        terms = range(-2, M + 2)
+    else:
+        k = int(support_interval)
+        if not 0 <= k < M:
+            raise ValueError(f"support_interval must be in [0, {M}), got {k}")
+        # B3(x - i) != 0 only for |x - i| < 2: on x in [k, k+1] that is
+        # i in {k-1, k, k+1, k+2}.
+        terms = range(k - 1, k + 3)
+    for i in terms:
         idx = i % M  # integer, safe for MX indexing
         t = x - i
         w = cubic_cardinal_B3(t)  # scalar
@@ -301,7 +322,17 @@ def build_periodic_cubic_bspline_function(M, dim=1, name="per_bspline"):
 
 class PeriodicBSpline(ParametrizedPatterns):
 
-    def __init__(self, M, C_phi, C_beta, s_init, s_final, r0=None, downloops=True):
+    def __init__(
+        self,
+        M,
+        C_phi,
+        C_beta,
+        s_init,
+        s_final,
+        r0=None,
+        downloops=True,
+        support_interval=None,
+    ):
         super().__init__(
             M=M, C_phi=C_phi, C_beta=C_beta, s_init=s_init, s_final=s_final, r0=r0
         )
@@ -309,13 +340,60 @@ class PeriodicBSpline(ParametrizedPatterns):
         self.s_init = float(s_init)
         self.s_final = float(s_final)
         self.omega = 1.0 if downloops else -1.0
+        # None: full periodic spline. int k: truncated to the four basis terms
+        # of knot interval k -- exact only for s inside that interval, see
+        # ``build_periodic_cubic_bspline_function`` / ``local_support``.
+        self.support_interval = (
+            None if support_interval is None else int(support_interval)
+        )
 
         self.spline = build_periodic_cubic_bspline_function(
-            self.M, dim=1, name=f"periodic_bspline_{self.M}"
+            self.M,
+            dim=1,
+            name=(
+                f"periodic_bspline_{self.M}"
+                if self.support_interval is None
+                else f"periodic_bspline_{self.M}_k{self.support_interval}"
+            ),
+            support_interval=self.support_interval,
         )
 
         self.C_phi = C_phi
         self.C_beta = C_beta
+
+    def local_support(self, k):
+        """Copy of this spline restricted (structurally) to knot interval ``k``.
+
+        Same coefficients and parametrisation; only the four basis terms that
+        are non-zero on ``u*M in [k, k+1]`` are kept, so a symbolic-``s``
+        expression built from it depends on 4 control points per coordinate
+        instead of M. Exact on that interval only -- evaluate it at ``s``
+        with ``knot_interval(s) == k``.
+        """
+        return PeriodicBSpline(
+            M=self.M,
+            C_phi=self.C_phi,
+            C_beta=self.C_beta,
+            s_init=self.s_init,
+            s_final=self.s_final,
+            r0=getattr(self, "r0", None),
+            downloops=self.omega > 0,
+            support_interval=k,
+        )
+
+    def knot_interval(self, s):
+        """Knot interval index k in [0, M) of numeric ``s`` (scalar or array).
+
+        Uses the same ``s -> u`` mapping (direction + wrap into [0, 1)) as
+        the evaluation, so the truncated spline ``local_support(k)`` is exact
+        at ``s`` (including ``s`` exactly on a knot, where both neighbouring
+        truncations agree).
+        """
+        s_arr = np.asarray(s, dtype=float)
+        u = self.omega * (s_arr - self.s_init) / (self.s_final - self.s_init)
+        u = u - np.floor(u)
+        k = np.clip(np.floor(u * self.M).astype(int), 0, self.M - 1)
+        return int(k) if np.ndim(s_arr) == 0 else k
 
     def _u(self, s):
         u = self.omega * (s - self.s_init) / (self.s_final - self.s_init)
@@ -656,6 +734,42 @@ def reelin_bump(s, reelout_fraction=0.7, ramp_fraction=0.25, reelin_center=0.5):
     return _smoothstep(-h, -h + r, d) * (1.0 - _smoothstep(h - r, h, d))
 
 
+# ``bow_shape="lobe"`` handover: the figure still advances this much phase
+# (rad) while the window fades it out / back in -- the freeze happens over the
+# first ``2 * LOBE_HANDOVER_PHASE / (rate * ramp)`` of the ramp, so the
+# peel-off and landing always span the same small fraction of a figure (~1/12)
+# regardless of loop count or ramp width. Smaller = sharper handover bend.
+LOBE_HANDOVER_PHASE = 0.5
+# Fraction of each elevation ramp the "lobe" bow overlaps (1 - this is how far
+# up the climb it stays on the meridian): the bow runs from
+# ``ramp * (1 - overlap)`` to ``1 - ramp * (1 - overlap)`` in window units, so
+# it carries path speed across the flat plateau edges; 0.5 reproduces the
+# mid-ramp start of the "descent" bow, smaller concentrates the crossing (and
+# rounds the plateau corners: more azimuth speed where the elevation stalls).
+LOBE_BOW_OVERLAP = 0.3
+
+
+def _pinned_handover_edges(
+    psi_entry, psi_exit, bow_shape, lobe_handover_phase=LOBE_HANDOVER_PHASE
+):
+    """Reel-in window EDGE phases and their fractional figure ``gap``.
+
+    For ``bow_shape="lobe"`` the knobs are the FROZEN phases and the window
+    edges sit ``lobe_handover_phase`` outside them (the figure keeps advancing
+    that much while it fades out / back in); the other shapes pin the edges
+    directly. ``gap`` is the (entry - exit) phase difference as a fraction of
+    a figure -- the fractional part every achievable reel-out figure count
+    carries.
+    """
+    if bow_shape == "lobe":
+        psi_in_edge = float(psi_entry) - float(lobe_handover_phase)
+        psi_out_edge = float(psi_exit) + float(lobe_handover_phase)
+    else:
+        psi_in_edge, psi_out_edge = float(psi_entry), float(psi_exit)
+    gap = ((psi_in_edge - psi_out_edge) / (2.0 * np.pi)) % 1.0
+    return psi_in_edge, psi_out_edge, gap
+
+
 def full_cycle_angles(
     s,
     n_loops=5,
@@ -672,6 +786,7 @@ def full_cycle_angles(
     psi_exit=None,
     bow_shape="sym",
     downloops=True,
+    lobe_handover_phase=LOBE_HANDOVER_PHASE,
 ):
     """Azimuth/elevation samples for a *synthetic full pumping cycle*.
 
@@ -696,9 +811,14 @@ def full_cycle_angles(
     ----------
     s : array-like
         Path parameter samples in ``[0, 1)``.
-    n_loops : int
+    n_loops : float
         Figure-eights over the whole period (roughly ``reelout_fraction * n_loops``
-        are visible; the rest fall inside the suppressed reel-in window).
+        are visible; the rest fall inside the suppressed reel-in window). With
+        BOTH handover phases pinned this is only the snap target and may be
+        non-integer -- use :func:`full_cycle_n_loops_for_half_figures` to
+        derive it (and the parity-matching ``psi_entry``) from the number of
+        half-figures the reel-out should show. With a free phase it must be an
+        integer for exact periodicity.
     reelout_fraction : float
         Fraction of the period spent reeling out (the rest is reel-in).
     beta0, beta_amp0, az_amp0 : float
@@ -756,14 +876,61 @@ def full_cycle_angles(
         sideways (the elevation plateau carries no path speed, so the
         azimuth must -- a bow that stays zero through the climb would stall
         the parametrization into an unflyable cusp), peaks at mid-exit-ramp
-        and returns for the figure re-entry. The sign of ``az_reelin_amp``
-        picks the side in both shapes.
+        and returns for the figure re-entry. ``"lobe"`` flies the reel-in
+        as ONE giant lobe of the figure, which is what the full-cycle
+        optimiser converges to: the figure PHASE FREEZES as the window
+        fades in (it advances only ``LOBE_HANDOVER_PHASE`` more rad, over
+        the start of the entry ramp, then holds through the window and
+        resumes over the end of the exit ramp), so the figure term dies as a
+        fading constant offset instead of wiggling on -- the climb peels off
+        the last centre crossing and runs STRAIGHT (in azimuth/elevation) to
+        the top of the zero meridian; a one-sided bow starting
+        ``LOBE_BOW_OVERLAP`` of a ramp before the plateau carries the kite
+        across the top; and the bow does NOT return -- the descent comes down
+        on the ``az_reelin_amp`` side and lands tangentially on the figure.
+        For this shape ``psi_entry`` / ``psi_exit`` are the FROZEN phases:
+        ``psi_entry`` is the figure point the climb peels off from (with
+        ``downloops``, ``2*pi - 0.3`` = the climbing crossing a bit before
+        azimuth 0, heading up toward the right lobe) and ``psi_exit`` the
+        figure point the descent lands on (``3*pi/2`` = the left-lobe
+        extreme heading down -- the descent is vertical there when
+        ``|az_reelin_amp| == az_amp0`` -- then the kite flies the lower
+        half of that lobe into the next crossing); choose ``psi_exit`` on the
+        ``az_reelin_amp`` side. The fade begins ``LOBE_HANDOVER_PHASE``
+        before ``psi_entry`` and the figure is fully back that much after
+        ``psi_exit``; the reel-out figure count is set as for the other
+        shapes, from those edge phases. Requires both phases pinned (raises
+        ``ValueError`` otherwise); the residual is hidden in the plateau. The
+        sign of ``az_reelin_amp`` picks the side in all three shapes.
     downloops : bool
         Traversal sense (flips the azimuth direction).
+    lobe_handover_phase : float
+        ``bow_shape="lobe"`` only: the phase budget (rad) the figure still
+        advances while the window fades it out / back in (default
+        ``LOBE_HANDOVER_PHASE``). The freeze spans ``2 * budget / rate`` of
+        the entry ramp, and the figure rate grows with the loop count -- so
+        at HIGH loop counts a fixed budget completes ever earlier in the
+        ramp, where the climb speed is still near zero, and the peel-off
+        bend sharpens (curvature ~ rate). Enlarging the budget stretches the
+        freeze back over the ramp and removes that spike. The visible lobe
+        count between peel-off and landing is budget-INDEPENDENT (the fade
+        flies the budget phase; the window edges sit that much outside the
+        frozen phases), provided the snapped reel-out figure integer is
+        unchanged -- vary the budget by less than pi/2 around the value used
+        to derive ``n_loops``.
     """
     s = np.asarray(s, dtype=float).ravel()
     omega = 1.0 if downloops else -1.0
     f = float(reelout_fraction)
+    if bow_shape not in ("sym", "descent", "lobe"):
+        raise ValueError(
+            f"bow_shape must be 'sym', 'descent' or 'lobe', got {bow_shape!r}"
+        )
+    if bow_shape == "lobe" and (psi_entry is None or psi_exit is None):
+        raise ValueError(
+            "bow_shape='lobe' freezes the figure phase through the reel-in and "
+            "needs BOTH handover phases pinned (psi_entry and psi_exit)"
+        )
 
     c = float(reelin_center)
     ri = reelin_bump(
@@ -794,20 +961,58 @@ def full_cycle_angles(
                 "absorb the phase correction: ramp_fraction must be < 0.5 "
                 f"(got {float(ramp_fraction):g})"
             )
-        gap = ((float(psi_entry) - float(psi_exit)) / (2.0 * np.pi)) % 1.0
+        psi_in_edge, psi_out_edge, gap = _pinned_handover_edges(
+            psi_entry, psi_exit, bow_shape, lobe_handover_phase
+        )
         n_ro = np.floor(n_loops * f - gap + 0.5) + gap
         if n_ro <= 0.0:
             n_ro = gap if gap > 0.0 else 1.0
         rate = 2.0 * np.pi * n_ro / f
         u = (d - h) % 1.0
-        # Residual to make sin(psi) exactly periodic at the u = 0/1 wrap
-        # (total advance = 2*pi * integer), swallowed by a smoothstep strictly
-        # inside the plateau where the figure amplitude is EXACTLY zero -- it
-        # never shows in the path, and the rate matches across the seam.
-        dcorr = 2.0 * np.pi * (np.round(n_ro / f) - n_ro / f)
-        psi = (
-            float(psi_exit) + rate * u + dcorr * _smoothstep(f + r_s, 1.0 - r_s, u)
-        )
+        if bow_shape == "lobe":
+            # Frozen phase: over the first ``rho`` of the entry ramp the
+            # figure rate fades ``rate -> 0`` with a smoothstep (advancing
+            # exactly LOBE_HANDOVER_PHASE, rho < 1), then psi HOLDS at
+            # psi_entry through the rest of the window and resumes over the
+            # last ``rho`` of the exit ramp -- the figure term
+            # ``(1 - ri) * F(psi)`` dies as a fading constant offset instead
+            # of wiggling on while the amplitude fades. Closed-form integrals
+            # of the smoothstep keep this exact for unsorted ``s``. (If the
+            # ramp is too short to hold the budget, rho caps at 1 and the
+            # frozen phase drifts a little from the knob; periodicity is
+            # still exact via dcorr.)
+            rho = min(
+                1.0, 2.0 * float(lobe_handover_phase) / max(rate * r_s, 1e-12)
+            )
+            l_f = rho * r_s
+            t_in = np.clip((u - f) / l_f, 0.0, 1.0)
+            t_out = np.clip((u - (1.0 - l_f)) / l_f, 0.0, 1.0)
+            adv = (
+                np.minimum(u, f)
+                + l_f * (t_in - t_in**3 + 0.5 * t_in**4)
+                + l_f * (t_out**3 - 0.5 * t_out**4)
+            )
+            # Residual (centred in (-pi, pi]) so u = 1 lands EXACTLY on the
+            # exit-edge phase, hidden in the plateau where the amplitude is
+            # exactly zero -- the freeze makes the jump invisible.
+            dcorr = -(((rate * (f + l_f)) + np.pi) % (2.0 * np.pi) - np.pi)
+            psi = (
+                psi_out_edge
+                + rate * adv
+                + dcorr * _smoothstep(f + r_s, 1.0 - r_s, u)
+            )
+        else:
+            # Residual to make sin(psi) exactly periodic at the u = 0/1 wrap
+            # (total advance = 2*pi * integer), swallowed by a smoothstep
+            # strictly inside the plateau where the figure amplitude is
+            # EXACTLY zero -- it never shows in the path, and the rate
+            # matches across the seam.
+            dcorr = 2.0 * np.pi * (np.round(n_ro / f) - n_ro / f)
+            psi = (
+                float(psi_exit)
+                + rate * u
+                + dcorr * _smoothstep(f + r_s, 1.0 - r_s, u)
+            )
     else:
         # One edge pinned: re-anchor the uniform phase so it hits the target
         # at that window edge (the legacy psi0 is replaced, not added).
@@ -832,10 +1037,16 @@ def full_cycle_angles(
             _smoothstep(edge, 1.0 - edge, xi)
             * (1.0 - _smoothstep(1.0 - edge, 1.0, xi))
         )
-    else:
-        raise ValueError(
-            f"bow_shape must be 'sym' or 'descent', got {bow_shape!r}"
-        )
+    else:  # "lobe"
+        # One-sided bow that does NOT return: climb the zero meridian, drift
+        # out over the last LOBE_BOW_OVERLAP of the entry ramp (so it carries
+        # the path speed where the elevation plateau is flat), cross, and
+        # stay out through the descent -- ``ri`` fades the bow and the figure
+        # term (frozen at ``psi_exit``, the lobe extreme on the same side)
+        # takes over, so the descent lands tangentially on the lobe instead
+        # of swinging back to the meridian.
+        edge = min(float(ramp_fraction), 0.5) * (1.0 - LOBE_BOW_OVERLAP)
+        bow = omega * _smoothstep(edge, 1.0 - edge, xi)
     az_bow = ri * az_reelin_amp * bow
 
     azimuth = window * az_amp0 * np.sin(omega * psi) + az_bow
@@ -845,6 +1056,61 @@ def full_cycle_angles(
         + window * beta_amp0 * np.sin(2.0 * psi)
     )
     return azimuth, elevation
+
+
+def full_cycle_n_loops_for_half_figures(
+    n_halves,
+    reelout_fraction=0.7,
+    psi_entry=None,
+    psi_exit=None,
+    bow_shape="sym",
+    lobe_handover_phase=LOBE_HANDOVER_PHASE,
+):
+    """``(n_loops, psi_entry)`` putting ``n_halves`` half-figures in the reel-out.
+
+    The natural user-facing loop count is what you SEE: half figure-eights
+    (lobes) flown during reel-out. ``n_loops`` in :func:`full_cycle_angles` is
+    the continuous full-period figure count instead, and with pinned handover
+    phases the VISIBLE reel-out figure count snaps to ``k + gap`` (integer
+    ``k``; ``gap`` the fractional figure fixed by the entry/exit phases), so
+    typed counts and visible lobes drift apart. This inverts the snap:
+
+    - BOTH phases pinned: returns the (generally non-integer) ``n_loops``
+      whose snapped reel-out count is closest to ``n_halves / 2`` figures.
+      The pinned phases fix the PARITY of reachable half-counts (the descent
+      must land on a given lobe), so when the requested parity does not match,
+      ``psi_entry`` is shifted by pi -- the handover moves to the mirrored
+      figure point (for the designed "lobe" shape: the climb peels off the
+      OTHER, equally valid, climbing centre crossing) which flips the gap by
+      half a figure while leaving the descent landing (``psi_exit`` and the
+      ``az_reelin_amp`` side) untouched. The returned ``psi_entry`` REPLACES
+      the input one.
+    - Any phase free (``None``): exact periodicity needs an integer figure
+      count per period, so the nearest integer to
+      ``n_halves / (2 * reelout_fraction)`` is returned and ``psi_entry``
+      passes through unchanged.
+    """
+    n_halves = int(n_halves)
+    if n_halves < 1:
+        raise ValueError(f"n_halves must be a positive integer, got {n_halves}")
+    f = float(reelout_fraction)
+    if psi_entry is None or psi_exit is None:
+        return max(1, int(round(n_halves / (2.0 * f)))), psi_entry
+    best = None
+    for shift in (0.0, np.pi):
+        candidate_entry = (float(psi_entry) + shift) % (2.0 * np.pi)
+        _, _, gap = _pinned_handover_edges(
+            candidate_entry, psi_exit, bow_shape, lobe_handover_phase
+        )
+        k = max(int(round(n_halves / 2.0 - gap)), 0)
+        n_ro = k + gap
+        if n_ro <= 0.0:  # mirror full_cycle_angles' degenerate fallback
+            n_ro = gap if gap > 0.0 else 1.0
+        err = abs(2.0 * n_ro - n_halves)
+        if best is None or err < best[0]:
+            best = (err, n_ro, candidate_entry)
+    _, n_ro, psi_entry = best
+    return n_ro / f, psi_entry
 
 
 def make_full_cycle_bspline_path_parameters(
@@ -865,6 +1131,7 @@ def make_full_cycle_bspline_path_parameters(
     psi_exit=None,
     bow_shape="sym",
     downloops=True,
+    lobe_handover_phase=LOBE_HANDOVER_PHASE,
     precision=6,
 ):
     """YAML-ready *periodic* path parameters for a synthetic full pumping cycle.
@@ -892,6 +1159,7 @@ def make_full_cycle_bspline_path_parameters(
         psi_exit=psi_exit,
         bow_shape=bow_shape,
         downloops=downloops,
+        lobe_handover_phase=lobe_handover_phase,
     )
     _, C_phi, C_beta = fit_bspline_pattern_to_trajectory(
         spline_type="periodic",

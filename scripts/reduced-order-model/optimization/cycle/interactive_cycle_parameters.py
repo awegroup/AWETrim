@@ -16,7 +16,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-from matplotlib.widgets import Button, CheckButtons, Slider
+from matplotlib.widgets import Button, CheckButtons, RadioButtons, Slider
 
 _here = Path(__file__).resolve()
 _repo_root = next(p for p in _here.parents if (p / "src" / "awetrim").exists())
@@ -59,6 +59,10 @@ SLIDER_SPECS = {
     # psi_entry = figure phase where the reel-in fade begins (0 = climbing
     # centre crossing), psi_exit = phase where the figures resume (pi = the
     # other crossing -> first lobe on the other side). psi0 is inert then.
+    # With the "lobe" bow they are the FROZEN phases instead: psi_entry = the
+    # figure point the climb peels off from (2*pi - 0.3 = a bit before the
+    # centre, heading up), psi_exit = the point the descent lands on (3*pi/2
+    # = left-lobe extreme heading down; pair it with a NEGATIVE az_reelin_amp).
     "psi_entry": (0.00, 2.0 * np.pi, 0.005, float),
     "psi_exit": (0.00, 2.0 * np.pi, 0.005, float),
     "depower_depth": (0.00, 1.00, 0.005, float),
@@ -102,7 +106,7 @@ def _shape_kwargs(values):
         psi0=values["psi0"],
         psi_entry=values["psi_entry"] if pinned else None,
         psi_exit=values["psi_exit"] if pinned else None,
-        bow_shape="descent" if values.get("descent_bow", False) else "sym",
+        bow_shape=values.get("bow_shape", "sym"),
         downloops=True,
     )
 
@@ -145,8 +149,7 @@ def _print_values(values):
         print(f'    "{key}": {values[key]!r},')
     print(f'    "psi_entry": {values["psi_entry"] if pinned else None!r},')
     print(f'    "psi_exit": {values["psi_exit"] if pinned else None!r},')
-    bow = "descent" if values.get("descent_bow", False) else "sym"
-    print(f'    "bow_shape": {bow!r},')
+    print(f'    "bow_shape": {values.get("bow_shape", "sym")!r},')
     print("}")
     print(f"DEPOWER_DEPTH = {values['depower_depth']:.6g}\n")
 
@@ -162,7 +165,7 @@ def main(show_spline=True):
         defaults.get("psi_entry") is not None
         and defaults.get("psi_exit") is not None
     )
-    descent_default = defaults.get("bow_shape", "sym") == "descent"
+    bow_default = defaults.get("bow_shape", "sym")
     if defaults.get("psi_entry") is None:
         defaults["psi_entry"] = 0.0
     if defaults.get("psi_exit") is None:
@@ -230,11 +233,19 @@ def main(show_spline=True):
     reset_button = Button(button_reset_ax, "Reset")
     print_button = Button(button_print_ax, "Print")
 
-    check_ax = fig.add_axes([0.80, 0.19, 0.17, 0.115])
+    check_ax = fig.add_axes([0.80, 0.265, 0.17, 0.07])
     spline_check = CheckButtons(
         check_ax,
-        ["fit B-spline", "pin handover phases", "descent-only bow"],
-        [show_spline, pin_default, descent_default],
+        ["fit B-spline", "pin handover phases"],
+        [show_spline, pin_default],
+    )
+    # Reel-in bow shape (see full_cycle_angles): "lobe" = the optimiser-like
+    # giant lobe (frozen figure phase, climb on the meridian, land on the
+    # lobe extreme); it needs the handover phases pinned.
+    radio_ax = fig.add_axes([0.80, 0.19, 0.17, 0.07])
+    radio_ax.set_title("reel-in bow", fontsize=9, loc="left", pad=2)
+    bow_radio = RadioButtons(
+        radio_ax, ["sym", "descent", "lobe"], active=["sym", "descent", "lobe"].index(bow_default)
     )
 
     status = fig.text(0.80, 0.115, "", fontsize=9, color="tab:red")
@@ -242,13 +253,13 @@ def main(show_spline=True):
     toggles = {
         "fit B-spline": bool(show_spline),
         "pin handover phases": bool(pin_default),
-        "descent-only bow": bool(descent_default),
     }
+    bow_state = {"bow_shape": bow_default}
 
     def redraw(_=None):
         values = _clean_values(sliders)
         values["pin_phases"] = toggles["pin handover phases"]
-        values["descent_bow"] = toggles["descent-only bow"]
+        values["bow_shape"] = bow_state["bow_shape"]
         try:
             phi_target, beta_target = full_cycle_angles(s, **_shape_kwargs(values))
         except ValueError as exc:  # e.g. pinned phases with ramp >= 0.5
@@ -321,11 +332,15 @@ def main(show_spline=True):
     def print_current(_event):
         values = _clean_values(sliders)
         values["pin_phases"] = toggles["pin handover phases"]
-        values["descent_bow"] = toggles["descent-only bow"]
+        values["bow_shape"] = bow_state["bow_shape"]
         _print_values(values)
 
     def toggle_spline(label):
         toggles[label] = not toggles[label]
+        redraw()
+
+    def select_bow(label):
+        bow_state["bow_shape"] = label
         redraw()
 
     for slider in sliders.values():
@@ -333,6 +348,7 @@ def main(show_spline=True):
     reset_button.on_clicked(reset)
     print_button.on_clicked(print_current)
     spline_check.on_clicked(toggle_spline)
+    bow_radio.on_clicked(select_bow)
 
     redraw()
     plt.show()
