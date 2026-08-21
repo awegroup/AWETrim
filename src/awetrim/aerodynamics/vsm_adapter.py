@@ -219,6 +219,17 @@ class VSMAeroModelAdapter:
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
+        # Flat tapes (steering/depower) are stored as an area-equivalent
+        # circle, which says nothing about their drag -- substitute the
+        # drag-equivalent diameters (awetrim.aerodynamics.line_drag).
+        if bridle is not None:
+            from awetrim.aerodynamics.line_drag import (
+                apply_bridle_drag_diameters,
+            )
+
+            with open(bridle, "r", encoding="utf-8") as f:
+                apply_bridle_drag_diameters(body, yaml.safe_load(f))
+
         return body
 
     def _resolve_csv_paths(self, body_config: dict) -> None:

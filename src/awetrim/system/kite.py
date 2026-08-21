@@ -266,6 +266,8 @@ class Kite(Wing):
         area_wing,
         aero_input,
         mass_kcu=0,
+        length_kcu=0.0,
+        diameter_kcu=0.0,
         g=9.81,
         rho=1.225,
         center_aerodynamic_wing=[0, 0, 10],
@@ -278,6 +280,12 @@ class Kite(Wing):
 
         super().__init__(mass_wing, area_wing, aero_input)
         self.mass_kcu = mass_kcu  # Mass of the kite control unit
+        # KCU envelope [m]; only the VSM trims use it, for the bluff-body drag
+        # in awetrim.aerodynamics.kcu_drag. 0.0 = unknown = no KCU drag, which
+        # keeps every Kite built without these (tests, legacy configs, design
+        # tools) exactly as it was.
+        self.length_kcu = float(length_kcu or 0.0)
+        self.diameter_kcu = float(diameter_kcu or 0.0)
         self.steering_control = steering_control
         self.g = g  # Gravitational acceleration
         self.rho = rho  # Air density

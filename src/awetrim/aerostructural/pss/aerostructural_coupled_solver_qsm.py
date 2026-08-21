@@ -893,6 +893,11 @@ def main(
         # structural weight and the internal trim, so callers audit it rather
         # than trust whatever the kite's as_config.yaml said at launch time.
         "is_with_gravity": bool(config["is_with_gravity"]),
+        "is_with_kcu_drag": bool(config.get("is_with_kcu_drag", True)),
+        # Kite-side KCU drag the trim actually applied (0.0 when off).
+        "kcu_drag_coefficient": float(
+            results_aero.get("kcu_drag_coefficient", 0.0) or 0.0
+        ),
         # The internal trim's own moment residuals at opt_x. In deep stall
         # least_squares can park on a residual plateau (|cmx| ~ 5e-2 observed)
         # while still reporting success -- downstream re-solves of the same

@@ -3,6 +3,11 @@
 # starting_from_sim_subdir: depower_p0000mm_steer_p0000mm
 is_with_gravity: !!bool false
 is_with_aero_bridle: !!bool true
+# KCU bluff-body drag in the trim (finite cylinder on the tether axis,
+# awetrim.aerodynamics.kcu_drag; envelope from system.yaml
+# control_system.structure). Set false to reproduce a result from before
+# 2026-08-21, when the trim chain had no KCU drag at all.
+is_with_kcu_drag: !!bool true
 is_with_aero_tether: !!bool true
 is_run_only_1_time_step: !!bool false
 is_with_initial_point_velocity: !!bool false
@@ -76,6 +81,13 @@ quasi_steady_trim:
 aerodynamic_bridle:
   cd_cable: !!float 1.1
   cf_cable: !!float 0.01
+  # How the unknown roll angle of a FLAT TAPE about its own axis is
+  # treated (steering/depower tapes; lines with a "w" column in
+  # struc_geometry.yaml). averaged = uniform-roll mean of the broadside
+  # and edge-on limits; broadside|edge_on = that bracket; round =
+  # pre-2026-08-21 behaviour, the area-equivalent circle.
+  # See awetrim.aerodynamics.line_drag.
+  tape_roll_model: averaged
 
 ## structural pss
 structural_pss:

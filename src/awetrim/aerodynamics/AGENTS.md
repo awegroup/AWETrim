@@ -37,7 +37,59 @@ src/awetrim/aerodynamics/
   vsm_adapter.py
   parametric_geometry.py
   parametric_airfoil.py
+  kcu_drag.py
+  line_drag.py
 ```
+
+`kcu_drag.py` owns a dependency-light (numpy only, **no VSM/CasADi**) bluff-body
+drag model for the **kite control unit**, treated as a finite cylinder hanging on
+the tether. It is the single source of the Applied-Fluid-Dynamics-Handbook
+coefficient tables and of the force law; the two trims and their stability
+linearisations call it rather than restating it. Public API:
+`cd_area_axial_kcu(length_kcu, diameter_kcu)`,
+`cd_area_broadside_kcu(length_kcu, diameter_kcu)`,
+`force_drag_kcu(velocity_apparent, axis_kcu, density_air, cd_area_axial,
+cd_area_broadside)` and `KcuDragModel` (constructors `from_dimensions`,
+`from_system_model`, `from_cd_areas`, `from_trim_result`; methods `force`,
+`drag_coefficient` = the additive CD share, `force_coefficient` = |F|/qS, the
+EKF's normalisation). Every constructor returns `None` when the KCU envelope is
+missing, which is the single "no KCU drag" sentinel the call sites test for. The
+coefficients depend only on the constant fineness ratio L/D, so they collapse to
+two floats per kite and this module needs neither the `xp` namespace pattern nor
+`ca.interpolant`. Read its module docstring before touching the coefficient
+pairing: the reference EKF implementation crosses the axial and crossflow pairs,
+so this model runs ~1.5x its published `kcu_drag_coefficient` by construction.
+
+`line_drag.py` owns the **section** drag of bridle lines: the round-cable
+coefficient the crossflow law has always used, and the flat-tape model added
+2026-08-21 for the steering/depower webbing. It is numpy-free at the physics
+level (plain `math`) and knows nothing about VSM. The problem it solves:
+`struc_geometry.yaml` stores a 12 x 1.5 mm tape as an AREA-equivalent circle
+(`d_eq = sqrt(4wt/pi)` = 4.787307 mm on LEI-V3), which is correct for line mass
+and EA and meaningless for drag -- drag follows the projected WIDTH. Public API:
+`tape_thickness_from_equivalent_diameter`, `cd_width_round`, `cd_width_tape`,
+`drag_diameter_tape`, `bridle_drag_diameters(struc_geometry, roll_model,
+cd_cable)`, `apply_bridle_drag_diameters(body_aero, ...)` (in-place on
+`_bridle_line_system`, returns the number of segments changed),
+`lines_missing_width`, `tape_summary` and `settings_from_config` (the single
+source of the `aerodynamic_bridle.tape_roll_model` / `cd_cable` YAML key names).
+
+Three things to know before touching it:
+
+- The correction reaches the solver as a **drag-equivalent diameter** in the
+  line system's third slot, because `cd_cable` is baked into VSM's line-force
+  call. `d_drag = cd_width / cd_cable`. It must never be written back into a
+  structural table.
+- A tape is declared by an optional `w` column (width [m]) on a `bridle_lines`
+  row -- rows without it keep the round law, so kites whose tape width is
+  unknown (LEI-V9) are unaffected. `lines_missing_width` warns when a row is
+  *named* like a tape but declares no width, which is how legacy deformed
+  snapshots would otherwise regress silently.
+- `roll_model` is a real modelling choice, not a tuning knob: the tape's roll
+  angle about its own axis is not in the geometry and the broadside and edge-on
+  limits differ by **18x**. `averaged` (default) is the uniform-roll mean,
+  2.91x the round-equivalent drag on LEI-V3; `broadside`/`edge_on` are the
+  bracket; `round` reproduces pre-2026-08-21 results.
 
 `parametric_airfoil.py` owns a dependency-light (numpy only, **no VSM/CasADi**)
 parametric **2D airfoil-section** generator — the section-level counterpart to
@@ -462,6 +514,21 @@ name `quasi_steady_state` because AWETrim already has a point-mass
 quasi-steady residual solver in `SystemModel`.
 
 Public functions should use these names:
+
+- `kcu_drag` (optional keyword on `solve_vsm_quasi_steady_trim`,
+  `solve_vsm_qs_trim_with_williams_tether` and
+  `compute_vsm_trim_stability_derivatives`): a `KcuDragModel` or `None`. The
+  **Python default is `None`** (no KCU drag) so every existing caller — design
+  tools, tetherless/glider trims, sweeps — is unchanged; the aerostructural
+  path turns it on via the `is_with_kcu_drag` config key (default true) in
+  `aerodynamic_vsm.run_vsm_package`. The linearisation defaults its model from
+  `trim_result` (`KcuDragModel.from_trim_result`), so it can never disagree
+  with the trim it linearises about — a mismatch there would be absorbed by
+  the tether baseline anchor and survive only as missing velocity damping.
+  Trim results carry `kcu_drag_force_vsm`, `kcu_drag_coefficient`,
+  `kcu_force_coefficient`, `kcu_cd_area_axial_m2`, `kcu_cd_area_broadside_m2`,
+  `kcu_area_reference_m2` and `kcu_axis_model`, always numeric (never `None`,
+  since they reach HDF5 attributes).
 
 - `solve_vsm_quasi_steady_trim` (accepts an optional `applied_moment_nm` for
   external/steering moments, backward-compatible; also an optional

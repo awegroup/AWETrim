@@ -29,6 +29,9 @@ CONFIG_DEFAULTS: dict = {
     "timeder_speed_radial": 0.0,
     "is_with_gravity": False,
     "is_with_aero_bridle": True,
+    # KCU bluff-body drag in the trim (awetrim.aerodynamics.kcu_drag).
+    # Added 2026-08-21; set False to reproduce a pre-2026-08-21 result.
+    "is_with_kcu_drag": True,
     "power_tape_final_extension": 0.0,
     "initial_geometry_rotation_deg": 0.0,
     "initial_geometry_rotation_point": [0.0, 0.0, 0.0],

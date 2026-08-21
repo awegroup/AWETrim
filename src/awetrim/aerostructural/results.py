@@ -38,6 +38,7 @@ SWEEP_CSV_FIELDNAMES: list[str] = [
     "results_dir",
     "is_with_gravity",
     "is_with_aero_bridle",
+    "is_with_kcu_drag",
     "angle_elevation_deg",
     "angle_azimuth_deg",
     "angle_course_deg",
@@ -286,6 +287,11 @@ def build_sweep_csv_row(
         ),
         "is_with_aero_bridle": bool(
             config.get("is_with_aero_bridle", config_defaults["is_with_aero_bridle"])
+        ),
+        "is_with_kcu_drag": bool(
+            config.get(
+                "is_with_kcu_drag", config_defaults.get("is_with_kcu_drag", True)
+            )
         ),
         "angle_elevation_deg": float(
             config.get("angle_elevation_deg", config_defaults["angle_elevation_deg"])

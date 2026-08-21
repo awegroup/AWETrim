@@ -28,6 +28,11 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from awetrim.environment.profile_laws import LOG_BASED_MODELS
+from awetrim.aerodynamics.kcu_drag import (
+    AXIS_MODEL_NONE,
+    AXIS_MODEL_RADIAL,
+    KcuDragModel,
+)
 from awetrim.aerodynamics.protocols import (
     AWETrimSystemModel,
     AxisDefinition,
@@ -194,6 +199,46 @@ def _acceleration_course_body(system_model: AWETrimSystemModel) -> np.ndarray:
     if hasattr(system_model, "acceleration_course_body"):
         return _as_numeric_3vector(system_model, system_model.acceleration_course_body)
     return _as_numeric_3vector(system_model, system_model.acceleration)
+
+
+def _kcu_drag_fields(
+    kcu_drag: "KcuDragModel | None",
+    force_kcu_vsm: np.ndarray,
+    velocity_apparent: np.ndarray,
+    axis_kcu: np.ndarray,
+    area_reference: float,
+) -> dict[str, Any]:
+    """Trim-result fields describing the KCU drag term.
+
+    Always present and always numeric (zeros/0.0/"none" when the term is off):
+    they travel into HDF5 attributes, which cannot hold ``None``. The two drag
+    areas make the model recoverable with ``KcuDragModel.from_trim_result``, so
+    a stability linearisation defaults to exactly the model its trim was solved
+    with.
+    """
+    if kcu_drag is None:
+        return {
+            "kcu_drag_force_vsm": np.zeros(3),
+            "kcu_drag_coefficient": 0.0,
+            "kcu_force_coefficient": 0.0,
+            "kcu_cd_area_axial_m2": 0.0,
+            "kcu_cd_area_broadside_m2": 0.0,
+            "kcu_area_reference_m2": float(area_reference),
+            "kcu_axis_model": AXIS_MODEL_NONE,
+        }
+    return {
+        "kcu_drag_force_vsm": np.asarray(force_kcu_vsm, dtype=float),
+        "kcu_drag_coefficient": kcu_drag.drag_coefficient(
+            velocity_apparent, axis_kcu, area_reference
+        ),
+        "kcu_force_coefficient": kcu_drag.force_coefficient(
+            velocity_apparent, axis_kcu, area_reference
+        ),
+        "kcu_cd_area_axial_m2": float(kcu_drag.cd_area_axial),
+        "kcu_cd_area_broadside_m2": float(kcu_drag.cd_area_broadside),
+        "kcu_area_reference_m2": float(area_reference),
+        "kcu_axis_model": AXIS_MODEL_RADIAL,
+    }
 
 
 def _force_gravity(system_model: AWETrimSystemModel) -> np.ndarray:
@@ -385,6 +430,7 @@ def solve_vsm_quasi_steady_trim(
     gamma_loop: str = "base",
     is_with_artificial_viscosity: bool = False,
     artificial_viscosity_factor: float = 0.035,
+    kcu_drag: "KcuDragModel | None" = None,
 ) -> tuple[dict[str, Any], VsmBodyAerodynamics]:
     """Solve one aerodynamic VSM quasi-steady trim state.
 
@@ -606,7 +652,21 @@ def solve_vsm_quasi_steady_trim(
         q_inf = 0.5 * float(solver.rho) * umag**2
         denom = q_inf * projected_area * max_chord if max_chord > 0.0 else 1.0
 
-        moment_vec = np.cross(cg_arm, inertial_force)
+        # KCU bluff-body drag (awetrim.aerodynamics.kcu_drag), on the KCU's
+        # own apparent wind -- which is the freestream one, because the KCU
+        # hangs at the bridle point and the VSM rotational inflow
+        # omega x (r - reference_point) vanishes there. The axis it is split
+        # about is the tether direction, approximated by the radial axis.
+        force_kcu = (
+            np.zeros(3)
+            if kcu_drag is None
+            else kcu_drag.force(va, axes.radial, float(solver.rho))
+        )
+        # The KCU hangs at the bridle point, i.e. at the geometry origin; the
+        # arm is zero whenever the reference point is that same bridle point
+        # (every shipped configuration), and correct if it ever moves.
+        arm_kcu = -_as_3vector(reference_point)
+        moment_vec = np.cross(cg_arm, inertial_force) + np.cross(arm_kcu, force_kcu)
         if include_gravity:
             moment_vec += np.cross(cg_arm, gravity_force)
         delta_cm = moment_vec / denom
@@ -641,7 +701,7 @@ def solve_vsm_quasi_steady_trim(
             cmy += gyro_cm[1]
             cmz += gyro_cm[2]
 
-        net_force = total_aero_force + inertial_force + gravity_force
+        net_force = total_aero_force + inertial_force + gravity_force + force_kcu
         force_denom = q_inf * projected_area
         cfx = np.dot(net_force, axes.course) / force_denom
         cfy = np.dot(net_force, axes.normal) / force_denom
@@ -660,6 +720,8 @@ def solve_vsm_quasi_steady_trim(
             "res": res,
             "gravity_force": gravity_force,
             "inertial_force": inertial_force,
+            "force_kcu": force_kcu,
+            "projected_area": projected_area,
             "denom": denom,
         }
         return residual
@@ -752,7 +814,12 @@ def solve_vsm_quasi_steady_trim(
         if x_cp_arr.size == 3
         else np.array([float(x_cp_arr), 0.0, 0.0])
     )
-    tether_force = float(total_aero_force[2] + gravity_force[2] + inertial_force[2])
+    force_kcu = _as_3vector(payload.get("force_kcu", np.zeros(3)))
+    # Radial component of the SAME net force cfx/cfy come from, so the KCU
+    # drag belongs in it exactly as gravity and inertia do.
+    tether_force = float(
+        total_aero_force[2] + gravity_force[2] + inertial_force[2] + force_kcu[2]
+    )
 
     result: dict[str, Any] = {
         "opt_x": opt_x,
@@ -786,6 +853,15 @@ def solve_vsm_quasi_steady_trim(
         "tether_force": tether_force,
         "optimizer": opt,
     }
+    result.update(
+        _kcu_drag_fields(
+            kcu_drag,
+            force_kcu,
+            va,
+            axes.radial,
+            float(payload.get("projected_area", 0.0)),
+        )
+    )
     if prescribed_roll_deg is not None:
         result["prescribed_roll_deg"] = float(prescribed_roll_deg)
         result["reaction_roll_moment_nm"] = float(cmx * payload["denom"])
@@ -1163,6 +1239,7 @@ def solve_vsm_qs_trim_with_williams_tether(
     tether_model: str = "williams",
     prescribed_roll_deg: float | None = None,
     gamma_seed: np.ndarray | None = None,
+    kcu_drag: "KcuDragModel | None" = None,
 ) -> tuple[dict[str, Any], VsmBodyAerodynamics]:
     """Coupled VSM trim with a consistent (off-radial) tether force.
 
@@ -1546,10 +1623,22 @@ def solve_vsm_qs_trim_with_williams_tether(
         denom_m = q_inf * projected_area * max_chord
         denom_f = q_inf * projected_area
 
+        # KCU bluff-body drag (awetrim.aerodynamics.kcu_drag): the KCU hangs
+        # at the bridle point, so its apparent wind is the freestream one (the
+        # rotational inflow vanishes at the reference point) and its long axis
+        # is the tether direction, approximated by the radial axis.
+        force_kcu = (
+            np.zeros(3)
+            if kcu_drag is None
+            else kcu_drag.force(va, axes.radial, float(solver.rho))
+        )
+        # Zero arm whenever the reference point IS the bridle point the KCU
+        # hangs from (every shipped configuration); correct if it moves.
+        arm_kcu = -_as_3vector(reference_point)
         moment_vec = np.cross(
             cg_arm,
             inertial_force_wing + inertial_force_kcu + inertial_force_offset,
-        )
+        ) + np.cross(arm_kcu, force_kcu)
         if include_gravity:
             moment_vec += np.cross(cg_arm, gravity_force_total)
         dcm = moment_vec / denom_m
@@ -1579,6 +1668,7 @@ def solve_vsm_qs_trim_with_williams_tether(
             + inertial_force_wing
             + inertial_force_kcu
             + inertial_force_offset
+            + force_kcu
             + (gravity_force_total if include_gravity else 0.0)
         )
         cfx = float(np.dot(net_force, axes.course) / denom_f)
@@ -1616,6 +1706,10 @@ def solve_vsm_qs_trim_with_williams_tether(
             "inertial_force": (
                 inertial_force_wing + inertial_force_kcu + inertial_force_offset
             ),
+            # Kept OUT of gravity_force/inertial_force: the coupled solver
+            # distributes those over the structural nodes, and the KCU force
+            # acts on the (fixed) bridle node instead.
+            "force_kcu": force_kcu,
             "va": va,
             "umag": umag,
             "res": res,
@@ -1845,6 +1939,13 @@ def solve_vsm_qs_trim_with_williams_tether(
         # detection); without them this solver cannot drive a coupled solve.
         "gravity_force": payload["gravity_force"],
         "inertial_force": payload["inertial_force"],
+        **_kcu_drag_fields(
+            kcu_drag,
+            payload.get("force_kcu", np.zeros(3)),
+            payload["va"],
+            axes.radial,
+            projected_area_cache.get("projected_area", 0.0),
+        ),
         "F_distribution": payload["res"].get("F_distribution"),
         "panel_cp_locations": payload["res"].get("panel_cp_locations"),
         "alpha_at_ac": payload["res"].get("alpha_at_ac"),
@@ -2441,6 +2542,7 @@ def compute_vsm_trim_stability_derivatives(
     transport_rate_follows_states: bool = True,
     transformation_c_from_vsm: np.ndarray = DEFAULT_TRANSFORMATION_C_FROM_VSM,
     gamma_seed: np.ndarray | None = None,
+    kcu_drag: "KcuDragModel | None" = None,
 ) -> dict[str, Any]:
     """Compute aerodynamic stability derivatives around a VSM trim state.
 
@@ -2716,6 +2818,12 @@ def compute_vsm_trim_stability_derivatives(
         f_tether = np.array(
             [0.0, 0.0, -float(trim_result["tether_force"])], dtype=float
         )
+    # KCU drag: default to the model the trim itself was solved with, so the
+    # linearisation can never disagree with its own trim. A mismatch would be
+    # swallowed by the baseline anchor below and survive only as missing
+    # velocity damping in the Jacobian.
+    if kcu_drag is None:
+        kcu_drag = KcuDragModel.from_trim_result(trim_result)
     r_arm = reference_point - center_of_gravity
     moment_tether_at_cg = np.cross(r_arm, f_tether)
     distance_radial_trim = (
@@ -3518,9 +3626,7 @@ def compute_vsm_trim_stability_derivatives(
         # the slow (trajectory) subsystem, not this frozen-slow-state block.
         tether_offset = offset_axes_total
         if not tether_lateral_feedback:
-            tether_offset = (
-                float(np.dot(offset_axes_total, axes.radial)) * axes.radial
-            )
+            tether_offset = float(np.dot(offset_axes_total, axes.radial)) * axes.radial
         f_tether_eff = tether_force_for(
             tether_offset, use_position_fallback=position_feedback
         )
@@ -3581,12 +3687,31 @@ def compute_vsm_trim_stability_derivatives(
             delta_roll_deg, delta_pitch_deg, delta_yaw_deg
         )
         f_centripetal = -mass * np.cross(omega_total, np.cross(omega_total, cg_world))
-        force = f_aero + f_tether_eff + gravity_force_stab + f_transport + f_centripetal
+        # KCU drag at the PERTURBED apparent wind: this is what gives the term
+        # its velocity damping in the Jacobian. The axis stays radial under an
+        # attitude perturbation (the KCU hangs on the tether, it does not
+        # rotate with the wing), so it contributes only to the velocity
+        # columns. The frozen tether reaction f_tether_eff already carries the
+        # KCU drag at trim, so force(0) is unchanged.
+        force_kcu = (
+            np.zeros(3)
+            if kcu_drag is None
+            else kcu_drag.force(va_pert, axes.radial, float(solver.rho))
+        )
+        force = (
+            f_aero
+            + f_tether_eff
+            + gravity_force_stab
+            + f_transport
+            + f_centripetal
+            + force_kcu
+        )
         moment_b = (
             moment_aero_at_ref
             + np.cross(cg_world, gravity_force_stab)
             + np.cross(cg_world, f_transport)
             - np.cross(omega_total, inertia_b_world @ omega_total)
+            + np.cross(-_as_3vector(reference_point), force_kcu)
         )
         if with_contributions:
             contributions = {
@@ -3595,6 +3720,7 @@ def compute_vsm_trim_stability_derivatives(
                 "F_gravity": np.asarray(gravity_force_stab, dtype=float),
                 "F_transport": np.asarray(f_transport, dtype=float),
                 "F_centripetal": np.asarray(f_centripetal, dtype=float),
+                "F_kcu": np.asarray(force_kcu, dtype=float),
                 "M_aero_B": np.asarray(moment_aero_at_ref, dtype=float),
                 "M_gravity_B": np.cross(cg_world, gravity_force_stab),
                 "M_transport_B": np.cross(cg_world, f_transport),
@@ -3832,9 +3958,7 @@ def compute_vsm_trim_stability_derivatives(
         tether attachment ``r_B_world``, the CG-rotated LE/TE outlines, and
         the anchor-to-B tether length.
         """
-        delta_v_cg = (
-            np.zeros(3) if delta_v_cg is None else _as_3vector(delta_v_cg)
-        )
+        delta_v_cg = np.zeros(3) if delta_v_cg is None else _as_3vector(delta_v_cg)
         omega_perturb = (
             np.zeros(3) if omega_perturb is None else _as_3vector(omega_perturb)
         )
@@ -3879,13 +4003,9 @@ def compute_vsm_trim_stability_derivatives(
         va_pert = va_trim - delta_v_b
         umag = np.linalg.norm(va_pert)
         aoa_deg = np.rad2deg(np.arctan2(va_pert[2], va_pert[0]))
-        beta_deg = np.rad2deg(
-            np.arctan2(va_pert[1], np.hypot(va_pert[0], va_pert[2]))
-        )
+        beta_deg = np.rad2deg(np.arctan2(va_pert[1], np.hypot(va_pert[0], va_pert[2])))
         omega_mag = np.linalg.norm(omega_total)
-        omega_axis = (
-            omega_total / omega_mag if omega_mag > 1e-12 else axes.radial
-        )
+        omega_axis = omega_total / omega_mag if omega_mag > 1e-12 else axes.radial
         working_body.va_initialize(
             Umag=umag,
             angle_of_attack=aoa_deg,
@@ -3933,9 +4053,7 @@ def compute_vsm_trim_stability_derivatives(
         nonlocal tether_position_solver_degraded
         _degraded_before = tether_position_solver_degraded
         tether_position_solver_degraded = False
-        f_teth = tether_force_for(
-            R_body @ delta_b_world, use_position_fallback=True
-        )
+        f_teth = tether_force_for(R_body @ delta_b_world, use_position_fallback=True)
         if tether_position_solver_degraded:
             tether_model_used = (
                 "straight_fallback"
@@ -3973,8 +4091,19 @@ def compute_vsm_trim_stability_derivatives(
         f_transport_cg = -mass * np.cross(omega_c_world_cg, v_cg_world)
         moment_gyro_cg = -np.cross(omega_total, inertia_cg_att @ omega_total)
 
-        force_net = f_aero + f_teth + gravity_force_stab + f_transport_cg
-        moment_net = moment_aero_cg + moment_teth_cg + moment_gyro_cg
+        # KCU drag acts at the bridle point B, the same station as the tether
+        # reaction, so about the CG it carries the SAME arm as moment_teth_cg
+        # -- unlike the B form, this moment is NOT zero and is what keeps the
+        # CG form identical to the B form.
+        force_kcu = (
+            np.zeros(3)
+            if kcu_drag is None
+            else kcu_drag.force(va_pert, axes.radial, float(solver.rho))
+        )
+        moment_kcu_cg = np.cross(-c_att, force_kcu)
+
+        force_net = f_aero + f_teth + gravity_force_stab + f_transport_cg + force_kcu
+        moment_net = moment_aero_cg + moment_teth_cg + moment_gyro_cg + moment_kcu_cg
         # CG-rotated outline for plotting: B-rotated points + delta_B.
         kite_le = np.array(
             [
@@ -3991,8 +4120,7 @@ def compute_vsm_trim_stability_derivatives(
             ]
         )
         r_anchor = (
-            _as_3vector(reference_point)
-            - float(distance_radial_trim) * axes.radial
+            _as_3vector(reference_point) - float(distance_radial_trim) * axes.radial
             if distance_radial_trim is not None
             else None
         )
@@ -4001,6 +4129,8 @@ def compute_vsm_trim_stability_derivatives(
             "M_aero_cg": moment_aero_cg,
             "F_tether": f_teth,
             "M_tether_cg": moment_teth_cg,
+            "F_kcu": force_kcu,
+            "M_kcu_cg": moment_kcu_cg,
             "F_gravity": np.array(gravity_force_stab, dtype=float),
             "F_transport": f_transport_cg,
             "M_gyro_cg": moment_gyro_cg,

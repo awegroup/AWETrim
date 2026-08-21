@@ -381,6 +381,15 @@ def build_body(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
         # Clean up temporary file
         Path(tmp_path).unlink()
 
+    # Flat steering/depower tapes are stored as an AREA-equivalent circle,
+    # which is right for mass/EA and meaningless for drag -- substitute the
+    # drag-equivalent diameters (awetrim.aerodynamics.line_drag).
+    if config["struc_geometry_path"]:
+        from awetrim.aerodynamics.line_drag import apply_bridle_drag_diameters
+
+        with open(config["struc_geometry_path"], "r", encoding="utf-8") as f:
+            apply_bridle_drag_diameters(body, yaml.safe_load(f))
+
     # Return both body and properties for use in scripts
     properties = {
         "mass": config["mass"],

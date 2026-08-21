@@ -30,6 +30,11 @@ src/awetrim/aerostructural/
   logging_config.py                Package-level logging setup
   aerodynamic_vsm.py               VSM body initialisation and run_vsm_package wrapper (shared)
   aerodynamic_bridle_line_drag.py  Bridle line aerodynamic drag (shared)
+                                   (the KCU's bluff-body drag is NOT here: it
+                                    enters through the TRIM, see below; the
+                                    flat-TAPE section model is not here either:
+                                    it enters as the drag-equivalent diameter
+                                    written into the line system, see below)
 
   # ── PSS-based solver ──────────────────────────────────────────────────────
   pss/
@@ -77,6 +82,15 @@ Fixed-point loop (pss/coupling.PssQsmCoupler.solve  or  pss/aerostructural_coupl
      loop; on actuated shapes the missing asymmetric bridle drag mis-trims
      roll (measured: cmx ~0.075, phi_a off by ~0.8 deg at 0.2 m steering
      tape). qsm driver passes bridle_line_specs; coupling.py not yet wired.
+     The diameters in those specs are DRAG-equivalent, not structural: the
+     steering/depower lines are flat 12 mm webbing that the structural
+     table stores as an area-equivalent circle (right for mass/EA, wrong
+     for drag). aerodynamic_vsm.initialize applies the substitution to the
+     freshly instantiated body and parse_bridle_line_specs repeats it for
+     the rebuilds, both via awetrim.aerodynamics.line_drag -- so the two
+     paths cannot disagree. Selected by as_config
+     aerodynamic_bridle.tape_roll_model (default averaged, 2.91x the old
+     round drag on LEI-V3; round reproduces pre-2026-08-21 results).
   3. aerodynamic_vsm.run_vsm_package() → panel forces + trim state           [common]
   4. mapping.BilinearAeroToStructuralLoadMapper.map_loads(panel_forces) → nodal aero forces  [common]
   5. forces.distribute_total_force_by_particle_mass(inertial+gravity) → nodal inertial forces [common]
@@ -125,7 +139,7 @@ Node positions are updated as `nodes += factor * (solved_nodes - nodes)` where `
 
 - No CasADi symbolics enter this module. All quantities are numeric numpy arrays.
 - VSM solver internals (`VSM.core`) are accessed only through `aerodynamic_vsm.py`; the rest of the module is VSM-agnostic.
-- `aerodynamic_vsm.py` and `aerodynamic_bridle_line_drag.py` live at the root level and are shared by all solvers. `pss/structural_pss.py` holds the PSS dependency. All other common files (`mapping.py`, `convergence.py`, etc.) depend only on numpy and the module's own protocols.
+- `aerodynamic_vsm.py` and `aerodynamic_bridle_line_drag.py` live at the root level and are shared by all solvers. `aerodynamic_vsm.run_vsm_package` also builds the KCU bluff-body drag model (`awetrim.aerodynamics.kcu_drag`, gated by the `is_with_kcu_drag` config key, default true) and hands it to whichever trim it dispatches to. It is deliberately NOT distributed onto structural nodes: the KCU is node 0, a FIXED node, so a force there is absorbed by the constraint and cannot deform anything — the KCU drag reaches the structure only through the trim state the wing is loaded at. `pss/structural_pss.py` holds the PSS dependency. All other common files (`mapping.py`, `convergence.py`, etc.) depend only on numpy and the module's own protocols.
 - `pss/aerostructural_coupled_solver_qsm.py` is a legacy high-level driver retained for production scripts. New protocol-level code should go through `pss/coupling.PssQsmCoupler`.
 - When adding a new structural solver, create a new subfolder (e.g., `fem/`) mirroring the `pss/` layout. Common files at the root level are shared by all solvers.
 

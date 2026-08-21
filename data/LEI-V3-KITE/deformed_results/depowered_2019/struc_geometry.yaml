@@ -3,10 +3,6 @@ bridle_point_node:
 - 0.0
 - 0.0
 pulley_mass: 0.09
-# Deprecated fallback only (single source of truth is system.yaml
-# control_system.structure.mass). Snapshot was taken from a flown-KCU
-# (22.75 kg) deformation run; value corrected to the optimization-regime
-# 8.4 kg to match the sibling system.yaml and powered_2019.
 kcu_mass: 8.4
 dyneema:
   density: 1717
@@ -624,104 +620,125 @@ bridle_lines:
   - d
   - material
   - linktype
+  - w
   data:
   - - a5_equiv
     - 11.928
     - 0.002
     - dyneema
     - pulley
+    - null
   - - A4_equiv
     - 2.91
     - 0.003
     - dyneema
     - noncompressive
+    - null
   - - A3_equiv
     - 3.45
     - 0.003
     - dyneema
     - noncompressive
+    - null
   - - A2_equiv
     - 3.53
     - 0.003
     - dyneema
     - noncompressive
+    - null
   - - A1_equiv
     - 3.708
     - 0.003
     - dyneema
     - noncompressive
+    - null
   - - AII
     - 3.36
     - 0.005
     - dyneema
     - noncompressive
+    - null
   - - AI
     - 3.67
     - 0.005
     - dyneema
     - noncompressive
+    - null
   - - A_main
     - 3.903
     - 0.006
     - dyneema
     - noncompressive
+    - null
   - - br_1
     - 4.407
     - 0.002
     - dyneema
     - noncompressive
+    - null
   - - br_2
     - 4.18
     - 0.002
     - dyneema
     - noncompressive
+    - null
   - - br_3
     - 4.094
     - 0.002
     - dyneema
     - noncompressive
+    - null
   - - br_4
     - 3.55
     - 0.002
     - dyneema
     - noncompressive
+    - null
   - - br_5_equiv
     - 13.818
     - 0.002
     - dyneema
     - pulley
+    - null
   - - Br_I
     - 2.333
     - 0.002
     - dyneema
     - noncompressive
+    - null
   - - Br_II
     - 2.045
     - 0.002
     - dyneema
     - noncompressive
+    - null
   - - Br_main_1
     - 0.61
     - 0.002
     - dyneema
     - noncompressive
+    - null
   - - Br_main_e
     - 0.07
     - 0.004
     - dyneema
     - noncompressive
+    - null
   - - M
     - 4.856
     - 0.004
     - dyneema
     - pulley
+    - null
   - - steering_tape
     - 1.6
     - 0.004787307
     - dyneema
     - noncompressive
+    - 0.012
   - - depower_tape
     - 1.5
     - 0.004787307
     - dyneema
     - noncompressive
+    - 0.012

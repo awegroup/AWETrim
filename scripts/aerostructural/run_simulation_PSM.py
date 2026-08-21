@@ -719,7 +719,9 @@ def solve_deformation(
         bridle_diameter_arr=bridle_diameter_arr,
         # Keep the VSM bridle-line drag tracking the deforming/actuated bridle
         # (the initial static bridle mis-trims roll on steered shapes).
-        bridle_line_specs=aerodynamic_vsm.parse_bridle_line_specs(struc_geometry),
+        bridle_line_specs=aerodynamic_vsm.parse_bridle_line_specs(
+            struc_geometry, config
+        ),
         ### AERO --> STRUC
         aero2struc_mapping=aero2struc_mapping,
         power_tape_index=power_tape_index,

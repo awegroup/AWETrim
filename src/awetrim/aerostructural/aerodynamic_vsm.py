@@ -29,6 +29,12 @@ from VSM.core.BodyAerodynamics import BodyAerodynamics
 from VSM.core.WingGeometry import Wing
 from VSM.core.Solver import Solver
 from VSM.plot_geometry_matplotlib import plot_geometry
+from awetrim.aerodynamics.kcu_drag import KcuDragModel
+from awetrim.aerodynamics.line_drag import (
+    apply_bridle_drag_diameters,
+    bridle_drag_diameters,
+    settings_from_config,
+)
 from awetrim.aerodynamics.vsm_quasi_steady import (
     solve_quasi_steady_state,
     solve_vsm_qs_trim_with_williams_tether,
@@ -229,6 +235,25 @@ def initialize(
         ],
         bridle_path=bridle_path,
     )
+    # The bridle-line drag law reads one diameter per segment, and the
+    # structural table stores flat tapes as an AREA-equivalent circle --
+    # right for mass/EA, meaningless for drag. Swap in the drag-equivalent
+    # diameters before anything solves (awetrim.aerodynamics.line_drag).
+    if bridle_path is not None:
+        import yaml as _yaml
+
+        with open(bridle_path, "r", encoding="utf-8") as f:
+            _struc_geometry = _yaml.safe_load(f)
+        _roll_model, _cd_cable = settings_from_config(config)
+        _n = apply_bridle_drag_diameters(
+            body_aero, _struc_geometry, _roll_model, _cd_cable
+        )
+        if _n:
+            logging.info(
+                "flat-tape drag applied to %d bridle segments (roll model %r)",
+                _n,
+                _roll_model,
+            )
 
     aero_cfg = config["aerodynamic"]
     vsm_solver = Solver(
@@ -283,7 +308,7 @@ def plot_vsm_geometry(body_aero):
     )
 
 
-def parse_bridle_line_specs(struc_geometry: dict) -> list:
+def parse_bridle_line_specs(struc_geometry: dict, config: dict = None) -> list:
     """``(node_i, node_j, diameter)`` rows of the VSM bridle-line system.
 
     Replicates exactly the parse ``BodyAerodynamics.instantiate(bridle_path=...)``
@@ -292,6 +317,11 @@ def parse_bridle_line_specs(struc_geometry: dict) -> list:
     of baked-in coordinates -- so the segments can be rebuilt from the live
     ``struc_nodes`` as the structure deforms. Node ids match the structural
     array (0 = KCU/bridle point).
+
+    The diameter is the DRAG-equivalent one, matching what ``initialize``
+    put in the body: flat tapes carry their projected width, every other
+    line its structural diameter (awetrim.aerodynamics.line_drag). Without
+    ``config`` the module defaults apply.
     """
     if "bridle_connections" not in struc_geometry or "bridle_lines" not in struc_geometry:
         return []
@@ -300,12 +330,12 @@ def parse_bridle_line_specs(struc_geometry: dict) -> list:
         row[0]: dict(zip(headers, row[1:]))
         for row in struc_geometry["bridle_lines"]["data"]
     }
+    diameters = bridle_drag_diameters(struc_geometry, *settings_from_config(config))
     specs = []
     for row in struc_geometry["bridle_connections"]["data"]:
-        diameter = float(lines[row[0]]["d"])
-        specs.append((int(row[1]), int(row[2]), diameter))
+        specs.append((int(row[1]), int(row[2]), diameters[len(specs)]))
         if len(row) == 4:
-            specs.append((int(row[2]), int(row[3]), diameter))
+            specs.append((int(row[2]), int(row[3]), diameters[len(specs)]))
     return specs
 
 
@@ -433,12 +463,23 @@ def run_vsm_package(
     include_tether_in_trim = bool(tether_cfg.get("include_in_trim", False))
     tether_model = str(tether_cfg.get("model", "rigid_lumped")).lower()
 
+    # KCU bluff-body drag: on unless a config switches it off. Reads the
+    # KCU envelope off the system model, so a system.yaml without a
+    # control_system.structure block yields None = no term. ``.get`` (not
+    # ``[]``) because stored snapshot configs predate the key.
+    kcu_drag = (
+        KcuDragModel.from_system_model(system_model)
+        if bool((config or {}).get("is_with_kcu_drag", True))
+        else None
+    )
+
     # Primary path: quasi-steady trim solve.
     try:
         # Preserve the pre-trim body state in case we need direct-solve fallback.
         body_fallback = copy.deepcopy(body_aero)
         if include_tether_in_trim:
             results, body_aero = solve_vsm_qs_trim_with_williams_tether(
+                kcu_drag=kcu_drag,
                 body_aero=body_aero,
                 center_of_gravity=center_of_gravity,
                 reference_point=reference_point,
@@ -459,6 +500,7 @@ def run_vsm_package(
             )
         else:
             results, body_aero = solve_quasi_steady_state(
+                kcu_drag=kcu_drag,
                 body_aero=body_aero,
                 center_of_gravity=center_of_gravity,
                 reference_point=reference_point,

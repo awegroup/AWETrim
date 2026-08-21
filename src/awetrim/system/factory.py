@@ -173,6 +173,11 @@ def _extract_params_awesio(cfg: dict) -> tuple:
     mass_wing = wing_struct.get("mass", 20.0)
     area_wing = wing_struct.get("projected_surface_area", 20.0)
     mass_kcu = cs_struct.get("mass", 0.0)
+    # KCU envelope, used for its bluff-body drag (awetrim.aerodynamics.
+    # kcu_drag). Absent in older/partial system files -> 0.0, which the
+    # drag model reads as 'no KCU drag' rather than failing.
+    length_kcu = float(cs_struct.get("length", 0.0) or 0.0)
+    diameter_kcu = float(cs_struct.get("diameter", 0.0) or 0.0)
     tether_diameter = tether_struct.get("diameter", 0.006)
     tether_density = tether_struct.get("density", 970.0)
     wind_cfg = cfg.get("wind", {})
@@ -183,6 +188,8 @@ def _extract_params_awesio(cfg: dict) -> tuple:
         mass_wing,
         area_wing,
         mass_kcu,
+        length_kcu,
+        diameter_kcu,
         tether_diameter,
         tether_density,
         wind_cfg,
@@ -233,11 +240,14 @@ def _extract_params_legacy(cfg: dict) -> tuple:
     tether_diameter = tether_cfg.get("diameter", 0.006)
     tether_density = tether_cfg.get("density", 970.0)
 
+    # The legacy format carries no KCU envelope -> no KCU drag.
     return (
         mass_wing,
         area_wing,
         aero_cfg,
         mass_kcu,
+        0.0,
+        0.0,
         tether_diameter,
         tether_density,
         wind_cfg,
@@ -275,6 +285,8 @@ def create_system_model_from_yaml(
             mass_wing,
             area_wing,
             mass_kcu,
+            length_kcu,
+            diameter_kcu,
             tether_diameter,
             tether_density,
             wind_cfg,
@@ -286,6 +298,8 @@ def create_system_model_from_yaml(
             area_wing,
             aero_cfg,
             mass_kcu,
+            length_kcu,
+            diameter_kcu,
             tether_diameter,
             tether_density,
             wind_cfg,
@@ -296,6 +310,9 @@ def create_system_model_from_yaml(
     print(
         f"Creating SystemModel with mass_wing={mass_wing}, area_wing={area_wing}, mass_kcu={mass_kcu}, tether_diameter={tether_diameter}, tether_density={tether_density}"
     )
+    # 0.0 here means the system file carries no KCU envelope, so the trims
+    # will run without KCU drag -- worth seeing in a run log.
+    print(f"  KCU envelope: length={length_kcu} m, diameter={diameter_kcu} m")
     if "components" in cfg:
         aero_cfg = load_aero_input(
             cfg, config_path=config_path, aero_yaml_path=aero_yaml_path
@@ -311,6 +328,8 @@ def create_system_model_from_yaml(
     kite = Kite(
         mass_wing=mass_wing,
         mass_kcu=mass_kcu,
+        length_kcu=length_kcu,
+        diameter_kcu=diameter_kcu,
         area_wing=area_wing,
         aero_input=aero_cfg,
         steering_control=steering_control,
