@@ -60,9 +60,11 @@ SLIDER_SPECS = {
     # centre crossing), psi_exit = phase where the figures resume (pi = the
     # other crossing -> first lobe on the other side). psi0 is inert then.
     # With the "lobe" bow they are the FROZEN phases instead: psi_entry = the
-    # figure point the climb peels off from (2*pi - 0.3 = a bit before the
-    # centre, heading up), psi_exit = the point the descent lands on (3*pi/2
-    # = left-lobe extreme heading down; pair it with a NEGATIVE az_reelin_amp).
+    # figure point the climb peels off from (pi - 0.3 = a bit before the
+    # centre heading up-left -> opposite-side re-entry; 2*pi - 0.3 = the
+    # mirrored, same-side variant), psi_exit = the point the descent lands on
+    # (3*pi/2 = left-lobe extreme heading down; pair it with a NEGATIVE
+    # az_reelin_amp).
     "psi_entry": (0.00, 2.0 * np.pi, 0.005, float),
     "psi_exit": (0.00, 2.0 * np.pi, 0.005, float),
     "depower_depth": (0.00, 1.00, 0.005, float),

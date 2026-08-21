@@ -4,7 +4,16 @@ Produces everything ``run_full_cycle_opti.py`` needs to optimize a whole
 pumping cycle as ONE periodic ``spline_periodic`` phase:
 
   * a **periodic** cubic B-spline ``(azimuth, elevation)`` path — one period ==
-    one full pumping cycle (reel-out figure-eights + a reel-in arc);
+    one full pumping cycle (reel-out figure-eights + a reel-in arc). By default
+    the reel-in is flown as ONE giant lobe of the figure, the shape the
+    full-cycle optimiser converges to (``bow_shape="lobe"`` in
+    ``full_cycle_angles``): the kite peels off a climbing centre crossing a
+    bit before azimuth 0, climbs straight up the middle of the wind window,
+    crosses the top and comes down on the OTHER side -- re-entering the
+    figures on the opposite side from where it went out -- to land
+    tangentially on the lobe extreme, flying the lower half of that lobe back
+    into the figures -- no figure wiggle during the handover (the figure
+    phase is frozen through the reel-in);
   * a synthetic depower profile aligned with the reel-in window; and
   * a linear winch law with a **depower-dependent offset** ``offset(l_dp) =
     offset0 + gain * (l_dp - l_dp_ref)`` so the *same* force law reels out when
@@ -22,12 +31,15 @@ The result is written to
 ``data/LEI-V3-KITE/cycle_configs/full_cycle_periodic_from_exp.yaml`` and
 checked with the same validator ``run_full_cycle_opti.py`` applies on load.
 
-Every generation starts with a purely geometric curvature pre-tune: the max
-sampled path curvature must stay under ``CURVATURE_LIMIT_1PM`` (0.08 1/m), and
-the sharpness of the reel-out/reel-in handover scales with the loop count, so
-changing ``--loops`` re-fits the reel-in knobs (``psi0``, ``az_reelin_amp``,
-``beta_reelin_peak``, ``ramp_fraction``) automatically -- no forward sims, a
-few seconds. See ``tune_reelin_for_curvature``.
+The max sampled path curvature must stay under ``CURVATURE_LIMIT_1PM``
+(0.08 1/m). The parametric reel-in is only a SKETCH: when its fitted spline
+violates the limit, the reel-in is DESIGNED between the frozen exit/entry
+handover states (``design_reelin_spline``) -- the window control points
+solve a spline-in-tension NLP that hits ``beta_reelin_peak`` as a target
+with curvature bounded as a hard constraint; the figures, the handover
+states and every knob you set stay exactly as configured. A residual
+fairing pass (``fair_periodic_spline_to_curvature_limit``) then catches
+anything outside the designed window. Purely geometric, no forward sims.
 
 Resolution is derived, not hand-set: ``M`` keeps >= 10 control points per
 figure-eight AND >= 15 across the reel-in window (measured convergence knees,
@@ -37,24 +49,48 @@ nodes per second of the MEASURED cycle duration -- the ``CYCLE_DURATION_S``
 prior can be over 2x off at other winds/shapes.
 
 Usage:
-    python .../fit_periodic_cycle_config.py [--auto] [--loops N] [--check]
-                                            [--close] [--plot]
+    python .../fit_periodic_cycle_config.py [--auto] [--loops N]
+                                            [--reelin smooth|cross]
+                                            [--cross-at P]
+                                            [--reentry opposite|same]
+                                            [--check] [--close] [--plot]
                                             [--curvature-limit K]
 
     --auto   auto-tune the shape/depower knobs (one forward sim per
              iteration) until the seed is trim-feasible and radially closed
              at the wind in run_full_cycle_opti's WIND_CONFIG -- use this to
              generate a seed for ANY wind speed / loop count hands-free
-    --loops  override the number of figure-eights per cycle (the curvature
-             pre-tune adapts the reel-in knobs to the new count)
+    --loops  number of half figure-eights (lobes) VISIBLE during reel-out
+             -- what you count on the sphere, honoured EXACTLY; the internal
+             full-period n_loops and the parity-matching psi_entry are
+             derived from it (full_cycle_n_loops_for_half_figures), and the
+             spline fairing absorbs the sharper handover of a new count
+    --reelin  how the reel-in gets from the peel-off to the tangential
+             landing. The sides are NOT a choice: the landing is always
+             tangential at a lobe extreme going down, so --loops parity
+             ties the exit side to the entry side (odd = opposite, even =
+             same), and flipping both would only mirror the whole cycle.
+             "smooth" (default): top loop on the exit side -- one clean
+             arc, no crossing. "cross": up the middle, out to the OPPOSITE
+             side near the top, descend parked on that side, then cross
+             az = 0 low to reach the exit azimuth
+    --cross-at  "cross" only: fraction of the exit ramp where the az = 0
+             crossing sits (0 = right after the top, 1 = at figure height;
+             default 0.7)
+    --reentry  requested exit side RELATIVE to the entry lobe ("opposite"
+             or "same"). Tangential exits tie this to the --loops parity
+             (odd = opposite, even = same), so the flag only validates and
+             errors on a mismatch
     --check  forward-simulate the generated config and print a feasibility
              report (steering/AoA vs NLP bounds, radial closure, trim health);
              also recalibrates n_points to the measured cycle duration
     --close  only fit the reel-in depower depth (secant on forward sims)
              until the simulated cycle closes radially
-    --plot   overview plots of the simulated initial guess + the spline path
+    --plot   show the seed-path figure (wind-window view + az/el/depower vs
+             s; it is ALWAYS saved as a PNG next to the optimizer results, see
+             SEED_PLOT_PATH) and the overview plots of the simulated guess
     --curvature-limit  max path curvature in 1/m (default 0.08; 0 disables
-             both the pre-tune and the write-time guard)
+             both the spline fairing and the write-time guard)
     --reelin-center  centre of the reel-in window in s; any value, mod 1
              (the window wraps the periodic seam). 0.5 (default) keeps s=0
              in steady reel-out; (1-f)/2 starts the reel-in at s=0,
@@ -64,7 +100,6 @@ Usage:
 
 import argparse
 import copy
-import itertools
 import sys
 from pathlib import Path
 
@@ -93,8 +128,13 @@ from awetrim.identification.controls import (  # noqa: E402
     flight_dataframe_depower_to_power_tape_length,
 )
 from awetrim.kinematics.parametrized_patterns import (  # noqa: E402
+    LOBE_HANDOVER_PHASE,
+    design_reelin_spline,
+    fair_periodic_spline_to_curvature_limit,
     fit_bspline_pattern_to_trajectory,
     full_cycle_angles,
+    full_cycle_n_loops_for_half_figures,
+    full_cycle_visible_half_figures,
     make_full_cycle_bspline_path_parameters,
 )
 from awetrim.utils.config_paths import LEI_V3_CYCLE_CONFIG_DIR  # noqa: E402
@@ -122,7 +162,7 @@ CYCLE_ID = 62  # a representative good cycle in the 2019-10-08 flight
 M_PER_SECOND = 0.2
 NPOINTS_PER_SECOND = 3.0
 M_MAX = 90
-N_POINTS_MAX = 600
+N_POINTS_MAX = 2000
 
 # Shape source for the periodic path spline:
 #   "experimental" -- fit the spline to the flown (azimuth, elevation) of CYCLE_ID
@@ -139,7 +179,13 @@ ARTIFICIAL = {
     # reel-in-window floor) -- see _resolve_artificial_M. A fixed M
     # under-resolves high loop counts and the underfit RINGS (spline
     # curvature far above the raw curve's).
-    "n_loops": 4,  # figure-eights during reel-out (2 loops dwell too long at
+    "n_loops": 4,  # INTERNAL count: continuous figure-eights over the WHOLE
+    # period (~reelout_fraction * n_loops visible; the pinned handover phases
+    # snap the visible count -- 4 here shows 2.5 figures = 5 half-eights
+    # during reel-out, the opposite-side handover parity). The --loops CLI
+    # knob is the WYSIWYG unit (visible reel-out HALF-figures) and overrides
+    # this via full_cycle_n_loops_for_half_figures,
+    # which may leave a non-integer value here. (2 loops dwell too long at
     # the azimuth extremes -> steering blows up; 4 loops turn too fast)
     "reelout_fraction": 0.65,  # fraction of the period spent reeling out
     # (lower closes the cycle better but deepens the reel-in-edge steering)
@@ -150,11 +196,26 @@ ARTIFICIAL = {
     # a.36/b.14 is the sweet spot (larger starts spiking at the window edges).
     "beta_amp0": 0.14,  # figure-eight elevation amplitude (rad)
     "az_amp0": 0.36,  # figure-eight azimuth amplitude (rad)
-    "beta_reelin_peak": 1.5,  # reel-in peak elevation (rad ~ 49 deg; higher
-    # starves the kite of apparent wind at the top -> AoA blows past its limit)
-    "az_reelin_amp": 0.5,  # reel-in azimuth bow (rad) -- turns the up/down
-    # retrace into a wide smooth loop; too SMALL a bow = tight low-speed turn
-    "ramp_fraction": 0.45,  # reel-in window edge width (0.5 = one smooth hump,
+    "beta_reelin_peak": 1.4,  # reel-in peak elevation (rad). What you set is
+    # what the raw curve does -- if the top U-turn is then too sharp for the
+    # curvature limit, the SPLINE is locally faired around it (the knob
+    # itself is never lowered). Too high starves the kite of apparent wind
+    # at the top -> AoA blows past its limit
+    "az_reelin_amp": -0.36,  # reel-in bow (rad). With bow_shape "lobe" this
+    # is the azimuth the descent comes down on -- ALWAYS the psi_exit lobe's
+    # side (negative = left), so the reel-in exits tangentially at a side of
+    # the figure going down; main() normalizes the sign. |.| = az_amp0 lands
+    # it vertically on the lobe extreme.
+    "az_reelin_through": 0.36,  # azimuth (rad) the --reelin "cross" shape
+    # descends along: up the middle, out to this side near the top, DOWN
+    # parked on this azimuth, then cross az = 0 low (reelin_cross_pos) to
+    # the az_reelin_amp side. Sign = side; 0 = "smooth" (top loop directly
+    # on the landing side, nothing crosses). main() resolves the sign
+    # (opposite the exit) or zeroes it; the magnitude is this knob.
+    "reelin_cross_pos": 0.7,  # "cross" only: where on the descent the az = 0
+    # crossing sits, as a fraction of the exit ramp (0 = right after the
+    # top, 1 = at figure height). CLI: --cross-at.
+    "ramp_fraction": 0.49,  # reel-in window edge width (0.5 = one smooth hump,
     # but then full depower is never held and the cycle under-reels)
     "reelin_center": 0.0,  # reel-in window centre in s (any value, mod 1: the
     # window wraps across the periodic seam). 0.5 keeps s = 0 (the periodic
@@ -163,23 +224,48 @@ ARTIFICIAL = {
     # 1 - h ends it there so s = 0 is the reel-out start, and 0 puts s = 0 at
     # the reel-in top. Moving the seam off mid-reel-out -> harder trim start.
     "psi0": 0.0,  # figure-phase offset (rad): sets WHERE in a figure-eight the
-    # reel-in window fades the oscillation. The phase at the window edges is
-    # what makes the handover sharp or smooth, and it scales with n_loops --
-    # this is the knob the curvature tuner leans on when --loops changes.
+    # reel-in window fades the oscillation (the phase at the window edges is
+    # what makes the handover sharp or smooth, and it scales with n_loops).
     # IGNORED while psi_entry/psi_exit below are pinned.
-    # Designed handover (see full_cycle_angles): pin the figure phase at the
-    # reel-in window edges instead of letting psi0/the tuner choose it.
-    # psi_entry=0 exits the figure at the CLIMBING centre crossing (azimuth 0,
-    # heading up toward zenith); psi_exit=pi resumes at the other crossing, so
-    # the first lobe after the reel-in is on the OTHER side (this implies a
-    # half-integer figure count across the reel-out). bow_shape="descent"
-    # keeps the climb on the zero meridian and bows out only on the way down
-    # (the sign of az_reelin_amp picks the side; the curvature tuner then only
-    # tunes the arc-shape knobs, psi0 being inert). Set BOTH phases to None to
-    # fall back to the legacy free-psi0 behaviour.
-    "psi_entry": float(0),
-    "psi_exit": float(2 * np.pi),
-    # "bow_shape": "descent",
+    # Designed handover (see full_cycle_angles, bow_shape="lobe"): the reel-in
+    # is ONE giant lobe, the shape the full-cycle optimiser converges to, and
+    # it re-enters the figures on the OPPOSITE side from where it went out.
+    # The kite peels off the climbing centre crossing coming OUT of the right
+    # lobe, a bit before azimuth 0 heading up-left (psi_entry = pi - 0.3 --
+    # for "lobe" the phases are the FROZEN figure phases, held through the
+    # whole reel-in so nothing wiggles on the way up), climbs to the top of
+    # the zero meridian, crosses and comes down on the az_reelin_amp side to
+    # land tangentially on the LEFT-lobe extreme heading down (psi_exit =
+    # 3*pi/2), then flies the lower half of that lobe into the next crossing.
+    # The reel-in thus replaces the top half of the left lobe itself (the
+    # phase freezes at pi - 0.3 and resumes at 3*pi/2 of the SAME lobe), so
+    # the giant lobe slots into the figure alternation instead of doubling a
+    # side. The reel-in ALWAYS exits tangentially at a side of the figure
+    # going down, so parity ties the exit side to the visible half-lobe
+    # count (odd = opposite the peel-off lobe, even = same -- an even
+    # --loops mirrors psi_entry back to 2*pi - 0.3), and flipping the
+    # absolute orientation would only mirror the whole cycle (fixed
+    # convention: exit left). The ONE real choice per count is --reelin:
+    # "smooth" puts the top loop on the exit side (plain lobe,
+    # az_reelin_through = 0, no crossing); "cross" puts it on the opposite
+    # side, and the descent crosses the ascending leg at lower elevation on
+    # its way to the exit azimuth. --reentry validates the requested
+    # relative side against the parity.
+    # Legacy shapes: bow_shape "sym" / "descent" read psi_entry/psi_exit as
+    # the window EDGE phases (0 = climbing crossing heading up; 2*pi / pi =
+    # same- / other-side re-entry); set BOTH phases to None for free psi0.
+    "psi_entry": float(np.pi - 0.3),
+    "psi_exit": float(1.5 * np.pi),
+    "bow_shape": "lobe",
+    # Phase budget (rad) the figure advances while the reel-in window fades it
+    # out / back in. The freeze spans 2*budget/rate of the entry ramp and the
+    # figure RATE grows with the loop count, so a fixed budget completes ever
+    # earlier in the ramp (where the climb speed is ~0) and the peel-off bend
+    # sharpens ~ linearly with n_loops (bigger budget = freeze stretched back
+    # over the ramp; the visible lobe count is budget-independent -- the
+    # spline fairing rounds whatever bend remains). Seed at the module
+    # default.
+    "lobe_handover_phase": float(LOBE_HANDOVER_PHASE),
 }
 
 # Data-derived constants used when SHAPE_SOURCE == "artificial", so the
@@ -211,7 +297,7 @@ DEPOWER_DEPTH = 1.0
 # warm start (m). ~8 m on r0 ~ 237 m is 0.03 scaled infeasibility on the NLP's
 # closure row -- trivially absorbed by stage 0. Chasing the last metres via
 # reelout_fraction destabilizes the steering at the window edges, so don't.
-CLOSURE_TOL_M = 8.0
+CLOSURE_TOL_M = 10
 
 # NLP winch mode emitted into the config:
 #   "force_law"  -- the optimizer keeps the regressed tension curve as a hard
@@ -239,45 +325,27 @@ OPTI_LIMITS_OVERRIDE = {
 
 # Output config (loaded verbatim by run_full_cycle_opti.py).
 OUTPUT_PATH = LEI_V3_CYCLE_CONFIG_DIR / "full_cycle_periodic_from_exp.yaml"
+# Seed-path figure (wind-window view + az/el/depower vs s), written on every
+# successful generation next to the optimizer's own outputs (results/ is
+# git-ignored; the YAML above is tracked). See plot_seed_path.
+SEED_PLOT_PATH = (
+    Path("results") / "LEI-V3-KITE" / "optimization" / "full_cycle" / "seed_path.png"
+)
 
 # Geometric creation-time guard (1/m): refuse to write a path sharper than
-# this sampled max curvature. Before building, the reel-in knobs are auto-tuned
-# (see tune_reelin_for_curvature) so the limit holds for ANY --loops value --
-# the sharpest point of the synthetic cycle is the reel-out/reel-in handover,
-# and how sharp it is depends strongly on n_loops. Override with
-# --curvature-limit; 0 disables both the tuning and the guard.
+# this sampled max curvature. Every build enforces it ON THE FITTED SPLINE
+# (fair_periodic_spline_to_curvature_limit: control points around a violation
+# move minimally, the parametric knobs are never touched), so the limit holds
+# for ANY --loops value -- the sharpest point of the synthetic cycle is the
+# reel-out/reel-in handover, and how sharp it is depends strongly on n_loops.
+# Override with --curvature-limit; 0 disables both the fairing and the guard.
 CURVATURE_LIMIT_1PM = 0.08
 CURVATURE_SAMPLES = 1000
 
-# Magnitude bounds for the reel-in azimuth bow, SHARED by the geometric
-# curvature tuner (CURVATURE_TUNE_BOUNDS below) and the --auto trim lever
-# (``bow_up`` in ``_auto_action``) so the two never disagree on how wide a bow
-# is allowed: the tuner may set anything up to the cap and --auto's bow_up can
-# still widen to the same magnitude. The seed bow (|az_reelin_amp| = 0.5) sits
-# inside it; only the magnitude is bounded (the seed's sign/direction is kept).
+# Magnitude bounds for the reel-in azimuth bow, used by the --auto trim lever
+# (``bow_up`` in ``_auto_action``). The seed bow sits inside it; only the
+# magnitude is bounded (the seed's sign/direction is kept).
 AZ_REELIN_AMP_MAG_BOUNDS = (0.15, 0.80)
-
-# Knob bounds for the curvature tuner (tune_reelin_for_curvature). psi0 spans
-# one full figure period; az_reelin_amp is searched in magnitude within the
-# shared AZ_REELIN_AMP_MAG_BOUNDS (the seed's bow direction is preserved);
-# beta_reelin_peak's floor matches the --auto lever floor and its cap stays
-# inside the C_beta override; ramp_fraction's cap matches --auto (>= 0.5
-# removes the depower plateau).
-CURVATURE_TUNE_BOUNDS = {
-    "psi0": (0.0, 2.0 * np.pi),
-    "az_reelin_amp": AZ_REELIN_AMP_MAG_BOUNDS,
-    "beta_reelin_peak": (0.62, 1.35),
-    "ramp_fraction": (0.15, 0.48),
-}
-# Tune to slightly under the limit so knob rounding and the write-time guard
-# (both sampled on the same grid) never disagree by a hair.
-CURVATURE_TUNE_MARGIN = 0.97
-
-# How many of the best raw-curvature coarse candidates to re-score on the
-# (expensive) spline metric before seeding the Nelder-Mead polish. Raw analytic
-# curvature is blind to spline ringing, so validating a handful bridges that gap
-# without a full spline scan of the grid (~0.15 s each vs ~ms for raw).
-COARSE_SPLINE_TOPK = 8
 
 
 def _synthetic_depower(
@@ -411,7 +479,11 @@ def _resolve_artificial_M(art):
     window = int(
         np.ceil(M_REELIN_WINDOW / max(1.0 - float(art["reelout_fraction"]), 1e-9))
     )
-    return max(int(art["M"]), M_PER_FIGURE * int(art["n_loops"]), window)
+    return max(
+        int(art["M"]),
+        int(np.ceil(M_PER_FIGURE * float(art["n_loops"]))),
+        window,
+    )
 
 
 def _artificial_path_parameters(art, r0=R0):
@@ -426,232 +498,17 @@ def _artificial_path_parameters(art, r0=R0):
         az_amp0=art["az_amp0"],
         beta_reelin_peak=art["beta_reelin_peak"],
         az_reelin_amp=art["az_reelin_amp"],
+        az_reelin_through=art.get("az_reelin_through", 0.0),
+        reelin_cross_pos=art.get("reelin_cross_pos", 0.7),
         ramp_fraction=art["ramp_fraction"],
         reelin_center=art.get("reelin_center", 0.5),
         psi0=art.get("psi0", 0.0),
         psi_entry=art.get("psi_entry"),
         psi_exit=art.get("psi_exit"),
         bow_shape=art.get("bow_shape", "sym"),
+        lobe_handover_phase=art.get("lobe_handover_phase", LOBE_HANDOVER_PHASE),
         downloops=True,
     )
-
-
-def _raw_curvature_max(art, n_samples=1500):
-    """Max curvature (1/m) of the ANALYTIC synthetic curve (no spline fit).
-
-    Pure NumPy (~ms), so the tuner's coarse scan can afford a dense grid; the
-    fitted spline tracks the raw curve closely once M scales with n_loops, so
-    raw curvature ranks candidates reliably (the polish re-checks the spline).
-    """
-    s = np.linspace(0.0, 1.0, int(n_samples), endpoint=False)
-    az, el = full_cycle_angles(
-        s,
-        n_loops=art["n_loops"],
-        reelout_fraction=art["reelout_fraction"],
-        beta0=art["beta0"],
-        beta_amp0=art["beta_amp0"],
-        az_amp0=art["az_amp0"],
-        beta_reelin_peak=art["beta_reelin_peak"],
-        az_reelin_amp=art["az_reelin_amp"],
-        ramp_fraction=art["ramp_fraction"],
-        reelin_center=art.get("reelin_center", 0.5),
-        psi0=art.get("psi0", 0.0),
-        psi_entry=art.get("psi_entry"),
-        psi_exit=art.get("psi_exit"),
-        bow_shape=art.get("bow_shape", "sym"),
-        downloops=True,
-    )
-    return curvature_from_angles(az, el, R0)["max_physical"]
-
-
-def tune_reelin_for_curvature(art, curvature_limit, n_samples=CURVATURE_SAMPLES):
-    """Adapt the reel-in knobs so the path's max curvature respects the limit.
-
-    The sharpest point of the synthetic cycle is the reel-out/reel-in
-    handover, and its sharpness is set by the figure-oscillation PHASE at the
-    window edges -- which scales with n_loops, so knobs good for one loop
-    count blow the curvature limit at another. The tuner searches
-    (psi0, az_reelin_amp, beta_reelin_peak, ramp_fraction); psi0 is the key
-    lever (it realigns the fade with a fast part of the figure), the other
-    three shape the arc itself. When the handover phases are PINNED
-    (psi_entry/psi_exit in the knob set) psi0 is inert and only the three
-    arc-shape knobs are searched -- the designed handover is kept, and if it
-    is inherently too sharp the guard refuses it. Figure amplitudes and the
-    window split are left alone: they are trim/closure levers owned by
-    --auto/--close.
-
-    Purely geometric -- a coarse grid scan on the analytic curve (~ms per
-    candidate) picks a basin, then Nelder-Mead polishes on the actual fitted
-    spline (the metric the write-time guard checks, ~0.15 s per candidate) --
-    so it runs on every generation, before any forward simulation. The
-    objective is an exact penalty on the curvature excess plus a small pull
-    toward the seed knobs, i.e. it returns the feasible shape CLOSEST to the
-    seed; when no feasible shape exists within CURVATURE_TUNE_BOUNDS it warns
-    and returns the best found (the guard then refuses to write). Returns a
-    NEW knob dict; the input is not modified.
-    """
-    from scipy.optimize import minimize
-
-    art = dict(art)
-    art.setdefault("psi0", 0.0)
-    limit = float(curvature_limit)
-    target = limit * CURVATURE_TUNE_MARGIN
-    # signbit, not "< 0": a seed of -0.0 must keep its negative bow direction
-    sign = -1.0 if np.signbit(float(art["az_reelin_amp"])) else 1.0
-    # With pinned handover phases (psi_entry/psi_exit set) the fade alignment
-    # is a DESIGN constraint, not a smoothness lever: psi0 is inert, so the
-    # tuner searches only the arc-shape knobs.
-    pinned = art.get("psi_entry") is not None and art.get("psi_exit") is not None
-    keys = (
-        ("az_reelin_amp", "beta_reelin_peak", "ramp_fraction")
-        if pinned
-        else ("psi0", "az_reelin_amp", "beta_reelin_peak", "ramp_fraction")
-    )
-    bounds = [CURVATURE_TUNE_BOUNDS[k] for k in keys]
-    scale = np.array([hi - lo for lo, hi in bounds])
-
-    def to_art(x):
-        cand = dict(art)
-        for k, v in zip(keys, x):
-            if k == "psi0":
-                cand[k] = float(v) % (2.0 * np.pi)
-            elif k == "az_reelin_amp":
-                cand[k] = sign * float(v)
-            else:
-                cand[k] = float(v)
-        return cand
-
-    def x_of(cand):
-        vals = []
-        for k in keys:
-            v = float(cand[k])
-            if k == "psi0":
-                vals.append(v % (2.0 * np.pi))
-            elif k == "az_reelin_amp":
-                vals.append(abs(v))
-            else:
-                vals.append(v)
-        return np.array(vals)
-
-    def spline_kappa(cand):
-        return path_curvature_metrics(
-            _artificial_path_parameters(cand), n_samples=n_samples
-        )["max_physical"]
-
-    k_seed = spline_kappa(art)
-    if k_seed <= limit:
-        print(
-            f"[curv] max path curvature {k_seed:.4g} 1/m within the "
-            f"{limit:g} 1/m limit; reel-in knobs unchanged"
-        )
-        return art
-
-    x_seed = np.clip(x_of(art), [lo for lo, _ in bounds], [hi for _, hi in bounds])
-
-    def dist(x):
-        # Normalized distance to the seed knobs; psi0 (when searched) circular.
-        d = (x - x_seed) / scale
-        if "psi0" in keys:
-            i = keys.index("psi0")
-            dpsi = abs(float(x[i]) - x_seed[i]) % (2.0 * np.pi)
-            d[i] = min(dpsi, 2.0 * np.pi - dpsi) / np.pi
-        return float(np.sum(d**2))
-
-    print(
-        f"[curv] max path curvature {k_seed:.4g} 1/m exceeds the {limit:g} "
-        f"1/m limit (n_loops={art['n_loops']}); tuning reel-in knobs..."
-    )
-
-    # Coarse scan on the analytic curve: psi0 makes the landscape multimodal
-    # (the handover phase wraps every figure), so a single descent from the
-    # seed stalls in the wrong basin. Rank raw-feasible candidates by closeness
-    # to the seed; if none are raw-feasible, by flatness. The grid stays where
-    # the fitted spline tracks the raw curve -- pushing it into ramp_fraction or
-    # beta_reelin_peak extremes buys nothing (see the spline-ringing note below).
-    grid_by_key = {
-        "psi0": np.linspace(0.0, 2.0 * np.pi, 24, endpoint=False),
-        "az_reelin_amp": np.array([0.25, 0.35, 0.45, 0.55, 0.65]),
-        "beta_reelin_peak": np.array([0.8, 1.0, 1.2]),
-        "ramp_fraction": np.array([0.35, 0.45]),
-    }
-    coarse = []
-    for combo in itertools.product(*(grid_by_key[k] for k in keys)):
-        x = np.array(combo, dtype=float)
-        coarse.append((_raw_curvature_max(to_art(x)), x))
-    feasible = [x for k, x in coarse if k <= target]
-    if feasible:
-        ranked = sorted(feasible, key=dist)
-    else:
-        ranked = [x for _, x in sorted(coarse, key=lambda t: t[0])]
-
-    # Raw analytic curvature is BLIND to spline ringing: the fixed-M periodic
-    # B-spline overshoots a too-sharp reel-in edge, fitting to hundreds of 1/m
-    # where the raw curve is smooth, and which (ramp, az, psi0) combos ring is
-    # scattered -- not a clean region a bound could fence off. So re-score the
-    # top raw candidates on the SPLINE metric the guard checks and seed
-    # Nelder-Mead from the best spline one, or the polish can start trapped in a
-    # ringing basin it never escapes within maxfev.
-    seeds = sorted(
-        ((spline_kappa(to_art(x)), x) for x in ranked[:COARSE_SPLINE_TOPK]),
-        key=lambda t: t[0],
-    )
-    x0 = seeds[0][1]
-
-    def objective(x):
-        # Exact penalty: any excess over the (slightly tightened) target
-        # dominates; the pull term picks the feasible point nearest the seed.
-        excess = max(spline_kappa(to_art(x)) / target - 1.0, 0.0)
-        return excess + 1e-2 * dist(x)
-
-    res = minimize(
-        objective,
-        x0,
-        method="Nelder-Mead",
-        bounds=bounds,
-        options={"xatol": 1e-3, "fatol": 1e-5, "maxfev": 60},
-    )
-
-    # Round like the other knobs, re-verify the ROUNDED candidates on the
-    # spline metric (what gets written), and keep the best.
-    def rounded(x):
-        cand = to_art(x)
-        for key in keys:
-            cand[key] = round(cand[key], 3)
-        return cand
-
-    # Final pool: the polished point, every spline-validated coarse seed, and
-    # the UNTUNED seed itself -- so the tuner can never return a shape that rings
-    # worse than (or is otherwise inferior to) the seed it started from. Among
-    # those within the limit take the one closest to the seed; else the flattest.
-    candidates = [rounded(res.x)] + [rounded(x) for _, x in seeds]
-    scored = [(spline_kappa(c), c) for c in candidates]
-    scored.append((k_seed, dict(art)))
-    ok = [t for t in scored if t[0] <= limit]
-    if ok:
-        k_best, tuned = min(ok, key=lambda t: dist(x_of(t[1])))
-    else:
-        k_best, tuned = min(scored, key=lambda t: t[0])
-
-    for key in keys:
-        print(f"[curv]     {key}: {art[key]} -> {tuned[key]}")
-    if k_best > limit:
-        metrics = path_curvature_metrics(
-            _artificial_path_parameters(tuned), n_samples=n_samples
-        )
-        ri_c = float(art.get("reelin_center", 0.5))
-        ri_h = 0.5 * (1.0 - float(art["reelout_fraction"]))
-        in_reelin = _dist_to_reelin_center(metrics["s_at_max"], ri_c) <= ri_h
-        print(
-            f"[curv] WARN: best reachable max curvature {k_best:.4g} 1/m still "
-            f"exceeds {limit:g} 1/m at s={metrics['s_at_max']:.3f} "
-            f"({'reel-in window' if in_reelin else 'figure eights'}) -- the "
-            "reel-in knobs cannot fix this; enlarge the figures "
-            "(az_amp0/beta_amp0) or change --loops. The write-time guard "
-            "will refuse this config."
-        )
-    else:
-        print(f"[curv] tuned max path curvature {k_best:.4g} 1/m <= {limit:g} 1/m")
-    return tuned
 
 
 def _cycle_arrays(ekf_df, flight_df, cycle_id):
@@ -729,7 +586,13 @@ def _fit_winch_with_depower_offset(arr):
     }
 
 
-def build_config(arr=None, depower_depth=1.0, artificial=None, duration_s=None):
+def build_config(
+    arr=None,
+    depower_depth=1.0,
+    artificial=None,
+    duration_s=None,
+    curvature_limit=CURVATURE_LIMIT_1PM,
+):
     """Assemble the reelout config dict.
 
     ``arr`` (the experimental cycle arrays) is only required when
@@ -741,7 +604,11 @@ def build_config(arr=None, depower_depth=1.0, artificial=None, duration_s=None):
     ``duration_s`` overrides the cycle-duration estimate that sets
     ``n_points`` -- pass the MEASURED duration of a forward sim (see
     ``_measured_cycle_duration``) so the grid tracks the actual flight time
-    instead of the CYCLE_DURATION_S prior.
+    instead of the CYCLE_DURATION_S prior. ``curvature_limit`` (1/m, falsy
+    disables) is enforced ON THE FITTED SPLINE: control points around any
+    violation are moved minimally (see
+    ``fair_periodic_spline_to_curvature_limit``) -- the parametric knobs are
+    never changed to satisfy it.
     """
     art = artificial if artificial is not None else ARTIFICIAL
     if SHAPE_SOURCE == "experimental":
@@ -782,10 +649,54 @@ def build_config(arr=None, depower_depth=1.0, artificial=None, duration_s=None):
         # Clean, exactly-periodic synthetic cycle: figure-eights + reel-in arc.
         M = _resolve_artificial_M(art)
         print(
-            f"Artificial shape, M={M}, n_loops={art['n_loops']}, "
+            f"Artificial shape, M={M}, n_loops={float(art['n_loops']):g}, "
             f"n_points={n_points}, depower depth={depower_depth:.3f}"
         )
         path_parameters = _artificial_path_parameters(art, r0=r0)
+        if curvature_limit:
+            # The parametric reel-in is only a SKETCH: when its fitted spline
+            # violates the curvature limit, the reel-in is DESIGNED between
+            # the frozen exit/entry handover states -- the window control
+            # points solve a bending-energy NLP that hits beta_reelin_peak
+            # with curvature bounded as a hard constraint. Knobs and the
+            # figures are never changed.
+            path_parameters, des = design_reelin_spline(
+                path_parameters,
+                float(curvature_limit),
+                reelin_center=art.get("reelin_center", 0.5),
+                reelout_fraction=art["reelout_fraction"],
+                peak_elevation=art.get("beta_reelin_peak"),
+            )
+            if des["changed"]:
+                print(
+                    f"[design] reel-in designed between the handover states: "
+                    f"curvature {des['max_before']:.4g} -> "
+                    f"{des['max_after']:.4g} 1/m (limit "
+                    f"{float(curvature_limit):g}), peak "
+                    f"{np.degrees(des['peak_achieved']):.1f} deg (target "
+                    f"{np.degrees(des['peak_target']):.1f}), "
+                    f"{len(des['freed'])}/{M} window points designed, path "
+                    f"moved <= {np.degrees(des['max_path_move']):.2f} deg"
+                )
+            # Safety net for anything the design could not (or was not
+            # allowed to) touch -- figures, window edges, a failed design.
+            path_parameters, fair = fair_periodic_spline_to_curvature_limit(
+                path_parameters, float(curvature_limit)
+            )
+            if fair["changed"]:
+                print(
+                    f"[fair] residual spline curvature {fair['max_before']:.4g}"
+                    f" -> {fair['max_after']:.4g} 1/m (sharpest at "
+                    f"s={fair['s_at_max_before']:.3f}); moved "
+                    f"{len(fair['touched'])}/{M} control points, path moved "
+                    f"<= {np.degrees(fair['max_path_move']):.2f} deg"
+                )
+            if not fair["converged"]:
+                print(
+                    "[fair] WARN: curvature limit not reachable -- the "
+                    "write-time guard will refuse this config; enlarge the "
+                    "figures (az_amp0/beta_amp0) or change --loops"
+                )
         # Synthetic depower aligned with the figures-stop / reel-in split
         # (same window AND ramp width as the shape).
         u_dep_profile = _synthetic_depower(
@@ -862,6 +773,10 @@ def build_config(arr=None, depower_depth=1.0, artificial=None, duration_s=None):
                 # Solver keys consumed by run_full_cycle_opti.py, emitted here
                 # so the generated YAML is complete and never hand-edited.
                 "opti_limits_override": OPTI_LIMITS_OVERRIDE,
+                # Whole-graph SX expansion: with the local-support node
+                # functions (see Phase.run_opti) it builds in ~15 s at ~400
+                # nodes (~3.7 MB/node) and iterates ~2x faster than the MX
+                # outer graph; set False when memory-bound (~40% less).
                 "expand_nlp": True,
                 "ipopt_robust": False,
                 # Abort -- instead of silently truncating and padding -- when a
@@ -877,6 +792,260 @@ def build_config(arr=None, depower_depth=1.0, artificial=None, duration_s=None):
         }
     }
     return config
+
+
+def _reelin_window_mask(s, art):
+    """True inside the reel-in window (bump > 0) for the knob set ``art``."""
+    f = float(art["reelout_fraction"])
+    c = float(art.get("reelin_center", 0.5))
+    h = 0.5 * (1.0 - f)
+    d = (np.asarray(s, dtype=float) - c + 0.5) % 1.0 - 0.5
+    return np.abs(d) <= h
+
+
+def plot_seed_path(config, art=None, arr=None, save_path=None, show=False):
+    """Plot the generated seed trajectory (pure geometry, no forward sim).
+
+    Left: wind-window view (azimuth vs elevation) of the fitted periodic
+    B-spline the optimizer warm-starts from, with the analytic synthetic
+    target it was fitted to (artificial shape) or the flight samples
+    (experimental fit), flight-direction arrows, the ``s = 0`` seam, the
+    control polygon, and the reel-in window highlighted along the path with
+    its entry / exit points (where the figure fade begins / ends -- with the
+    "lobe" shape the visible peel-off and landing sit LOBE_HANDOVER_PHASE
+    of figure phase inside those). Right: azimuth + elevation vs ``s`` and the
+    synthetic depower profile, both with the reel-in window shaded. The title
+    reports the resolution and the sampled max curvature. Saves a PNG to
+    ``save_path`` (parents created) and/or shows the figure; returns it.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Patch
+
+    from awetrim.kinematics.parametrized_patterns import PeriodicBSpline
+
+    reelout = config["reelout"]
+    path = reelout["path_parameters"]
+    sim = reelout["sim_parameters"]
+    M = int(path["M"])
+    r0 = float(path["r0"])
+    pattern = PeriodicBSpline(
+        M=M,
+        C_phi=np.asarray(path["C_phi"], dtype=float).reshape((M, 1)),
+        C_beta=np.asarray(path["C_beta"], dtype=float).reshape((M, 1)),
+        s_init=0.0,
+        s_final=1.0,
+        downloops=bool(path.get("downloops", True)),
+    )
+    s = np.linspace(0.0, 1.0, 800, endpoint=False)
+    phi = np.array([float(pattern.azimuth(r0, si)) for si in s])
+    beta = np.array([float(pattern.elevation(r0, si)) for si in s])
+    kappa = path_curvature_metrics(path)["max_physical"]
+
+    fig = plt.figure(figsize=(13.0, 6.2))
+    grid = fig.add_gridspec(
+        2,
+        2,
+        width_ratios=(1.25, 1.0),
+        hspace=0.32,
+        wspace=0.22,
+        left=0.06,
+        right=0.98,
+        top=0.88,
+        bottom=0.09,
+    )
+    ax_path = fig.add_subplot(grid[:, 0])
+    ax_ang = fig.add_subplot(grid[0, 1])
+    ax_dep = fig.add_subplot(grid[1, 1], sharex=ax_ang)
+
+    in_window = None
+    if art is not None:
+        az_t, el_t = full_cycle_angles(
+            s,
+            n_loops=art["n_loops"],
+            reelout_fraction=art["reelout_fraction"],
+            beta0=art["beta0"],
+            beta_amp0=art["beta_amp0"],
+            az_amp0=art["az_amp0"],
+            beta_reelin_peak=art["beta_reelin_peak"],
+            az_reelin_amp=art["az_reelin_amp"],
+            az_reelin_through=art.get("az_reelin_through", 0.0),
+            reelin_cross_pos=art.get("reelin_cross_pos", 0.7),
+            ramp_fraction=art["ramp_fraction"],
+            reelin_center=art.get("reelin_center", 0.5),
+            psi0=art.get("psi0", 0.0),
+            psi_entry=art.get("psi_entry"),
+            psi_exit=art.get("psi_exit"),
+            bow_shape=art.get("bow_shape", "sym"),
+            lobe_handover_phase=art.get("lobe_handover_phase", LOBE_HANDOVER_PHASE),
+            downloops=True,
+        )
+        ax_path.plot(
+            np.degrees(az_t),
+            np.degrees(el_t),
+            color="0.6",
+            lw=0.9,
+            label="analytic target",
+        )
+        in_window = _reelin_window_mask(s, art)
+    if arr is not None:
+        ax_path.plot(
+            np.degrees(arr["azimuth"]),
+            np.degrees(arr["elevation"]),
+            ".",
+            ms=2,
+            alpha=0.35,
+            color="0.5",
+            label="flight",
+        )
+
+    # Control polygon (light) and the fitted spline, reel-in part on top.
+    ax_path.plot(
+        np.degrees(path["C_phi"]),
+        np.degrees(path["C_beta"]),
+        "o",
+        ms=2.5,
+        color="0.4",
+        alpha=0.6,
+        label=f"control points (M={M})",
+    )
+    ax_path.plot(
+        np.degrees(phi),
+        np.degrees(beta),
+        color="tab:blue",
+        lw=1.8,
+        label="periodic B-spline",
+    )
+    if in_window is not None and in_window.any():
+        # Draw the reel-in part as contiguous segments (it may wrap the seam).
+        idx = np.flatnonzero(in_window)
+        breaks = np.flatnonzero(np.diff(idx) > 1)
+        chunks = np.split(idx, breaks + 1)
+        if len(chunks) > 1 and idx[0] == 0 and idx[-1] == s.size - 1:
+            chunks = [np.r_[chunks[-1], chunks[0]]] + chunks[1:-1]
+        for k, ch in enumerate(chunks):
+            ax_path.plot(
+                np.degrees(phi[ch]),
+                np.degrees(beta[ch]),
+                color="tab:orange",
+                lw=2.6,
+                label="reel-in window (spline)" if k == 0 else None,
+            )
+        # Peel-off (window entry) and landing (window exit) points.
+        i_in, i_out = chunks[0][0], chunks[0][-1]
+        ax_path.plot(
+            np.degrees(phi[i_in]),
+            np.degrees(beta[i_in]),
+            "^",
+            ms=8,
+            color="tab:green",
+            mec="k",
+            label="window entry (fade begins)",
+            zorder=6,
+        )
+        ax_path.plot(
+            np.degrees(phi[i_out]),
+            np.degrees(beta[i_out]),
+            "v",
+            ms=8,
+            color="tab:red",
+            mec="k",
+            label="window exit (figures back)",
+            zorder=6,
+        )
+
+    # Flight direction: one arrow every ~1/32 of the period.
+    step = max(1, s.size // 32)
+    ax_path.quiver(
+        np.degrees(phi[::step]),
+        np.degrees(beta[::step]),
+        np.gradient(np.degrees(phi))[::step],
+        np.gradient(np.degrees(beta))[::step],
+        color="k",
+        angles="xy",
+        scale_units="xy",
+        scale=0.08,
+        width=0.004,
+        headwidth=5,
+        alpha=0.8,
+        zorder=5,
+    )
+    ax_path.plot(
+        np.degrees(phi[0]),
+        np.degrees(beta[0]),
+        "o",
+        ms=8,
+        color="w",
+        mec="k",
+        mew=1.5,
+        label="s = 0",
+        zorder=7,
+    )
+    ax_path.axvline(0.0, color="0.75", lw=0.8, ls=":")
+    ax_path.set_xlabel(r"azimuth $\phi$ (deg)")
+    ax_path.set_ylabel(r"elevation $\beta$ (deg)")
+    ax_path.grid(True, alpha=0.4)
+    ax_path.legend(loc="upper right", fontsize=8)
+    ax_path.set_title("Wind-window view (seed path)", fontsize=10)
+
+    # Right column: angles and depower vs s, reel-in window shaded.
+    ax_ang.plot(s, np.degrees(phi), color="tab:blue", lw=1.3, label="azimuth")
+    ax_ang.plot(s, np.degrees(beta), color="tab:orange", lw=1.3, label="elevation")
+    ax_ang.set_ylabel("angle (deg)")
+    ax_ang.grid(True, alpha=0.4)
+    s_dep = np.linspace(0.0, 1.0, len(sim["input_depower_profile"]))
+    ax_dep.plot(
+        s_dep,
+        sim["input_depower_profile"],
+        color="tab:green",
+        lw=1.5,
+        label="depower l_dp (seed)",
+    )
+    ax_dep.set_xlabel("s (one period = one cycle)")
+    ax_dep.set_ylabel("input_depower (m)")
+    ax_dep.grid(True, alpha=0.4)
+    if in_window is not None:
+        for ax in (ax_ang, ax_dep):
+            ax.fill_between(
+                s,
+                0,
+                1,
+                where=in_window,
+                transform=ax.get_xaxis_transform(),
+                color="tab:orange",
+                alpha=0.12,
+                lw=0,
+            )
+    handles, labels = ax_ang.get_legend_handles_labels()
+    if in_window is not None:
+        handles.append(Patch(color="tab:orange", alpha=0.25))
+        labels.append("reel-in window")
+    ax_ang.legend(handles, labels, loc="upper center", fontsize=8, ncol=3)
+    ax_dep.legend(loc="upper center", fontsize=8)
+
+    bits = [f"M={M}", f"n_points={int(sim['n_points'])}", f"r0={r0:.0f} m"]
+    if art is not None:
+        bits = [
+            f"n_loops={float(art['n_loops']):g}",
+            f"f_ro={float(art['reelout_fraction']):.2f}",
+            f"bow={art.get('bow_shape', 'sym')}",
+            f"peak={np.degrees(float(art['beta_reelin_peak'])):.0f} deg",
+            f"A={float(art['az_reelin_amp']):+.2f} rad",
+            f"ramp={float(art['ramp_fraction']):.2f}",
+        ] + bits
+    fig.suptitle(
+        "Full-cycle seed -- " + ", ".join(bits) + f"  |  max curvature {kappa:.3f} 1/m",
+        fontsize=10,
+    )
+    if save_path is not None:
+        save_path = Path(save_path)
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(save_path, dpi=130)
+        print(f"Saved seed-path figure to {save_path}")
+    if show:
+        plt.show()
+    else:
+        plt.close(fig)
+    return fig
 
 
 def _simulate_cycle(config, run_plots=False):
@@ -1193,10 +1362,9 @@ def _auto_action(m, art, depth, escalate=0):
     # Individual levers: (description, art, depth), or None when at their cap.
     def bow_up(why):
         # Wider bow = wider arc through the low-speed top. Widen the MAGNITUDE
-        # (the seed's bow direction/sign is preserved, as the curvature tuner
-        # does) up to the SHARED cap, so --auto can reach any bow the pre-tune
-        # set instead of stalling below it -- and so a NEGATIVE seed bow widens
-        # (more negative) instead of shrinking toward zero.
+        # up to the cap (the seed's bow direction/sign is preserved, so a
+        # NEGATIVE seed bow widens -- more negative -- instead of shrinking
+        # toward zero, and the exit side survives).
         _, hi = AZ_REELIN_AMP_MAG_BOUNDS
         sign = -1.0 if np.signbit(float(art["az_reelin_amp"])) else 1.0
         mag = abs(art["az_reelin_amp"])
@@ -1332,10 +1500,11 @@ def _auto_tune(arr=None, max_iter=AUTO_MAX_ITER, curvature_limit=None):
     in its chain (stall detection), and the BEST simulated iterate -- not the
     last -- is returned and written; the knobs are printed for pinning.
 
-    ``curvature_limit`` (1/m) only biases the best-iterate selection: the
-    feasibility levers move the same reel-in knobs the curvature tuner set, so
-    an iterate that re-violates the limit is penalized -- otherwise --auto
-    could hand the write-time guard a config it must refuse.
+    ``curvature_limit`` (1/m) is enforced on the spline inside every
+    ``build_config`` (local fairing) and additionally biases the best-iterate
+    selection: an iterate whose faired spline still violates the limit is
+    penalized -- otherwise --auto could hand the write-time guard a config it
+    must refuse.
     """
     art = dict(ARTIFICIAL)
     depth = float(np.clip(DEPOWER_DEPTH, 0.25, 1.0))
@@ -1346,7 +1515,11 @@ def _auto_tune(arr=None, max_iter=AUTO_MAX_ITER, curvature_limit=None):
     duration_s = None  # measured sim duration; recalibrates n_points as we go
     for it in range(1, max_iter + 1):
         config = build_config(
-            arr, depower_depth=depth, artificial=art, duration_s=duration_s
+            arr,
+            depower_depth=depth,
+            artificial=art,
+            duration_s=duration_s,
+            curvature_limit=curvature_limit,
         )
         phase, system_model = _simulate_cycle(config)
         measured = _measured_cycle_duration(
@@ -1409,12 +1582,14 @@ def _auto_tune(arr=None, max_iter=AUTO_MAX_ITER, curvature_limit=None):
         "az_amp0",
         "beta_reelin_peak",
         "az_reelin_amp",
+        "az_reelin_through",
         "ramp_fraction",
         "reelin_center",
         "psi0",
         "psi_entry",
         "psi_exit",
         "bow_shape",
+        "lobe_handover_phase",
     ):
         print(f"    {key}: {best_art.get(key)}")
     print(f"    DEPOWER_DEPTH: {best_depth:.3f}")
@@ -1427,7 +1602,7 @@ def _auto_tune(arr=None, max_iter=AUTO_MAX_ITER, curvature_limit=None):
     return config, phase, system_model, best_art
 
 
-def _close_cycle_depth(arr=None, max_iter=6):
+def _close_cycle_depth(arr=None, max_iter=6, curvature_limit=CURVATURE_LIMIT_1PM):
     """Fit the reel-in depower depth so the simulated cycle closes radially.
 
     Secant iteration on ``depth``: the winch's depower-shifted offset makes the
@@ -1444,7 +1619,7 @@ def _close_cycle_depth(arr=None, max_iter=6):
         return float(r[-1] - r[0])
 
     depth = float(np.clip(DEPOWER_DEPTH, lo_d, hi_d))
-    config = build_config(arr, depower_depth=depth)
+    config = build_config(arr, depower_depth=depth, curvature_limit=curvature_limit)
     n_points = int(config["reelout"]["sim_parameters"]["n_points"])
     phase, system_model = _simulate_cycle(config)
     gap = _closure_gap(phase, n_points)
@@ -1474,7 +1649,12 @@ def _close_cycle_depth(arr=None, max_iter=6):
     for _ in range(max_iter):
         if abs(gap) <= CLOSURE_TOL_M:
             break
-        config = build_config(arr, depower_depth=depth, duration_s=duration_s)
+        config = build_config(
+            arr,
+            depower_depth=depth,
+            duration_s=duration_s,
+            curvature_limit=curvature_limit,
+        )
         n_points = int(config["reelout"]["sim_parameters"]["n_points"])
         phase, system_model = _simulate_cycle(config)
         gap = _closure_gap(phase, n_points)
@@ -1524,22 +1704,97 @@ def main(
     close: bool = False,
     auto: bool = False,
     loops: int = None,
+    reentry: str = None,
+    reelin_shape: str = None,
+    cross_at: float = None,
     curvature_limit: float = CURVATURE_LIMIT_1PM,
     reelin_center: float = None,
 ) -> int:
+    if cross_at is not None:
+        ARTIFICIAL["reelin_cross_pos"] = float(cross_at)
     if loops:
-        # CLI override; --auto adapts the remaining knobs to the loop count.
-        ARTIFICIAL["n_loops"] = int(loops)
+        # CLI override in the WYSIWYG unit: half figure-eights (lobes) VISIBLE
+        # during reel-out. Derive the internal continuous full-period count
+        # (and the parity-matching psi_entry -- the count is always honoured
+        # EXACTLY; the peel-off crossing mirrors by pi as its parity needs);
+        # --auto adapts the remaining knobs to the loop count.
+        ARTIFICIAL["n_loops"], ARTIFICIAL["psi_entry"] = (
+            full_cycle_n_loops_for_half_figures(
+                int(loops),
+                reelout_fraction=ARTIFICIAL["reelout_fraction"],
+                psi_entry=ARTIFICIAL.get("psi_entry"),
+                psi_exit=ARTIFICIAL.get("psi_exit"),
+                bow_shape=ARTIFICIAL.get("bow_shape", "sym"),
+                lobe_handover_phase=ARTIFICIAL.get(
+                    "lobe_handover_phase", LOBE_HANDOVER_PHASE
+                ),
+            )
+        )
+    if ARTIFICIAL.get("bow_shape") == "lobe":
+        # The reel-in ALWAYS exits tangentially at a side of the figure going
+        # down, so the exit-vs-entry sameness is fixed by the half-lobe
+        # parity; --reentry only VALIDATES the request against it. The free
+        # geometric choice per peel-off is which side the top goes THROUGH.
+        halves = round(
+            full_cycle_visible_half_figures(
+                ARTIFICIAL["n_loops"],
+                reelout_fraction=ARTIFICIAL["reelout_fraction"],
+                psi_entry=ARTIFICIAL.get("psi_entry"),
+                psi_exit=ARTIFICIAL.get("psi_exit"),
+                bow_shape="lobe",
+                lobe_handover_phase=ARTIFICIAL.get(
+                    "lobe_handover_phase", LOBE_HANDOVER_PHASE
+                ),
+            )
+        )
+        natural = "opposite" if halves % 2 else "same"
+        if reentry and reentry != natural:
+            other = loops + 1 if loops else "an odd" if reentry == "opposite" else "an even"
+            print(
+                f"[reentry] a tangential {reentry}-side exit is impossible "
+                f"with {halves} visible half-lobes (the giant reel-in lobe "
+                f"is one lobe of the figure, so {halves} halves re-enter "
+                f"{natural}-side); use "
+                + (f"--loops {other} " if loops else f"{other} --loops ")
+                + f"or --reentry {natural}"
+            )
+            return 1
+        # Sides in the downloops sense (azimuth ~ sin(psi), right = az > 0).
+        # The absolute orientation is a fixed convention (psi_exit = 3*pi/2,
+        # exit left): flipping it would only mirror the whole cycle, so
+        # there is no flag for it. The ONE real choice per count is HOW the
+        # reel-in gets from the peel-off to the tangential landing:
+        # "smooth" loops over the top on the exit side (plain lobe, no
+        # crossing); "cross" loops on the OPPOSITE side, then the descent
+        # crosses the ascending leg at lower elevation on its way to the
+        # exit azimuth.
+        s_exit = 1.0 if np.sin(float(ARTIFICIAL["psi_exit"])) >= 0.0 else -1.0
+        s_entry = 1.0 if np.sin(float(ARTIFICIAL["psi_entry"])) >= 0.0 else -1.0
+        ARTIFICIAL["az_reelin_amp"] = s_exit * abs(
+            float(ARTIFICIAL["az_reelin_amp"])
+        )
+        shape = reelin_shape or "smooth"
+        s_thr = s_exit if shape == "smooth" else -s_exit
+        thr_mag = abs(float(ARTIFICIAL.get("az_reelin_through", 0.0)))
+        ARTIFICIAL["az_reelin_through"] = (
+            0.0 if shape == "smooth" else s_thr * thr_mag
+        )
+
+        def _side(sgn):
+            return "az>0" if sgn > 0 else "az<0"
+
+        print(
+            f"[shape] reel-in: {shape} -- entry {_side(s_entry)}, top loop "
+            f"{_side(s_thr)}, exit {_side(s_exit)} "
+            f"({halves} visible half-lobes, {natural}-side re-entry)"
+        )
     if reelin_center is not None:
         # CLI override of the window centre (reelin_bump validates the range).
         ARTIFICIAL["reelin_center"] = float(reelin_center)
-    if SHAPE_SOURCE == "artificial" and curvature_limit:
-        # Geometric pre-tune (no forward sims): adapt the reel-in knobs to the
-        # loop count so the path stays under the curvature limit -- the
-        # handover sharpness scales with n_loops, so knobs pinned for one loop
-        # count violate it at another. Runs before --auto/--close so they
-        # start from a curvature-feasible shape.
-        ARTIFICIAL.update(tune_reelin_for_curvature(ARTIFICIAL, curvature_limit))
+    # The curvature limit is enforced ON THE FITTED SPLINE inside every
+    # build_config call (fair_periodic_spline_to_curvature_limit): control
+    # points around a violation move minimally, the parametric knobs are
+    # never changed for curvature.
     arr = _load_experimental_cycle() if SHAPE_SOURCE == "experimental" else None
 
     phase = system_model = None
@@ -1549,9 +1804,13 @@ def main(
             arr, curvature_limit=curvature_limit
         )
     elif close:
-        config, phase, system_model = _close_cycle_depth(arr)
+        config, phase, system_model = _close_cycle_depth(
+            arr, curvature_limit=curvature_limit
+        )
     else:
-        config = build_config(arr, depower_depth=DEPOWER_DEPTH)
+        config = build_config(
+            arr, depower_depth=DEPOWER_DEPTH, curvature_limit=curvature_limit
+        )
         if check:
             # Bootstrap sim: calibrate n_points to the MEASURED cycle duration
             # before the config is validated and written (one rebuild + re-sim
@@ -1569,7 +1828,10 @@ def main(
                         f"n_points {n_old} -> {n_new}; rebuilding and re-simulating"
                     )
                     config = build_config(
-                        arr, depower_depth=DEPOWER_DEPTH, duration_s=measured
+                        arr,
+                        depower_depth=DEPOWER_DEPTH,
+                        duration_s=measured,
+                        curvature_limit=curvature_limit,
                     )
                     phase, system_model = _simulate_cycle(config)
                 else:
@@ -1600,6 +1862,12 @@ def main(
         yaml.safe_dump(config, f, sort_keys=False, default_flow_style=False)
     print(f"Wrote {OUTPUT_PATH}")
 
+    # Seed-path figure (geometry only): always saved, shown with --plot.
+    art_plot = None
+    if SHAPE_SOURCE == "artificial":
+        art_plot = art_used if art_used is not None else ARTIFICIAL
+    plot_seed_path(config, art=art_plot, arr=arr, save_path=SEED_PLOT_PATH, show=False)
+
     # Feasibility: simulate (or reuse the --auto/--close sim) and check the
     # trajectory against the bounds the NLP will impose on it as a warm start.
     if run_plots or (check and phase is None):
@@ -1608,51 +1876,7 @@ def main(
         _feasibility_report(phase, system_model, config, artificial=art_used)
 
     if run_plots:
-        import matplotlib.pyplot as plt
-
-        path = config["reelout"]["path_parameters"]
-        from awetrim.kinematics.parametrized_patterns import PeriodicBSpline
-
-        pattern = PeriodicBSpline(
-            M=path["M"],
-            C_phi=np.asarray(path["C_phi"]).reshape((path["M"], 1)),
-            C_beta=np.asarray(path["C_beta"]).reshape((path["M"], 1)),
-            s_init=0.0,
-            s_final=1.0,
-            downloops=True,
-        )
-        s_plot = np.linspace(0.0, 1.0, 400, endpoint=True)
-        phi_fit = np.array([float(pattern.azimuth(path["r0"], s)) for s in s_plot])
-        beta_fit = np.array([float(pattern.elevation(path["r0"], s)) for s in s_plot])
-
-        plt.figure(figsize=(5, 4))
-        if arr is not None:
-            plt.plot(
-                np.degrees(arr["azimuth"]),
-                np.degrees(arr["elevation"]),
-                ".",
-                ms=2,
-                alpha=0.4,
-                label="flight",
-            )
-        plt.plot(
-            np.degrees(phi_fit),
-            np.degrees(beta_fit),
-            "-",
-            lw=1.5,
-            label="periodic B-spline",
-        )
-        plt.xlabel(r"azimuth $\phi$ (deg)")
-        plt.ylabel(r"elevation $\beta$ (deg)")
-        plt.grid(True)
-        plt.legend()
-        plt.title(
-            "Synthetic full-cycle periodic spline"
-            if arr is None
-            else f"Cycle {CYCLE_ID} periodic-spline fit"
-        )
-        plt.tight_layout()
-        plt.show()
+        plot_seed_path(config, art=art_plot, arr=arr, save_path=None, show=True)
 
     return 0
 
@@ -1662,7 +1886,8 @@ if __name__ == "__main__":
     parser.add_argument(
         "--plot",
         action="store_true",
-        help="Overview plots of the simulated initial guess + the spline path",
+        help="Show the seed-path figure (always saved to SEED_PLOT_PATH) and "
+        "the overview plots of the simulated initial guess",
     )
     parser.add_argument(
         "--check",
@@ -1681,8 +1906,42 @@ if __name__ == "__main__":
         "--loops",
         type=int,
         default=None,
-        help="Override the number of figure-eight loops per cycle "
-        "(combine with --auto to adapt the remaining knobs)",
+        help="Number of half figure-eights (lobes) flown during reel-out "
+        "-- the count you see on the sphere, honoured exactly; the "
+        "internal full-period n_loops and the parity-matching psi_entry "
+        "are derived from it (combine with --auto to adapt the other "
+        "knobs)",
+    )
+    parser.add_argument(
+        "--reentry",
+        choices=("opposite", "same"),
+        default=None,
+        help="Which side the reel-in exits on, relative to the lobe the "
+        "kite left from. The exit is ALWAYS tangential at a side of the "
+        "figure going down, so this is fixed by the --loops parity (odd = "
+        "opposite, even = same): the flag validates the request and "
+        "errors on a mismatch instead of flying a different shape",
+    )
+    parser.add_argument(
+        "--reelin",
+        dest="reelin_shape",
+        choices=("smooth", "cross"),
+        default=None,
+        help="How the reel-in gets from the peel-off to the tangential "
+        "landing (the sides themselves are not a choice: --loops parity "
+        "ties exit to entry, and flipping both would only mirror the "
+        "whole cycle). 'smooth' (default): top loop on the exit side, one "
+        "clean arc, no crossing. 'cross': up the middle, out to the "
+        "opposite side near the top, DOWN parked on that side, then cross "
+        "az = 0 low (see --cross-at) to the exit azimuth",
+    )
+    parser.add_argument(
+        "--cross-at",
+        type=float,
+        default=None,
+        help="--reelin cross only: where on the descent the az = 0 "
+        "crossing sits, as a fraction of the exit ramp (0 = right after "
+        "the top, 1 = at figure height; default 0.7)",
     )
     parser.add_argument(
         "--close",
@@ -1694,9 +1953,10 @@ if __name__ == "__main__":
         type=float,
         default=CURVATURE_LIMIT_1PM,
         help="Maximum sampled physical path curvature in 1/m (default "
-        f"{CURVATURE_LIMIT_1PM}). The reel-in knobs are geometrically "
-        "pre-tuned to respect it (adapts them to --loops); the script "
-        "refuses to write a config that still exceeds it. 0 disables both.",
+        f"{CURVATURE_LIMIT_1PM}). Enforced on the fitted spline: control "
+        "points around a violation are moved minimally (local fairing), "
+        "the parametric knobs are never changed; the script refuses to "
+        "write a config that still exceeds it. 0 disables both.",
     )
     parser.add_argument(
         "--reelin-center",
@@ -1717,6 +1977,9 @@ if __name__ == "__main__":
             close=args.close,
             auto=args.auto,
             loops=args.loops,
+            reentry=args.reentry,
+            reelin_shape=args.reelin_shape,
+            cross_at=args.cross_at,
             curvature_limit=args.curvature_limit,
             reelin_center=args.reelin_center,
         )
