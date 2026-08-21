@@ -325,6 +325,14 @@ Add `"wait": false` to get the old asynchronous behavior instead
   [m/s] **or** `p_max` [W] (`v_max = p_max/f_max`); both optional, both at
   once is rejected; omitted = the optimizer's default bound (10 m/s).
   `mode: "reelin"` → 400 (not supported yet).
+  Set `optimize_k_v: true` to let the optimizer **retune the gain** instead of
+  taking it as given; the reply's `winch_params.k_v` is then the OPTIMIZED
+  value and the returned path is not flyable with the one you sent in (same
+  contract as `depower`). The search is bracketed by `k_v_bounds`
+  `[k_v_min, k_v_max]`, defaulting to a factor 2 either side of your `k_v`;
+  `optimized_parameters.k_v_at_bound` tells you whether the result ran into
+  that bracket, in which case widen it and re-solve. See
+  [Optimizing the winch gain](#optimizing-the-winch-gain).
 - `Trajectory {azimuth[], elevation[]}` — flight path in **degrees**,
   periodic (closing point optional on input, always present in replies).
   On input it is fitted to the pattern B-spline as the starting guess;
@@ -470,3 +478,36 @@ Depower cheat-sheet: **fixed** = remove `"input_depower"` from
 `optimization_params` and set the `input_depower` field; **one optimized
 value** = keep it in `optimization_params` (default); **optimized per point** =
 additionally set `optimize_depower_profile: true` in the cycle config.
+
+## Optimizing the winch gain
+
+By default the winch law is a **given**: you send `k_v`, the optimizer shapes a
+path around it. With `winch_params.optimize_k_v: true` the gain becomes a design
+variable instead, so the answer is "here is the best path *and* the winch gain
+it wants".
+
+```json
+{"winch_params": {"mode": "reelout", "k_v": 0.11, "f_min": 1000, "f_max": 8400,
+                  "optimize_k_v": true, "k_v_bounds": [0.03, 0.22]}}
+```
+
+Read the result from **`winch_params.k_v` in the reply** — as with depower, the
+path assumes the optimized gain and is not flyable with the one you sent.
+`optimized_parameters` additionally carries `k_v`, the raw `slope_winch_ro`
+(`= 1/k_v²`, the optimizer's own parameter) and `k_v_at_bound`.
+
+Three things to know before using it:
+
+- **The bracket matters, and it binds.** It defaults to a factor 2 either side
+  of your `k_v`. On the LEI-V3 reference at 5.2 m/s, a client gain of 0.11
+  optimizes down to ~0.035 — a factor 3 — so the default bracket stops at 0.055
+  and leaves ~8 % of the available power behind. `k_v_at_bound: true` is the
+  signal to widen `k_v_bounds` and re-solve.
+- **The gain is weakly identified.** Power is flat along this direction: from
+  `k_v = 0.04`, different brackets land between 0.035 and 0.040 with under 1 %
+  power spread. Treat the returned gain as an order-of-magnitude
+  recommendation, not a precise setpoint, and keep `reg_weight` on.
+- **A wider bracket is not reliably easier to solve.** Starting from
+  `k_v = 0.11`, brackets `[0.055, 0.22]` and `[0.01, 0.22]` both converge but
+  `[0.02, 0.22]` fails. If a solve fails, retry with a different bracket before
+  concluding the case is infeasible.

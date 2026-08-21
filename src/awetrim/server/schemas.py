@@ -189,6 +189,23 @@ class WinchParams(BaseModel):
         description="Maximum winch power [W]; alternative to v_max "
         "(v_max = p_max / f_max)",
     )
+    # Treat the winch gain as a design variable instead of a given. The
+    # returned path then assumes the OPTIMIZED k_v, which the replies echo back
+    # in this same struct -- exactly like depower, the path is NOT flyable with
+    # the k_v that was sent in.
+    optimize_k_v: bool = Field(
+        default=False,
+        description="Let the optimizer retune the winch gain k_v. The reply "
+        "echoes the optimized value; fly that one, not the value sent in.",
+    )
+    k_v_bounds: Optional[List[float]] = Field(
+        default=None,
+        min_length=2,
+        max_length=2,
+        description="[k_v_min, k_v_max] bracket for the optimized gain; "
+        "defaults to a factor 2 either side of k_v. Ignored unless "
+        "optimize_k_v is true.",
+    )
 
     @model_validator(mode="after")
     def _check_forces(self):
@@ -196,6 +213,14 @@ class WinchParams(BaseModel):
             raise ValueError("f_max must be greater than f_min")
         if self.v_max is not None and self.p_max is not None:
             raise ValueError("give either v_max or p_max, not both")
+        if self.k_v_bounds is not None:
+            lo, hi = self.k_v_bounds
+            if lo <= 0 or hi <= 0:
+                raise ValueError("k_v_bounds must be positive")
+            if lo >= hi:
+                raise ValueError("k_v_bounds must be [min, max] with min < max")
+            if not lo <= self.k_v <= hi:
+                raise ValueError("k_v must lie inside k_v_bounds")
         return self
 
     def reel_speed_limit(self) -> Optional[float]:

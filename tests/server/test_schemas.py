@@ -129,6 +129,20 @@ def test_winch_params_take_v_max_or_p_max_not_both():
         WinchParams(**base, v_max=8.0, p_max=38000.0)
 
 
+def test_winch_k_v_optimization_is_opt_in_and_bracket_is_validated():
+    from awetrim.server.schemas import WinchParams
+
+    base = dict(mode="reelout", k_v=0.04, f_min=1000.0, f_max=8400.0)
+    assert WinchParams(**base).optimize_k_v is False
+    assert WinchParams(**base).k_v_bounds is None
+    assert WinchParams(**base, optimize_k_v=True, k_v_bounds=[0.02, 0.08])
+
+    # The bracket must be a positive, ordered pair containing k_v.
+    for bad in ([0.05, 0.08], [0.01, 0.03], [0.08, 0.02], [-0.01, 0.08], [0.04]):
+        with pytest.raises(ValidationError):
+            WinchParams(**base, optimize_k_v=True, k_v_bounds=bad)
+
+
 def test_min_turn_radius_is_optional_and_non_negative():
     assert InitRequest(**_init_kwargs()).min_turn_radius is None
     assert StepRequest().min_turn_radius is None

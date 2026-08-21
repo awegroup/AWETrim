@@ -1056,6 +1056,23 @@ components:
           - type: 'null'
           title: P Max
           description: Maximum winch power [W]; alternative to v_max (v_max = p_max / f_max)
+        optimize_k_v:
+          type: boolean
+          title: Optimize K V
+          description: Let the optimizer retune the winch gain k_v. The reply echoes the optimized
+            value; fly that one, not the value sent in.
+          default: false
+        k_v_bounds:
+          anyOf:
+          - items:
+              type: number
+            type: array
+            maxItems: 2
+            minItems: 2
+          - type: 'null'
+          title: K V Bounds
+          description: '[k_v_min, k_v_max] bracket for the optimized gain; defaults to a factor
+            2 either side of k_v. Ignored unless optimize_k_v is true.'
       additionalProperties: false
       type: object
       required:

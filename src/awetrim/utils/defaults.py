@@ -154,7 +154,14 @@ DEFAULT_OPTI_LIMITS = {
     "speed_radial": (-10, 10),
     "distance_radial": (100, 415),
     "k_vr": (0.5, 1.5),
-    "slope_winch_ro": (3000, 30000),  # Range for slope in winch model
+    # Winch force-law slope [N/(m/s)^2]. The old (3000, 30000) box was fitted
+    # to the cycle configs (~5500) and excluded the whole range real ground
+    # stations use: a controller gain k_v maps to slope = 1/k_v^2, so k_v of
+    # 0.02/0.04/0.11 gives 2500/625/83 -- all BELOW the old lower bound, which
+    # silently clipped the seed instead of failing. This range spans
+    # k_v in [0.0045, 0.14]. The reelout server narrows it per request around
+    # the client's own k_v (see server/session.py::_apply_winch_params).
+    "slope_winch_ro": (50, 50000),
     "offset_winch_ro": (-6, 0),  # Range for offset in winch model
     "slope_winch_ri": (0, 10000),  # Range for slope in winch model
     "offset_winch_ri": (-6, -1),  # Range for offset in winch model

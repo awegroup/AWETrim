@@ -30,6 +30,7 @@ raised here into HTTP status codes.
 
 import copy
 import logging
+import math
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -73,6 +74,15 @@ RESIM_VARIABLES = [
     "mechanical_power",
     "angle_of_attack",
 ]
+
+# The optimizer's name for the winch force-law slope. The client speaks k_v
+# (v_set = k_v*sqrt(F)); the two are related by slope = 1/k_v^2, so the API
+# never has to expose this name.
+WINCH_SLOPE_PARAM = "slope_winch_ro"
+# Default half-width of the optimized-gain bracket, as a factor either side of
+# the client's k_v. Wide enough to be worth optimizing, tight enough that the
+# NLP stays near the winch the client actually owns.
+K_V_BRACKET_FACTOR = 2.0
 
 
 class SessionState(str, Enum):
@@ -265,8 +275,9 @@ class ReeloutSession:
             )
 
         winch = config.get("winch_params")
+        optimize_k_v = False
         if winch:
-            self._apply_winch_params(
+            optimize_k_v = self._apply_winch_params(
                 reelout_config["radial_parameters"], sim_parameters, winch
             )
 
@@ -285,6 +296,7 @@ class ReeloutSession:
             config.get("optimization_params")
             or ["C_phi", "C_beta", "input_depower"]
         )
+        self._set_winch_optimization(optimization_params, optimize_k_v)
         depower_mode = self._apply_depower(
             sim_parameters, optimization_params, config.get("depower")
         )
@@ -401,6 +413,30 @@ class ReeloutSession:
         elif "input_depower" not in optimization_params:
             optimization_params.append("input_depower")
         return mode
+
+    def winch_state(self) -> Optional[Dict[str, Any]]:
+        """WinchParams echo carrying the k_v the returned path assumes.
+
+        Without ``optimize_k_v`` this is the struct the client sent. With it,
+        the optimizer has moved the gain, so ``k_v`` is the OPTIMIZED value
+        recovered from the force law (k_v = 1/sqrt(slope)) — like depower, the
+        path is not flyable with the value that was sent in.
+        """
+        if not self._winch_params:
+            return None
+        out = dict(self._winch_params)
+        if self.phase is None:
+            return out
+        slope = self.phase.pattern_config.get("radial_parameters", {}).get(
+            WINCH_SLOPE_PARAM
+        )
+        try:
+            slope = float(slope)
+        except (TypeError, ValueError):
+            return out
+        if slope > 0:
+            out["k_v"] = 1.0 / math.sqrt(slope)
+        return out
 
     def depower_state(
         self, n_points: Optional[int] = None
@@ -545,7 +581,7 @@ class ReeloutSession:
         radial_parameters: Dict[str, Any],
         sim_parameters: Dict[str, Any],
         winch: Dict[str, Any],
-    ) -> None:
+    ) -> bool:
         """Map a client winch law v_set = k_v*sqrt(F) onto the optimizer.
 
         Inverted, the law is F = (1/k_v^2) * v^2 — exactly AWETrim's
@@ -556,6 +592,14 @@ class ReeloutSession:
         speed keeps rising up to the winch's power limit, so the speed cap
         is an input: ``v_max`` (or ``p_max`` / f_max) bounds the speed_radial
         NLP variable; without either the optimizer's default bound stays.
+
+        With ``optimize_k_v`` the slope becomes a design variable rather than a
+        constant, bracketed by ``k_v_bounds`` (default: a factor
+        ``K_V_BRACKET_FACTOR`` either side of the client's own k_v). The
+        bracket is set per request instead of relying on
+        ``DEFAULT_OPTI_LIMITS["slope_winch_ro"]``, so the box always contains
+        the seed no matter which gain the client flies. Returns whether the
+        caller must add the slope to ``optimization_params``.
         """
         if winch["mode"] != "reelout":
             raise ValueError(
@@ -588,10 +632,38 @@ class ReeloutSession:
             ]
         else:
             override.pop("speed_radial", None)
+        optimize_k_v = bool(winch.get("optimize_k_v", False))
+        if optimize_k_v:
+            bounds = winch.get("k_v_bounds")
+            if bounds:
+                k_v_lo, k_v_hi = float(min(bounds)), float(max(bounds))
+            else:
+                k_v_lo = k_v / K_V_BRACKET_FACTOR
+                k_v_hi = k_v * K_V_BRACKET_FACTOR
+            # slope = 1/k_v^2 falls as k_v rises, so the bracket inverts.
+            override[WINCH_SLOPE_PARAM] = [
+                1.0 / (k_v_hi * k_v_hi),
+                1.0 / (k_v_lo * k_v_lo),
+            ]
+        else:
+            override.pop(WINCH_SLOPE_PARAM, None)
         if override:
             sim_parameters["opti_limits_override"] = override
         else:
             sim_parameters.pop("opti_limits_override", None)
+        return optimize_k_v
+
+    @staticmethod
+    def _set_winch_optimization(
+        optimization_params: List[str], optimize_k_v: bool
+    ) -> None:
+        """Add/remove the winch-slope design variable in place."""
+        if optimize_k_v:
+            if WINCH_SLOPE_PARAM not in optimization_params:
+                optimization_params.append(WINCH_SLOPE_PARAM)
+        else:
+            while WINCH_SLOPE_PARAM in optimization_params:
+                optimization_params.remove(WINCH_SLOPE_PARAM)
 
     @staticmethod
     def _fit_trajectory_into_path(
@@ -687,9 +759,12 @@ class ReeloutSession:
                 self._inflow = dict(inflow_conditions)
 
             if winch_params is not None:
-                self._apply_winch_params(
+                optimize_k_v = self._apply_winch_params(
                     pattern_config["radial_parameters"], sim_parameters,
                     winch_params,
+                )
+                self._set_winch_optimization(
+                    self._optimization_params, optimize_k_v
                 )
                 self._winch_params = dict(winch_params)
 
@@ -782,9 +857,7 @@ class ReeloutSession:
             state = self.state.value
         return {
             "length": self._length(),
-            "winch_params": dict(self._winch_params)
-            if self._winch_params
-            else None,
+            "winch_params": self.winch_state(),
             "trajectory": self.trajectory_degrees(),
             "depower": self.depower_state(),
             "min_turn_radius": self.min_turn_radius(),
@@ -927,6 +1000,32 @@ class ReeloutSession:
                 optimized_parameters["input_depower"] = float(value)
             except (TypeError, ValueError):
                 pass
+        # The winch gain, when it was a design variable. Reported in both the
+        # client's units (k_v) and the optimizer's (the force-law slope).
+        if WINCH_SLOPE_PARAM in self._optimization_params:
+            slope = pattern_config.get("radial_parameters", {}).get(
+                WINCH_SLOPE_PARAM
+            )
+            try:
+                slope = float(slope)
+            except (TypeError, ValueError):
+                slope = None
+            if slope and slope > 0:
+                optimized_parameters[WINCH_SLOPE_PARAM] = slope
+                optimized_parameters["k_v"] = 1.0 / math.sqrt(slope)
+                # Whether the gain ran into its own bracket. A binding bound
+                # means the optimizer wanted to retune further than it was
+                # allowed, so the reported k_v is the edge of the box rather
+                # than an optimum -- widen k_v_bounds to chase it.
+                bracket = (sim_parameters.get("opti_limits_override") or {}).get(
+                    WINCH_SLOPE_PARAM
+                )
+                if bracket:
+                    lo, hi = float(bracket[0]), float(bracket[1])
+                    tol = 1e-3 * (hi - lo)
+                    optimized_parameters["k_v_at_bound"] = bool(
+                        slope <= lo + tol or slope >= hi - tol
+                    )
 
         return SolveRecord(
             step_index=step_index,
@@ -985,9 +1084,7 @@ class ReeloutSession:
         return {
             "name": self._name,
             "length": self._length(),
-            "winch_params": dict(self._winch_params)
-            if self._winch_params
-            else None,
+            "winch_params": self.winch_state(),
             "inflow_conditions": dict(self._inflow) if self._inflow else None,
             "trajectory": self.trajectory_degrees(),
             "input_depower": sim_parameters.get("input_depower"),

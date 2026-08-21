@@ -38,7 +38,12 @@ src/awetrim/
                          /init /status /step /trajectory /reset; one
                          warm-started re-solve per /step for co-simulation
                          clients, e.g. an external kite simulator).
-                         Co-sim structs: WinchParams, Trajectory,
+                         Co-sim structs: WinchParams {mode, k_v, f_min,
+                         f_max, v_max|p_max, optimize_k_v, k_v_bounds}
+                         (optimize_k_v -> slope_winch_ro becomes a design
+                         variable, bracketed per request around the client's
+                         k_v; replies echo the OPTIMIZED k_v and flag
+                         optimized_parameters.k_v_at_bound), Trajectory,
                          DepowerParams {mode: fixed|optimize|profile, value},
                          InflowConditions {wind_speed @6 m, wind_direction
                          (compass, FROM), profile_law 0-6, alpha, z0,

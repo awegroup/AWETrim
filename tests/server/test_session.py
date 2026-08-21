@@ -364,6 +364,124 @@ def test_winch_params_map_to_quadratic_force_law(patched_session):
         sess.init(config)
 
 
+def test_optimize_k_v_off_by_default(patched_session):
+    """The winch gain stays a constant unless the client asks for it."""
+    sess, config = patched_session
+    config["winch_params"] = {
+        "mode": "reelout", "k_v": 0.04, "f_min": 1000.0, "f_max": 8400.0,
+    }
+    sess.init(config)
+    assert "slope_winch_ro" not in sess._optimization_params
+    override = sess.phase.pattern_config["sim_parameters"].get(
+        "opti_limits_override", {}
+    )
+    assert "slope_winch_ro" not in override
+
+
+def test_optimize_k_v_adds_bounded_design_variable(patched_session):
+    """optimize_k_v makes the slope a variable, bracketed around the seed."""
+    sess, config = patched_session
+    k_v = 0.04
+    config["winch_params"] = {
+        "mode": "reelout", "k_v": k_v, "f_min": 1000.0, "f_max": 8400.0,
+        "optimize_k_v": True,
+    }
+    sess.init(config)
+
+    assert "slope_winch_ro" in sess._optimization_params
+    lo, hi = sess.phase.pattern_config["sim_parameters"][
+        "opti_limits_override"
+    ]["slope_winch_ro"]
+    # slope = 1/k_v^2 falls as k_v rises, so the bracket inverts.
+    assert lo == pytest.approx(1.0 / (2.0 * k_v) ** 2)
+    assert hi == pytest.approx(1.0 / (0.5 * k_v) ** 2)
+    # The seed must lie strictly inside its own box -- the bug the old
+    # DEFAULT_OPTI_LIMITS range caused was a seed outside it, clipped silently.
+    seed = sess.phase.pattern_config["radial_parameters"]["slope_winch_ro"]
+    assert lo < seed < hi
+
+
+def test_optimize_k_v_honours_explicit_bounds(patched_session):
+    sess, config = patched_session
+    config["winch_params"] = {
+        "mode": "reelout", "k_v": 0.04, "f_min": 1000.0, "f_max": 8400.0,
+        "optimize_k_v": True, "k_v_bounds": [0.03, 0.10],
+    }
+    sess.init(config)
+    lo, hi = sess.phase.pattern_config["sim_parameters"][
+        "opti_limits_override"
+    ]["slope_winch_ro"]
+    assert lo == pytest.approx(1.0 / 0.10**2)
+    assert hi == pytest.approx(1.0 / 0.03**2)
+
+
+def test_step_can_toggle_k_v_optimization_off(patched_session):
+    """A later /step turning it off drops the variable and its bracket."""
+    sess, config = patched_session
+    config["winch_params"] = {
+        "mode": "reelout", "k_v": 0.04, "f_min": 1000.0, "f_max": 8400.0,
+        "optimize_k_v": True,
+    }
+    sess.init(config)
+    assert "slope_winch_ro" in sess._optimization_params
+
+    _run_step_to_success(sess, winch_params={
+        "mode": "reelout", "k_v": 0.04, "f_min": 1000.0, "f_max": 8400.0,
+        "optimize_k_v": False,
+    })
+    assert "slope_winch_ro" not in sess._optimization_params
+    override = sess.phase.pattern_config["sim_parameters"].get(
+        "opti_limits_override", {}
+    )
+    assert "slope_winch_ro" not in override
+    # ...and it is not appended twice when re-enabled.
+    _run_step_to_success(sess, winch_params={
+        "mode": "reelout", "k_v": 0.04, "f_min": 1000.0, "f_max": 8400.0,
+        "optimize_k_v": True,
+    })
+    assert sess._optimization_params.count("slope_winch_ro") == 1
+
+
+def test_winch_state_echoes_the_optimized_gain(patched_session):
+    """The reply must carry the k_v the path assumes, not the one sent in."""
+    sess, config = patched_session
+    config["winch_params"] = {
+        "mode": "reelout", "k_v": 0.04, "f_min": 1000.0, "f_max": 8400.0,
+        "optimize_k_v": True,
+    }
+    sess.init(config)
+    # Stand in for what run_opti writes back after a solve.
+    sess.phase.pattern_config["radial_parameters"]["slope_winch_ro"] = 1.0 / 0.05**2
+
+    assert sess.winch_state()["k_v"] == pytest.approx(0.05)
+    assert sess.init_reply()["winch_params"]["k_v"] == pytest.approx(0.05)
+    # The non-optimized fields are passed through untouched.
+    assert sess.winch_state()["f_max"] == 8400.0
+
+
+@pytest.mark.parametrize(
+    "k_v_solved, at_bound", [(0.05, False), (0.08, True), (0.02, True)]
+)
+def test_optimized_parameters_flag_a_binding_bracket(
+    patched_session, k_v_solved, at_bound
+):
+    """A gain sitting on its bracket is an edge, not an optimum: say so."""
+    sess, config = patched_session
+    config["winch_params"] = {
+        "mode": "reelout", "k_v": 0.04, "f_min": 1000.0, "f_max": 8400.0,
+        "optimize_k_v": True,  # default bracket -> k_v in [0.02, 0.08]
+    }
+    sess.init(config)
+    sess.phase.pattern_config["radial_parameters"]["slope_winch_ro"] = (
+        1.0 / k_v_solved**2
+    )
+    _run_step_to_success(sess)
+
+    opt = sess.last_record.optimized_parameters
+    assert opt["k_v"] == pytest.approx(k_v_solved)
+    assert opt["k_v_at_bound"] is at_bound
+
+
 def test_trajectory_fit_round_trip(patched_session):
     """A sent degree-path is fitted and re-sampled close to the original."""
     sess, config = patched_session
