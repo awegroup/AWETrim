@@ -212,11 +212,6 @@ def process_data(config_data: dict, log_directory: Path) -> pd.DataFrame:
         flight_data = flight_data.assign(**fused_kite_data)
 
     add_orientation_data(log, kite_sensors, "kite", flight_data)
-    import matplotlib.pyplot as plt
-
-    plt.plot(log["main_battery_voltage"])
-    plt.plot(log["main_battery_current"])
-    plt.show()
     # Ground station data
     flight_data["ground_tether_force"] = log["ground_tether_force"] * 9.81
     flight_data["ground_wind_speed"] = log["ground_wind_velocity"]
