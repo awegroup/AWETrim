@@ -619,6 +619,14 @@ class ReeloutSession:
                 "softminus": True,
             }
         )
+        # A client that inverts this curve to command a reel-out speed has to use
+        # the SAME corner sharpness, so honour what it sends before falling back to
+        # the historical default. Set explicitly rather than by setdefault: the
+        # cycle config may already carry a value, and the request is the authority.
+        for key in ("softplus_beta", "softminus_beta"):
+            value = winch.get(key)
+            if value is not None:
+                radial_parameters[key] = float(value)
         radial_parameters.setdefault("softplus_beta", 1e-3)
         radial_parameters.setdefault("softminus_beta", 1e-3)
         v_max = winch.get("v_max")

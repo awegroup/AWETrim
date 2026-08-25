@@ -206,6 +206,26 @@ class WinchParams(BaseModel):
         "defaults to a factor 2 either side of k_v. Ignored unless "
         "optimize_k_v is true.",
     )
+    # Corner sharpness of the two soft saturations applied to the tension curve.
+    # Carried on the wire so a client that INVERTS this curve to command a reel-out
+    # speed cannot silently drift from the curve the path was planned against: the
+    # two sides used to agree only because both happened to say 1e-3.
+    softplus_beta: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Corner sharpness of the UPPER force limit [1/N]; larger is "
+        "sharper, and the transition spans a tension band of order 1/beta. "
+        "Unset keeps the server default (1e-3).",
+    )
+    softminus_beta: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Corner sharpness of the LOWER force limit [1/N]; larger is "
+        "sharper. Unset keeps the server default (1e-3). Watch this one: the "
+        "effective floor is softplus(beta*f_min)/beta, so a 1/beta larger than "
+        "f_min itself dominates the limit it smooths -- at 1e-3 an f_min of 350 N "
+        "gives an 884 N floor, 2.5x the value requested.",
+    )
 
     @model_validator(mode="after")
     def _check_forces(self):
