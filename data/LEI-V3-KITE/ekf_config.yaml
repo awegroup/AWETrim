@@ -5,9 +5,18 @@ simulation_parameters:
   max_iterations: 200                 # Maximum number of iterations for the IEKF
   log_profile: false                   # Model wind speed as logarithmic with height
   initial_wind_velocity: [0.001, 8, 0] # Initial wind velocity [vx, vy, vz] for EKF state initialization
-  enforce_vertical_wind_to_0: false    # Enforce the vertical wind speed to be zero (If apparent wind speed not measured, recommended to be true)
+  enforce_vertical_wind_to_0: true     # Soft-pin w_z (pseudo-measurement, meas_stdv z_wind): the free w_z was 55 % figure-eight-locked and its 3-h mean flipped sign with the tuning; 2019-10-08 was overcast+rain, no convection to carry a real mean updraft (tuned 2026-08-24)
   model_yaw: false                   # Model the yaw angle in the state vector
-
+  steering_dependent_cs: true        # CS = CL*tan(k_phi_us*us) + residual state; kills the CS walk chasing the loop-locked steering (k_phi_us -0.60 on us=steering/200, 2019-10-08)
+  steering_dependent_clcd: true      # k_cl_us*|us| on CL, k_cd_us*us^2 on CD (even terms; pair with the tightened CL/CD walks below)
+  steering_dependent_cl_asym: true   # signed k_cl_us_odd*us on CL only (+0.20 on /200 scale); a signed CD term made CD worse -- do not add one
+  steering_input_lag: 0.3            # first-order lag [s] on the steering input; identified from the CS residual (zeroes its du_s/dt correlation), tuned 2026-08-24
+  calibrate_apparent_windspeed: true     # Calibrate the pitot tube against the EKF estimate in a pre-run (only if kite_apparent_windspeed is measured)
+  pitot_calibration_fit_zero: true      # Also fit the pitot transducer zero, not only the calibration coefficient
+  calibration_start_minutes: 10          # skip the filter transient AND the first ~15 flight minutes, where the tether ODE fails on ~10 % of samples (2019-10-08) and the pitot fit lands on garbage (k 0.82 there vs 0.75 on clean data)
+  calibration_duration_minutes: 10       # minutes of flight to fit on
+  calibration_end_margin_minutes: 3      # stay clear of the end of the flight
+  
   measurements:
     kite_position: true                   # Kite position measurement
     kite_velocity: true                   # Kite velocity measurement
@@ -43,11 +52,11 @@ tuning_parameters:
     v: 1
     uf: 0.002
     wdir: 0.00349  # 0.2 degrees in radians
-    vw: 0.1
-    vwz: 0.01
-    CL: 0.01
-    CD: 0.003
-    CS: 0.01
+    vw: 0.02   # per-step random walk; 0.05 let the wind wander ~7 % pp in phase with the loop, 0.01 over-tightens (suppresses real turbulence, biases the level +0.4 m/s). Residual TI 8.8 %
+    vwz: 0.005
+    CL: 0.005  # residual walks: the loop-locked steering response is carried by the steering_dependent_* terms, so the walks only hold what the actuation cannot explain. Tightening below these was not tried; loosening back to 0.01/0.003/0.01 costs wind-speed pattern (0.457 vs 0.401 pp). Freeing to 0.05 breaks wind observability outright
+    CD: 0.0005 # with the stages carrying the loop-locked and depower response, the CD state is a near-constant parasitic CD0 — a loose walk let lift/drag axis-misattribution noise dip the wing CD below 0.05 for 12% of samples (0.002) vs 9.5% here; lidar agreement on 2025-10-09 is unchanged by the tightening. 0.0001 kills the dips entirely (1.6%) but suppresses TI 8.8->6.6% and degrades w_z pattern on 2019 (tuned 2026-08-25)
+    CS: 0.003
     tether_elevation: 0.0873 # 5 degrees in radians
     tether_azimuth: 0.0873 # 5 degrees in radians
     tether_length: 0.1

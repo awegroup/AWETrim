@@ -74,8 +74,8 @@ components:
       type: kite_control_unit
       version: 1.0
       structure:
-        length: 1.0      # m
-        diameter: 0.48   # m
+        length: 1.2      # m
+        diameter: 0.62   # m
         mass: 23.3       # kg, as flown 2025-10-09
         center_of_mass: [0.0, 0.0, 0.0]  # m, same as bridle_point_node
   tethers:
