@@ -144,11 +144,11 @@ def load_config(project_dir: Path | None = None) -> dict:
         "length": control_sys_struct.get("length", 1.0),
         "diameter": control_sys_struct.get("diameter", 0.48),
         "mass": control_sys_struct.get("mass", 0.0),
-        "distance_kcu_kite": (
-            bridle_struct.get("bridle_point_node", [0, 0, 0])[2]
-            if bridle_struct.get("bridle_point_node")
-            else 0.0
-        ),
+        # bridle_point_node is the body-frame ORIGIN in awesIO (always [0,0,0]),
+        # so the KCU-to-wing distance is the wing CG height above it. Reading
+        # the node itself gave 0 and collapsed the bridle segment in the tether
+        # model (bridle drag lost, KCU drag split corrupted).
+        "distance_kcu_kite": wing_struct.get("center_of_mass", [0.0, 0.0, 0.0])[2],
         "total_length_bridle_lines": bridle_struct.get(
             "total_nominal_line_length", 0.0
         ),
