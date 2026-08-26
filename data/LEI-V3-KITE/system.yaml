@@ -97,7 +97,7 @@ components:
                            # (~35 m), or the lap cannot complete: at r0 = 340 m
                            # a lap ends near 375 m and the 350 cap forced short,
                            # over-tight patterns or outright failures.
-      diameter: 0.004      # m  (4 mm) — as flown; drag area scales with this
+      diameter: 0.008      # m  (8 mm) — as flown; drag area scales with this
       density: 724.0       # kg/m³  effective density of the braided rope, not of
                            # the SK78 fibre (970): with the rope's own diameter it
                            # is the rope's mass per metre that has to come out right
@@ -105,7 +105,13 @@ components:
       conductive: false
       material:
         type: Dyneema-SK78
-        youngs_modulus: 850.0e+6  # Pa (0.85 GPa)
+        youngs_modulus: 55.0e+9   # Pa (55 GPa) — matches SimpleKiteControllers.jl's
+                                  # e_tether (data/settings_reelout_150m.yaml), cited
+                                  # to Ruppert; was 850e6 (0.85 GPa), a 65x mismatch.
+                                  # Changed 2026-08-26 to test whether it explains the
+                                  # power_ratio regression (1.0 -> 0.92 at 6 m/s) that
+                                  # appeared after doubling the tether diameter to 8mm.
+                                  # Revert to 850.0e+6 if this breaks something else.
   ground_station:
     name: LEI-V3 Ground Station
     type: pumping_ground_gen_station
