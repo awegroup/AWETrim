@@ -206,6 +206,52 @@ def _resolve_kcu_mass(struc_geometry, config=None, system_config=None):
     return 0.0
 
 
+ELEMENT_STIFFNESS_KEY = "element_stiffness"
+
+
+def element_stiffness_overrides(struc_geometry) -> dict:
+    """Parse the optional ``element_stiffness`` table: ``(node_i, node_j) -> (k, c)``.
+
+    Written by a coupled solve whose PSM stiffness update fired (see
+    ``aerostructural.pss.structural_pss.adapt_stiffnesses``): the wing element
+    stiffnesses are chosen so that no element elongates by more than 1%, and
+    this is how the SELECTED values travel with the deformed geometry instead
+    of being silently re-derived from the material table on reload.
+
+    Elements are keyed by their NODE PAIR, not by name: a bridle line name
+    covers both sides of the kite (and both arms of a pulley), which the
+    elongation bound can drive to different stiffnesses. ``c`` is optional and
+    defaults to whatever the material table gives.
+    """
+    table = struc_geometry.get(ELEMENT_STIFFNESS_KEY)
+    if not table:
+        return {}
+    headers = [str(h) for h in table["headers"]]
+    overrides = {}
+    for row in table["data"]:
+        entry = dict(zip(headers, row))
+        key = tuple(sorted((int(entry["node_i"]), int(entry["node_j"]))))
+        damping = entry.get("c")
+        overrides[key] = (
+            float(entry["k"]),
+            None if damping is None else float(damping),
+        )
+    return overrides
+
+
+def _apply_stiffness_override(overrides, ci, cj, k, c):
+    """Return (k, c) with the ``element_stiffness`` entry for this pair applied."""
+    if not overrides:
+        return k, c
+    k_override, c_override = overrides.get(
+        tuple(sorted((int(ci), int(cj)))), (None, None)
+    )
+    return (
+        k if k_override is None else k_override,
+        c if c_override is None else c_override,
+    )
+
+
 def initialize_wing_structure(
     struc_geometry,
     struc_nodes,
@@ -250,6 +296,7 @@ def initialize_wing_structure(
         row[0]: dict(zip(struc_geometry["wing_elements"]["headers"][1:], row[1:]))
         for row in struc_geometry["wing_elements"]["data"]
     }
+    overrides = element_stiffness_overrides(struc_geometry)
     tubular_frame_line_idx_list = []
     te_line_idx_list = []
     for conn_idx, (conn_name, ci, cj) in enumerate(
@@ -262,8 +309,17 @@ def initialize_wing_structure(
 
         kite_connectivity_arr.append([ci, cj])
         l0_arr.append(wing_elements_dict[conn_name]["l0"])
-        k_arr.append(wing_elements_dict[conn_name]["k"])
-        c_arr.append(wing_elements_dict[conn_name]["c"])
+        # A solve that selected stiffnesses under the elongation bound writes
+        # them into `element_stiffness`; they win over the material table.
+        k_element, c_element = _apply_stiffness_override(
+            overrides,
+            ci,
+            cj,
+            wing_elements_dict[conn_name]["k"],
+            wing_elements_dict[conn_name]["c"],
+        )
+        k_arr.append(k_element)
+        c_arr.append(c_element)
         linktype_arr.append(wing_elements_dict[conn_name]["linktype"])
 
         if "le" in conn_name.lower() or "strut" in conn_name.lower():
@@ -324,6 +380,7 @@ def initialize_bridle_line_system(
 
     # initialize a connectivity counter, that starts with the number of wing_connections
     conn_idx_counter = len(kite_connectivity_arr)
+    overrides = element_stiffness_overrides(struc_geometry)
     bridle_connectivity_arr = []
     bridle_diameter_arr = []
     pulley_node_indices = []
@@ -391,8 +448,9 @@ def initialize_bridle_line_system(
             bridle_connectivity_arr.append([ci, cj])
             bridle_diameter_arr.append(bridle_lines_dict[conn_name]["d"])
             l0_arr.append(l0)
-            k_arr.append(k)
-            c_arr.append(c)
+            k_arm, c_arm = _apply_stiffness_override(overrides, ci, cj, k, c)
+            k_arr.append(k_arm)
+            c_arr.append(c_arm)
             linktype_arr.append(bridle_lines_dict[conn_name]["linktype"])
 
             # Create a special mapping for the Structural Particle System Solver
@@ -421,8 +479,9 @@ def initialize_bridle_line_system(
             bridle_connectivity_arr.append([cj, ck])
             bridle_diameter_arr.append(bridle_lines_dict[conn_name]["d"])
             l0_arr.append(l0)
-            k_arr.append(k)
-            c_arr.append(c)
+            k_arm, c_arm = _apply_stiffness_override(overrides, cj, ck, k, c)
+            k_arr.append(k_arm)
+            c_arr.append(c_arm)
             linktype_arr.append(bridle_lines_dict[conn_name]["linktype"])
 
             # Create a special mapping for the Structural Particle System Solver
@@ -456,6 +515,7 @@ def initialize_bridle_line_system(
             kite_connectivity_arr.append([ci, cj])
             bridle_connectivity_arr.append([ci, cj])
             bridle_diameter_arr.append(bridle_lines_dict[conn_name]["d"])
+            k, c = _apply_stiffness_override(overrides, ci, cj, k, c)
             l0_arr.append(l0)
             k_arr.append(k)
             c_arr.append(c)
