@@ -23,7 +23,9 @@ src/awetrim/aerostructural/
   protocols.py                     All dataclasses and Protocol types
   mapping.py                       LinearStructuralToAeroMapper, BilinearAeroToStructuralLoadMapper
   forces.py                        distribute_total_force_by_particle_mass
-  convergence.py                   compute_adaptive_dt, check_convergence
+  convergence.py                   compute_adaptive_dt, check_convergence,
+                                   resultant_tether_force, relative_residual_norm,
+                                   resolve_residual_tolerances, max_element_elongation
   results.py                       save_sim_output, append_sweep_csv_row, build_sweep_csv_row
   tracking.py                      setup_tracking_arrays, update_tracking_arrays
   utils.py                         rotate_geometry, calculate_cg, calculate_inertia, load_yaml
@@ -40,7 +42,8 @@ src/awetrim/aerostructural/
   pss/
     __init__.py                    PssKineticDampingSolver, PssQsmCoupler
     coupling.py                    PssQsmCoupler (fixed-point loop)
-    structural_pss.py              PSS instantiation and kinetic-damping solve
+    structural_pss.py              PSS instantiation, kinetic-damping solve,
+                                   adapt_stiffnesses (1% elongation bound)
     structural_geometry_io.py      Parse struc_geometry.yaml → StructuralGeometry arrays
     actuation.py                   update_steering_tape_actuation, update_power_tape_actuation
     aerostructural_coupled_solver_qsm.py  Legacy high-level driver (used by production scripts)
@@ -99,6 +102,9 @@ Fixed-point loop (pss/coupling.PssQsmCoupler.solve  or  pss/aerostructural_coupl
   8. Aitken relaxation on node displacement
   9. pss/actuation.update_*_tape_actuation() (every N iterations)            [pss]
   10. convergence.check_convergence() → break or continue                    [common]
+      (relative residual: ||f_int + f_ext|| / |sum f_ext|, see below)
+  11. convergence.element_elongations() + pss/structural_pss.adapt_stiffnesses():
+      stiffen anything over the 1% elongation bound and keep iterating   [pss]
 ```
 
 ## Key Dataclasses (protocols.py)
@@ -128,6 +134,96 @@ pss_pulley_dict = {key: val[:3] for key, val in pulley_dict.items()}
 
 ### Frame convention
 Panel forces from VSM are in the VSM frame (x and y negated relative to the course frame). The transformation `T_C_from_VSM = [[-1,0,0],[0,-1,0],[0,0,1]]` is applied inside `aerodynamics/vsm_quasi_steady.py` **before** forces reach this module. Structural geometry coordinates are in the course frame throughout.
+
+### Convergence criterion (coupled loop)
+
+The coupled solve converges on the GLOBAL NODAL FORCE RESIDUAL
+`f_res = f_int + f_ext` (fixed nodes zeroed -- their imbalance is the tether
+reaction), measured as
+
+    ||f_res|| / F_tether  <=  residual_tol_relative   (default 1e-4)
+
+`F_tether = |sum f_ext|` is the resultant tether force: the spring forces are
+internal and pairwise self-equilibrated, so the whole applied load (aero +
+gravity + inertial) is carried by the single fixed bridle/KCU node.
+`convergence.resultant_tether_force` is the ONLY place that force is formed and
+`convergence.relative_residual_norm` the only place the ratio is; the PSS/QSM
+driver, the FEM driver and `pss/coupling.PssQsmCoupler` all call them. The
+residual-norm HISTORY (stagnation window, adaptive dt) is relative too -- do not
+mix an absolute history with a relative tolerance.
+
+`meta` carries the evidence per solve: `residual_force_n`, `residual_relative`,
+`residual_tol_relative`, `tether_force_resultant`, and `max_element_elongation`
+(largest `(l - l0)/l0`, pulley arms excluded -- they trade rope length with
+their partner, so their elongation is not strain).
+
+Before 2026-08-27 the criterion was an ABSOLUTE `tol: 5` N. On the 2019 LEI-V3
+grid that was ~1.3e-3 relative, so results produced under it are NOT converged
+to 1e-4; re-run rather than compare across the change.
+
+### Element elongation bound (PSM stiffness update)
+
+The WING element stiffnesses are not known: following Poland & Schmehl they
+are chosen so that no element elongates by more than 1%. The PSM loop ENFORCES
+that instead of assuming it -- each coupled iteration,
+`convergence.element_elongations` measures every element and
+`pss/structural_pss.adapt_stiffnesses` multiplies the stiffness of anything over
+`max_elongation` by `stiffness_update_factor` (capped at `max_stiffness`), marks
+the iteration not-converged, and restarts the stagnation window.
+
+CONTINUATION (`stiffness_ramp_iterations`, default 20 = ON): the particle
+system runs at `stiffness_ramp_factor(i) * k_target` while the ramp is active,
+and the loop cannot converge until it completes. Needed when the bridle
+material modulus is RAISED -- which the shipped geometries now do: since
+2026-08-27 `dyneema.youngs_modulus` is SK75 datasheet grade (109 GPa, Avient
+technical data sheet) instead of the old 10 GPa. The
+bridle rest lengths are photogrammetry-adjusted with ~1-2% line stretch baked
+in, so a stiff bridle imposed in one step shortens the effective bridle by
+centimetres, pitches the wing up and lands the trim on the stalled branch
+(measured: 25/27 panels stalled, residual -> NaN at 55 GPa). Ramping from
+`stiffness_ramp_start_factor` (use `k_old / k_new`) keeps the solve on the
+attached branch. The elongation update adapts `k_target`, never the ramped
+value, so the two compose.
+
+SCOPE (`stiffness_update_scope`, default `wing`): only the wing elements are
+adapted. A bridle line's stiffness is NOT a free parameter -- it is `E*A/l0`
+from the line material and diameter -- so stiffening it to suppress its stretch
+would falsify the bridle. Wing elements are parsed first, so the eligible set is
+`range(len(kite_connectivity_arr) - len(bridle_connectivity_arr))`. `meta` keeps
+`max_wing_element_elongation` and `max_bridle_element_elongation` apart so the
+bridle stretch stays visible.
+
+NOTE on the bridle material: `dyneema.youngs_modulus` is now 109 GPa (SK75
+datasheet lower bound) in every shipped `struc_geometry*.yaml`; `density` stays
+an EQUIVALENT value (1717 for LEI-V3, not the fibre's 970) because with the
+stored line diameters it is the mass per metre that must come out right. The
+bridle rest lengths are photogrammetry-adjusted WITH the old 10 GPa stretch
+present, so the change re-trims the kite -- measured at u_dp 0.227: bridle
+elongation 2.78% -> 0.29%, alpha +0.54 deg, CL 0.684 -> 0.722, tether force
+5532 -> 6406 N. Results produced before 2026-08-27 are on the soft bridle.
+The FEM path shares the material block but has NO continuation of its own. So a converged
+PSM shape satisfies BOTH the force residual and the elongation bound; if
+offending elements reach `max_stiffness` nothing is updated any more and the
+loop is free to converge (check `max_element_elongation` in `meta`).
+
+A PULLEY's arms share one rope: `element_elongations` gives both arms the
+ROPE's strain (`(l_a + l_b - l0_a - l0_b) / (l0_a + l0_b)`), so a pulley that
+merely trades length between arms is never stiffened. Pass the driver's
+`pulley_line_to_other_node_pair_dict` as `pulley_pairs`.
+
+Damping is deliberately NOT rescaled with `k` (the PSS dissipation is the
+kinetic-damping scheme). The SELECTED stiffnesses travel with the deformed
+geometry: `results.build_deformed_struc_geometry` writes the changed elements
+into an `element_stiffness` table (`headers: [node_i, node_j, k]`) that
+`structural_geometry_io` applies on reload, so a snapshot re-solve starts from
+the values its solve converged with. Rows are keyed by NODE PAIR, never by name
+-- one bridle name covers both sides of the kite and both arms of a pulley, and
+the bound can drive those to different stiffnesses. `meta["final_stiffnesses"]`
+holds the full array.
+
+Before 2026-08-27 the PSM path had NO stiffness update (only the FEM path did,
+via `kite_fem.adapt_stiffnesses`), and converged 2019-grid shapes reached ~1.4%
+on a wing element and ~1.9% on the bridle lines.
 
 ### PSS convergence
 The PSS kinetic-damping convergence check requires `step * dt > 10.0` before it fires. With `n_internal_time_steps = 100` and `dt = 0.005` (total = 0.5 s), the check **never triggers** — the PSS always runs the full step count. Starting from the unloaded YAML geometry (far from loaded equilibrium) with large aero forces will produce large non-physical deformations in the first iteration. Pre-loaded starting geometry (warm-start from a previous result) avoids this.
@@ -166,13 +262,26 @@ structural_pss:
   max_iter: 500
   kinetic_energy_tolerance: 1.0e-3
   fixed_point_indices: [0]
+  update_stiffness: true       # enforce the elongation bound (see below)
+  stiffness_update_scope: wing # wing elements only (bridle k is E*A/l0)
+  max_elongation: 0.01         # 1%
+  stiffness_ramp_iterations: 20 # continuation, ON by default (see below)
+  stiffness_ramp_start_factor: 0.1
+  stiffness_ramp_scope: bridle
+  stiffness_update_factor: 2.0
+  max_stiffness: 5.0e+5        # ceiling [N/m]
 
 aero_structural_solver:
   max_iter: 100
-  tol: 5.0
+  residual_tol_relative: 1.0e-4   # DIMENSIONLESS (see "Convergence criterion")
+  stagnation_tol_relative: 4.0e-5 # DIMENSIONLESS
   relaxation_factor: 0.5
   is_with_aitken_relaxation: true
 ```
+
+The legacy absolute-force keys `tol` [N] and `stagnation_tol` [N] are REJECTED
+with a ValueError (`convergence.resolve_residual_tolerances`) rather than
+reinterpreted -- a `tol: 5` read as a ratio would "converge" on iteration 1.
 
 ## Result Storage
 

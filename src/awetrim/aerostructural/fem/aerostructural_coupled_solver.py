@@ -29,6 +29,11 @@ from . import aero2struc, structural_kite_fem
 from ..pss import structural_pss
 from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking
 from awetrim import plotting
+from ..convergence import (
+    relative_residual_norm,
+    resolve_residual_tolerances,
+    resultant_tether_force,
+)
 from ..mapping import LinearStructuralToAeroMapper
 from ..utils import calculate_cg, rotate_geometry
 
@@ -311,17 +316,23 @@ def check_convergence(
     f_residual_list,
     f_aero_wing_vsm_format,
     config,
+    force_reference,
     stagnation_check_start=0,
 ):
     """
     Check convergence conditions for the aero-structural solver.
 
+    Convergence is the Euclidean norm of the nodal force residual
+    ``f_int + f_ext`` normalised by the resultant tether force, below the
+    dimensionless ``residual_tol_relative`` (see aerostructural/convergence.py).
+
     Args:
         i: Current iteration number
         f_residual: Current residual force vector
-        f_residual_list: List of residual force norms from all iterations
+        f_residual_list: List of RELATIVE residual norms from all iterations
         f_aero_wing_vsm_format: Aerodynamic forces in VSM format
         config: Configuration dictionary
+        force_reference: Resultant tether force [N] the residual is normalised by
         stagnation_check_start: Iteration index from which to check stagnation
             (reset when switching regularization phase)
 
@@ -335,25 +346,38 @@ def check_convergence(
     should_break = False
     is_stagnated = False
 
+    residual_tol, stagnation_tol = resolve_residual_tolerances(
+        config["aero_structural_solver"]
+    )
+    residual_relative = relative_residual_norm(f_residual, force_reference)
     n_stag = config["aero_structural_solver"].get("n_max_constant_residual_force", 15)
     # Number of iterations since the stagnation check window started
     iters_since_start = i - stagnation_check_start
 
     ### All the convergence checks, are be done in if-elif because only 1 should hold at once
-    # if convergence (residual below set tolerance)
-    if np.linalg.norm(f_residual) <= config["aero_structural_solver"]["tol"]:
-        is_convergence = True
-
     # if residual forces are NaN
-    elif np.isnan(np.linalg.norm(f_residual)):
+    if np.isnan(np.linalg.norm(f_residual)):
         is_convergence = False
         logging.info("Classic PS diverged - residual force is NaN")
         should_break = True
 
+    # if the normalisation itself is unusable (zero/NaN resultant external
+    # force): no convergence claim, but the run is not killed either
+    elif not np.isfinite(residual_relative):
+        logging.warning(
+            "Coupled convergence undefined - resultant tether force is %s N",
+            force_reference,
+        )
+
+    # if convergence (relative residual below set tolerance)
+    elif residual_relative <= residual_tol:
+        is_convergence = True
+
     # if residual forces are not changing anymore (compare start of window vs current)
-    elif iters_since_start > n_stag and np.abs(
-        f_residual_list[i - n_stag] - f_residual_list[i]
-    ) < config["aero_structural_solver"].get("stagnation_tol", 1.0):
+    elif (
+        iters_since_start > n_stag
+        and np.abs(f_residual_list[i - n_stag] - f_residual_list[i]) < stagnation_tol
+    ):
         is_convergence = False
         is_stagnated = True
 
@@ -443,7 +467,13 @@ def main(
     t_vector = np.linspace(0, max_iter, max_iter + 1)
     tracking_data = tracking.setup_tracking_arrays(len(struc_nodes), t_vector)
     is_convergence = False
+    # The coupled loop converges on the RELATIVE nodal force residual
+    # ||f_int + f_ext|| / F_tether, so this history holds dimensionless norms
+    # (see aerostructural/convergence.py).
     f_residual_list = []
+    f_residual = np.zeros(struc_nodes.size)
+    f_residual_relative = float("nan")
+    f_tether_resultant = float("nan")
     f_tether_drag = np.zeros(3)
     is_residual_below_tol = False
     struc_nodes_prev = None  # Initialize previous points for tracking
@@ -863,7 +893,11 @@ def main(
                 for fix_idx in config["structural_pss"]["fixed_point_indices"]:
                     f_residual[3 * fix_idx : 3 * fix_idx + 3] = 0.0
 
-            f_residual_list.append(np.linalg.norm(np.abs(f_residual)))
+            # Convergence measure: nodal force residual normalised by the
+            # resultant tether force, i.e. the load the structure hangs from.
+            f_tether_resultant = resultant_tether_force(f_ext_flat)
+            f_residual_relative = relative_residual_norm(f_residual, f_tether_resultant)
+            f_residual_list.append(f_residual_relative)
             if config["structural_solver"] == "pss":
                 logging.debug(
                     f"residual force in y-direction: {np.sum([f_residual[1::3]]):.3f}N"
@@ -884,6 +918,7 @@ def main(
             ### PROGRESS BAR
             pbar.set_postfix(
                 {
+                    "res/Ft": f"{f_residual_relative:.2e}",
                     "res": f"{np.linalg.norm(f_residual):.3f}N",
                     "aero_model": f"{end_time_aero_model-begin_time_aero_model:.2f}s",
                     "struc_model": f"{end_time_f_int-begin_time_f_int:.2f}s",
@@ -900,6 +935,7 @@ def main(
                 f_residual_list=f_residual_list,
                 f_aero_wing_vsm_format=f_aero_wing_vsm_format,
                 config=config,
+                force_reference=f_tether_resultant,
                 stagnation_check_start=stagnation_check_start,
             )
 
@@ -1018,6 +1054,11 @@ def main(
         # initial + number of completed loop iterations.
         "n_iter": len(f_residual_list) + 1,
         "converged": is_convergence,
+        # What "converged" means here: nodal force residual, the resultant
+        # tether force it is normalised by, and their ratio.
+        "residual_force_n": float(np.linalg.norm(f_residual)),
+        "residual_relative": float(f_residual_relative),
+        "tether_force_resultant": float(f_tether_resultant),
         "rest_lengths": rest_lengths,  # ensure numeric array
         # Convert kite_connectivity to a numeric array for HDF5 compatibility
         "kite_connectivity": np.array(

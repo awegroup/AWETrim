@@ -26,7 +26,15 @@ from .actuation import (
     update_power_tape_actuation,
     update_steering_tape_actuation_progressive,
 )
-from ..convergence import check_convergence, compute_adaptive_dt
+from ..convergence import (
+    check_convergence,
+    compute_adaptive_dt,
+    element_elongations,
+    max_element_elongation,
+    relative_residual_norm,
+    resolve_residual_tolerances,
+    resultant_tether_force,
+)
 from ..forces import distribute_total_force_by_particle_mass
 from ..mapping import (
     BilinearAeroToStructuralLoadMapper,
@@ -176,8 +184,82 @@ def main(
     n_panels = len(body_aero.panels) if body_aero is not None else 0
     tracking_data = tracking.setup_tracking_arrays(len(struc_nodes), t_vector, n_panels=n_panels)
     is_convergence = False
+    # Coupled convergence is measured on the RELATIVE nodal force residual
+    # ||f_int + f_ext|| / F_tether (see aerostructural/convergence.py), so this
+    # history holds dimensionless norms. Resolving the tolerances here fails
+    # fast on a config that still carries the legacy absolute [N] keys.
+    residual_tol_relative, _ = resolve_residual_tolerances(
+        config["aero_structural_solver"]
+    )
     f_residual_list = []
+    f_residual_relative = float("nan")
+    f_tether_resultant = float("nan")
     f_tether_drag = np.zeros(3)
+    # WING element stiffnesses are not known: following Poland & Schmehl they
+    # are chosen so that no element elongates by more than `max_elongation`.
+    # The loop enforces that -- an element over the bound is stiffened and the
+    # coupled iteration continues, so a converged shape satisfies BOTH the
+    # force residual and the elongation bound.
+    #
+    # Scope: WING elements only by default. A bridle line's stiffness is not a
+    # free parameter (k = E*A/l0 from the line material and diameter), so
+    # stiffening it to suppress its stretch would falsify the bridle; set
+    # `stiffness_update_scope: all` to include them anyway.
+    is_with_stiffness_update = bool(
+        config["structural_pss"].get("update_stiffness", True)
+    )
+    stiffness_update_scope = str(
+        config["structural_pss"].get("stiffness_update_scope", "wing")
+    ).lower()
+    elongation_bound = float(config["structural_pss"].get("max_elongation", 0.01))
+    stiffness_update_factor = float(
+        config["structural_pss"].get("stiffness_update_factor", 2.0)
+    )
+    max_stiffness = float(config["structural_pss"].get("max_stiffness", 5.0e5))
+    # Wing elements are parsed first, bridle lines appended after them.
+    n_wing_elements = len(kite_connectivity_arr) - (
+        0 if bridle_connectivity_arr is None else len(bridle_connectivity_arr)
+    )
+    stiffness_update_indices = (
+        None if stiffness_update_scope == "all" else range(n_wing_elements)
+    )
+    n_stiffness_updates = 0
+    max_elongation_seen = float("nan")
+    max_wing_elongation = float("nan")
+    max_bridle_elongation = float("nan")
+    # Stiffness CONTINUATION. A bridle imposed at its full (stiff) value in one
+    # step moves the wing by centimetres of line length at once, which throws
+    # the trim onto the stalled branch and never recovers. Ramping the target
+    # stiffness in from `stiffness_ramp_start_factor` over
+    # `stiffness_ramp_iterations` lets the shape re-equilibrate at each step.
+    # `k_target` is what the elongation update adapts; the particle system runs
+    # at `ramp * k_target` until the ramp completes.
+    # Default ON: the shipped geometries carry the SK75 bridle, which cannot be
+    # imposed in one step (it stalls the wing). Set 0 to disable.
+    stiffness_ramp_iterations = int(
+        config["structural_pss"].get("stiffness_ramp_iterations", 20)
+    )
+    stiffness_ramp_start_factor = float(
+        config["structural_pss"].get("stiffness_ramp_start_factor", 0.1)
+    )
+    stiffness_ramp_scope = str(
+        config["structural_pss"].get("stiffness_ramp_scope", "bridle")
+    ).lower()
+    k_target = structural_pss.get_stiffnesses(psystem)
+    ramp_mask = np.zeros(len(k_target), dtype=bool)
+    if stiffness_ramp_iterations > 0:
+        if stiffness_ramp_scope == "all":
+            ramp_mask[:] = True
+        else:
+            ramp_mask[n_wing_elements:] = True
+        logging.info(
+            "Stiffness continuation: %s elements ramped from %.3g to 1.0 over "
+            "%s iterations",
+            int(ramp_mask.sum()),
+            stiffness_ramp_start_factor,
+            stiffness_ramp_iterations,
+        )
+    stiffness_ramp_active = bool(ramp_mask.any())
     is_actuation_finalized = True
     is_steering_finalized = True
     struc_nodes_prev = None  # Initialize previous points for tracking
@@ -366,13 +448,24 @@ def main(
                     f_residual_list,
                     dt_initial,
                     dt_max,
-                    config["aero_structural_solver"]["tol"],
+                    residual_tol_relative,
                 )
                 config["structural_pss"]["dt"] = adaptive_dt
                 logging.debug(
-                    f"Adaptive dt updated: {adaptive_dt:.6f} (residual: {f_residual_list[-1]:.3f}N)"
+                    f"Adaptive dt updated: {adaptive_dt:.6f} "
+                    f"(relative residual: {f_residual_list[-1]:.3e})"
                 )
                 print(f"Adaptive dt: {adaptive_dt:.6f} s at iteration {i}")
+            if stiffness_ramp_active:
+                ramp = structural_pss.stiffness_ramp_factor(
+                    i, stiffness_ramp_iterations, stiffness_ramp_start_factor
+                )
+                structural_pss.set_stiffnesses(
+                    psystem, np.where(ramp_mask, ramp * k_target, k_target)
+                )
+                if ramp >= 1.0:
+                    stiffness_ramp_active = False
+                    logging.info("Stiffness continuation complete at iteration %s", i)
             psystem, is_structural_converged, struc_nodes, f_int = (
                 structural_pss.run_pss(
                     psystem,
@@ -626,9 +719,22 @@ def main(
             for fix_idx in config["structural_pss"]["fixed_point_indices"]:
                 f_residual[3 * fix_idx : 3 * fix_idx + 3] = 0.0
 
-            f_residual_list.append(np.linalg.norm(np.abs(f_residual)))
+            # Convergence measure: the Euclidean norm of the nodal force
+            # residual normalised by the resultant tether force, i.e. the load
+            # the whole structure hangs from. Dimensionless, so the same
+            # threshold holds across wind speeds and depower settings.
+            f_tether_resultant = resultant_tether_force(f_ext)
+            f_residual_relative = relative_residual_norm(f_residual, f_tether_resultant)
+            f_residual_list.append(f_residual_relative)
             logging.debug(
                 f"residual force in y-direction: {np.sum([f_residual[1::3]]):.3f}N"
+            )
+            logging.debug(
+                "residual %.4fN / tether force %.1fN = %.3e (tol %.1e)",
+                np.linalg.norm(f_residual),
+                f_tether_resultant,
+                f_residual_relative,
+                residual_tol_relative,
             )
 
             ### TRACKING
@@ -652,6 +758,7 @@ def main(
             ### PROGRESS BAR
             pbar.set_postfix(
                 {
+                    "res/Ft": f"{f_residual_relative:.2e}",
                     "res": f"{np.linalg.norm(f_residual):.3f}N",
                     "aero": f"{end_time_f_ext-begin_time_f_ext:.2f}s",
                     "struc": f"{end_time_f_int-begin_time_f_int:.2f}s",
@@ -664,11 +771,68 @@ def main(
                 iteration=i,
                 residual=f_residual,
                 residual_norm_history=f_residual_list,
+                force_reference=f_tether_resultant,
                 aero_forces_vsm_format=f_aero_wing_vsm_format,
                 solver_config=config["aero_structural_solver"],
                 is_run_only_1_time_step=config["is_run_only_1_time_step"],
                 stagnation_check_start=stagnation_check_start,
             )
+
+            ### ELEMENT ELONGATION BOUND
+            stiffness_updated_now = False
+            # Stiffen whatever exceeds the bound and keep iterating: the
+            # elongation bound is part of the convergence criterion, not a
+            # post-check. Once every offending element sits at max_stiffness
+            # nothing is updated any more and the loop is free to converge.
+            if is_with_stiffness_update:
+                elongations = element_elongations(
+                    struc_nodes,
+                    kite_connectivity_arr,
+                    psystem.extract_rest_length,
+                    pulley_pairs=pulley_line_to_other_node_pair_dict,
+                )
+                k_target, n_stiffened, max_elongation_seen = (
+                    structural_pss.adapt_stiffnesses(
+                        k_target,
+                        elongations,
+                        element_indices=stiffness_update_indices,
+                        max_elongation=elongation_bound,
+                        factor=stiffness_update_factor,
+                        max_stiffness=max_stiffness,
+                    )
+                )
+                if n_stiffened > 0 and not stiffness_ramp_active:
+                    structural_pss.set_stiffnesses(psystem, k_target)
+                if n_wing_elements > 0:
+                    max_wing_elongation = float(
+                        np.nanmax(elongations[:n_wing_elements])
+                    )
+                    if len(elongations) > n_wing_elements:
+                        max_bridle_elongation = float(
+                            np.nanmax(elongations[n_wing_elements:])
+                        )
+                if stiffness_ramp_active:
+                    # The structure has not reached its target stiffness yet.
+                    stiffness_updated_now = True
+                    is_convergence = False
+                    is_stagnated = False
+                    stagnation_check_start = i + 1
+                if n_stiffened > 0:
+                    stiffness_updated_now = True
+                    n_stiffness_updates += n_stiffened
+                    is_convergence = False
+                    is_stagnated = False
+                    # The residual history is no longer comparable across a
+                    # stiffness change, so restart the stagnation window.
+                    stagnation_check_start = i + 1
+                    logging.info(
+                        "Stiffened %s element(s) over the %.2f%% elongation "
+                        "bound (max %.2f%%) at iteration %s",
+                        n_stiffened,
+                        100.0 * elongation_bound,
+                        100.0 * max_elongation_seen,
+                        i,
+                    )
 
             should_apply_steering_now = (
                 steering_tape_extension_step != 0
@@ -696,11 +860,13 @@ def main(
 
             if qs_state_should_break:
                 # Do not allow quasi-steady stagnation stopping to interrupt
-                # progressive actuation before targets are fully applied.
+                # progressive actuation before targets are fully applied, nor a
+                # stiffness update whose shape change has not been solved yet.
                 if (
                     is_actuation_finalized
                     and is_steering_finalized
                     and depower_settle_counter == 0
+                    and not stiffness_updated_now
                 ):
                     break
                 qs_state_should_break = False
@@ -887,6 +1053,38 @@ def main(
         "total_time_s": time.time() - start_time,
         "n_iter": i + 2,  # +2: 1 for pre-loop initial state + (i+1) loop entries
         "converged": is_convergence,
+        # What "converged" actually means for this solve: the nodal force
+        # residual ||f_int + f_ext||, the resultant tether force it was
+        # normalised by, their ratio, and the threshold it was tested against.
+        "residual_force_n": float(np.linalg.norm(f_residual)),
+        "residual_relative": float(f_residual_relative),
+        "residual_tol_relative": float(residual_tol_relative),
+        "tether_force_resultant": float(f_tether_resultant),
+        # Largest element elongation of the converged shape: the stiffness
+        # update keeps this at or below `elongation_bound` unless offending
+        # elements hit `max_stiffness`. Pulley arms carry the ROPE's strain
+        # (both arms combined), not their individual length change.
+        "max_element_elongation": max_element_elongation(
+            struc_nodes,
+            kite_connectivity_arr,
+            rest_lengths,
+            pulley_pairs=pulley_line_to_other_node_pair_dict,
+        ),
+        "max_wing_element_elongation": float(max_wing_elongation),
+        "max_bridle_element_elongation": float(max_bridle_elongation),
+        "elongation_bound": float(elongation_bound),
+        "is_with_stiffness_update": bool(is_with_stiffness_update),
+        "stiffness_update_scope": str(stiffness_update_scope),
+        "n_stiffness_updates": int(n_stiffness_updates),
+        "stiffness_ramp_iterations": int(stiffness_ramp_iterations),
+        "stiffness_ramp_start_factor": float(stiffness_ramp_start_factor),
+        # Stiffnesses the converged shape actually ran with. The deformed
+        # struc_geometry.yaml snapshot still carries the ORIGINAL k (the
+        # update is a solver device, and a re-solve re-derives it from the
+        # same rule), so this is the only record of what was used.
+        "final_stiffnesses": np.array(
+            [float(link.k) for link in psystem.springdampers], dtype=float
+        ),
         "qs_success": bool(results_aero.get("success", False)),
         "opt_x": opt_x,
         # The gravity flag this solve actually ran with: it gates BOTH the

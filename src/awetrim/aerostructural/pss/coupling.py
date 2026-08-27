@@ -23,6 +23,7 @@ from typing import Any
 
 import numpy as np
 
+from ..convergence import relative_residual_norm, resultant_tether_force
 from ..mapping import (
     BilinearAeroToStructuralLoadMapper,
     LinearStructuralToAeroMapper,
@@ -83,6 +84,7 @@ class PssQsmCoupler:
         )
 
         final_residual = np.full(nodes.size, np.nan)
+        final_tether_force = float("nan")
         final_nodal_forces = np.zeros_like(nodes)
         trim_result: dict[str, Any] = {}
         iteration_records: list[QsmIterationRecord] = []
@@ -149,10 +151,17 @@ class PssQsmCoupler:
             final_residual = residual
             final_nodal_forces = nodal_forces
             residual_norm = float(np.linalg.norm(residual))
+            # Convergence is judged on the residual normalised by the
+            # resultant tether force (aerostructural/convergence.py).
+            tether_force = resultant_tether_force(external_force)
+            final_tether_force = tether_force
+            residual_norm_relative = relative_residual_norm(residual, tether_force)
 
             record = QsmIterationRecord(
                 iteration=iteration,
                 residual_norm=residual_norm,
+                residual_norm_relative=residual_norm_relative,
+                tether_force_resultant=tether_force,
                 structural_converged=bool(structural_converged),
                 trim_success=bool(trim_result.get("success", False)),
                 trim_success_physical=bool(
@@ -170,7 +179,7 @@ class PssQsmCoupler:
             )
             iteration_records.append(record)
 
-            if residual_norm <= settings.residual_tolerance:
+            if residual_norm_relative <= settings.residual_tolerance_relative:
                 break
 
         moment_report = check_moment_preservation(
@@ -182,7 +191,10 @@ class PssQsmCoupler:
         }
 
         return QsmCouplingResult(
-            converged=float(np.linalg.norm(final_residual)) <= settings.residual_tolerance,
+            converged=(
+                relative_residual_norm(final_residual, final_tether_force)
+                <= settings.residual_tolerance_relative
+            ),
             final_nodes=np.asarray(nodes, dtype=float),
             final_rest_lengths=np.asarray(system.extract_rest_length, dtype=float),
             final_nodal_forces=final_nodal_forces,

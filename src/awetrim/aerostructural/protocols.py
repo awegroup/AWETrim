@@ -75,12 +75,18 @@ class TapeActuationState:
 
 @dataclass(frozen=True)
 class QsmCouplingSettings:
-    """Numerical settings for the outer aero-structural coupling loop."""
+    """Numerical settings for the outer aero-structural coupling loop.
+
+    The residual tolerances are DIMENSIONLESS: the loop converges on the
+    Euclidean norm of the nodal force residual ``f_int + f_ext`` normalised by
+    the resultant tether force (see ``aerostructural.convergence``), not on an
+    absolute force in newtons.
+    """
 
     max_iter: int
-    residual_tolerance: float
+    residual_tolerance_relative: float
     residual_stagnation_window: int
-    residual_stagnation_tolerance: float
+    residual_stagnation_tolerance_relative: float
     relaxation_factor: float
     use_aitken_relaxation: bool
     n_aero_panels_per_structural_section: int
@@ -118,7 +124,9 @@ class QsmIterationRecord:
     """Diagnostics from one outer aero-structural iteration."""
 
     iteration: int
-    residual_norm: float
+    residual_norm: float  # ||f_int + f_ext|| [N]
+    residual_norm_relative: float  # ||f_int + f_ext|| / F_tether [-]
+    tether_force_resultant: float  # |sum f_ext| [N]
     structural_converged: bool
     trim_success: bool
     trim_success_physical: bool
