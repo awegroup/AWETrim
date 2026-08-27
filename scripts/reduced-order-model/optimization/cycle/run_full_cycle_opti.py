@@ -70,7 +70,7 @@ RESULTS_DIR = (
 
 # Tunable constant logarithmic wind.
 WIND_CONFIG = {
-    "speed_wind_at_100": 6.0,  # m/s at 100 m
+    "speed_wind_at_100": 15.0,  # m/s at 100 m
     "z0": 0.03,  # roughness length (m)
     "model_type": "logarithmic",
 }
