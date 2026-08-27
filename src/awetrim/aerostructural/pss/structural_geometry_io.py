@@ -387,6 +387,9 @@ def initialize_bridle_line_system(
     pulley_line_indices = []
     pulley_line_to_other_node_pair_dict = {}
     steering_tape_indices = []
+    # None means the geometry has no depower tape; every consumer guards on
+    # ``is not None`` (see aerostructural.protocols.StructuralActuation).
+    power_tape_index = None
     for _, conn_data in enumerate(struc_geometry["bridle_connections"]["data"]):
 
         conn_name = conn_data[0]
