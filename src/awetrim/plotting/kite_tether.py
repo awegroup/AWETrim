@@ -72,8 +72,11 @@ def load_struc_nodes_and_edges(struc_path: str | None):
     """Return (nodes_C, wing_edges, bridle_edges, wing_ids) from struc_geometry.yaml.
 
     Nodes are in the course frame with KCU at origin (node 0). Wing nodes come
-    from ``wing_particles``; bridle nodes from ``bridle_particles``. Pulley
-    rows (3 ids) are split into two segments. Returns ``None`` if unavailable.
+    from ``wing_particles``; bridle nodes from ``bridle_particles``. A pulley
+    row (3 ids) is split into its two segments ci-cj and cj-ck -- the pulley
+    node is cj, as the structural reader itself has it (see
+    ``aerostructural/fem/read_struc_geometry_yaml``). Returns ``None`` if
+    unavailable.
     """
     if not struc_path:
         return None
@@ -100,9 +103,9 @@ def load_struc_nodes_and_edges(struc_path: str | None):
             ids = [int(v) for v in row[1:] if v is not None]
             if len(ids) == 2:
                 out.append((ids[0], ids[1]))
-            elif len(ids) == 3:
-                out.append((ids[1], ids[0]))
-                out.append((ids[0], ids[2]))
+            elif len(ids) == 3:  # pulley: ci-cj and cj-ck, pulley node cj
+                out.append((ids[0], ids[1]))
+                out.append((ids[1], ids[2]))
         return out
 
     return nodes, _edges("wing_connections"), _edges("bridle_connections"), wing_ids
