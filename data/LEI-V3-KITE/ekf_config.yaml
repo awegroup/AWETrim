@@ -12,7 +12,7 @@ simulation_parameters:
   steering_dependent_cl_asym: true   # signed k_cl_us_odd*us on CL only (+0.20 on /200 scale); a signed CD term made CD worse -- do not add one
   steering_input_lag: 0.3            # first-order lag [s] on the steering input; identified from the CS residual (zeroes its du_s/dt correlation), tuned 2026-08-24
   calibrate_apparent_windspeed: true     # Calibrate the pitot tube against the EKF estimate in a pre-run (only if kite_apparent_windspeed is measured)
-  pitot_calibration_fit_zero: true      # Also fit the pitot transducer zero, not only the calibration coefficient
+  pitot_calibration_fit_zero: false      # Also fit the pitot transducer zero, not only the calibration coefficient
   calibration_start_minutes: 10          # skip the filter transient AND the first ~15 flight minutes, where the tether ODE fails on ~10 % of samples (2019-10-08) and the pitot fit lands on garbage (k 0.82 there vs 0.75 on clean data)
   calibration_duration_minutes: 10       # minutes of flight to fit on
   calibration_end_margin_minutes: 3      # stay clear of the end of the flight
