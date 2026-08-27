@@ -2047,6 +2047,64 @@ class PhaseParameterized(TimeSeries):
                         "violated by the fixed pattern and C_phi is not optimized"
                     )
 
+        # --- Elevation-span ceiling
+        # The mirror of the azimuth floor above: ONE smooth row caps how TALL
+        # the figure is -- the mean square of the elevation's deviation from
+        # its own mean must be <= b^2/2. A figure-eight or helix of elevation
+        # half-span B satisfies that with B <= b. Where ``elevation_max`` (a
+        # C_beta coefficient bound) only caps where the path may SIT, this
+        # caps its SPAN, which is what the curvature margin actually reads:
+        # lifting the floor with the ceiling fixed squeezes the figure into a
+        # narrower band and concentrates curvature at the lobe shoulders.
+        # Off by default: the NLP is unchanged when the key is absent or 0.
+        max_elevation_amplitude = float(
+            sim_params.get("max_elevation_amplitude") or 0.0
+        )
+        if max_elevation_amplitude < 0.0:
+            raise ValueError(
+                f"max_elevation_amplitude must be >= 0, got "
+                f"{max_elevation_amplitude}"
+            )
+        if max_elevation_amplitude > 0.0:
+            elevation_nodes = pattern.elevation(
+                opti_vars["distance_radial"], s_grid[:-1]
+            )  # N entries
+            el_dev = elevation_nodes - ca.sum1(elevation_nodes) / (
+                elevation_nodes.numel()
+            )
+            el_ms = ca.sumsqr(el_dev) / el_dev.numel()
+            el_amplitude_row = 2.0 * el_ms - max_elevation_amplitude**2
+            # (``ca.depends_on(expr, opti.x)`` is False for Opti variables --
+            # opti.x is a view, not the symbols -- so test for free symbols.)
+            if isinstance(el_amplitude_row, ca.MX) and ca.symvar(el_amplitude_row):
+                opti.subject_to(el_amplitude_row <= 0.0)
+                _report_ineq(
+                    "elevation_amplitude (rms*sqrt2)",
+                    ca.sqrt(2.0 * el_ms + 1e-12),
+                    (0.0, max_elevation_amplitude),
+                    "rad",
+                )
+                print(
+                    "Elevation amplitude ceiling: "
+                    f"{np.degrees(max_elevation_amplitude):.1f} deg"
+                )
+            else:
+                # C_beta is not an optimization parameter: the pattern's
+                # elevation is fixed, so the ceiling is a plain check on the
+                # given shape.
+                value = (
+                    float(ca.evalf(el_amplitude_row))
+                    if isinstance(el_amplitude_row, ca.MX)
+                    else float(el_amplitude_row)
+                )
+                if value > 0.0:
+                    raise ValueError(
+                        "max_elevation_amplitude "
+                        f"({np.degrees(max_elevation_amplitude):.1f} deg) is "
+                        "violated by the fixed pattern and C_beta is not "
+                        "optimized"
+                    )
+
         # Constraint init and end azimuth
         # azimuth = pattern.azimuth(opti_vars["distance_radial"], s_grid[:-1])
         # opti.subject_to(azimuth[0] == 0)

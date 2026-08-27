@@ -557,6 +557,16 @@ class ReeloutSession:
         else:
             sim_parameters.pop("min_azimuth_amplitude", None)
 
+        el_amplitude = limits.get("elevation_amplitude_max")
+        if el_amplitude:
+            if float(el_amplitude) < 0.0:
+                raise ValueError("elevation_amplitude_max must be >= 0")
+            sim_parameters["max_elevation_amplitude"] = float(
+                np.radians(el_amplitude)
+            )
+        else:
+            sim_parameters.pop("max_elevation_amplitude", None)
+
     def pattern_limits(self) -> Optional[Dict[str, float]]:
         """The pattern limits in force, as the degree-valued struct
         (None when none of them is set -- optimizer defaults apply)."""
@@ -574,6 +584,9 @@ class ReeloutSession:
         amplitude = sim_parameters.get("min_azimuth_amplitude")
         if amplitude:
             out["azimuth_amplitude_min"] = float(np.degrees(amplitude))
+        el_amplitude = sim_parameters.get("max_elevation_amplitude")
+        if el_amplitude:
+            out["elevation_amplitude_max"] = float(np.degrees(el_amplitude))
         return out or None
 
     @staticmethod

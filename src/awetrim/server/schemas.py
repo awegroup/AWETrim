@@ -358,6 +358,16 @@ class PatternLimits(BaseModel):
         "which a figure-eight or helix of half-width A satisfies with A >= "
         "value). Guards the degenerate zero-width collapse. 0/omitted = off.",
     )
+    elevation_amplitude_max: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=90,
+        description="The figure's elevation half-span stays <= this [deg] "
+        "(one smooth constraint: mean over the path of "
+        "(elevation - mean)^2 <= value^2/2, which a figure-eight or helix of "
+        "half-span B satisfies with B <= value). Caps how TALL the pattern is "
+        "where ``elevation_max`` only caps where it may sit. 0/omitted = off.",
+    )
 
     @model_validator(mode="after")
     def _check_elevation_band(self):
