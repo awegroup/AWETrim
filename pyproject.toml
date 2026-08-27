@@ -48,9 +48,10 @@ dependencies = [
   "scipy",
   "PyYAML",
   "prompt_toolkit",
+  "vplot3d @ git+https://github.com/rschmehl/vplot3d.git@main",
   "VSM @ git+https://github.com/awegroup/Vortex-Step-Method.git@2a12f13388122eafa541041c11c13be5f020f1fb",
   "PSS @ git+https://github.com/awegroup/Particle_System_Simulator.git@v1.0.2",
-  "awes-ekf @ git+https://github.com/ocayon/EKF-AWE.git@7ca4660e7bf5d6b9ec56193fb4e722027fbc3ee0",
+  "awes-ekf @ git+https://github.com/ocayon/EKF-AWE.git@main",
   "kite_fem @ git+https://github.com/awegroup/kite_fem.git@mass_proportional_regularisation",
   "awesIO @ git+https://github.com/awegroup/awesIO.git@d454992301e1790e069ff850eabf65526545d33c",
 ]
