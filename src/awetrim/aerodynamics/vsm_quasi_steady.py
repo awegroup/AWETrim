@@ -2044,7 +2044,7 @@ _KINEMATIC_RATE = {"z": "w", "phi": "p", "theta": "q", "psi": "r"}
 #: consumes, so this index appears in both course-rate variants.
 _I_V_STATE = ALL_STATE_NAMES.index("v")
 
-#: Index of each body-rate state in the (course, normal, radial) principal-axis
+#: Index of each body-rate state in the (course, normal, radial) stability-axis
 #: ordering used by the gyroscopic coupling term (p=course, q=normal, r=radial).
 _RATE_AXIS_INDEX = {"p": 0, "q": 1, "r": 2}
 
@@ -2092,7 +2092,7 @@ def corotating_state_transform(
     the same course axes CARRIED BY THE BODY about the tether attachment:
     axes that coincide with the course axes at trim and co-rotate with the
     perturbed attitude. (This is a component-basis choice, distinct from the
-    principal-body-axes ``--stability-frame body`` option.) At a fixed trim
+    material-body-axes ``--stability-frame body`` option.) At a fixed trim
     the two descriptions differ by the constant linear map built here,
 
         dv_corot     = dv_frozen     + [v_kite_trim]_x dTheta
@@ -2346,7 +2346,7 @@ def _course_transport_rate_axes(
     Returns ``(omega_c_axes, omega_c_world, is_full)``:
 
     - ``omega_c_axes`` — ``Omega_C`` resolved in the ``(course, normal, radial)``
-      principal-axis basis, used by the gyroscopic term in ``_build_state_space``.
+      stability-axis basis, used by the gyroscopic term in ``_build_state_space``.
     - ``omega_c_world`` — the same vector in the world/VSM basis, used as the
       aerodynamic body-rate baseline in ``eval_force_moment``.
 
@@ -2578,8 +2578,9 @@ def compute_vsm_trim_stability_derivatives(
         overrides ``inertia_xx``/``inertia_yy``/``inertia_zz`` and carries the
         products of inertia into the B-point mass matrix and gyroscopic terms.
         When ``None`` (default), the diagonal ``diag(I_xx, I_yy, I_zz)`` is
-        used — exact only when the geometry basis is principal (e.g. body
-        stability axes from a rigid-body identification).
+        used — exact only when the geometry basis happens to diagonalise the
+        inertia, which the MATERIAL body axes of ``rigid_body_axes`` do not,
+        so prefer passing the full tensor.
     states
         Subset of :data:`ALL_STATE_NAMES` to use for the *selected* state-space
         block returned alongside the full coupled and default decoupled blocks.
@@ -2604,9 +2605,9 @@ def compute_vsm_trim_stability_derivatives(
         trim attitude plus the perturbation, matching the aerodynamic
         geometry — correct when the stability axes are the (space-fixed)
         course axes and the kite is tilted from them by the trim attitude.
-        Set ``False`` when the stability axes are the body-fixed principal
-        axes (``--stability-frame body``): the baseline tensors stay
-        principal/diagonal and only the attitude perturbation rotates them.
+        Set ``False`` when the stability axes are the body-fixed material
+        axes (``--stability-frame body``): the baseline tensors are already
+        resolved in them and only the attitude perturbation rotates them.
     include_added_mass
         If ``True``, the strip-theory apparent-mass matrix of the canopy
         (:func:`_strip_theory_added_mass`, evaluated on the zero-attitude
@@ -3256,9 +3257,9 @@ def compute_vsm_trim_stability_derivatives(
     # inertia tensor do too; both feed the coupled B-point mass matrix and the
     # attitude-dependent gravity moment. With ``rotate_inertia_by_trim``
     # (default) the rotation is the full trim attitude plus the perturbation,
-    # matching the aerodynamic geometry; with ``False`` (body-fixed principal
+    # matching the aerodynamic geometry; with ``False`` (body-fixed material
     # stability axes) only the perturbation rotates the tensors, so the
-    # baseline stays principal/diagonal as before.
+    # baseline stays as given.
     if inertia_cg is None:
         inertia_cg0 = np.diag([float(inertia_xx), float(inertia_yy), float(inertia_zz)])
     else:

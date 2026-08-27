@@ -20,11 +20,11 @@ eigenvalue extraction, complex-plane plots, and per-eigenmode animations.
 The project moved to static stability; the full modal version of this file
 is recoverable from git history
 (``git log -- scripts/aerodynamics/compute_stability_derivatives.py``).
-The old ``--stability-frame body`` behaviour, which passed the identified
-principal body axes INTO the linearisation, was removed as well: the
-Omega_C transport construction is only frame-consistent in the course frame,
-so the linearisation now always runs in ``DEFAULT_AXES``. With
-``--stability-frame body`` the principal body axes (rotated to the trim
+The old ``--stability-frame body`` behaviour, which passed the material
+body axes INTO the linearisation, was removed as well: the Omega_C transport
+construction is only frame-consistent in the course frame, so the
+linearisation now always runs in ``DEFAULT_AXES``. With
+``--stability-frame body`` the centre-panel body axes (rotated to the trim
 attitude) are instead passed as ``attitude_axes`` to a second
 ``static_slopes_summary`` call, so both course-frame and body-frame
 attitude slopes are reported.
@@ -72,7 +72,7 @@ from awetrim.system.williams_tether import WilliamsTether
 from awetrim.aerostructural.utils import load_sim_output
 from awetrim.identification.rigid_body_axes import (
     compute_rigid_body_axes,
-    load_psm_nodes_and_masses,
+    load_psm_geometry,
 )
 
 # ---------------------------------------------------------------------------
@@ -113,21 +113,21 @@ def _load_rigid_body_axes_from_result(result_path: Path, struc_override: Path | 
       1. struc_override (explicit --rigid-body-struc)
       2. {result_path}/struc_geometry.yaml  (deformed, saved by save_geometry_snapshot)
       3. HDF5 positions + data/{kite}/struc_geometry.yaml  (fallback)
+
+    Masses and the KCU mass come from the PSS initializer, which reads the
+    system.yaml beside the geometry (single source of the KCU mass).
     """
     result_path = result_path.resolve()
     case_dir = result_path if result_path.is_dir() else result_path.parent
 
     if struc_override is not None:
-        struc_path = struc_override.resolve()
-        with struc_path.open("r", encoding="utf-8") as f:
-            sg = yaml.safe_load(f)
-        nodes, m_arr = load_psm_nodes_and_masses(sg)
+        nodes, m_arr, le_indices, te_indices = load_psm_geometry(
+            struc_override.resolve()
+        )
     else:
         saved = case_dir / "struc_geometry.yaml"
         if saved.exists():
-            with saved.open("r", encoding="utf-8") as f:
-                sg = yaml.safe_load(f)
-            nodes, m_arr = load_psm_nodes_and_masses(sg)
+            nodes, m_arr, le_indices, te_indices = load_psm_geometry(saved)
         else:
             h5 = case_dir / "sim_output.h5"
             if not h5.exists():
@@ -163,11 +163,9 @@ def _load_rigid_body_axes_from_result(result_path: Path, struc_override: Path | 
                 raise FileNotFoundError(
                     f"Fallback struc_geometry not found: {fallback}"
                 )
-            with fallback.open("r", encoding="utf-8") as f:
-                sg = yaml.safe_load(f)
-            _, m_arr = load_psm_nodes_and_masses(sg)
+            _, m_arr, le_indices, te_indices = load_psm_geometry(fallback)
 
-    return compute_rigid_body_axes(nodes, m_arr)
+    return compute_rigid_body_axes(nodes, m_arr, le_indices, te_indices)
 
 
 def _axes_to_dict(axes: AxisDefinition) -> dict[str, list[float]]:
@@ -309,8 +307,9 @@ def main() -> None:
             "Attitude-slope reporting frame. The trim linearisation ALWAYS "
             "runs in the course frame (the Omega_C transport construction is "
             "only frame-consistent there). `body` additionally reports the "
-            "roll/pitch/yaw static slopes about the identified principal body "
-            "axes at the trim attitude; requires --rigid-body-result."
+            "roll/pitch/yaw static slopes about the centre-panel body "
+            "axes at the trim attitude; requires "
+            "--rigid-body-result."
         ),
     )
     parser.add_argument(
@@ -415,9 +414,9 @@ def main() -> None:
     deformed_aero_path: Path | None = None  # set below when deformed geometry is found
 
     # Optionally load identified rigid-body properties and deformed geometry.
-    # NOTE: the linearisation ALWAYS runs in the course frame — the identified
-    # principal body axes are used only for the body-frame attitude slopes of
-    # the second static_slopes_summary call (--stability-frame body).
+    # NOTE: the linearisation ALWAYS runs in the course frame — the centre-
+    # panel body axes are used only for the body-frame attitude slopes of the
+    # static_slopes_summary call (--stability-frame body).
     if args.rigid_body_result is not None:
         from common import _resolve_csv_paths, add_vsm_path as _add_vsm_path
         import tempfile
@@ -427,11 +426,11 @@ def main() -> None:
         )
         center_of_gravity = rigid_body.cg
         inertia_xx, inertia_yy, inertia_zz = (
-            float(v) for v in rigid_body.principal_moments
+            float(v) for v in rigid_body.inertia_moments
         )
-        # Course stability axes: pass the full structural-frame tensor so the
-        # trim-attitude rotation needs no principal-axis approximation — the
-        # products of inertia are kept.
+        # Course stability axes: pass the full structural-frame tensor — the
+        # centre-panel frame does not diagonalise the inertia, so the diagonal
+        # scalars above are only a fallback; the products of inertia are kept.
         inertia_cg = np.asarray(rigid_body.inertia_cg, dtype=float)
 
         case_dir = args.rigid_body_result.resolve()
@@ -473,7 +472,7 @@ def main() -> None:
 
         print(f"\nRigid-body axes loaded from: {args.rigid_body_result}")
         print(f"  CG (structural frame):  {rigid_body.cg}")
-        print(f"  Inertia [Ix, Iy, Iz]:   {rigid_body.principal_moments}")
+        print(f"  Inertia [Ixx, Iyy, Izz] (body axes): {rigid_body.inertia_moments}")
         print(f"  x_body (roll):   {rigid_body.body_axes[0]}")
         print(f"  y_body (pitch):  {rigid_body.body_axes[1]}")
         print(f"  z_body (yaw):    {rigid_body.body_axes[2]}\n")
@@ -647,7 +646,7 @@ def main() -> None:
             stability, base=base, attitude_axes=body_axes_world_at_trim
         )
         _print_static_verdict(
-            static_body, title="principal body attitude axes"
+            static_body, title="centre-panel body attitude axes"
         )
         print(
             "  (v_tau / radial / chi_dot are attitude-axes-independent and "

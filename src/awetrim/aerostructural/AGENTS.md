@@ -289,6 +289,6 @@ Output goes to `results/aerostructural/<kite_name>/<case_folder>/sim_output.h5` 
 
 ## Required Developer Checks
 
-- Read `structural_geometry_io.main()` before changing how struc_geometry.yaml is parsed; the node index ordering (odd = LE, even = TE) and pulley dict format `[cj, ck, l0_cj_ck, l0_ci_cj, ci]` are load-bearing.
+- Read `structural_geometry_io.main()` before changing how struc_geometry.yaml is parsed; the node index ordering (odd = LE, even = TE) and pulley dict format `[cj, ck, l0_cj_ck, l0_ci_cj, ci]` are load-bearing. It is also the single entry point for the point-mass cloud: node ordering, element-to-node mass lumping and the KCU mass (from `system.yaml` via `_resolve_kcu_mass`) all come from here, so read a cloud through it (`identification.rigid_body_axes.load_psm_geometry` for a path, `load_psm_nodes_and_masses` for a dict) rather than re-walking the YAML. `power_tape_index` is `None` when the geometry has no `depower_tape` connection.
 - Any change to `PssQsmCoupler` must keep `QsmCouplingRequest` / `QsmCouplingResult` stable; the protocol tests check these fields.
 - Scripts in `scripts/aerostructural/` import shared helpers from `common.py` — add new shared defaults to `CONFIG_DEFAULTS` there, not as literals in individual scripts.

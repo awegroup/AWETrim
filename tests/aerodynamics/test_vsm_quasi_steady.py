@@ -596,10 +596,10 @@ def test_gyroscopic_rate_coupling_full_omega_c_couples_p_and_r():
 
 
 def test_compute_vsm_trim_stability_derivatives_rotates_inertia_by_trim():
-    """The principal inertia is rotated into the stability frame by the trim attitude.
+    """The body inertia is rotated into the stability frame by the trim attitude.
 
-    In the course frame the kite's principal axes are tilted from the stability
-    axes by the trim attitude, so I_stab = R diag(I) R^T picks up off-diagonal
+    In the course frame the kite's body axes are tilted from the stability axes
+    by the trim attitude, so I_stab = R diag(I) R^T picks up off-diagonal
     products of inertia. Disabling the rotation recovers the diagonal set.
     """
     ixx, iyy, izz = 100.0, 20.0, 120.0
@@ -638,7 +638,7 @@ def test_compute_vsm_trim_stability_derivatives_rotates_inertia_by_trim():
 def test_compute_vsm_trim_stability_derivatives_accepts_full_inertia_tensor():
     """``inertia_cg`` carries the full CG tensor, overriding the scalars.
 
-    A diagonal ``inertia_cg`` must reproduce the principal-scalar path
+    A diagonal ``inertia_cg`` must reproduce the diagonal-scalar path
     exactly; a tensor with a roll-yaw product of inertia must carry it into
     ``inertia_stability`` (rotated by the trim attitude like the geometry).
     """
@@ -672,7 +672,7 @@ def test_compute_vsm_trim_stability_derivatives_accepts_full_inertia_tensor():
     result = compute_vsm_trim_stability_derivatives(**common, inertia_cg=full)
     assert np.allclose(result["inertia_stability"], R @ full @ R.T)
 
-    # The principal scalars are ignored when the full tensor is given.
+    # The diagonal scalars are ignored when the full tensor is given.
     ignored = compute_vsm_trim_stability_derivatives(
         **common, inertia_cg=full, inertia_xx=1.0, inertia_yy=1.0, inertia_zz=1.0
     )

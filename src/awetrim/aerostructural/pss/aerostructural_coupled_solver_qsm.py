@@ -981,6 +981,8 @@ def main(
             m_arr=m_arr,
             panel_cp_locations=panel_cp,
             f_aero_panel=np.asarray(f_aero_wing_vsm_format),
+            struc_node_le_indices=struc_node_le_indices,
+            struc_node_te_indices=struc_node_te_indices,
             title="Aero forces, body frame and course frame",
         )
         plt.show()

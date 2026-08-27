@@ -183,7 +183,7 @@ class VsmQuasiSteadyAerodynamicSolver(Protocol):
         """Linearise aerodynamic forces and moments around a trim state.
 
         ``inertia_cg`` optionally carries the full 3x3 CG inertia tensor
-        (zero-attitude geometry basis) and overrides the principal scalars.
+        (zero-attitude geometry basis) and overrides the diagonal scalars.
         """
 
     def run_sweep(self, request: VsmSweepRequest) -> Sequence[Mapping[str, Any]]:

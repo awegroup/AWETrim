@@ -15,7 +15,7 @@ Mechanics of Tethered Flight*, and mirror the ROM validators in
 |--------|--------------|
 | [`calibrate_cd0_depower_qs.py`](calibrate_cd0_depower_qs.py) | Calibrate the ROM aero parameters `CD0`, `angle_pitch_depower_0` and `delta_pitch_depower` against the quasi-steady validation: fit them so the **predicted** tether force and tangential speed match the **measured** ones, split per powered/depowered phase (this jointly breaks the CD0 ↔ depower-pitch degeneracy). |
 | [`identify_aero_parameters_turn_law.py`](identify_aero_parameters_turn_law.py) | Identify the turn-rate law from flight data in three formulations (simple, two-term, full rational) by least-squares / nonlinear fit, per flight phase. Produces the fitted gains and per-phase fit plots. |
-| [`plot_body_axes.py`](plot_body_axes.py) | 3-D visualisation of the rigid-body principal axes for a deformed aerostructural result: deformed nodes (sized by nodal mass), CG, principal body axes and the global frame. Locates the struc geometry from the result path (override with `--struc`); `--save` to write a PNG. |
+| [`plot_body_axes.py`](plot_body_axes.py) | 3-D visualisation of the centre-panel body axes for a deformed aerostructural result: deformed nodes (sized by nodal mass), CG, the body triad (anchored to the wing's centre panel, which is drawn) and the global frame. Locates the struc geometry from the result path (override with `--struc`); `--save` to write a PNG. |
 
 ## Notes
 

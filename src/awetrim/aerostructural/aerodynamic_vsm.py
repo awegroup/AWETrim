@@ -698,6 +698,8 @@ def plot_aero_forces_with_frames(
     m_arr: np.ndarray,
     panel_cp_locations: np.ndarray,
     f_aero_panel: np.ndarray,
+    struc_node_le_indices,
+    struc_node_te_indices,
     title: str = "Aero forces, body frame and course frame",
 ) -> plt.Figure:
     """3-D plot of the deformed kite structure with:
@@ -705,7 +707,7 @@ def plot_aero_forces_with_frames(
     - structural connectivity (thin grey lines)
     - total aerodynamic force arrow at each panel aerodynamic centre
     - course frame triad at the origin (dashed)
-    - body frame triad (principal inertia axes) at the CG (solid)
+    - body frame triad (centre-panel axes) at the CG
 
     All coordinates are in the structural/VSM frame.  The course-frame unit
     vectors in that frame are X_C=[-1,0,0], Y_C=[0,-1,0], Z_C=[0,0,1].
@@ -713,7 +715,9 @@ def plot_aero_forces_with_frames(
     from awetrim.identification.rigid_body_axes import compute_rigid_body_axes
 
     # ── body axes ────────────────────────────────────────────────────────────
-    rba = compute_rigid_body_axes(struc_nodes, m_arr)
+    rba = compute_rigid_body_axes(
+        struc_nodes, m_arr, struc_node_le_indices, struc_node_te_indices
+    )
     cg = rba.cg
     body_axes = rba.body_axes  # rows: x_K, y_K, z_K in structural frame
 
@@ -826,7 +830,7 @@ def plot_aero_forces_with_frames(
         color="grey",
         linestyle="solid",
         linewidth=2.0,
-        label="Body frame $K$ (inertia)",
+        label="Body frame $K$ (centre panel)",
     )
 
     ax.scatter(*cg, s=80, c="black", marker="*", zorder=5, label="CG")

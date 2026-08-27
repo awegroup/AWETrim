@@ -1,11 +1,13 @@
-"""Plot rigid-body principal axes for a deformed aerostructural result.
+"""Plot the centre-panel body axes for a deformed aerostructural result.
 
 Loads deformed node positions from a sim_output.h5 result file, combines them
 with nodal masses from the structural geometry YAML, and produces a 3-D
 visualisation showing:
   - deformed structural nodes (marker size proportional to nodal mass)
   - CG location
-  - principal body axes (x=red, y=green, z=blue) as arrows at the CG
+  - body axes (x=red, y=green, z=blue) as arrows at the CG -- anchored to
+    the wing's centre panel (see ``awetrim.identification.rigid_body_axes``)
+  - the centre panel itself: its four corners and its chord
   - global reference frame arrows (thin, grey) at the origin
 
 The kite name is inferred from the results path so the struc_geometry YAML is
@@ -27,7 +29,6 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
-import yaml
 from mpl_toolkits.mplot3d import Axes3D  # noqa: F401 – registers 3d projection
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -39,7 +40,7 @@ from awetrim.aerostructural.utils import load_sim_output
 from awetrim.identification.rigid_body_axes import (
     RigidBodyAxes,
     compute_rigid_body_axes,
-    load_psm_nodes_and_masses,
+    load_psm_geometry,
 )
 
 
@@ -107,7 +108,7 @@ def plot_body_axes(
     struc_nodes: np.ndarray,
     m_arr: np.ndarray,
     result: RigidBodyAxes,
-    title: str = "Rigid-body principal axes",
+    title: str = "Kite centre-panel body axes",
 ) -> plt.Figure:
     """Generate the 3-D body-axis visualisation."""
     cg = result.cg
@@ -136,15 +137,37 @@ def plot_body_axes(
 
     ax.scatter(*cg, s=120, c="black", marker="*", zorder=5, label="CG")
 
-    # Body frame (principal inertia axes) at CG — solid, thick
+    # Body frame (centre-panel axes) at CG — solid, thick
     body_colors = ["tab:red", "tab:green", "tab:blue"]
     body_labels = [
-        f"$x_K$  $I_x$={result.principal_moments[0]:.3f} kg·m²",
-        f"$y_K$  $I_y$={result.principal_moments[1]:.3f} kg·m²",
-        f"$z_K$  $I_z$={result.principal_moments[2]:.3f} kg·m²",
+        f"$x_K$  $I_{{xx}}$={result.inertia_moments[0]:.3f} kg·m²",
+        f"$y_K$  $I_{{yy}}$={result.inertia_moments[1]:.3f} kg·m²",
+        f"$z_K$  $I_{{zz}}$={result.inertia_moments[2]:.3f} kg·m²",
     ]
     for i, (color, label) in enumerate(zip(body_colors, body_labels)):
         _arrow(ax, cg, body_axes[i], arrow_len, color, label, linewidth=2.5)
+
+    # The centre panel the triad is anchored to: its outline and its chord.
+    panel = result.panel
+    outline = np.column_stack([
+        panel.le_port, panel.le_starboard, panel.te_starboard,
+        panel.te_port, panel.le_port,
+    ])
+    ax.plot(
+        *outline,
+        color="black", linewidth=1.4, linestyle="solid", alpha=0.8,
+        label="centre panel",
+    )
+    ax.plot(
+        *np.column_stack([panel.te_centre, panel.le_centre]),
+        color="black", linewidth=1.4, linestyle="dotted", alpha=0.8,
+        label=f"panel chord (c={panel.chord_centre:.3f} m)",
+    )
+    ref_pts = np.vstack(list(panel.reference_points.values()))
+    ax.scatter(
+        ref_pts[:, 0], ref_pts[:, 1], ref_pts[:, 2],
+        s=60, c="black", marker="o", zorder=6,
+    )
 
     # Course frame (C) at origin — dashed, thin.
     # The structural/VSM frame has X and Y negated relative to the course frame,
@@ -194,9 +217,18 @@ def _print_summary(result: RigidBodyAxes) -> None:
     print("\nInertia tensor about CG (kg·m²):")
     for row in result.inertia_cg:
         print(f"  [{row[0]:+10.4f}  {row[1]:+10.4f}  {row[2]:+10.4f}]")
-    print("\nPrincipal body axes K (unit vectors in structural frame):")
-    for name, axis, moment in zip(["x_K", "y_K", "z_K"], result.body_axes, result.principal_moments):
+    print("\nCentre-panel body axes K (unit vectors, structural frame):")
+    for name, axis, moment in zip(
+        ["x_K", "y_K", "z_K"], result.body_axes, result.inertia_moments
+    ):
         print(f"  {name}: [{axis[0]:+.4f}, {axis[1]:+.4f}, {axis[2]:+.4f}]   I = {moment:.4f} kg·m²")
+    print("\nInertia tensor about CG in body axes (kg·m²); the off-diagonal")
+    print("terms are the products of inertia this frame keeps:")
+    for row in result.inertia_body:
+        print(f"  [{row[0]:+10.4f}  {row[1]:+10.4f}  {row[2]:+10.4f}]")
+    print("\nCentre-panel corners (structural frame):")
+    for name, point in result.panel.reference_points.items():
+        print(f"  {name:>13}: [{point[0]:+.4f}, {point[1]:+.4f}, {point[2]:+.4f}]")
 
 
 # ---------------------------------------------------------------------------
@@ -260,12 +292,12 @@ def main() -> None:
     if not struc_path.exists():
         sys.exit(f"struc_geometry not found: {struc_path}")
 
-    with struc_path.open("r", encoding="utf-8") as f:
-        struc_geometry = yaml.safe_load(f)
+    # Masses, KCU mass (from the system.yaml beside the geometry) and the
+    # LE/TE connectivity all come from the PSS initializer.
+    deformed_nodes, m_arr, le_indices, te_indices = load_psm_geometry(struc_path)
 
     if use_deformed_yaml:
-        # Deformed YAML has updated positions — use them directly as node positions.
-        deformed_nodes, m_arr = load_psm_nodes_and_masses(struc_geometry)
+        # Deformed YAML has updated positions — use them directly.
         print(f"Using saved deformed geometry: {struc_path}")
     else:
         # Fall back: positions from HDF5, masses from the (undeformed) data YAML.
@@ -273,7 +305,6 @@ def main() -> None:
         if "positions" not in tracking:
             sys.exit(f"'positions' dataset missing in {h5_path}")
         deformed_nodes = np.asarray(tracking["positions"][-1], dtype=float)
-        _, m_arr = load_psm_nodes_and_masses(struc_geometry)
         print(f"Using HDF5 positions + geometry masses from: {struc_path}")
 
     if deformed_nodes.shape[0] != m_arr.shape[0]:
@@ -282,13 +313,13 @@ def main() -> None:
             f"struc_geometry yields {m_arr.shape[0]} nodes."
         )
 
-    result = compute_rigid_body_axes(deformed_nodes, m_arr)
+    result = compute_rigid_body_axes(deformed_nodes, m_arr, le_indices, te_indices)
 
     fig = plot_body_axes(
         deformed_nodes,
         m_arr,
         result,
-        title=f"Rigid-body principal axes — {case_label} (deformed)",
+        title=f"Centre-panel body axes — {case_label} (deformed)",
     )
 
     if args.save is not None:

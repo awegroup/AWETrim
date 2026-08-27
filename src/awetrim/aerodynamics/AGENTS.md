@@ -164,8 +164,8 @@ Primitives kept here for AWEDesign (and general use):
   converged circulation then warm-starts every finite-difference solve as
   before. Pass the seed the trim was solved with, so the linearisation sits
   on the same gamma branch as the equilibrium it linearises.
-  Inertia enters either as principal scalars `inertia_xx/yy/zz` or as the full
-  3x3 CG tensor `inertia_cg` (zero-attitude geometry basis, same convention as
+  Inertia enters either as the diagonal scalars `inertia_xx/yy/zz` or as the
+  full 3x3 CG tensor `inertia_cg` (zero-attitude geometry basis, same convention as
   `solve_vsm_quasi_steady_trim`'s `inertia_cg`), which overrides the scalars
   and keeps the products of inertia. Its result dict always includes
   `nonlinear_rhs`, a callable `f(delta_state) -> xdot` for the nonlinear
@@ -176,7 +176,7 @@ Primitives kept here for AWEDesign (and general use):
 - `vsm_quasi_steady.corotating_state_transform` — constant unipotent map `T`
   from the linearisation's native FROZEN stability axes to the co-rotating
   course axes (course axes at trim, carried by the body about B — the paper's
-  reporting convention; distinct from the principal-body-axes stability-frame
+  reporting convention; distinct from the material-body-axes stability-frame
   option). `A_corot = T A inv(T)`, `vec_corot = T vec`; eigenvalues and
   margins invariant, only A-entries and mode participation change. The result
   dict of `compute_vsm_trim_stability_derivatives` carries the assembled
@@ -386,7 +386,7 @@ Primitives kept here for AWEDesign (and general use):
   decomposition) plus restoring/damping booleans. Restoring iff slope < 0;
   chi_dot damping iff slope > 0 (`timeder_angle_course` sense — a positive
   turn rate rotates about `-e_radial`). Attitude axes default to the course
-  frame; pass principal body axes (rows, world components) for the
+  frame; pass centre-panel body axes (rows, world components) for the
   body-axes trio TOGETHER WITH `euler_rate_matrix`: the attitude columns
   are per EULER ANGLE of the `R_yaw R_pitch R_roll` composition, so a
   rotation about a non-frame axis `b` has Euler tangents `E^-1 b` (columns
@@ -594,9 +594,10 @@ course-frame `DEFAULT_AXES`, always `course_rate_state=True`) →
 `static_slopes_summary` verdict table + `J_full`/`J_course_rate` diagnostics
 and JSON. No modal/eigenmode analysis (the modal version is recoverable from
 git history). `--stability-frame body` no longer changes the linearisation
-axes — it additionally reports the attitude slopes about the principal body
-axes at trim (`rigid_body_axes` cloud — aircraft FRD sense: x forward, y
-right, z down — rotated by the trim attitude) via the
+axes — it additionally reports the attitude slopes about the centre-panel
+body axes at trim (`rigid_body_axes`: chord and normal of the wing's centre
+panel, aircraft FRD sense: x forward, y right, z down — rotated by the trim
+attitude) via the
 `attitude_axes=` argument of `static_slopes_summary`; the old
 `stability_config.yaml` (`states`/`coupled`/`frame`) is gone.
 

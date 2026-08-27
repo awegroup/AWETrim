@@ -78,7 +78,8 @@ src/awetrim/
                          BIC forward-stepwise polynomial fit with k-fold CV
                          (aero_polynomial.py → rom_config "coeffs"), control
                          conventions (controls.py), rigid_body_axes.py
-                         (principal axes in aircraft FRD sense).
+                         (body axes anchored to the wing's CENTRE PANEL,
+                         aircraft FRD sense; never inertia eigenvectors).
                          Regressors: alpha, u_s, u_p, v_a; targets CL/CD/phi_a.
                          (aero LUT guide is outdated and needs revising)
 ```
