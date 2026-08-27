@@ -115,7 +115,7 @@ CYCLES = range(2, 70)  # cycles to include
 FLIGHTS = [
     {
         "label": "2019-10-08",
-        "path": "results/LEI-V3-KITE/ekf/LEI-V3-Kite_2019-10-08.h5",
+        "path": "results/LEI-V3-KITE/ekf/LEI-V3 Kite_2019-10-08.h5",
         "scatter_cycles": [62, 63, 64],
         # Standardised u_s (1.4*u_s = tape half-difference): the 2019 KCU's
         # kcu/100 moves only half the nominal tape, so divide by 200.
