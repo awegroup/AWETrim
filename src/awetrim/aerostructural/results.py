@@ -21,7 +21,6 @@ from __future__ import annotations
 import copy
 import csv
 from pathlib import Path
-from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
@@ -134,61 +133,16 @@ def save_input_snapshot(
     return results_dir
 
 
-def _changed_stiffness_rows(
-    connectivity: Sequence[Any] | None,
-    stiffnesses: np.ndarray | None,
-    stiffnesses_initial: np.ndarray | None,
-) -> list[list[Any]]:
-    """Return ``[node_i, node_j, k]`` rows for elements whose stiffness changed.
-
-    Elements are keyed by node pair rather than by element name: one bridle
-    line name covers both sides of the kite (and both arms of a pulley), which
-    the elongation bound can drive to different stiffnesses.
-    """
-    if connectivity is None or stiffnesses is None or stiffnesses_initial is None:
-        return []
-    final = np.asarray(stiffnesses, dtype=float).reshape(-1)
-    initial = np.asarray(stiffnesses_initial, dtype=float).reshape(-1)
-    n = min(len(connectivity), len(final), len(initial))
-    rows: list[list[Any]] = []
-    for index in range(n):
-        if final[index] == initial[index]:
-            continue
-        node_i, node_j = connectivity[index][0], connectivity[index][1]
-        rows.append([int(node_i), int(node_j), float(final[index])])
-    return rows
-
-
 def build_deformed_struc_geometry(
     struc_geometry: dict[str, Any],
     struc_nodes: np.ndarray,
-    *,
-    connectivity: Sequence[Any] | None = None,
-    stiffnesses: np.ndarray | None = None,
-    stiffnesses_initial: np.ndarray | None = None,
 ) -> dict[str, Any]:
     """Return a copy of struc_geometry with node positions replaced by deformed values.
 
     Node indices in the YAML are used directly as row indices into struc_nodes,
     matching the ordering established by structural_geometry_io.main().
-
-    If the coupled solve SELECTED stiffnesses (the PSM elongation-bound update,
-    ``pss/structural_pss.adapt_stiffnesses``), pass the element connectivity
-    with the final and initial stiffness arrays: the elements that changed are
-    written into an ``element_stiffness`` table keyed by node pair, which
-    ``structural_geometry_io`` applies on reload. Without it a re-solve would
-    silently restart from the material table's values.
     """
     sg = copy.deepcopy(struc_geometry)
-
-    stiffness_rows = _changed_stiffness_rows(
-        connectivity, stiffnesses, stiffnesses_initial
-    )
-    if stiffness_rows:
-        sg["element_stiffness"] = {
-            "headers": ["node_i", "node_j", "k"],
-            "data": stiffness_rows,
-        }
 
     # KCU attachment point (node 0)
     if "bridle_point_node" in sg:

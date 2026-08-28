@@ -100,34 +100,6 @@ structural_pss:
   fixed_point_indices: [0] #this is the bridle point / KCU
   is_with_diagnostics: !!bool false
   num_node_diagnostics: !!int 34
-  # Element stiffnesses are not known: they are selected so that no element
-  # elongates by more than max_elongation (following Poland & Schmehl).
-  # Whenever an element exceeds the bound its stiffness is multiplied by
-  # stiffness_update_factor (capped at max_stiffness) and the coupled
-  # iteration continues, so a converged shape satisfies both the force
-  # residual and the elongation bound.
-  update_stiffness: !!bool true
-  # Scope: 'wing' (default) stiffens only the wing elements, whose stiffness
-  # is a free parameter. A bridle line's k = E*A/l0 comes from the line
-  # material and diameter, so it is NOT adapted; 'all' includes them.
-  stiffness_update_scope: !!str 'wing'
-  max_elongation: !!float 0.01
-  stiffness_update_factor: !!float 2.0
-  max_stiffness: !!float 5.0e+5
-  # Stiffness CONTINUATION (off by default). A stiff bridle imposed in one
-  # step moves the wing by centimetres of line length at once and can throw
-  # the trim onto the stalled branch; ramping the target stiffness in from
-  # stiffness_ramp_start_factor over stiffness_ramp_iterations lets the
-  # shape re-equilibrate at each step. Needed when raising the bridle
-  # material modulus (e.g. dyneema 10 GPa -> SK75), not for the calibrated
-  # geometry. Scope: 'bridle' (default) or 'all'.
-  # ON by default since 2026-08-27: the shipped geometry carries the SK75
-  # bridle (109 GPa), ~11x the stiffness its photogrammetry-adjusted rest
-  # lengths were fitted with. 0.1 starts the continuation at the old effective
-  # stiffness; 0 disables it.
-  stiffness_ramp_iterations: !!int 20
-  stiffness_ramp_start_factor: !!float 0.1
-  stiffness_ramp_scope: !!str 'bridle'
 
 ## aero2struc
 aero2struc:
@@ -140,13 +112,11 @@ aero2struc:
 aero_structural_solver:
   max_iter: !!int 100
   it_check: !!int 5
-  # Convergence: Euclidean norm of the nodal force residual f_int + f_ext,
-  # normalised by the resultant tether force. Dimensionless.
-  residual_tol_relative: !!float 1.0e-4
+  tol: !!float 5 #N
   is_with_aitken_relaxation: !!bool true
   relaxation_factor: !!float 0.05 #0.05-0.3
   n_max_constant_residual_force: !!int 10
-  stagnation_tol_relative: !!float 4.0e-5 # [-], same normalisation as residual_tol_relative
+  stagnation_tol: !!float 2 # N, tolerance for stagnation detection
   qs_state_stagnation_decimals: !!int 2 # stop if opt_x is unchanged at this rounding
   qs_state_stagnation_n_iter: !!int 30 # consecutive unchanged iterations required to stop (0 disables)
   aero_update_interval: !!int 1 # run aero every N structural iterations (1 = every iter, 5 = every 5th)

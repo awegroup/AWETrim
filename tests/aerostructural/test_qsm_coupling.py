@@ -133,9 +133,9 @@ def geometry():
 def settings():
     return QsmCouplingSettings(
         max_iter=3,
-        residual_tolerance_relative=1e-9,
+        residual_tolerance=1e-9,
         residual_stagnation_window=3,
-        residual_stagnation_tolerance_relative=0.0,
+        residual_stagnation_tolerance=0.0,
         relaxation_factor=1.0,
         use_aitken_relaxation=False,
         n_aero_panels_per_structural_section=1,

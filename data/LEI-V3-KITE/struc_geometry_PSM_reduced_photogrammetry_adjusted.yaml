@@ -9,24 +9,9 @@ pulley_mass: !!float 0.09 #[kg] # 0.54 kg measured pulley mass / 6 modeled pulle
 
 ## Material properties
 dyneema:
-  # Dyneema SK75 fibre, datasheet grade. Tensile modulus 109-132 GPa,
-  # density 970 kg/m3 (Avient/DSM Dyneema SK75 technical data sheet, hosted at
-  # https://pelicanrope.com/content/PDFs/DyneemaSK75_Tech_Sheet.pdf and
-  # https://pelicanrope.com/content/PDFs/Dyneema-Comprehensive-factsheet-UHMWPE.pdf).
-  # The LOWER bound is used: a braided rope is softer than the bare fibre, so
-  # 109 GPa is an upper bound on what these bridle lines actually reach.
-  # Was 1.0e10 (10 GPa, attributed to M.B. Ruppert) until 2026-08-27; at that
-  # value the loaded lines stretched 1.5-2.8%, i.e. centimetres of bridle, which
-  # is comparable to the depower-tape travel.
-  # NOTE: the bridle rest lengths below are photogrammetry-adjusted WITH that
-  # stretch present, so this change re-trims the kite (measured at u_dp 0.227:
-  # alpha +0.54 deg, CL +5.7%, tether force +15.8%). It also requires the
-  # stiffness continuation (as_config structural_pss.stiffness_ramp_*): imposed
-  # in one step a stiff bridle stalls the wing and the solve diverges.
-  # density stays an EQUIVALENT value (not the fibre's 970): with the stored
-  # line diameters it is the mass per metre that has to come out right.
+  # (M.B. Ruppert) [Pa]
   density: 1717 #[kg/m^3] equivalent reduced-bridle density -> m = density * A * l0
-  youngs_modulus: 109.0e+9  # [Pa] -> k = E A / l0 (was 10000000000)
+  youngs_modulus: 10000000000 #8000000000 #550000000 #[Pa] -> k = E A / l0
   damping_per_stiffness: 0.0 # [/s] -> c = damping_per_stiffness * k
 
 fixed_point_indices: !!seq [0] # node indices that are fixed in space (0-based)
