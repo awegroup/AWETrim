@@ -143,6 +143,30 @@ def test_winch_k_v_optimization_is_opt_in_and_bracket_is_validated():
             WinchParams(**base, optimize_k_v=True, k_v_bounds=bad)
 
 
+def test_winch_use_awe_trim_defaults_and_is_validated():
+    from awetrim.server.schemas import WinchParams
+
+    base = dict(mode="reelout", k_v=0.0408, f_min=350.0, f_max=8000.0)
+    default = WinchParams(**base)
+    assert default.use_awe_trim == 0.0
+    assert default.v_reel_in is None
+    assert default.reel_in_beta is None
+
+    req = WinchParams(**base, use_awe_trim=1.0, v_reel_in=-2.0, reel_in_beta=20.0)
+    assert req.use_awe_trim == 1.0
+    assert req.v_reel_in == pytest.approx(-2.0)
+    assert req.reel_in_beta == pytest.approx(20.0)
+
+    with pytest.raises(ValidationError):
+        WinchParams(**base, use_awe_trim=1.5)
+    with pytest.raises(ValidationError):
+        WinchParams(**base, use_awe_trim=-0.1)
+    with pytest.raises(ValidationError):
+        WinchParams(**base, v_reel_in=0.5)  # must be negative
+    with pytest.raises(ValidationError):
+        WinchParams(**base, reel_in_beta=-1.0)  # must be positive
+
+
 def test_min_turn_radius_is_optional_and_non_negative():
     assert InitRequest(**_init_kwargs()).min_turn_radius is None
     assert StepRequest().min_turn_radius is None

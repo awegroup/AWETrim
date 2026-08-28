@@ -364,6 +364,35 @@ def test_winch_params_map_to_quadratic_force_law(patched_session):
         sess.init(config)
 
 
+def test_winch_use_awe_trim_defaults_to_zero_and_is_threaded_through(patched_session):
+    sess, config = patched_session
+    config["winch_params"] = {
+        "mode": "reelout", "k_v": 0.02,
+        "f_min": 1000.0, "f_max": 8400.0,
+    }
+    sess.init(config)
+    radial = sess.phase.pattern_config["radial_parameters"]
+    assert radial["use_awe_trim"] == 0.0
+    assert "v_reel_in" not in radial
+    assert "reel_in_beta" not in radial
+
+    config["winch_params"] = {
+        "mode": "reelout", "k_v": 0.02,
+        "f_min": 1000.0, "f_max": 8400.0,
+        "use_awe_trim": 1.0, "v_reel_in": -3.0, "reel_in_beta": 15.0,
+    }
+    sess.init(config)
+    radial2 = sess.phase.pattern_config["radial_parameters"]
+    assert radial2["use_awe_trim"] == pytest.approx(1.0)
+    assert radial2["v_reel_in"] == pytest.approx(-3.0)
+    assert radial2["reel_in_beta"] == pytest.approx(15.0)
+
+    # use_awe_trim doesn't relax the reelout-only restriction on mode itself.
+    config["winch_params"]["mode"] = "reelin"
+    with pytest.raises(ValueError, match="reelout"):
+        sess.init(config)
+
+
 def test_optimize_k_v_off_by_default(patched_session):
     """The winch gain stays a constant unless the client asks for it."""
     sess, config = patched_session

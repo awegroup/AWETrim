@@ -226,6 +226,39 @@ class WinchParams(BaseModel):
         "f_min itself dominates the limit it smooths -- at 1e-3 an f_min of 350 N "
         "gives an 884 N floor, 2.5x the value requested.",
     )
+    # Reel-in-capable blend, mirroring WinchControllers.jl's calc_vro_soft
+    # (Winch.tension_curve computes force from speed; that one inverts it).
+    # 0 leaves the winch law exactly as above (symmetric, unphysical for
+    # negative speed); 1 replaces it below f_min with a straight line through
+    # (0, f_min) and (v_reel_in, 0), handed to the quadratic law above by a
+    # smooth maximum. Independent of `mode`: it makes the tension curve
+    # itself valid for a momentary negative speed_radial within whichever
+    # phase is being optimized, not a reel-in trajectory phase in its own
+    # right (mode = "reelin" is still rejected server-side).
+    use_awe_trim: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Blend factor in [0, 1] towards a reel-in-capable winch "
+        "law. 0 (default) is the plain law above; 1 replaces it below f_min "
+        "with a straight reel-in line, smoothly handed to the quadratic law.",
+    )
+    v_reel_in: Optional[float] = Field(
+        default=None,
+        lt=0,
+        description="use_awe_trim only: reel-in speed [m/s] at zero force. "
+        "Unset keeps the server default (-2.0). Must be negative.",
+    )
+    reel_in_beta: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="use_awe_trim only: sharpness of the smooth handover "
+        "between the reel-in line and the quadratic law [s/m]. Unset keeps "
+        "the server default (20.0). Unlike softminus_beta above, this has no "
+        "matching sharpness requirement against f_min/k_v -- the forward "
+        "law's quadratic term has zero, not infinite, slope at its own "
+        "zero, so soft_max stays well-behaved for any positive value.",
+    )
 
     @model_validator(mode="after")
     def _check_forces(self):

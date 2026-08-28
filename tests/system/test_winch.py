@@ -4,6 +4,7 @@ Tests verify the nominal tether-force model and the radial algebraic equation:
 - tension_curve shapes: linear / quadratic / custom_spline
 - offset and slope discovery via the ``offset_winch_*`` / ``slope_winch_*`` keys
 - optional softplus / softminus force-limiting smoothing
+- use_awe_trim: the reel-in-capable blend of the quadratic law
 - radial_equation for the "force" and "constant" reeling strategies
 - error paths for missing/invalid configuration
 
@@ -12,6 +13,8 @@ Per AGENTS.md @tester role:
   values where the model is deterministic (no smoothing).
 - One test file per source module.
 """
+
+import math
 
 import casadi as ca
 import numpy as np
@@ -261,6 +264,103 @@ class TestTensionCurveSmoothing:
                 softplus=True, softplus_beta=1e-4, softminus=True, softminus_beta=1e-4
             )
         )
+        vr = ca.MX.sym("vr")
+        assert isinstance(winch.tension_curve(vr), ca.MX)
+
+
+# ============================================================================
+# TENSION CURVE — AWE-TRIM BLEND (reel-in line, quadratic reel-out only)
+# ============================================================================
+
+
+class TestTensionCurveAweTrim:
+    """use_awe_trim blends the plain quadratic law with a reel-in-capable one.
+
+    0 = unchanged quadratic law (symmetric, unphysical for v < 0); 1 = a
+    straight line through (offset, min_tether_force) and
+    (offset + v_reel_in, 0), handed to the quadratic reel-out law by a smooth
+    maximum. Mirrors WinchControllers.jl's calc_vro_soft in the forward
+    direction.
+    """
+
+    def _cfg(self, **overrides):
+        cfg = _quadratic_config(
+            min_tether_force=350.0,
+            use_awe_trim=1.0,
+            v_reel_in=-2.0,
+            reel_in_beta=20.0,
+        )
+        cfg.update(overrides)
+        return cfg
+
+    def test_zero_use_awe_trim_matches_original(self):
+        plain = Winch(pattern_config=_quadratic_config())
+        trimmed = Winch(pattern_config=self._cfg(use_awe_trim=0.0))
+        for v in (-3.0, -0.5, 0.0, 0.5, 3.0):
+            assert float(trimmed.tension_curve(v)) == pytest.approx(
+                float(plain.tension_curve(v))
+            )
+
+    def test_full_use_awe_trim_near_zero_at_v_reel_in(self):
+        # line and the (relu'd) quadratic term are BOTH exactly 0 at
+        # v_reel_in, so soft_max sits log(2)/reel_in_beta above true 0 there
+        # -- the same degenerate-tie behaviour documented for
+        # WinchControllers.jl's calc_vro_soft, mirrored here in the forward
+        # direction.
+        winch = Winch(pattern_config=self._cfg())
+        assert float(winch.tension_curve(-2.0)) == pytest.approx(
+            math.log(2) / 20.0, abs=1e-6
+        )
+
+    def test_full_use_awe_trim_near_min_tether_force_at_offset(self):
+        # A sharp reel_in_beta keeps the soft_max correction negligible here.
+        winch = Winch(pattern_config=self._cfg())
+        assert float(winch.tension_curve(0.0)) == pytest.approx(350.0, abs=1.0)
+
+    def test_full_use_awe_trim_is_not_symmetric(self):
+        # Unlike the plain quadratic law, reel-in (v < offset) must differ
+        # from the mirrored reel-out speed.
+        winch = Winch(pattern_config=self._cfg())
+        below = float(winch.tension_curve(-1.0))
+        above = float(winch.tension_curve(1.0))
+        assert below != pytest.approx(above)
+        assert below < above
+
+    def test_full_use_awe_trim_monotonic(self):
+        winch = Winch(pattern_config=self._cfg())
+        speeds = np.linspace(-2.0, 3.0, 51)
+        forces = [float(winch.tension_curve(v)) for v in speeds]
+        assert all(b >= a - 1e-9 for a, b in zip(forces, forces[1:]))
+
+    def test_blend_is_exact_linear_combination(self):
+        own = Winch(pattern_config=self._cfg(use_awe_trim=1.0))
+        plain = Winch(pattern_config=_quadratic_config())
+        half = Winch(pattern_config=self._cfg(use_awe_trim=0.5))
+        for v in (-1.5, -0.5, 0.5, 2.0):
+            expected = 0.5 * float(plain.tension_curve(v)) + 0.5 * float(
+                own.tension_curve(v)
+            )
+            assert float(half.tension_curve(v)) == pytest.approx(expected)
+
+    def test_use_awe_trim_out_of_range_raises(self):
+        winch = Winch(pattern_config=self._cfg(use_awe_trim=1.5))
+        with pytest.raises(ValueError, match="use_awe_trim"):
+            winch.tension_curve(1.0)
+
+    def test_use_awe_trim_requires_quadratic_model(self):
+        winch = Winch(
+            pattern_config=_linear_config(use_awe_trim=1.0, v_reel_in=-2.0)
+        )
+        with pytest.raises(ValueError, match="force_model"):
+            winch.tension_curve(1.0)
+
+    def test_use_awe_trim_requires_negative_v_reel_in(self):
+        winch = Winch(pattern_config=self._cfg(v_reel_in=0.5))
+        with pytest.raises(ValueError, match="v_reel_in"):
+            winch.tension_curve(1.0)
+
+    def test_use_awe_trim_symbolic_type_preserved(self):
+        winch = Winch(pattern_config=self._cfg())
         vr = ca.MX.sym("vr")
         assert isinstance(winch.tension_curve(vr), ca.MX)
 

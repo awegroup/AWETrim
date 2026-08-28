@@ -613,6 +613,11 @@ class ReeloutSession:
         ``DEFAULT_OPTI_LIMITS["slope_winch_ro"]``, so the box always contains
         the seed no matter which gain the client flies. Returns whether the
         caller must add the slope to ``optimization_params``.
+
+        ``use_awe_trim`` (0..1, default 0) blends this quadratic law with a
+        reel-in-capable one below f_min -- see ``WinchParams.use_awe_trim``
+        and ``Winch.tension_curve``. Independent of ``mode``, which is still
+        rejected below unless it is "reelout".
         """
         if winch["mode"] != "reelout":
             raise ValueError(
@@ -636,12 +641,13 @@ class ReeloutSession:
         # the SAME corner sharpness, so honour what it sends before falling back to
         # the historical default. Set explicitly rather than by setdefault: the
         # cycle config may already carry a value, and the request is the authority.
-        for key in ("softplus_beta", "softminus_beta"):
+        for key in ("softplus_beta", "softminus_beta", "v_reel_in", "reel_in_beta"):
             value = winch.get(key)
             if value is not None:
                 radial_parameters[key] = float(value)
         radial_parameters.setdefault("softplus_beta", 1e-3)
         radial_parameters.setdefault("softminus_beta", 1e-3)
+        radial_parameters["use_awe_trim"] = float(winch.get("use_awe_trim", 0.0))
         v_max = winch.get("v_max")
         if v_max is None and winch.get("p_max") is not None:
             v_max = float(winch["p_max"]) / float(winch["f_max"])
