@@ -23,6 +23,84 @@ import logging
 import numpy as np
 
 
+def element_elongations(
+    struc_nodes,
+    connectivity,
+    rest_lengths,
+    *,
+    pulley_pairs=None,
+):
+    """Per-element elongation ``(l - l0) / l0`` [-], in element order.
+
+    Pulleys are the subtlety. PSS represents a pulley rope as TWO elements, one
+    per arm, each naming the other; the pulley slides until the tension in both
+    arms is equal, which means an individual arm's length change carries no
+    information -- the arm can lengthen purely because the pulley slid. What is
+    physically strained is the ROPE:
+
+        (l_a + l_b - l0_a - l0_b) / (l0_a + l0_b)
+
+    so both arms of a pulley report that shared value. Treating the arms as
+    independent elements is how a pulley arm acquires a large spurious
+    "elongation" and gets stiffened for it.
+
+    Args:
+        struc_nodes: (n_nodes, 3) node positions.
+        connectivity: (n_elements, >=2) node index pairs, in element order.
+        rest_lengths: per-element rest length [m], same order.
+        pulley_pairs: the solver's ``pulley_line_to_other_node_pair_dict`` --
+            ``{str(element_index): [node_a, node_b, l0_other, l0_self, ci]}``,
+            naming the OTHER arm of the rope this element is half of.
+
+    Returns:
+        (n_elements,) array of elongations; NaN where the rest length is not
+        positive.
+    """
+    nodes = np.asarray(struc_nodes, dtype=float)
+    conn = np.asarray(connectivity, dtype=int)
+    l0 = np.asarray(rest_lengths, dtype=float).reshape(-1)
+    n_elements = min(len(conn), len(l0))
+    if n_elements == 0:
+        return np.zeros(0, dtype=float)
+
+    pairs = conn[:n_elements, :2]
+    lengths = np.linalg.norm(nodes[pairs[:, 1]] - nodes[pairs[:, 0]], axis=1)
+    elongations = np.full(n_elements, np.nan, dtype=float)
+    positive = l0[:n_elements] > 0.0
+    elongations[positive] = lengths[positive] / l0[:n_elements][positive] - 1.0
+
+    for key, value in (pulley_pairs or {}).items():
+        index = int(key)
+        if not 0 <= index < n_elements:
+            continue
+        other = np.asarray(value, dtype=float).reshape(-1)
+        node_a, node_b = int(other[0]), int(other[1])
+        l0_other, l0_self = float(other[2]), float(other[3])
+        l0_rope = l0_self + l0_other
+        if l0_rope <= 0.0:
+            continue
+        l_other = float(np.linalg.norm(nodes[node_b] - nodes[node_a]))
+        elongations[index] = (lengths[index] + l_other) / l0_rope - 1.0
+
+    return elongations
+
+
+def max_element_elongation(
+    struc_nodes,
+    connectivity,
+    rest_lengths,
+    *,
+    pulley_pairs=None,
+):
+    """Largest element elongation [-], NaN-safe. See element_elongations."""
+    elongations = element_elongations(
+        struc_nodes, connectivity, rest_lengths, pulley_pairs=pulley_pairs
+    )
+    if elongations.size == 0 or not np.any(np.isfinite(elongations)):
+        return float("nan")
+    return float(np.nanmax(elongations))
+
+
 def compute_adaptive_dt(
     residual_norm_history,
     dt_initial: float,

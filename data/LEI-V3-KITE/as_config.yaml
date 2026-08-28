@@ -100,6 +100,36 @@ structural_pss:
   fixed_point_indices: [0] #this is the bridle point / KCU
   is_with_diagnostics: !!bool false
   num_node_diagnostics: !!int 34
+  # --- OPT-IN stiffness machinery, all OFF by default ---------------------
+  # Both change the MODEL, so they are never inherited silently. Left off,
+  # the coupled solver behaves exactly as before they existed (verified:
+  # u_dp 0.32 reproduces 31 iterations / 3.327 N / v_tau 13.657).
+  # See scripts/personal/wes-quasi-steady/FINDINGS_bridle_stiffness.md.
+  #
+  # 1. Elongation bound (Poland & Schmehl): stiffen only elements stretching
+  #    more than `max_elongation`, each capped at its own MODULUS ceiling
+  #    (k_max = max_stiffness_factor * k_initial; since k = E*A/l0 this is the
+  #    same modulus for every element, unlike a scalar N/m cap). The bound
+  #    also gates the solve's EXIT, so a converged answer satisfies it.
+  #    At 10 GPa this costs ~the baseline wall time and keeps stretch from
+  #    moving the trim, which is the reason to use it.
+  # update_stiffness: !!bool true
+  # stiffness_update_scope: !!str 'all'    # 'wing' | 'bridle' | 'all'
+  # max_elongation: !!float 0.01           # the 1% gate
+  # stiffness_update_factor: !!float 1.5
+  # max_stiffness_factor: !!float 9.0      # 9x10 GPa = 90 GPa effective rope
+  # stiffness_settle_iters: !!int 5
+  # stiffness_trigger_factor: !!float 1.0  # step only from residual <= tol
+  #
+  # 2. Modulus continuation: walk the bridle modulus up INSIDE one solve,
+  #    each step taken only from a converged state. Reaches 90 GPa at
+  #    u_dp 0.18; stalls near 2.7x at u_dp 0.32. Rarely worth it -- 90 GPa
+  #    moves the trim by <4%, which is near the solver tolerance.
+  # modulus_ramp_target_factor: !!float 9.0
+  # modulus_ramp_step_factor: !!float 1.4
+  # modulus_ramp_scope: !!str 'bridle'     # 'wing' | 'bridle' | 'bridle_lines' | 'all'
+  # modulus_stall_iters: !!int 25
+  # modulus_max_halvings: !!int 2
 
 ## aero2struc
 aero2struc:

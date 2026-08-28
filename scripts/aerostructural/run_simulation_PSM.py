@@ -738,18 +738,9 @@ def solve_deformation(
     if gamma_final.size:
         np.save(Path(results_dir) / "gamma_distribution.npy", gamma_final)
     final_nodes = np.asarray(tracking_data["positions"][meta["n_iter"] - 1])
-    # Carry the SELECTED stiffnesses (elongation-bound update) with the
-    # deformed geometry, so a re-solve of the snapshot starts from the values
-    # this solve converged with instead of the material table's.
     save_geometry_snapshot(
         config,
-        build_deformed_struc_geometry(
-            struc_geometry,
-            final_nodes,
-            connectivity=kite_connectivity_arr,
-            stiffnesses=meta.get("final_stiffnesses"),
-            stiffnesses_initial=k_arr,
-        ),
+        build_deformed_struc_geometry(struc_geometry, final_nodes),
         build_deformed_aero_geometry(
             aero_geometry, final_nodes, struc_node_le_indices, struc_node_te_indices
         ),

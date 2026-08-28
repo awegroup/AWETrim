@@ -17,6 +17,9 @@
 import yaml
 from pathlib import Path
 import numpy as np
+import json
+import logging
+
 import h5py
 
 
@@ -51,7 +54,25 @@ def save_results(tracking, meta, filename):
         for name, arr in tracking.items():
             grp.create_dataset(name, data=arr[: meta["n_iter"]], compression="gzip")
         for k, v in meta.items():
-            grp.attrs[k] = v
+            # A single unstorable value must not cost the whole run. h5py
+            # rejects anything without a native equivalent (lists of dicts,
+            # ragged sequences, None), and this write is the LAST thing a
+            # solve does -- losing minutes of coupled iteration here because
+            # one new diagnostic was the wrong shape is never the right
+            # trade. Store what fits, JSON the rest, and say so.
+            try:
+                grp.attrs[k] = v
+            except (TypeError, ValueError):
+                try:
+                    grp.attrs[k] = json.dumps(v, default=str)
+                    logging.debug("meta[%r] stored as a JSON string", k)
+                except (TypeError, ValueError):
+                    grp.attrs[k] = repr(v)
+                    logging.warning(
+                        "meta[%r] (%s) is not HDF5-storable; saved its repr",
+                        k,
+                        type(v).__name__,
+                    )
 
 
 def load_sim_output(h5_path):

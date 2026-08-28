@@ -18,6 +18,7 @@ import time
 from tqdm import tqdm
 import numpy as np
 import logging
+import math
 import matplotlib.pyplot as plt
 from . import structural_pss
 from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking
@@ -26,7 +27,12 @@ from .actuation import (
     update_power_tape_actuation,
     update_steering_tape_actuation_progressive,
 )
-from ..convergence import check_convergence, compute_adaptive_dt
+from ..convergence import (
+    check_convergence,
+    compute_adaptive_dt,
+    element_elongations,
+    max_element_elongation,
+)
 from ..forces import distribute_total_force_by_particle_mass
 from ..mapping import (
     BilinearAeroToStructuralLoadMapper,
@@ -178,6 +184,188 @@ def main(
     is_convergence = False
     f_residual_list = []
     f_tether_drag = np.zeros(3)
+
+    ### ELEMENT ELONGATION BOUND
+    # The WING element stiffnesses are not known: following Poland & Schmehl
+    # they are chosen so that no element elongates by more than
+    # `max_elongation`. Enforced HERE rather than as a post-check, so a
+    # converged shape satisfies both the force residual and the bound.
+    #
+    # Scope defaults to the wing. A bridle line's stiffness is not free -- it is
+    # E*A/l0 from the line material and diameter -- so stiffening it to suppress
+    # its (real) stretch falsifies the bridle unless the ceiling keeps it
+    # physical, which is what the MODULUS cap below is for. Off by default:
+    # this changes the model, so it is opted into, never inherited.
+    is_with_stiffness_update = bool(
+        config["structural_pss"].get("update_stiffness", False)
+    )
+    stiffness_update_scope = str(
+        config["structural_pss"].get("stiffness_update_scope", "wing")
+    ).lower()
+    elongation_bound = float(config["structural_pss"].get("max_elongation", 0.01))
+    stiffness_update_factor = float(
+        config["structural_pss"].get("stiffness_update_factor", 1.5)
+    )
+    # The ceiling is a MODULUS, expressed as a multiple of the geometry's own.
+    # 10.9 takes a 10 GPa base to the 109 GPa SK75 fibre datasheet value.
+    max_modulus_factor = float(
+        config["structural_pss"].get("max_stiffness_factor", 10.9)
+    )
+    # Minimum coupled iterations between two stiffening events. A stiffness
+    # jump has to be ABSORBED before the next one is judged -- the residual
+    # spikes on the iteration after an update, and stiffening again off that
+    # spike is the open-loop ramp this design exists to avoid.
+    stiffness_settle_iters = int(
+        config["structural_pss"].get("stiffness_settle_iters", 5)
+    )
+    # Wing elements are parsed first, bridle lines appended after them.
+    n_wing_elements = len(kite_connectivity_arr) - (
+        0 if bridle_connectivity_arr is None else len(bridle_connectivity_arr)
+    )
+    if stiffness_update_scope == "all":
+        stiffness_update_indices = None
+    elif stiffness_update_scope == "bridle":
+        stiffness_update_indices = range(n_wing_elements, len(kite_connectivity_arr))
+    else:
+        stiffness_update_indices = range(n_wing_elements)
+    #: A stiffness step may only be taken from a state at or under this
+    #: residual [N] -- the solver's own convergence tolerance by default, so
+    #: "converged" means the same thing to the ramp as to the solve. Loosen it
+    #: only deliberately: every multiple of tol is a step taken from a state
+    #: that is not actually an equilibrium.
+    stiffness_trigger_residual = float(
+        config["aero_structural_solver"]["tol"]
+    ) * float(config["structural_pss"].get("stiffness_trigger_factor", 1.0))
+
+    k_base = structural_pss.get_stiffnesses(psystem)
+    k_target = k_base.copy()
+    k_ceiling = structural_pss.modulus_stiffness_ceiling(k_base, max_modulus_factor)
+
+    ### MODULUS CONTINUATION, INSIDE THE COUPLED LOOP
+    # Walk the bridle modulus up to `modulus_ramp_target_factor` times the
+    # geometry's own, in `modulus_ramp_step_factor` steps, each taken only once
+    # the previous one has been ABSORBED (same residual gate as the elongation
+    # bound below).
+    #
+    # Why in the loop rather than by re-solving from a converged snapshot: a
+    # restart can only carry what is serialisable -- node positions, rest
+    # lengths, stiffnesses, the trim, the circulation. It cannot carry the
+    # Aitken relaxation state, the adapted dt (which drifts from 0.005 to
+    # ~0.009 over a solve), or the phase of the loop's cumulative trim
+    # rotation. Measured 2026-08-28: re-solving at the SAME modulus from a
+    # converged 3.327 N state restarts at 191 N against only 288 N of
+    # free-node load, i.e. the aero lands somewhere else entirely. Continuing
+    # in place has no handover, so none of that can be dropped.
+    modulus_ramp_target = float(
+        config["structural_pss"].get("modulus_ramp_target_factor", 1.0)
+    )
+    modulus_ramp_step = float(
+        config["structural_pss"].get("modulus_ramp_step_factor", 1.4)
+    )
+    modulus_ramp_scope = str(
+        config["structural_pss"].get("modulus_ramp_scope", "bridle")
+    ).lower()
+    is_with_modulus_ramp = modulus_ramp_target > 1.0 and modulus_ramp_step > 1.0
+    #: Where the ramp currently sits, as a multiple of the initial modulus.
+    modulus_factor = 1.0
+    modulus_ramp_history = []
+    is_modulus_ramp_finalized = not is_with_modulus_ramp
+    #: The last stiffness state that actually CONVERGED, and its factor. A step
+    #: that cannot be absorbed is reverted to this, because the previous level
+    #: is a perfectly good answer -- it is a converged aerostructural state at a
+    #: known modulus. Failing the whole solve because the ramp could not reach
+    #: its target throws that away and reports NaN for a case that had a valid
+    #: result in hand. The stall point IS the deliverable: the highest modulus
+    #: this case supports, measured rather than assumed.
+    k_last_converged = None
+    #: The converged SHAPE that went with those stiffnesses. Restoring k alone
+    #: is useless: by the time a bad step is detected the geometry has already
+    #: run away (1.9 MN residual, 460% elongation, v_tau pinned at its bound
+    #: was measured at u_dp 0.32), and putting the old stiffness back onto
+    #: wrecked positions recovers nothing. The state has to come back too.
+    struc_nodes_last_converged = None
+    modulus_factor_last_converged = 1.0
+    modulus_step_current = modulus_ramp_step
+    n_modulus_halvings = 0
+    is_modulus_ramp_stalled = False
+    #: Iterations after a step before it is declared unabsorbable.
+    modulus_stall_iters = int(
+        config["structural_pss"].get("modulus_stall_iters", 25)
+    )
+    #: Abandon a step the moment the residual exceeds this multiple of the one
+    #: it was taken from. Waiting the full modulus_stall_iters lets a diverging
+    #: step run to 1e6 N, and nothing is recoverable from there -- the point of
+    #: the fallback is to catch it while the shape is still worth reverting to.
+    modulus_divergence_factor = float(
+        config["structural_pss"].get("modulus_divergence_factor", 50.0)
+    )
+    residual_at_last_step = float("inf")
+    max_modulus_halvings = int(
+        config["structural_pss"].get("modulus_max_halvings", 2)
+    )
+    if modulus_ramp_scope == "all":
+        modulus_ramp_mask = np.ones(len(k_base), dtype=bool)
+    elif modulus_ramp_scope == "wing":
+        modulus_ramp_mask = np.zeros(len(k_base), dtype=bool)
+        modulus_ramp_mask[:n_wing_elements] = True
+    else:
+        modulus_ramp_mask = np.zeros(len(k_base), dtype=bool)
+        modulus_ramp_mask[n_wing_elements:] = True
+        if modulus_ramp_scope == "bridle_lines":
+            # The power and steering tapes are flat 12x1.5 mm webbing, not
+            # braided rope -- their `d` in the geometry is an AREA-equivalent
+            # diameter, so giving them a rope's modulus is not the same
+            # physical claim it is for a round line. The depower tape is also
+            # the actuator: at 90 GPa its k is ~1.1e6 N/m, which turns a 5 cm
+            # rest-length step into a ~54 kN swing on one element, the largest
+            # single perturbation anywhere in the solve. Exclude them and ramp
+            # the round lines only.
+            for tape_index in (
+                [power_tape_index] if power_tape_index is not None else []
+            ) + list(steering_tape_indices or []):
+                index = int(tape_index)
+                if 0 <= index < len(modulus_ramp_mask):
+                    modulus_ramp_mask[index] = False
+    if is_with_modulus_ramp:
+        logging.info(
+            "Modulus continuation: %s elements (%s) from 1.0x to %.2fx in "
+            "%.2fx steps, each taken only from a converged state "
+            f"(residual <= {stiffness_trigger_residual:.3f} N, actuation done)",
+            int(modulus_ramp_mask.sum()),
+            modulus_ramp_scope,
+            modulus_ramp_target,
+            modulus_ramp_step,
+        )
+
+    n_stiffness_updates = 0
+    #: Does the CURRENT shape satisfy the elongation bound? Either nothing
+    #: eligible exceeds it, or everything that does is already pinned at its
+    #: modulus ceiling and cannot be stiffened further. This joins the break
+    #: condition, which is what makes the bound part of the convergence
+    #: criterion rather than a post-check: a small FORCE residual on a shape
+    #: whose lines are stretched 2-3% is not a converged answer, it is a
+    #: converged answer to the wrong problem.
+    is_elongation_satisfied = not bool(
+        config["structural_pss"].get("update_stiffness", False)
+    )
+    max_elongation_seen = float("nan")
+    max_wing_elongation = float("nan")
+    max_bridle_elongation = float("nan")
+    #: Iteration of the last stiffening, and the residual just before it. The
+    #: iteration spaces successive steps; the residual is recorded for the log
+    #: and the ramp history, NOT used as the trigger (see the gate below).
+    last_stiffening_iteration = -(10**6)
+    residual_before_stiffening = float("inf")
+    if is_with_stiffness_update:
+        logging.info(
+            "Elongation bound active: scope=%s, bound=%.2f%%, factor=%.2f, "
+            "modulus ceiling=%.1fx initial, settle=%s iterations",
+            stiffness_update_scope,
+            100.0 * elongation_bound,
+            stiffness_update_factor,
+            max_modulus_factor,
+            stiffness_settle_iters,
+        )
     is_actuation_finalized = True
     is_steering_finalized = True
     struc_nodes_prev = None  # Initialize previous points for tracking
@@ -275,7 +463,55 @@ def main(
     # Warm gamma continuation across the coupling iterations (see
     # run_vsm_package): the pre-loop solve is cold, every later trim seeds
     # from the previous iteration's converged circulation.
+    #
+    # ...unless a continuation hands over its neighbour's converged
+    # circulation. Geometry and trim are only two thirds of the state: near
+    # stall the gamma loop has more than one attracting branch, and a cold
+    # pre-loop solve is free to pick a different one from the converged
+    # neighbour whose SHAPE it was just handed. That is the same "warm shape,
+    # cold aero" defect the trim seed fixes, one level down.
+    #
+    # Length must match the current panel count -- a re-panelled or re-meshed
+    # geometry invalidates the seed, so it is dropped rather than reshaped.
     gamma_seed_prev = None
+    initial_gamma = config.get("initial_gamma_distribution")
+    if initial_gamma is not None:
+        initial_gamma = np.asarray(initial_gamma, dtype=float).reshape(-1)
+        if body_aero is None:
+            logging.warning("initial_gamma_distribution given but no body_aero.")
+        elif initial_gamma.size != len(body_aero.panels):
+            logging.warning(
+                "Ignoring initial_gamma_distribution: %s values for %s panels.",
+                initial_gamma.size,
+                len(body_aero.panels),
+            )
+        elif not np.all(np.isfinite(initial_gamma)):
+            logging.warning("Ignoring initial_gamma_distribution: non-finite.")
+        else:
+            gamma_seed_prev = initial_gamma
+            logging.info(
+                "Circulation seeded from a continuation neighbour "
+                "(%s panels, |gamma|_max %.4f).",
+                initial_gamma.size,
+                float(np.max(np.abs(initial_gamma))),
+            )
+    # Trim seed for the PRE-LOOP solve. Every later iteration seeds from the
+    # previous one's opt_x, but this first one falls back to DEFAULT_GUESS_QS
+    # (30 m/s, level) unless told otherwise. In a CONTINUATION -- stepping the
+    # stiffness or the depower from an already-converged neighbour -- handing
+    # over the deformed shape with a cold trim is worse than useless: the first
+    # coupled step re-trims from 30 m/s and throws the warm shape away. This
+    # key carries the neighbour's converged trim across with the geometry.
+    # [kite_speed, roll, pitch, yaw, course_rate_body], as opt_x.
+    quasi_steady_initial_guess = config.get("quasi_steady_initial_guess")
+    if quasi_steady_initial_guess is not None:
+        quasi_steady_initial_guess = np.asarray(
+            quasi_steady_initial_guess, dtype=float
+        ).reshape(5)
+        logging.info(
+            "Quasi-steady trim seeded from a continuation neighbour: %s",
+            quasi_steady_initial_guess,
+        )
     f_aero_wing_vsm_format, body_aero, results_aero = aerodynamic_vsm.run_vsm_package(
         body_aero=body_aero,
         solver=vsm_solver,
@@ -286,6 +522,7 @@ def main(
         gamma_seed=gamma_seed_prev,
         le_arr=le_arr,
         te_arr=te_arr,
+        current_guess=quasi_steady_initial_guess,
         # va_vector=vel_app,
         aero_input_type="reuse_initial_polar_data",
         initial_polar_data=initial_polar_data,
@@ -670,6 +907,218 @@ def main(
                 stagnation_check_start=stagnation_check_start,
             )
 
+            ### ELEMENT ELONGATION BOUND
+            # Stiffen whatever exceeds the bound and keep iterating: the bound
+            # is part of the convergence criterion, not a post-check. Once
+            # every offending element sits at its modulus ceiling nothing is
+            # updated any more and the loop is free to converge -- and the
+            # report then says honestly which elements are pinned.
+            stiffness_updated_now = False
+            # ONE shared gate for both stiffness mechanisms, so at most one
+            # perturbation is injected per iteration and each is judged from a
+            # state that has actually recovered.
+            #
+            # The rule is the plan's: only raise the stiffness FROM A CONVERGED
+            # STATE. That means the residual is at or under the solver's own
+            # tolerance -- not merely "no worse than before the last step",
+            # which is vacuous on the first step (nothing precedes it) and
+            # admits steps taken at 6.4 N against a 5 N criterion.
+            #
+            # It also means waiting for the tape. Ramping the modulus while the
+            # power tape is still being walked out runs two continuations at
+            # once and neither result means anything.
+            residual_now = f_residual_list[-1] if f_residual_list else float("inf")
+            is_settled = (
+                is_actuation_finalized
+                and is_steering_finalized
+                and depower_settle_counter == 0
+                and i - last_stiffening_iteration >= stiffness_settle_iters
+                and np.isfinite(residual_now)
+                and residual_now <= stiffness_trigger_residual
+            )
+
+            ### MODULUS CONTINUATION
+            if is_with_modulus_ramp and not is_modulus_ramp_finalized and is_settled:
+                # This state converged, so it becomes the fallback -- both
+                # the stiffnesses AND the shape they were converged with.
+                k_last_converged = k_target.copy()
+                struc_nodes_last_converged = np.array(struc_nodes, copy=True)
+                modulus_factor_last_converged = modulus_factor
+                residual_at_last_step = residual_now
+                previous_factor = modulus_factor
+                modulus_factor = min(
+                    modulus_factor * modulus_step_current, modulus_ramp_target
+                )
+                # A FLOOR, not an assignment. The elongation bound may already
+                # have stiffened some of these elements past the ramp's current
+                # level; recomputing from k_base would silently undo that work
+                # every step, so the two mechanisms would fight. Taking the
+                # maximum lets the ramp lift everything toward the target
+                # modulus while whatever the bound raised further stays raised.
+                k_target = np.where(
+                    modulus_ramp_mask,
+                    np.maximum(k_target, k_base * modulus_factor),
+                    k_target,
+                )
+                # The elongation bound may not push an element past the modulus
+                # ceiling, but the ramp itself defines a floor that rises with
+                # it -- keep the ceiling at least at the ramp's own level.
+                k_ceiling = np.maximum(k_ceiling, k_base * modulus_factor)
+                structural_pss.set_stiffnesses(psystem, k_target)
+                stiffness_updated_now = True
+                is_convergence = False
+                is_stagnated = False
+                stagnation_check_start = i + 1
+                last_stiffening_iteration = i
+                residual_before_stiffening = residual_now
+                # Plain numbers, not dicts: this goes into the h5 as an
+                # attribute, and a list of dicts becomes an object-dtype array
+                # that h5py cannot store -- which threw away a completed
+                # 337 s solve at the very last step.
+                modulus_ramp_history.append(
+                    (int(i), float(modulus_factor), float(residual_now))
+                )
+                if modulus_factor >= modulus_ramp_target - 1e-12:
+                    is_modulus_ramp_finalized = True
+                logging.info(
+                    "Modulus continuation: %.3fx -> %.3fx at iteration %s "
+                    "(residual %.3f N)%s",
+                    previous_factor,
+                    modulus_factor,
+                    i,
+                    residual_now,
+                    " -- ramp complete" if is_modulus_ramp_finalized else "",
+                )
+
+            ### MODULUS RAMP STALL / FALLBACK
+            # A step the solve cannot absorb within modulus_stall_iters is
+            # reverted. Halve the step and try again from the same converged
+            # state; after max_modulus_halvings, stop and let the solve settle
+            # at the last converged modulus, which is then reported as the
+            # highest this case supports.
+            is_diverging = k_last_converged is not None and (
+                not np.isfinite(residual_now)
+                or residual_now
+                > modulus_divergence_factor * max(residual_at_last_step, 1e-9)
+            )
+            if (
+                is_with_modulus_ramp
+                and not is_modulus_ramp_finalized
+                and k_last_converged is not None
+                and i > last_stiffening_iteration
+                and (
+                    is_diverging
+                    or (
+                        i - last_stiffening_iteration >= modulus_stall_iters
+                        and residual_now > stiffness_trigger_residual
+                    )
+                )
+            ):
+                # Restore the whole state, not just the stiffnesses.
+                structural_pss.set_stiffnesses(psystem, k_last_converged)
+                k_target = k_last_converged.copy()
+                struc_nodes = np.array(struc_nodes_last_converged, copy=True)
+                for particle_index, particle in enumerate(psystem.particles):
+                    particle.update_pos(struc_nodes[particle_index])
+                    particle.update_vel(np.zeros(3))
+                modulus_factor = modulus_factor_last_converged
+                n_modulus_halvings += 1
+                if n_modulus_halvings > max_modulus_halvings:
+                    is_modulus_ramp_finalized = True
+                    is_modulus_ramp_stalled = True
+                    logging.warning(
+                        "Modulus continuation STALLED at %.3fx (%s halvings "
+                        "exhausted). Reverting to the last converged stiffness "
+                        "and settling there; that factor is the highest this "
+                        "case supports.",
+                        modulus_factor,
+                        n_modulus_halvings - 1,
+                    )
+                else:
+                    modulus_step_current = math.sqrt(modulus_step_current)
+                    logging.info(
+                        "Step to %.3fx abandoned after %s iterations "
+                        "(residual %.3g N); shape and stiffness reverted to "
+                        "%.3fx, step now %.4fx",
+                        previous_factor * modulus_step_current**2,
+                        i - last_stiffening_iteration,
+                        residual_now,
+                        modulus_factor,
+                        modulus_step_current,
+                    )
+                last_stiffening_iteration = i
+                stagnation_check_start = i + 1
+                is_convergence = False
+                is_stagnated = False
+                stiffness_updated_now = True
+
+            ### ELEMENT ELONGATION BOUND
+            if is_with_stiffness_update:
+                elongations = element_elongations(
+                    struc_nodes,
+                    kite_connectivity_arr,
+                    psystem.extract_rest_length,
+                    pulley_pairs=pulley_line_to_other_node_pair_dict,
+                )
+                if n_wing_elements > 0 and elongations.size:
+                    max_wing_elongation = float(
+                        np.nanmax(elongations[:n_wing_elements])
+                    )
+                    if elongations.size > n_wing_elements:
+                        max_bridle_elongation = float(
+                            np.nanmax(elongations[n_wing_elements:])
+                        )
+                # Evaluated every iteration, independently of the settle
+                # gate -- the gate decides WHEN to act, never whether the
+                # answer is acceptable. Doing this only on settled iterations
+                # is how a fast solve exits having never once looked.
+                eligible = (
+                    np.arange(len(elongations))
+                    if stiffness_update_indices is None
+                    else np.fromiter(stiffness_update_indices, dtype=int)
+                )
+                eligible = eligible[eligible < len(elongations)]
+                over = eligible[
+                    np.nan_to_num(elongations[eligible], nan=-np.inf)
+                    > elongation_bound
+                ]
+                # An element pinned at its ceiling cannot be helped; requiring
+                # it to come under the bound would spin the loop forever.
+                is_elongation_satisfied = bool(
+                    over.size == 0 or np.all(k_target[over] >= k_ceiling[over] - 1e-9)
+                )
+                if is_settled and not stiffness_updated_now:
+                    k_target, n_stiffened, max_elongation_seen, n_pinned = (
+                        structural_pss.adapt_stiffnesses(
+                            k_target,
+                            elongations,
+                            element_indices=stiffness_update_indices,
+                            max_elongation=elongation_bound,
+                            factor=stiffness_update_factor,
+                            max_stiffness=k_ceiling,
+                        )
+                    )
+                    if n_stiffened > 0:
+                        structural_pss.set_stiffnesses(psystem, k_target)
+                        stiffness_updated_now = True
+                        n_stiffness_updates += n_stiffened
+                        is_convergence = False
+                        is_stagnated = False
+                        # Neither the residual history nor the stagnation
+                        # window is comparable across a stiffness change.
+                        stagnation_check_start = i + 1
+                        last_stiffening_iteration = i
+                        residual_before_stiffening = residual_now
+                        logging.info(
+                            "Stiffened %s element(s) over the %.2f%% bound "
+                            "(max %.2f%%, %s already at ceiling) at iteration %s",
+                            n_stiffened,
+                            100.0 * elongation_bound,
+                            100.0 * max_elongation_seen,
+                            n_pinned,
+                            i,
+                        )
+
             should_apply_steering_now = (
                 steering_tape_extension_step != 0
                 and steering_tape_final_extension != 0
@@ -701,6 +1150,7 @@ def main(
                     is_actuation_finalized
                     and is_steering_finalized
                     and depower_settle_counter == 0
+                    and not stiffness_updated_now
                 ):
                     break
                 qs_state_should_break = False
@@ -739,8 +1189,14 @@ def main(
                 continue
 
             # Check if we should exit the loop
+            # A solve is not converged while the modulus is still being walked
+            # up: the residual being small at 1.0x says nothing about 10.9x.
             if should_break or (
-                is_convergence and is_actuation_finalized and is_steering_finalized
+                is_convergence
+                and is_actuation_finalized
+                and is_steering_finalized
+                and is_modulus_ramp_finalized
+                and is_elongation_satisfied
             ):
                 break
     ######################################################################
@@ -887,6 +1343,55 @@ def main(
         "total_time_s": time.time() - start_time,
         "n_iter": i + 2,  # +2: 1 for pre-loop initial state + (i+1) loop entries
         "converged": is_convergence,
+        # The nodal force residual the run ENDED on, and the threshold it was
+        # tested against -- both in newtons, which is what
+        # aero_structural_solver.tol means. Reporting only; the criterion
+        # itself is unchanged (check_convergence still owns it). A continuation
+        # needs this per level to tell a solve that closed from one that merely
+        # ran out of iterations near the bound.
+        "residual_force_n": (
+            float(f_residual_list[-1]) if f_residual_list else float("nan")
+        ),
+        "residual_tol_n": float(config["aero_structural_solver"]["tol"]),
+        # Largest element elongation of the converged shape. With the bound
+        # active this sits at or below `elongation_bound` unless offending
+        # elements hit their modulus ceiling. Pulley arms carry the ROPE's
+        # strain (both arms combined), not their individual length change.
+        "max_element_elongation": max_element_elongation(
+            struc_nodes,
+            kite_connectivity_arr,
+            rest_lengths,
+            pulley_pairs=pulley_line_to_other_node_pair_dict,
+        ),
+        "max_wing_element_elongation": float(max_wing_elongation),
+        "max_bridle_element_elongation": float(max_bridle_elongation),
+        "elongation_bound": float(elongation_bound),
+        "elongation_bound_satisfied": bool(is_elongation_satisfied),
+        "is_with_stiffness_update": bool(is_with_stiffness_update),
+        "stiffness_update_scope": str(stiffness_update_scope),
+        "max_stiffness_factor": float(max_modulus_factor),
+        "n_stiffness_updates": int(n_stiffness_updates),
+        # Where the in-loop modulus continuation got to, and how it got there.
+        # `modulus_factor_reached` is a MULTIPLE of the geometry's own modulus,
+        # so 10.9 from a 10 GPa base means the solve closed at 109 GPa.
+        "modulus_factor_reached": float(modulus_factor),
+        "modulus_ramp_target_factor": float(modulus_ramp_target),
+        "modulus_ramp_finalized": bool(is_modulus_ramp_finalized),
+        # True when the ramp could not reach its target and fell back. The
+        # solve is still VALID -- it converged at modulus_factor_reached.
+        "modulus_ramp_stalled": bool(is_modulus_ramp_stalled),
+        "modulus_ramp_halvings": int(n_modulus_halvings),
+        "stiffness_trigger_residual_n": float(stiffness_trigger_residual),
+        # (iteration, factor, residual_before_n) per step, as a float array.
+        "modulus_ramp_history": np.asarray(
+            modulus_ramp_history, dtype=float
+        ).reshape(-1, 3),
+        # Stiffnesses the converged shape actually ran with -- the deformed
+        # geometry snapshot still carries the material table's k, so this is
+        # the only record of what the solve used.
+        "final_stiffnesses": np.array(
+            [float(link.k) for link in psystem.springdampers], dtype=float
+        ),
         "qs_success": bool(results_aero.get("success", False)),
         "opt_x": opt_x,
         # The gravity flag this solve actually ran with: it gates BOTH the

@@ -210,6 +210,116 @@ def _diagnose_node_force_balance(psystem, f_ext, node_idx=34):
     print(f"{'='*80}\n")
 
 
+def get_stiffnesses(psystem) -> np.ndarray:
+    """Current spring stiffnesses [N/m], in element order."""
+    return np.array([float(link.k) for link in psystem.springdampers], dtype=float)
+
+
+def set_stiffnesses(psystem, stiffnesses) -> None:
+    """Write spring stiffnesses [N/m] back into the particle system."""
+    values = np.asarray(stiffnesses, dtype=float).reshape(-1)
+    for link, k in zip(psystem.springdampers, values):
+        link.k = float(k)
+
+
+def modulus_stiffness_ceiling(stiffnesses_initial, max_modulus_factor: float):
+    """Per-element stiffness ceiling implied by a MODULUS ceiling [N/m].
+
+    Element stiffness is ``k = E * A / l0``, so for a fixed geometry the ratio
+    ``k / k_initial`` IS the ratio ``E / E_initial``. Capping every element at
+    the same multiple of its own initial stiffness therefore caps every element
+    at the same MODULUS -- which is the physical statement ("no line is stiffer
+    than its fibre") -- while a single scalar ``max_stiffness`` in N/m caps a
+    short thick line at a wholly different modulus than a long thin one.
+
+    That distinction is not academic: under a scalar cap ``Br_main_1`` (0.61 m,
+    2 mm) settled at an effective 160 GPa, well above the 109 GPa datasheet
+    value of the fibre it is supposedly made of.
+
+    Args:
+        stiffnesses_initial: per-element ``k`` as built from the geometry [N/m].
+        max_modulus_factor: the modulus ceiling as a multiple of the geometry's
+            own modulus, e.g. 10.9 to allow 109 GPa from a 10 GPa base.
+
+    Returns:
+        Per-element ceiling [N/m].
+    """
+    return np.asarray(stiffnesses_initial, dtype=float).reshape(-1) * float(
+        max_modulus_factor
+    )
+
+
+def adapt_stiffnesses(
+    stiffnesses,
+    elongations,
+    *,
+    element_indices=None,
+    max_elongation: float = 0.01,
+    factor: float = 1.5,
+    max_stiffness=None,
+):
+    """Stiffen every eligible element elongating more than ``max_elongation``.
+
+    The WING element stiffnesses are not known; following Poland & Schmehl they
+    are chosen so that no element elongates by more than 1%. This enforces that
+    inside the coupled solve, so a converged shape satisfies both the force
+    residual and the elongation bound.
+
+    ``max_stiffness`` is a per-element ARRAY (see modulus_stiffness_ceiling),
+    not a scalar. Once an element sits at its ceiling it stops being updated,
+    which is what lets the loop finish: the ceiling is a modulus the material
+    genuinely has, so an element pinned there is reporting a real limit rather
+    than being silently pushed past one.
+
+    Args:
+        stiffnesses: current per-element stiffness [N/m], in element order.
+        elongations: per-element elongation [-], same order (pulley-aware --
+            see convergence.element_elongations).
+        element_indices: eligible elements (None = all).
+        max_elongation: bound above which an element is stiffened [-].
+        factor: multiplier applied to an offending element.
+        max_stiffness: per-element ceiling [N/m], or None for uncapped.
+
+    Returns:
+        (updated stiffnesses, number stiffened, largest ELIGIBLE elongation,
+        number already pinned at their ceiling).
+    """
+    updated = np.asarray(stiffnesses, dtype=float).reshape(-1).copy()
+    values = np.asarray(elongations, dtype=float).reshape(-1)
+    n_elements = min(len(updated), len(values))
+    ceiling = (
+        None
+        if max_stiffness is None
+        else np.asarray(max_stiffness, dtype=float).reshape(-1)
+    )
+    eligible = (
+        range(n_elements)
+        if element_indices is None
+        else [int(i) for i in element_indices if 0 <= int(i) < n_elements]
+    )
+
+    n_updated = 0
+    n_pinned = 0
+    max_seen = float("nan")
+    for index in eligible:
+        elongation = float(values[index])
+        if not np.isfinite(elongation):
+            continue
+        max_seen = elongation if np.isnan(max_seen) else max(max_seen, elongation)
+        if elongation <= max_elongation:
+            continue
+        limit = float("inf") if ceiling is None else float(ceiling[index])
+        if updated[index] >= limit:
+            n_pinned += 1
+            continue
+        k_new = min(updated[index] * float(factor), limit)
+        if k_new > updated[index]:
+            updated[index] = k_new
+            n_updated += 1
+
+    return updated, n_updated, max_seen, n_pinned
+
+
 def run_pss(psystem, f_ext, config_structural_pss):
     """
     Run the particle system simulation with kinetic damping until convergence.
