@@ -648,10 +648,23 @@ class ReeloutSession:
         radial_parameters.setdefault("softplus_beta", 1e-3)
         radial_parameters.setdefault("softminus_beta", 1e-3)
         radial_parameters["use_awe_trim"] = float(winch.get("use_awe_trim", 0.0))
+        winch_mode = winch.get("winch_mode")
+        if winch_mode is not None:
+            if winch_mode not in ("force_law", "free_speed"):
+                raise ValueError(
+                    f"winch_mode must be 'force_law' or 'free_speed', got "
+                    f"{winch_mode!r}"
+                )
+            sim_parameters["winch_mode"] = str(winch_mode)
         v_max = winch.get("v_max")
         if v_max is None and winch.get("p_max") is not None:
             v_max = float(winch["p_max"]) / float(winch["f_max"])
         override = dict(sim_parameters.get("opti_limits_override") or {})
+        # The reel-speed box deliberately keeps the full -10 lower bound. Flooring
+        # it at v_reel_in was tried on 2026-08-29 to remove the region where the
+        # reel-in law is flat at zero (dT/dv_r = 0, so the per-node tension equality
+        # loses rank there) and MEASURED WORSE: it left the wall at use_awe_trim
+        # 0.875 and turned 0.75, which converged cold, into an IPOPT failure.
         if v_max is not None:
             override["speed_radial"] = [
                 DEFAULT_OPTI_LIMITS["speed_radial"][0],

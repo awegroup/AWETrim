@@ -221,38 +221,52 @@ class WinchParams(BaseModel):
         default=None,
         gt=0,
         description="Corner sharpness of the LOWER force limit [1/N]; larger is "
-        "sharper. Unset keeps the server default (1e-3). Watch this one: the "
-        "effective floor is softplus(beta*f_min)/beta, so a 1/beta larger than "
-        "f_min itself dominates the limit it smooths -- at 1e-3 an f_min of 350 N "
-        "gives an 884 N floor, 2.5x the value requested.",
+        "sharper. NO LONGER APPLIED for a quadratic law with f_min > 0, which "
+        "uses the reel-in line below f_min instead -- softminus's effective "
+        "floor is softplus(beta*f_min)/beta, which cannot fall below "
+        "log(2)/beta (693 N at 1e-3) whatever f_min is asked for, and that is "
+        "above the whole force range a low-wind run reaches.",
     )
-    # Reel-in-capable blend, mirroring WinchControllers.jl's calc_vro_soft
-    # (Winch.tension_curve computes force from speed; that one inverts it).
-    # 0 leaves the winch law exactly as above (symmetric, unphysical for
-    # negative speed); 1 replaces it below f_min with a straight line through
-    # (0, f_min) and (v_reel_in, 0), handed to the quadratic law above by a
-    # smooth maximum. Independent of `mode`: it makes the tension curve
-    # itself valid for a momentary negative speed_radial within whichever
-    # phase is being optimized, not a reel-in trajectory phase in its own
-    # right (mode = "reelin" is still rejected server-side).
+    # Reel-in-capable law, mirroring WinchControllers.jl's calc_vro_soft under
+    # soft_lfc (Winch.tension_curve computes force from speed; that one
+    # inverts it). Below f_min the law is a straight line through (0, f_min)
+    # and (v_reel_in, 0), handed to the quadratic law above by a smooth
+    # maximum. Applied to every quadratic request with f_min > 0, replacing
+    # softminus. Independent of `mode`: it makes the tension curve itself
+    # valid for a momentary negative speed_radial within whichever phase is
+    # being optimized, not a reel-in trajectory phase in its own right
+    # (mode = "reelin" is still rejected server-side).
     use_awe_trim: float = Field(
         default=0.0,
         ge=0.0,
         le=1.0,
-        description="Blend factor in [0, 1] towards a reel-in-capable winch "
-        "law. 0 (default) is the plain law above; 1 replaces it below f_min "
-        "with a straight reel-in line, smoothly handed to the quadratic law.",
+        description="Blend in [0, 1] between the two winch curves: 0 (default) "
+        "is the reel-in law described above, 1 is the plain quadratic under "
+        "softminus that it replaced, and values between mix the two forces "
+        "linearly. The endpoints differ most at zero reel speed, where the "
+        "reel-in law holds f_min and softminus holds softplus(beta*f_min)/beta.",
+    )
+    winch_mode: Optional[str] = Field(
+        default=None,
+        description="'force_law' (default) ties the tension to the reel speed "
+        "through the curve above, as a per-node equality. 'free_speed' drops "
+        "that equality: the reel speed becomes a direct, acceleration-limited "
+        "control and the winch only bounds the tension to [f_min, f_max]. Use "
+        "it when the force law's flat regions (dT/dv_r ~ 0) stall the solve -- "
+        "but note the reply is then the best path for ANY winch inside that "
+        "force band, not for the k_v law you sent, so its predicted power is an "
+        "upper bound rather than a prediction of your controller.",
     )
     v_reel_in: Optional[float] = Field(
         default=None,
         lt=0,
-        description="use_awe_trim only: reel-in speed [m/s] at zero force. "
+        description="Reel-in law: reel-in speed [m/s] at zero force. "
         "Unset keeps the server default (-2.0). Must be negative.",
     )
     reel_in_beta: Optional[float] = Field(
         default=None,
         gt=0,
-        description="use_awe_trim only: sharpness of the smooth handover "
+        description="Reel-in law: sharpness of the smooth handover "
         "between the reel-in line and the quadratic law [s/m]. Unset keeps "
         "the server default (20.0). Unlike softminus_beta above, this has no "
         "matching sharpness requirement against f_min/k_v -- the forward "

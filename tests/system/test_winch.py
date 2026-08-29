@@ -274,34 +274,56 @@ class TestTensionCurveSmoothing:
 
 
 class TestTensionCurveAweTrim:
-    """use_awe_trim blends the plain quadratic law with a reel-in-capable one.
+    """The reel-in-capable law of a quadratic min_tether_force > 0 winch.
 
-    0 = unchanged quadratic law (symmetric, unphysical for v < 0); 1 = a
-    straight line through (offset, min_tether_force) and
+    A straight line through (offset, min_tether_force) and
     (offset + v_reel_in, 0), handed to the quadratic reel-out law by a smooth
-    maximum. Mirrors WinchControllers.jl's calc_vro_soft in the forward
-    direction.
+    maximum. Mirrors WinchControllers.jl's calc_vro_soft under soft_lfc, in
+    the forward direction. It replaces softminus and is NOT gated on
+    use_awe_trim, which no longer selects the law.
     """
 
     def _cfg(self, **overrides):
         cfg = _quadratic_config(
             min_tether_force=350.0,
-            use_awe_trim=1.0,
+            use_awe_trim=0.0,
             v_reel_in=-2.0,
             reel_in_beta=20.0,
         )
         cfg.update(overrides)
         return cfg
 
-    def test_zero_use_awe_trim_matches_original(self):
+    def test_zero_use_awe_trim_still_uses_the_reel_in_law(self):
+        # The whole point of the change: a request that never sets
+        # use_awe_trim still gets the reel-in law, not the symmetric one.
         plain = Winch(pattern_config=_quadratic_config())
         trimmed = Winch(pattern_config=self._cfg(use_awe_trim=0.0))
+        assert float(trimmed.tension_curve(-1.0)) < float(
+            plain.tension_curve(-1.0)
+        )
+        assert float(trimmed.tension_curve(0.0)) == pytest.approx(350.0, abs=1.0)
+
+    def test_zero_min_tether_force_keeps_the_plain_law(self):
+        # No reel-in line exists at min_tether_force = 0, and dividing by it
+        # would blow up -- that case must fall back untouched.
+        winch = Winch(pattern_config=self._cfg(min_tether_force=0.0))
+        plain = Winch(pattern_config=_quadratic_config())
         for v in (-3.0, -0.5, 0.0, 0.5, 3.0):
-            assert float(trimmed.tension_curve(v)) == pytest.approx(
+            assert float(winch.tension_curve(v)) == pytest.approx(
                 float(plain.tension_curve(v))
             )
 
-    def test_full_use_awe_trim_near_zero_at_v_reel_in(self):
+    def test_softminus_is_replaced_not_stacked(self):
+        # softminus's floor (sp(beta*min_tf)/beta) must not survive alongside
+        # the reel-in law; the force at v_reel_in stays ~0, not ~693 N.
+        winch = Winch(
+            pattern_config=self._cfg(softminus=True, softminus_beta=1e-3)
+        )
+        assert float(winch.tension_curve(-2.0)) == pytest.approx(
+            math.log(2) / 20.0, abs=1e-6
+        )
+
+    def test_reel_in_law_near_zero_at_v_reel_in(self):
         # line and the (relu'd) quadratic term are BOTH exactly 0 at
         # v_reel_in, so soft_max sits log(2)/reel_in_beta above true 0 there
         # -- the same degenerate-tie behaviour documented for
@@ -312,12 +334,12 @@ class TestTensionCurveAweTrim:
             math.log(2) / 20.0, abs=1e-6
         )
 
-    def test_full_use_awe_trim_near_min_tether_force_at_offset(self):
+    def test_reel_in_law_near_min_tether_force_at_offset(self):
         # A sharp reel_in_beta keeps the soft_max correction negligible here.
         winch = Winch(pattern_config=self._cfg())
         assert float(winch.tension_curve(0.0)) == pytest.approx(350.0, abs=1.0)
 
-    def test_full_use_awe_trim_is_not_symmetric(self):
+    def test_reel_in_law_is_not_symmetric(self):
         # Unlike the plain quadratic law, reel-in (v < offset) must differ
         # from the mirrored reel-out speed.
         winch = Winch(pattern_config=self._cfg())
@@ -326,21 +348,32 @@ class TestTensionCurveAweTrim:
         assert below != pytest.approx(above)
         assert below < above
 
-    def test_full_use_awe_trim_monotonic(self):
+    def test_reel_in_law_monotonic(self):
         winch = Winch(pattern_config=self._cfg())
         speeds = np.linspace(-2.0, 3.0, 51)
         forces = [float(winch.tension_curve(v)) for v in speeds]
         assert all(b >= a - 1e-9 for a, b in zip(forces, forces[1:]))
 
     def test_blend_is_exact_linear_combination(self):
-        own = Winch(pattern_config=self._cfg(use_awe_trim=1.0))
-        plain = Winch(pattern_config=_quadratic_config())
+        # 0 = the reel-in law, 1 = the softminus-floored law it replaced.
+        own = Winch(pattern_config=self._cfg(use_awe_trim=0.0))
+        floored = Winch(pattern_config=self._cfg(use_awe_trim=1.0))
         half = Winch(pattern_config=self._cfg(use_awe_trim=0.5))
         for v in (-1.5, -0.5, 0.5, 2.0):
-            expected = 0.5 * float(plain.tension_curve(v)) + 0.5 * float(
-                own.tension_curve(v)
+            expected = 0.5 * float(own.tension_curve(v)) + 0.5 * float(
+                floored.tension_curve(v)
             )
             assert float(half.tension_curve(v)) == pytest.approx(expected)
+
+    def test_full_use_awe_trim_restores_the_softminus_floor(self):
+        # The u = 1 endpoint is the old law: at zero speed it holds
+        # sp(beta*min_tf)/beta = 883 N, not the 350 N the reel-in law holds.
+        floored = Winch(
+            pattern_config=self._cfg(
+                use_awe_trim=1.0, softminus=True, softminus_beta=1e-3
+            )
+        )
+        assert float(floored.tension_curve(0.0)) == pytest.approx(883.0, abs=1.0)
 
     def test_use_awe_trim_out_of_range_raises(self):
         winch = Winch(pattern_config=self._cfg(use_awe_trim=1.5))
@@ -359,7 +392,7 @@ class TestTensionCurveAweTrim:
         with pytest.raises(ValueError, match="v_reel_in"):
             winch.tension_curve(1.0)
 
-    def test_use_awe_trim_symbolic_type_preserved(self):
+    def test_reel_in_law_symbolic_type_preserved(self):
         winch = Winch(pattern_config=self._cfg())
         vr = ca.MX.sym("vr")
         assert isinstance(winch.tension_curve(vr), ca.MX)

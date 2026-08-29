@@ -40,18 +40,30 @@ class Winch:
         - softplus / softminus: optional boolean flags
         - softplus_beta / softminus_beta: optional sharpness parameters
 
-        use_awe_trim (float in [0, 1], default 0, "quadratic" only): blends
-        the law above with one that is physically valid for negative
-        (reel-in) speeds too, replacing softminus's role: a straight line
-        through ``(offset, min_tether_force)`` and
-        ``(offset + v_reel_in, 0)`` for the reel-in side, handed over to the
-        plain quadratic reel-out law by a smooth maximum (sharpness
-        ``reel_in_beta``, default 20) once the quadratic law grows past the
-        line. 0 leaves this method's behaviour exactly as before; 1 uses the
-        new law exclusively. ``v_reel_in`` (< 0, default -2.0) is the
-        reel-in speed at zero force. Mirrors
-        WinchControllers.jl's ``calc_vro_soft``, in the forward direction
-        (this method computes force from speed; that one inverts it).
+        Reel-in-capable law ("quadratic" with ``min_tether_force > 0``, which
+        is every force-limited reel-out request): instead of softminus, the
+        law below ``min_tether_force`` is a straight line through
+        ``(offset, min_tether_force)`` and ``(offset + v_reel_in, 0)``, handed
+        over to the plain quadratic reel-out law by a smooth maximum
+        (sharpness ``reel_in_beta``, default 20) once the quadratic law grows
+        past the line. ``v_reel_in`` (< 0, default -2.0) is the reel-in speed
+        at zero force. Mirrors WinchControllers.jl's ``calc_vro_soft`` under
+        ``soft_lfc``, in the forward direction (this method computes force
+        from speed; that one inverts it).
+
+        use_awe_trim (float in [0, 1], default 0, "quadratic" only) blends
+        that law with the softminus-floored one it replaced: 0 (the default)
+        is the reel-in law above, 1 is the plain quadratic under softminus,
+        and values between mix the two forces linearly. The endpoints differ
+        most at zero speed, where the reel-in law holds ``min_tether_force``
+        while softminus holds ``sp(beta*min_tether_force)/beta`` — 883 N for
+        a 350 N ``min_tether_force`` at beta 1e-3, and never below
+        ``log(2)/beta`` whatever ``min_tether_force`` is asked for.
+
+        The reel-in law needs no softminus smoothing of its own corner: the
+        forward quadratic has zero (not infinite) slope at its own zero, so
+        the smooth maximum stays well conditioned for any
+        ``reel_in_beta > 0``.
 
         Depower-dependent offset (the key to flying a full pumping cycle as a
         single phase): the winch's zero-force reeling speed ``offset`` is shifted
@@ -138,45 +150,48 @@ class Winch:
         else:
             raise ValueError(f"Unknown force_model '{model}' in pattern_config")
 
-        # Optional smoothing limits
-        if self.pattern_config.get("softplus", False):
+        def softplus_cap(expr):
+            if not self.pattern_config.get("softplus", False):
+                return expr
             beta = self.pattern_config.get(
                 "softplus_beta", DEFAULT_WINCH_CONFIG.get("sharpness_beta", 1e-3)
             )
-            T = T - (1 / beta) * ca.log(1 + ca.exp(beta * (T - max_tf)))
-        if self.pattern_config.get("softminus", False):
+            return expr - (1 / beta) * ca.log(1 + ca.exp(beta * (expr - max_tf)))
+
+        def softminus_floor(expr):
+            if not self.pattern_config.get("softminus", False):
+                return expr
             beta = self.pattern_config.get(
                 "softminus_beta", DEFAULT_WINCH_CONFIG.get("sharpness_beta", 1e-3)
             )
-            T = T + (1 / beta) * ca.log(1 + ca.exp(beta * (min_tf - T)))
+            return expr + (1 / beta) * ca.log(1 + ca.exp(beta * (min_tf - expr)))
 
-        if use_awe_trim:
+        # A zero min_tether_force leaves no reel-in line to build (its two
+        # defining points collapse), so that case keeps the plain law.
+        if model == "quadratic" and min_tf:
             v_reel_in = self.pattern_config.get("v_reel_in", -2.0)
             if v_reel_in >= 0:
-                raise ValueError(f"use_awe_trim requires v_reel_in < 0, got {v_reel_in}")
+                raise ValueError(
+                    f"the reel-in law requires v_reel_in < 0, got {v_reel_in}"
+                )
             reel_in_beta = self.pattern_config.get("reel_in_beta", 20.0)
-            # Straight line through (offset, min_tf) and (offset + v_reel_in,
-            # 0), handed over to the quadratic reel-out law by a smooth
-            # maximum (soft_max) once the quadratic law grows past it -- the
-            # forward-direction analogue of the reel-in line
-            # WinchControllers.jl's calc_vro_soft builds in the inverse
-            # direction. No sharpness requirement on reel_in_beta carries
-            # over from there: unlike the inverse, the forward quadratic law
-            # has zero (not infinite) slope at its own zero, so soft_max
-            # stays well-behaved for any reel_in_beta > 0.
             m = -v_reel_in / min_tf
             line = min_tf + (speed_radial - offset) / m
             v_eff = ca.fmax(speed_radial - offset, 0)
             quad_ro = slope * v_eff * v_eff
             gap = ca.fabs(line - quad_ro)
-            T_own = ca.fmax(line, quad_ro) + ca.log(1 + ca.exp(-reel_in_beta * gap)) / reel_in_beta
-            if self.pattern_config.get("softplus", False):
-                beta = self.pattern_config.get(
-                    "softplus_beta", DEFAULT_WINCH_CONFIG.get("sharpness_beta", 1e-3)
-                )
-                T_own = T_own - (1 / beta) * ca.log(1 + ca.exp(beta * (T_own - max_tf)))
-            T_own = ca.fmax(T_own, 0)
-            T = (1 - use_awe_trim) * T + use_awe_trim * T_own
+            T_reel_in = (
+                ca.fmax(line, quad_ro)
+                + ca.log(1 + ca.exp(-reel_in_beta * gap)) / reel_in_beta
+            )
+            T_reel_in = ca.fmax(softplus_cap(T_reel_in), 0)
+            if not use_awe_trim:
+                return T_reel_in
+            return (1 - use_awe_trim) * T_reel_in + use_awe_trim * softminus_floor(
+                softplus_cap(T)
+            )
+
+        return softminus_floor(softplus_cap(T))
 
         return T
 

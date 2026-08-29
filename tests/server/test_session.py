@@ -828,3 +828,21 @@ def test_pattern_limits_round_trip_init_step_and_replies(patched_session):
     reply = sess.step_blocking(pattern_limits={})  # cleared
     assert reply["pattern_limits"] is None
     assert "min_azimuth_amplitude" not in sess.phase.pattern_config["sim_parameters"]
+
+
+def test_winch_mode_defaults_to_unset_and_is_threaded_through(patched_session):
+    sess, config = patched_session
+    base = {"mode": "reelout", "k_v": 0.02, "f_min": 1000.0, "f_max": 8400.0}
+
+    config["winch_params"] = dict(base)
+    sess.init(config)
+    # Unset leaves the cycle config's own value, so force_law stays the default.
+    assert "winch_mode" not in sess.phase.pattern_config["sim_parameters"]
+
+    config["winch_params"] = dict(base, winch_mode="free_speed")
+    sess.init(config)
+    assert sess.phase.pattern_config["sim_parameters"]["winch_mode"] == "free_speed"
+
+    config["winch_params"] = dict(base, winch_mode="nonsense")
+    with pytest.raises(ValueError, match="winch_mode"):
+        sess.init(config)
