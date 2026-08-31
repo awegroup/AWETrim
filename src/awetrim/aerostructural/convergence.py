@@ -14,13 +14,146 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Convergence and timestep helpers for aerostructural coupling."""
+"""Convergence and timestep helpers for aerostructural coupling.
+
+Convergence of the coupled solver is assessed on the GLOBAL NODAL FORCE
+RESIDUAL, the sum of the internal structural forces and the applied external
+forces,
+
+    f_res = f_int + f_ext ,
+
+with the fixed nodes zeroed. That norm can be judged two ways:
+
+* RELATIVE (preferred) -- ``||f_res|| / F_tether`` against
+  ``residual_tol_relative``, where ``F_tether = |sum f_ext|`` is the reaction
+  the constrained bridle node carries. The measure is dimensionless, so one
+  threshold means the same thing at 2 kN and at 8 kN of tether load.
+* ABSOLUTE (legacy) -- ``||f_res||`` in newtons against ``tol``. One tolerance
+  then means very different things across a sweep: measured on LEI-V3, the
+  ``tol: 5`` N gate is 6.8e-4 relative at 7.4 kN but 1.3e-3 at 3.9 kN, loose
+  enough that two solves of the SAME point reached CL 5-15% apart depending
+  only on which side the iteration approached from.
+
+Which one is active is decided by ``resolve_residual_tolerances``: configure
+``residual_tol_relative`` to get the relative criterion, otherwise the absolute
+``tol`` stays in force. The two are never silently interchanged -- a ``tol: 5``
+read as a ratio would "converge" on iteration 1.
+
+``resultant_tether_force`` is the single place the normalising force is
+defined; ``relative_residual_norm`` the single place the ratio is formed.
+"""
 
 from __future__ import annotations
 
 import logging
 
 import numpy as np
+
+# Dimensionless defaults for the coupled loop (see module docstring).
+DEFAULT_RESIDUAL_TOL_RELATIVE = 1.0e-4
+DEFAULT_STAGNATION_TOL_RELATIVE = 4.0e-5
+
+#: Below this the normalising force carries no information and the ratio is
+#: reported as NaN rather than exploding.
+_MIN_FORCE_REFERENCE_N = 1.0e-9
+
+
+def resultant_tether_force(external_force) -> float:
+    """Resultant tether force [N] the shape hangs from.
+
+    The spring forces are internal and pairwise self-equilibrated, so summing
+    the nodal balance ``f_int + f_ext + f_reaction = 0`` over every node leaves
+    ``|f_reaction| = |sum f_ext|``: the whole applied load (aerodynamic,
+    gravity, inertial) is carried by the constrained bridle/KCU node, i.e. by
+    the tether. This resultant is the reference the residual is normalised by.
+
+    Args:
+        external_force: nodal external forces, ``(n_nodes, 3)`` or flattened.
+
+    Returns:
+        Euclidean norm of the resultant external force [N].
+    """
+    forces = np.asarray(external_force, dtype=float).reshape(-1, 3)
+    return float(np.linalg.norm(forces.sum(axis=0)))
+
+
+def relative_residual_norm(residual, force_reference: float) -> float:
+    """``||f_int + f_ext|| / F_tether`` -- the coupled convergence measure [-].
+
+    Returns NaN when the normalising force is unusable (non-finite or ~0), so
+    callers can tell "not converged" from "criterion undefined".
+    """
+    residual_norm = float(
+        np.linalg.norm(np.atleast_1d(np.asarray(residual, dtype=float)))
+    )
+    reference = float(force_reference)
+    if not np.isfinite(reference) or reference <= _MIN_FORCE_REFERENCE_N:
+        return float("nan")
+    return residual_norm / reference
+
+
+def resolve_residual_tolerances(solver_config) -> tuple[float, float, bool]:
+    """Pick the convergence measure and its tolerances from the solver config.
+
+    ``residual_tol_relative`` selects the dimensionless criterion; without it
+    the legacy absolute ``tol`` [N] stays in force. Returns
+    ``(residual_tol, stagnation_tol, is_relative)`` so every consumer of the
+    tolerance -- convergence, stagnation, adaptive dt, the stiffness trigger --
+    reads the same number in the same units.
+    """
+    relative = solver_config.get("residual_tol_relative")
+    if relative is None:
+        return (
+            float(solver_config["tol"]),
+            float(solver_config["stagnation_tol"]),
+            False,
+        )
+    residual_tol = float(relative)
+    if not np.isfinite(residual_tol) or residual_tol <= 0.0:
+        raise ValueError(
+            f"residual_tol_relative must be a positive ratio, got {relative!r}"
+        )
+    if residual_tol >= 1.0:
+        # A newton value pasted into the relative key would converge instantly.
+        raise ValueError(
+            f"residual_tol_relative is a RATIO, not a force [N]; got {relative!r}"
+        )
+    stagnation_tol = float(
+        solver_config.get(
+            "stagnation_tol_relative", DEFAULT_STAGNATION_TOL_RELATIVE
+        )
+    )
+    return residual_tol, stagnation_tol, True
+
+
+def resolve_fallback_tolerance(solver_config, residual_tol: float) -> float:
+    """Looser tolerance a PLATEAUED solve may still be accepted at [-] or [N].
+
+    Some conditions do not have a fixed point the iteration can reach. A
+    steered, near-stall or heavily loaded case settles into a LIMIT CYCLE
+    instead: measured on LEI-V3 at u_dp 0.18 / u_s 0.1 tetherless, the relative
+    residual repeats a period-4 orbit between 7.2e-4 and 1.0e-3 from iteration
+    ~40 to 100, with the Aitken factor already pinned at its 0.05 floor -- so
+    there is no damping left to add and more iterations cannot help.
+
+    Rejecting those points loses whole rows of a sweep; silently loosening the
+    tolerance for everyone reintroduces the path-dependence the relative
+    criterion exists to remove. So they are accepted at a SEPARATE, looser
+    tolerance and flagged, with the cycle's own span reported alongside as the
+    honest uncertainty on the point.
+
+    Defaults to ``fallback_factor`` (10) times the main tolerance. Returning
+    something <= residual_tol disables the fallback.
+    """
+    explicit = solver_config.get("residual_tol_relative_fallback")
+    if explicit is None:
+        explicit = solver_config.get("residual_tol_fallback")
+    if explicit is not None:
+        return float(explicit)
+    factor = float(solver_config.get("residual_tol_fallback_factor", 10.0))
+    if not np.isfinite(factor) or factor <= 1.0:
+        return float(residual_tol)
+    return float(residual_tol) * factor
 
 
 def element_elongations(
@@ -135,28 +268,57 @@ def check_convergence(
     solver_config: dict,
     is_run_only_1_time_step: bool,
     stagnation_check_start: int = 0,
+    force_reference: float | None = None,
 ) -> tuple[bool, bool, bool]:
-    """Return convergence, break, and stagnation flags for the coupling loop."""
+    """Return convergence, break, and stagnation flags for the coupling loop.
+
+    ``residual_norm_history`` must already be in the ACTIVE measure (see
+    ``resolve_residual_tolerances``); ``force_reference`` is the resultant
+    tether force [N] and is required by the relative criterion.
+    """
     is_convergence = False
     should_break = False
     is_stagnated = False
 
-    residual_norm = np.linalg.norm(residual)
+    residual_tol, stagnation_tol, is_relative = resolve_residual_tolerances(
+        solver_config
+    )
+
+    residual_norm_absolute = float(np.linalg.norm(residual))
+    if is_relative:
+        if force_reference is None:
+            raise ValueError(
+                "residual_tol_relative is configured but no force_reference "
+                "was passed to check_convergence"
+            )
+        residual_norm = relative_residual_norm(residual, force_reference)
+    else:
+        residual_norm = residual_norm_absolute
     n_stag = solver_config["n_max_constant_residual_force"]
     iters_since_start = iteration - stagnation_check_start
 
-    if residual_norm <= solver_config["tol"]:
-        is_convergence = True
-    elif np.isnan(residual_norm):
+    if np.isnan(residual_norm_absolute):
         logging.info("Classic PS diverged - residual force is NaN")
         should_break = True
+    elif not np.isfinite(residual_norm):
+        # The residual itself is finite, so this is a broken NORMALISATION
+        # (zero or NaN resultant external force). Do not claim convergence and
+        # do not kill the run; the aero-NaN and max-iteration guards remain.
+        logging.warning(
+            "Coupled convergence undefined - resultant tether force is %s N; "
+            "residual %.3f N left unnormalised this iteration",
+            force_reference,
+            residual_norm_absolute,
+        )
+    elif residual_norm <= residual_tol:
+        is_convergence = True
     elif iters_since_start >= n_stag and n_stag > 0:
         window_vals = np.asarray(
             residual_norm_history[iteration - n_stag : iteration + 1], dtype=float
         )
         if window_vals.size > 0 and np.isfinite(window_vals).all():
             residual_span = float(np.max(window_vals) - np.min(window_vals))
-            if residual_span < solver_config["stagnation_tol"]:
+            if residual_span < stagnation_tol:
                 is_stagnated = True
     elif iteration > solver_config["max_iter"]:
         logging.info(
@@ -173,4 +335,15 @@ def check_convergence(
     return is_convergence, should_break, is_stagnated
 
 
-__all__ = ["check_convergence", "compute_adaptive_dt"]
+__all__ = [
+    "DEFAULT_RESIDUAL_TOL_RELATIVE",
+    "DEFAULT_STAGNATION_TOL_RELATIVE",
+    "check_convergence",
+    "compute_adaptive_dt",
+    "element_elongations",
+    "max_element_elongation",
+    "relative_residual_norm",
+    "resolve_fallback_tolerance",
+    "resolve_residual_tolerances",
+    "resultant_tether_force",
+]

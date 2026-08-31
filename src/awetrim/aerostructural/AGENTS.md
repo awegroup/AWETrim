@@ -23,7 +23,10 @@ src/awetrim/aerostructural/
   protocols.py                     All dataclasses and Protocol types
   mapping.py                       LinearStructuralToAeroMapper, BilinearAeroToStructuralLoadMapper
   forces.py                        distribute_total_force_by_particle_mass
-  convergence.py                   compute_adaptive_dt, check_convergence
+  convergence.py                   check_convergence, compute_adaptive_dt,
+                                   resolve_residual_tolerances, resultant_tether_force,
+                                   relative_residual_norm, element_elongations,
+                                   max_element_elongation
   results.py                       save_sim_output, append_sweep_csv_row, build_sweep_csv_row
   tracking.py                      setup_tracking_arrays, update_tracking_arrays
   utils.py                         rotate_geometry, calculate_cg, calculate_inertia, load_yaml
@@ -169,10 +172,38 @@ structural_pss:
 
 aero_structural_solver:
   max_iter: 100
-  tol: 5.0
+  residual_tol_relative: 1.0e-4   # preferred: dimensionless, see below
+  tol: 5.0                        # legacy absolute [N], used only if the above is absent
   relaxation_factor: 0.5
   is_with_aitken_relaxation: true
 ```
+
+### Convergence criterion
+
+The coupled loop converges on the global nodal force residual
+`f_res = f_int + f_ext` (fixed nodes zeroed), judged one of two ways:
+
+| key | measure | meaning |
+|-----|---------|---------|
+| `residual_tol_relative` | `\|\|f_res\|\| / F_tether` [-] | **preferred.** `F_tether = \|sum f_ext\|` is the reaction the constrained bridle node carries |
+| `tol` | `\|\|f_res\|\|` [N] | legacy; active only when the relative key is absent |
+
+`resolve_residual_tolerances` decides which is live and returns the tolerance
+in the active unit, so the convergence test, the stagnation window, the
+adaptive dt and the stiffness trigger can never disagree about what
+"converged" means. `resultant_tether_force` is the single definition of the
+normalising force and `relative_residual_norm` the single place the ratio is
+formed. A value >= 1 in the relative key raises rather than being read as
+newtons.
+
+**Why the absolute gate is not good enough.** One force tolerance means
+different things across a sweep: on LEI-V3 `tol: 5` is 6.8e-4 relative at
+7.4 kN of tether load but 1.3e-3 at 3.9 kN. Measured over a 6-row depower x
+steering sweep, that was loose enough for the SAME point to land 5-15% apart
+in CL, CD and tether force depending only on whether it was reached cold or
+from a warm start -- the warm start approaches from closer and so trips the
+gate much further from the fixed point. Any state handover, continuation or
+warm start is therefore only meaningful under the relative criterion.
 
 ## Result Storage
 

@@ -407,6 +407,18 @@ def _baseline_geometry(
     return baseline_sections, baseline_spanwise
 
 
+
+def _fmt_cm(values) -> str:
+    """Moment residuals as a compact scientific triple, for log messages.
+
+    Not `np.array2string(..., floatmode="scientific")`: that is not one of
+    numpy's floatmode options (fixed|unique|maxprec|maxprec_equal) and raises
+    ValueError, which turned this diagnostic into a hard failure of exactly the
+    points it exists to report on.
+    """
+    array = np.atleast_1d(np.asarray(values, dtype=float)).ravel()
+    return "[" + " ".join(f"{v:.2e}" for v in array) + "]"
+
 def solve_vsm_quasi_steady_trim(
     body_aero: VsmBodyAerodynamics,
     center_of_gravity: np.ndarray,
@@ -755,8 +767,46 @@ def solve_vsm_quasi_steady_trim(
         )
         opt_x = _to_full(opt.x)
 
+    # What the OPTIMISER converged to, before anything is re-evaluated.
+    #
+    # `moment_residual(opt_x)` below is a fresh VSM solve in all but the rare
+    # case where opt_x happens to be the last point least_squares evaluated
+    # (the single-slot cache): the final call is normally a finite-difference
+    # perturbation or a rejected trial step. That re-solve starts its
+    # circulation loop from whatever state the previous evaluation left in
+    # `working_body`, which is NOT the state the optimiser saw at opt_x. So the
+    # residual the accept/reject test judges can differ from the one the
+    # optimiser actually achieved -- and near stall or at high turn rate, where
+    # the gamma loop has more than one attracting branch, it can differ a lot.
+    #
+    # Keeping both makes that difference measurable instead of invisible. This
+    # changes no decision: `cm` and `physical_success` are unchanged, and the
+    # reported state still comes from the re-evaluation that produced it.
+    _opt_residual = np.asarray(getattr(opt, "fun", []), dtype=float).ravel()
+    if prescribed_roll_deg is None:
+        cm_optimizer = (
+            _opt_residual[:3] if _opt_residual.size >= 3
+            else np.full(3, np.nan)
+        )
+    else:
+        # objective was moment_residual(...)[1:], so cmx is absent by design.
+        cm_optimizer = (
+            np.concatenate(([np.nan], _opt_residual[:2]))
+            if _opt_residual.size >= 2
+            else np.full(3, np.nan)
+        )
+
     cm_best = moment_residual(opt_x)
     cmx, cmy, cmz, cfx, cfy = cm_best
+
+    _delta = np.abs(np.asarray([cmx, cmy, cmz]) - cm_optimizer)
+    if np.any(np.isfinite(_delta) & (_delta > 1e-3)):
+        logging.warning(
+            "trim re-evaluation moved the moment residual: optimiser "
+            "cm=%s -> re-solved cm=%s (the accept/reject test uses the latter)",
+            _fmt_cm(cm_optimizer),
+            _fmt_cm(np.asarray([cmx, cmy, cmz])),
+        )
     if prescribed_roll_deg is None:
         physical_success = bool(
             np.abs(cmx) < moment_tolerance
@@ -824,6 +874,9 @@ def solve_vsm_quasi_steady_trim(
     result: dict[str, Any] = {
         "opt_x": opt_x,
         "cm": np.array([cmx, cmy, cmz], dtype=float),
+        # The same three as the optimiser converged to, for comparison; NaN in
+        # cm_optimizer[0] under prescribed roll, where cmx is not a residual.
+        "cm_optimizer": np.asarray(cm_optimizer, dtype=float),
         "cfx": float(cfx),
         "cfy": float(cfy),
         "side_slip_deg": beta_center_chord_deg,
@@ -1827,8 +1880,34 @@ def solve_vsm_qs_trim_with_williams_tether(
         "[williams-trim] x*: trim=%s  williams=%s", opt_x_full[:5], opt_x_full[5:]
     )
 
+    # Same instrumentation as the tetherless trim: `joint_residual(opt_x_full)`
+    # below is a fresh evaluation, and least_squares rarely ends on opt.x, so
+    # the residual the accept/reject test judges need not be the one the
+    # optimiser converged to. Record both rather than assume they agree.
+    _opt_residual = np.asarray(getattr(opt, "fun", []), dtype=float).ravel()
+    if prescribed_roll_deg is None:
+        cm_optimizer = (
+            _opt_residual[:3] if _opt_residual.size >= 3 else np.full(3, np.nan)
+        )
+    else:
+        # objective was joint_residual(...)[1:], so cmx is absent by design.
+        cm_optimizer = (
+            np.concatenate(([np.nan], _opt_residual[:2]))
+            if _opt_residual.size >= 2
+            else np.full(3, np.nan)
+        )
+
     res_at_opt = joint_residual(opt_x_full)
     cm_res = res_at_opt[:3]
+
+    _delta = np.abs(np.asarray(cm_res, dtype=float) - cm_optimizer)
+    if np.any(np.isfinite(_delta) & (_delta > 1e-3)):
+        logging.warning(
+            "williams trim re-evaluation moved the moment residual: optimiser "
+            "cm=%s -> re-solved cm=%s (the accept/reject test uses the latter)",
+            _fmt_cm(cm_optimizer),
+            _fmt_cm(cm_res),
+        )
     ground_res = (
         np.zeros(3)
         if tether_model == "rigid_lumped"
@@ -1897,6 +1976,7 @@ def solve_vsm_qs_trim_with_williams_tether(
     result: dict[str, Any] = {
         "opt_x": np.asarray(opt_x_full[:5], dtype=float),
         "cm": np.asarray(cm_res, dtype=float),
+        "cm_optimizer": np.asarray(cm_optimizer, dtype=float),
         "cfx": float(cfx),
         "cfy": float(cfy),
         "cfz": float(cfz),
