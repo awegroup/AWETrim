@@ -443,8 +443,17 @@ def solve_vsm_quasi_steady_trim(
     is_with_artificial_viscosity: bool = False,
     artificial_viscosity_factor: float = 0.035,
     kcu_drag: "KcuDragModel | None" = None,
+    gamma_seed: np.ndarray | None = None,
 ) -> tuple[dict[str, Any], VsmBodyAerodynamics]:
     """Solve one aerodynamic VSM quasi-steady trim state.
+
+    ``gamma_seed`` (optional, one value per panel): initial circulation guess
+    for every inner VSM solve, same contract as the Williams-tether trim
+    solver's parameter of the same name. With the Li/Gaunaa artificial
+    viscosity the circulation problem is two-branched near stall and a cold
+    (gamma = 0) start picks a branch by accident; seeding from e.g. a coupled
+    solve's converged circulation keeps the trim on the branch the shape was
+    deformed on. A seeded inner solve that fails to converge is retried cold.
 
     The optimized state is ordered as
     `[speed_tangential, angle_roll_body_deg, angle_pitch_body_deg,
@@ -575,6 +584,19 @@ def solve_vsm_quasi_steady_trim(
     working_body = copy.deepcopy(body_aero)
     baseline_sections, baseline_spanwise = _baseline_geometry(working_body)
 
+    # Same capability check as the Williams trim solver: older VSM Solver.solve
+    # signatures have no ``gamma_distribution`` parameter.
+    _gamma_seed = None if gamma_seed is None else np.asarray(gamma_seed, dtype=float)
+    try:
+        _solve_accepts_gamma_seed = (
+            "gamma_distribution" in inspect.signature(solver.solve).parameters
+        )
+    except (TypeError, ValueError):
+        _solve_accepts_gamma_seed = False
+    # Per-panel stall onsets, once per trim: the attached-first solve tests
+    # every VSM evaluation against them.
+    _stall_onsets = _panel_stall_onsets_rad(working_body)
+
     def moment_residual(x: np.ndarray) -> np.ndarray:
         x = np.asarray(x, dtype=float)
         cached_x = cached_eval["x"]
@@ -642,7 +664,15 @@ def solve_vsm_quasi_steady_trim(
         )
 
         t0 = perf_counter()
-        res = solver.solve(working_body)
+        # Attached family whenever it exists; AV solve seeded from the AV-off
+        # iterate otherwise (solve_vsm_attached_first).
+        res = solve_vsm_attached_first(
+            solver,
+            working_body,
+            _gamma_seed,
+            accepts_seed=_solve_accepts_gamma_seed,
+            stall_onsets=_stall_onsets,
+        )
         timing_counters["solver_s"] += perf_counter() - t0
 
         cmx = float(res.get("cmx", np.nan))
@@ -903,6 +933,13 @@ def solve_vsm_quasi_steady_trim(
         "panel_cp_locations": res.get("panel_cp_locations"),
         "alpha_at_ac": res.get("alpha_at_ac"),
         "gamma_distribution": res.get("gamma_distribution"),
+        # "attached" when the AV-off solve converged below every stall onset
+        # (the answer), "stalled" when the AV solve had to take over, None
+        # without AV (solve_vsm_attached_first).
+        "av_stage": res.get("av_stage"),
+        # Stalled share of the wing (span-weighted) at the solved state --
+        # the branch indicator of the two-branched AV circulation.
+        **stall_fraction_fields(working_body, res.get("alpha_at_ac")),
         "tether_force": tether_force,
         "optimizer": opt,
     }
@@ -1438,6 +1475,10 @@ def solve_vsm_qs_trim_with_williams_tether(
         )
     except (TypeError, ValueError):
         _solve_accepts_gamma_seed = False
+    # Per-panel stall onsets, once per trim: the attached-first solve tests
+    # every VSM evaluation against them.
+    # (polars only, so body_aero equals the working copy made further down)
+    _stall_onsets = _panel_stall_onsets_rad(body_aero)
 
     # Seed the system-model kinematics so the symbolic
     # ``velocity_rotation_course_frame`` (which depends on speed_tangential and
@@ -1648,12 +1689,15 @@ def solve_vsm_qs_trim_with_williams_tether(
             reference_point=reference_point,
             rates_in_body_frame=True,
         )
-        if _solve_accepts_gamma_seed and _gamma_seed is not None:
-            res = solver.solve(working_body, gamma_distribution=_gamma_seed)
-            if not bool(res.get("gamma_converged", True)):
-                res = solver.solve(working_body)  # cold retry
-        else:
-            res = solver.solve(working_body)
+        # Attached family whenever it exists; AV solve seeded from the AV-off
+        # iterate otherwise (solve_vsm_attached_first).
+        res = solve_vsm_attached_first(
+            solver,
+            working_body,
+            _gamma_seed,
+            accepts_seed=_solve_accepts_gamma_seed,
+            stall_onsets=_stall_onsets,
+        )
 
         total_aero_force = np.array(
             [float(res.get(k, np.nan)) for k in ("Fx", "Fy", "Fz")],
@@ -2030,6 +2074,8 @@ def solve_vsm_qs_trim_with_williams_tether(
         "panel_cp_locations": payload["res"].get("panel_cp_locations"),
         "alpha_at_ac": payload["res"].get("alpha_at_ac"),
         "gamma_distribution": payload["res"].get("gamma_distribution"),
+        "av_stage": payload["res"].get("av_stage"),
+        **stall_fraction_fields(working_body, payload["res"].get("alpha_at_ac")),
         "optimizer": opt,
     }
     if prescribed_roll_deg is not None:
@@ -2579,6 +2625,207 @@ def _panel_stall_onsets_rad(body_aero: Any) -> np.ndarray:
                         break
         onsets.append(onset)
     return np.asarray(onsets, dtype=float)
+
+
+def extend_polar_past_onset(polar: Any) -> np.ndarray:
+    """Copy of a panel polar with Cl continued LINEARLY past its stall onset.
+
+    ``polar`` has columns ``alpha [rad], cl, cd, cm``. The onset is the first
+    interior Cl peak of the positive-Cl region (same definition as
+    :func:`_panel_stall_onsets_rad` and the VSM's own AV gate); rows past it
+    get ``cl = cl[k] + slope * (alpha - alpha[k])`` with the pre-stall slope
+    over the last few points (2*pi if degenerate). Cd and Cm are untouched.
+    Polars without an interior peak come back unchanged.
+
+    Why: with the post-stall Cl drop removed the circulation iteration has no
+    stalled-tip fixed point to lock into, so a coupled solve on these polars
+    converges to the ATTACHED solution if one exists -- and below the onset
+    the polar is the original, so a converged state with every panel below
+    its (original) onset is an exact solution of the true model. A state with
+    panels above the onset is NOT a solution (it used the extension) and must
+    be discarded. This is the attached-branch finder behind the sweep's
+    attached guard (2026-09-01).
+    """
+    arr = np.array(polar, dtype=float, copy=True)
+    if arr.ndim != 2 or arr.shape[0] < 4 or arr.shape[1] < 2:
+        return arr
+    alpha, cl = arr[:, 0], arr[:, 1]
+    positive = np.flatnonzero(cl > 0.0)
+    onset = None
+    for k in positive[1:-1]:
+        if cl[k] > cl[k - 1] and cl[k] > cl[k + 1]:
+            onset = int(k)
+            break
+    if onset is None:
+        return arr
+    j = max(0, onset - 3)
+    span = alpha[onset] - alpha[j]
+    slope = (cl[onset] - cl[j]) / span if span > 1e-9 else 2.0 * np.pi
+    if not np.isfinite(slope) or slope <= 0.0:
+        slope = 2.0 * np.pi
+    arr[onset + 1 :, 1] = cl[onset] + slope * (alpha[onset + 1 :] - alpha[onset])
+    return arr
+
+
+#: Iteration cap of the AV-off stage of :func:`solve_vsm_attached_first`.
+#: An attached solution converges long before this; a genuinely stalled wing
+#: only oscillates without the regularisation, and the cap bounds what is
+#: paid to find that out before the AV solve takes over.
+ATTACHED_FIRST_MAX_ITERATIONS = 300
+#: Opt-in switch of the AV-off stage. OFF by default (2026-09-01): on the
+#: flipped row of a depower continuation (u_dp 0.355, v_a 21) the AV-off
+#: Anderson/Picard iteration did not converge within the cap, so the AV solve
+#: took over from a non-converged iterate and landed stalled-tip anyway --
+#: 3.6x the cost for the same answer. The attached family is held at the
+#: sweep level instead (run_center_window_sweep.py attached guard).
+AV_ATTACHED_FIRST = False
+
+
+def solve_vsm_attached_first(
+    solver: Any,
+    body: Any,
+    gamma_seed: np.ndarray | None = None,
+    *,
+    accepts_seed: bool = True,
+    stall_onsets: np.ndarray | None = None,
+) -> dict:
+    """One VSM solve that lands on the ATTACHED solution whenever one exists.
+
+    With the Li/Gaunaa artificial viscosity the circulation problem is
+    two-branched near stall: an attached family and a stalled-tip family
+    (outer panels past their polar's stall onset), and a plain seeded solve
+    keeps whichever family its seed is closest to -- which is how a depower
+    continuation ended up alternating between the two every row beyond
+    u_dp ~0.33 (2026-09-01). The AV is a no-op below the onset, so an
+    attached solution is IDENTICAL with AV on or off, while the stalled-tip
+    family exists only under AV. Hence the rule (user, 2026-09-01: "if there
+    is an attached branch it should go there"):
+
+    1. solve WITHOUT AV, seeded as given (cold retry on non-convergence as
+       usual, capped at :data:`ATTACHED_FIRST_MAX_ITERATIONS`);
+    2. if that converged with every panel below its stall onset it already is
+       the AV solution -- return it, ``res["av_stage"] = "attached"``;
+    3. otherwise run the AV solve seeded from that iterate (cold AV retry if
+       it does not converge) and return its post-stall solution,
+       ``res["av_stage"] = "stalled"``.
+
+    A solver without AV (or without the attribute) gets the plain solve,
+    ``av_stage`` None. ``stall_onsets`` may pass the per-panel onsets
+    precomputed for the body (:func:`_panel_stall_onsets_rad`).
+    """
+
+    def plain(seed, cold_retry=True):
+        if accepts_seed and seed is not None:
+            res = solver.solve(body, gamma_distribution=np.asarray(seed, dtype=float))
+            if cold_retry and not bool(res.get("gamma_converged", True)):
+                res = solver.solve(body)
+            return res
+        return solver.solve(body)
+
+    av_on = bool(getattr(solver, "is_with_artificial_viscosity", False))
+    if not av_on or not AV_ATTACHED_FIRST:
+        res = plain(gamma_seed)
+        res["av_stage"] = None
+        return res
+
+    cap = getattr(solver, "max_iterations", None)
+    solver.is_with_artificial_viscosity = False
+    if isinstance(cap, (int, float)) and cap > ATTACHED_FIRST_MAX_ITERATIONS:
+        solver.max_iterations = ATTACHED_FIRST_MAX_ITERATIONS
+    try:
+        res0 = plain(gamma_seed)
+    finally:
+        solver.is_with_artificial_viscosity = True
+        if cap is not None:
+            solver.max_iterations = cap
+
+    onsets = (
+        np.asarray(stall_onsets, dtype=float)
+        if stall_onsets is not None
+        else _panel_stall_onsets_rad(body)
+    )
+    alpha = res0.get("alpha_at_ac")
+    attached = bool(res0.get("gamma_converged", True))
+    if attached and alpha is not None and onsets.size:
+        alpha = np.asarray(alpha, dtype=float).ravel()
+        if alpha.shape == onsets.shape:
+            finite = np.isfinite(alpha) & np.isfinite(onsets)
+            attached = bool(np.all(alpha[finite] <= onsets[finite])) and bool(
+                np.all(np.isfinite(alpha))
+            )
+        else:
+            attached = False
+    if attached:
+        res0["av_stage"] = "attached"
+        return res0
+
+    seed = res0.get("gamma_distribution")
+    seed = (
+        np.asarray(seed, dtype=float).ravel()
+        if seed is not None and np.all(np.isfinite(np.asarray(seed, dtype=float)))
+        else gamma_seed
+    )
+    res1 = plain(seed)
+    res1["av_stage"] = "stalled"
+    return res1
+
+
+def stall_fraction_fields(body_aero: Any, alpha_at_ac: Any) -> dict[str, Any]:
+    """Share of the wing past its 2-D stall onset at a solved state.
+
+    Per panel, stalled = ``alpha_at_ac`` above the panel polar's first
+    interior Cl peak (:func:`_panel_stall_onsets_rad` -- the VSM's own gate
+    for its post-stall artificial-viscosity regularisation). Returned keys:
+
+    ``stalled_fraction``       span-weighted (panel widths) share of the wing
+                               that is stalled, 0..1
+    ``stalled_area_fraction``  the same weighted by width x chord
+    ``n_stalled_panels`` / ``n_panels``   the raw count
+    ``stall_margin_min_deg``   min over panels of (onset - alpha) [deg]; < 0
+                               once any panel is stalled
+
+    NaN / None when the body exposes no polar tables or the alpha
+    distribution is missing, so a caller can always read the keys.
+    """
+    fields: dict[str, Any] = {
+        "stalled_fraction": float("nan"),
+        "stalled_area_fraction": float("nan"),
+        "n_stalled_panels": None,
+        "n_panels": None,
+        "stall_margin_min_deg": float("nan"),
+    }
+    if alpha_at_ac is None:
+        return fields
+    alpha = np.asarray(alpha_at_ac, dtype=float).ravel()
+    panels = list(getattr(body_aero, "panels", None) or ())
+    if alpha.size == 0 or len(panels) != alpha.size:
+        return fields
+    onsets = _panel_stall_onsets_rad(body_aero)
+    finite = np.isfinite(onsets) & np.isfinite(alpha)
+    if not np.any(finite):
+        return fields
+    stalled = finite & (alpha > onsets)
+    width = np.array([float(getattr(panel, "width", np.nan)) for panel in panels])
+    chord = np.array([float(getattr(panel, "chord", np.nan)) for panel in panels])
+    if np.all(np.isfinite(width)) and np.sum(width) > 0.0:
+        span_fraction = float(np.sum(width[stalled]) / np.sum(width))
+    else:  # no geometry on the panels (mocks): fall back to the count
+        span_fraction = float(np.count_nonzero(stalled) / alpha.size)
+    area = width * chord
+    if np.all(np.isfinite(area)) and np.sum(area) > 0.0:
+        area_fraction = float(np.sum(area[stalled]) / np.sum(area))
+    else:
+        area_fraction = span_fraction
+    fields.update(
+        {
+            "stalled_fraction": span_fraction,
+            "stalled_area_fraction": area_fraction,
+            "n_stalled_panels": int(np.count_nonzero(stalled)),
+            "n_panels": int(alpha.size),
+            "stall_margin_min_deg": float(np.rad2deg(np.min((onsets - alpha)[finite]))),
+        }
+    )
+    return fields
 
 
 def _timescales_from_eigs(eigvals: np.ndarray) -> np.ndarray:

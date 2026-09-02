@@ -567,8 +567,9 @@ Public functions should use these names:
   ~1 deg of the stall margin, where the base loop can oscillate without
   converging and the unconverged gamma corrupts the outer trim residuals.
   Ignored when an explicit `solver` is passed.
-  `solve_vsm_qs_trim_with_williams_tether` additionally takes `gamma_seed`
-  (optional, one circulation value per panel): an initial guess passed to
+  **Attached-first VSM solve (2026-09-01, OPT-IN via `AV_ATTACHED_FIRST`, off by default -- it did not hold the attached family and cost 3.6x):** every VSM evaluation inside both trim solvers goes through `solve_vsm_attached_first`; when enabled: AV OFF first (seeded, capped at `ATTACHED_FIRST_MAX_ITERATIONS`); if it converges with every panel below its stall onset that IS the AV solution (AV is a no-op below the onset) and is returned with `av_stage = "attached"`; otherwise the AV solve runs seeded from that iterate (`av_stage = "stalled"`). This makes the solver land on the attached family whenever one exists instead of whichever family the seed was nearest to (the two-branched AV circulation made depower continuations alternate every row). The trim result carries `av_stage`. Both trim result dicts carry `stalled_fraction` (span-weighted share of the wing past its 2-D stall onset), `stalled_area_fraction`, `n_stalled_panels` / `n_panels` and `stall_margin_min_deg` (`stall_fraction_fields`, onset = first interior Cl peak of each panel polar, the VSM's own AV gate; added 2026-09-01). Both trim solvers take `gamma_seed` (optional, one circulation value per
+  panel; the tetherless solver since 2026-08-31 — before that it silently
+  lacked the parameter and callers cold-started): an initial guess passed to
   EVERY inner VSM solve, with a cold retry when the seeded loop fails to
   converge. Near stall the circulation is multi-valued and a cold-started
   loop can converge onto a different branch than the one a deformed geometry
