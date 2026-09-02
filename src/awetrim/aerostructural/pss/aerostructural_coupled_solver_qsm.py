@@ -520,6 +520,21 @@ def main(
     qs_stag_n_iter = int(
         config["aero_structural_solver"].get("qs_state_stagnation_n_iter", 0)
     )
+    #: Runaway stop. A trim pinned on its kite-speed bound is a constrained
+    #: optimum, not an equilibrium (aerodynamic_vsm._warn_if_trim_on_bounds):
+    #: the force balance wants a speed outside the box, and a coupled loop
+    #: fed such a trim only drives the shape further from anything flyable.
+    #: Measured 2026-09-01 on a handover-seeded deep-depower point (u_dp
+    #: 0.37, V_w 7 m/s): pinned at 40 m/s from iteration 1, residual 5.9 kN,
+    #: then 100 iterations of nothing before the caller's cold retry. This
+    #: many CONSECUTIVE pinned iterations end the solve as not converged
+    #: (meta["stop_reason"] = "trim_speed_bound"); 0 disables.
+    qs_speed_bound_patience = int(
+        config["aero_structural_solver"].get("qs_speed_bound_patience", 3)
+    )
+    speed_bound_counter = 0
+    runaway_should_break = False
+    stop_reason = None
     steering_actuation_interval_iters = int(
         config["aero_structural_solver"].get("steering_actuation_interval_iters", 5)
     )
@@ -538,10 +553,28 @@ def main(
     depower_settle_iterations_after_update = max(
         0, depower_settle_iterations_after_update
     )
+    # Steering needs a LONGER settle than depower. A tape half-difference
+    # changes the geometry by millimetres at first; the steered equilibrium
+    # (rolled wing, turning trim) is reached by the coupled fixed-point
+    # iteration AMPLIFYING that asymmetry over several iterations, and the
+    # residual it carries meanwhile is far below the convergence gate. With
+    # no settle the u_s 0.025 / 0.05 rows of 2026-09-01 "converged" in 3
+    # iterations on the still-symmetric state (roll 0.00 deg, chi_dot 0),
+    # while the 0.075 row -- whose residual also dipped to 0.37 N at the same
+    # point -- went on to 2.1, 17, 21 N before settling on the rolled state.
+    steering_settle_iterations_after_update = int(
+        config["aero_structural_solver"].get(
+            "steering_settle_iterations_after_update", 6
+        )
+    )
+    steering_settle_iterations_after_update = max(
+        0, steering_settle_iterations_after_update
+    )
     qs_opt_prev_rounded = None
     qs_stag_counter = 0
     qs_state_should_break = False
     depower_settle_counter = 0
+    steering_settle_counter = 0
     logging.info(
         "Steering actuation interval: every %s iterations",
         steering_actuation_interval_iters,
@@ -553,6 +586,10 @@ def main(
     logging.info(
         "Depower settle iterations after update: %s",
         depower_settle_iterations_after_update,
+    )
+    logging.info(
+        "Steering settle iterations after update: %s",
+        steering_settle_iterations_after_update,
     )
 
     bridle_node_pairs = None
@@ -911,6 +948,24 @@ def main(
             print(f"  Yaw: {results_aero['opt_x'][3]:.2f} deg")
             print(f"  Course rate: {results_aero['opt_x'][4]:.2f} rad/s")
 
+            # Runaway stop (see qs_speed_bound_patience above).
+            if qs_speed_bound_patience > 0:
+                if "kite_speed" in (results_aero.get("trim_on_bounds") or []):
+                    speed_bound_counter += 1
+                else:
+                    speed_bound_counter = 0
+                if speed_bound_counter >= qs_speed_bound_patience:
+                    runaway_should_break = True
+                    stop_reason = "trim_speed_bound"
+                    logging.warning(
+                        "Stopping: quasi-steady trim pinned on its kite-speed "
+                        "bound (%.6g m/s) for %d consecutive coupled "
+                        "iterations -- no equilibrium inside the trim box; "
+                        "the solve is NOT converged.",
+                        float(results_aero["opt_x"][0]),
+                        speed_bound_counter,
+                    )
+
             # Stop if quasi-steady state vector has effectively frozen.
             if qs_stag_n_iter > 0:
                 qs_opt_current = np.asarray(results_aero.get("opt_x", []), dtype=float)
@@ -1139,6 +1194,7 @@ def main(
                 is_actuation_finalized
                 and is_steering_finalized
                 and depower_settle_counter == 0
+                    and steering_settle_counter == 0
                 and i - last_stiffening_iteration >= stiffness_settle_iters
                 and np.isfinite(residual_now)
                 and residual_now <= stiffness_trigger_residual
@@ -1350,6 +1406,13 @@ def main(
                 logging.info("Classic PS non-converging - residual no longer changes")
                 should_break = True
 
+            if runaway_should_break:
+                # Unlike the stagnation stop this does not wait for the
+                # actuation to finish: nothing downstream of a bound-pinned
+                # trim is worth another iteration.
+                is_convergence = False
+                break
+
             if qs_state_should_break:
                 # Do not allow quasi-steady stagnation stopping to interrupt
                 # progressive actuation before targets are fully applied.
@@ -1357,6 +1420,7 @@ def main(
                     is_actuation_finalized
                     and is_steering_finalized
                     and depower_settle_counter == 0
+                    and steering_settle_counter == 0
                     and not stiffness_updated_now
                 ):
                     break
@@ -1386,12 +1450,17 @@ def main(
                 depower_settle_counter = depower_settle_iterations_after_update
             elif depower_settle_counter > 0:
                 depower_settle_counter -= 1
+            if did_update_steering:
+                steering_settle_counter = steering_settle_iterations_after_update
+            elif steering_settle_counter > 0:
+                steering_settle_counter -= 1
 
             # If either actuation is not finalized, continue actuation phase.
             if (
                 (not is_actuation_finalized)
                 or (not is_steering_finalized)
                 or (depower_settle_counter > 0)
+                or (steering_settle_counter > 0)
             ):
                 continue
 
@@ -1473,7 +1542,7 @@ def main(
         window = window[np.isfinite(window)]
         if window.size:
             residual_cycle_span = float(window.max() - window.min())
-    if not is_convergence and f_residual_list:
+    if not is_convergence and f_residual_list and stop_reason is None:
         residual_final = float(f_residual_list[-1])
         physical_gates_met = (
             is_actuation_finalized
@@ -1644,6 +1713,10 @@ def main(
         "total_time_s": time.time() - start_time,
         "n_iter": i + 2,  # +2: 1 for pre-loop initial state + (i+1) loop entries
         "converged": is_convergence,
+        # Why the loop ended early, when it did for a reason other than
+        # convergence / stagnation / max_iter: "trim_speed_bound" (runaway
+        # stop, see qs_speed_bound_patience). None otherwise.
+        "stop_reason": stop_reason,
         # The nodal force residual the run ENDED on, and the threshold it was
         # tested against. Reporting only; the criterion itself is unchanged
         # (check_convergence still owns it). A continuation needs this per

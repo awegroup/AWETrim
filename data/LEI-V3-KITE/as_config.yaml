@@ -41,15 +41,31 @@ is_save_geometry_snapshots: !!bool true
 
 ## aerodynamic
 aerodynamic:
-  n_aero_panels_per_struc_section: !!int 3
+  # 5 x 9 structural sections = 45 panels (2026-08-31, was 3 = 27): cost
+  # parity with 27 after the numba AIC JIT, and the coupled answer is
+  # branch-consistent and mesh-converged across 27/36/45 (v_tau +/-0.2%).
+  n_aero_panels_per_struc_section: !!int 5
   spanwise_panel_distribution: !!str 'uniform'
   max_iterations: !!int 1500
-  allowed_error: !!float 2e-6
+  # allowed_error and gamma_loop_type are a MATCHED PAIR (2026-08-31): the
+  # Anderson-accelerated loop terminates on a superlinear, non-smooth residual
+  # that corrupts the coupled trim's finite-difference Jacobian unless the
+  # tolerance is ~1e-8 (measured -2.2% v_tau at the shipped 2e-6). Revert BOTH
+  # to base / 2e-6 together, never one alone. On steered, AV-active flow 1e-8
+  # can be unreachable for any loop and the point fails -- accepted by design:
+  # a failed point is recorded, not protected against.
+  allowed_error: !!float 1e-8
+  gamma_loop_type: !!str 'anderson'
   relaxation_factor: !!float 0.025
   reference_point: !!seq [0.0, 0.0, 0.0]
-  # Optional post-stall stabilization in the VSM gamma loop: parameter-free
-  # Li/Gaunaa spanwise artificial viscosity (TORQUE 2026). Off by default.
-  is_with_artificial_viscosity: !!bool false
+  # Li/Gaunaa spanwise artificial viscosity (TORQUE 2026) in the gamma loop.
+  # ON by default since 2026-08-31 -- a MODEL decision, not a solver one: near
+  # stall the circulation is two-branched and AV-on solves sit on the
+  # stalled-tip branch (CD +6.7% at the centre-sweep reference point), so
+  # AV-on results are not comparable to the AV-off history. The trim scripts
+  # inherit this value when --artificial-viscosity is not given, so both
+  # halves of a coupled analysis stay on one model.
+  is_with_artificial_viscosity: !!bool true
   artificial_viscosity_factor: !!float 0.035
 
 ## quasi-steady trim optimization (used by aero_structural_solver with aero_solve_type='qsm')
@@ -162,8 +178,10 @@ aero_structural_solver:
   stagnation_tol: !!float 2 # N, tolerance for stagnation detection
   qs_state_stagnation_decimals: !!int 2 # stop if opt_x is unchanged at this rounding
   qs_state_stagnation_n_iter: !!int 30 # consecutive unchanged iterations required to stop (0 disables)
+  qs_speed_bound_patience: !!int 3 # runaway stop: trim pinned on its kite-speed bound this many iterations in a row -> not converged (0 disables)
   aero_update_interval: !!int 1 # run aero every N structural iterations (1 = every iter, 5 = every 5th)
   steering_actuation_interval_iters: !!int 2 # apply steering actuation every N coupled iterations
+  steering_settle_iterations_after_update: !!int 6 # no convergence exit this many iterations after a steering tape update: the rolled/turning equilibrium grows out of a mm-level asymmetry whose residual sits below the gate (u_s 0.025/0.05 rows froze symmetric in 3 iterations on 2026-09-01)
   node_displacement_tol: !!float 0.0001 # stop if max nodal displacement < this [m] (0 = disabled, e.g. 1e-4)
   aero_solve_type: !!str 'qsm' # 'qsm' = quasi-steady optimization with system_model; 'level_1' = direct VSM with va_vector
 

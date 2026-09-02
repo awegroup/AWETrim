@@ -152,15 +152,38 @@ All defaults are defined in `scripts/aerostructural/common.CONFIG_DEFAULTS`. Key
 
 ```yaml
 aerodynamic:
-  n_aero_panels_per_struc_section: 3
+  n_aero_panels_per_struc_section: 5   # x 9 sections = 45 panels (2026-08-31)
   spanwise_panel_distribution: uniform
   max_iterations: 1000
-  allowed_error: 2.0e-6
+  allowed_error: 1.0e-8                # matched pair with gamma_loop_type --
+  gamma_loop_type: anderson            #   revert BOTH to base / 2e-6 together
   relaxation_factor: 0.05
   reference_point: [0.0, 0.0, 0.0]
-  is_with_artificial_viscosity: false  # opt-in Li/Gaunaa spanwise artificial
-  artificial_viscosity_factor: 0.035   #   viscosity (TORQUE 2026) in gamma_loop
+  is_with_artificial_viscosity: true   # Li/Gaunaa spanwise artificial viscosity
+  artificial_viscosity_factor: 0.035   #   (TORQUE 2026); ON = the model default
 
+```
+
+Defaults since 2026-08-31, all measured that day on the LEI-V3 centre-sweep
+reference point. `gamma_loop_type: anderson` is Anderson-accelerated: ~1.5x per
+coupled point with the same converged state as Picard to <=0.15%, steered
+points included — but ONLY at `allowed_error` ~1e-8, because it terminates on
+a superlinear, non-smooth residual that corrupts the finite-difference Jacobian
+of the QSM trim the coupled solver calls (measured -2.2% v_tau at 2e-6). The
+scripts refuse the unsafe half-pairing:
+`run_state_aerostructural_stability.py --as-gamma-loop anderson` requires
+`--as-gamma-tolerance`. On steered, AV-active flow 1e-8 can be unreachable for
+ANY loop (Anderson's own fallback IS the base loop) — such a point fails and is
+recorded, accepted by design. With artificial viscosity ON the circulation
+problem is multi-valued near stall and the branch is fixed by the seed, so a
+coupled run's one COLD aero solve chooses it and every warm-seeded iteration
+after that inherits it; AV-on results (stalled-tip branch, CD +6.7% at the
+reference point) are not comparable to the AV-off history. The wes-quasi-steady
+trim scripts inherit `is_with_artificial_viscosity` from the kite's as_config
+when `--artificial-viscosity` is not given, so the re-solve lens stays on the
+same model as the deformation.
+
+```yaml
 structural_pss:
   dt: 0.005
   n_internal_time_steps: 100   # must be >> 2000 for convergence check to fire
@@ -176,7 +199,47 @@ aero_structural_solver:
   tol: 5.0                        # legacy absolute [N], used only if the above is absent
   relaxation_factor: 0.5
   is_with_aitken_relaxation: true
+  qs_speed_bound_patience: 3      # runaway stop, see below (0 disables)
+  steering_settle_iterations_after_update: 6   # steering settle, see below
 ```
+
+**Runaway stop (2026-09-01).** `aerodynamic_vsm.run_vsm_package` returns
+`results["trim_on_bounds"]` (names of trim unknowns sitting on a search
+bound); when `"kite_speed"` is in it for `qs_speed_bound_patience`
+consecutive coupled iterations the loop ends immediately with
+`converged=False` and `meta["stop_reason"] = "trim_speed_bound"`, and the
+plateau fallback can never accept such a run. A bound-pinned trim is a
+constrained optimum, not an equilibrium; before this a handover-seeded
+deep-depower point burned its whole iteration budget pinned at 40 m/s
+before the sweep's cold retry.
+
+**Steering settle (2026-09-01).** `steering_settle_iterations_after_update`
+(default 6) blocks every convergence exit for that many coupled iterations
+after a steering tape update, the way `depower_settle_iterations_after_update`
+does for depower but longer. A tape half-difference first moves the geometry
+by millimetres; the steered equilibrium (rolled wing, turning trim) is
+reached by the coupled fixed-point iteration amplifying that asymmetry over
+several iterations, and until it does the residual sits far below the gate:
+without the settle the u_s = 0.025 / 0.05 rows of the 2019 reel-out steering
+continuation "converged" in 3 iterations on the still-symmetric state (roll
+0.00 deg, chi_dot 0), while the 0.075 row -- whose residual also dipped to
+0.37 N at the same point -- went on to 2.1, 17, 21 N before settling rolled.
+Rows with no steering update (u_s = 0, or a handover already at the target
+u_s) are unaffected.
+
+**VSM requirement for steered coupled solves (2026-09-01).** The structural
+-> aero mapper hands `BodyAerodynamics.update_from_points` the sections in
+arc order; the VSM must keep that order (`Wing.preserve_section_order`,
+set by `update_wing_from_points` in the Vortex-Step-Method checkout since
+2026-09-01). Older VSM re-sorts the sections with a nearest-neighbour chain
+and, once a steered LEI tip curls inboard past its neighbour (u_s >= ~0.125
+m tape), folds the lifting line back over itself: near-coincident control
+points, a circulation-map eigenvalue above 1, NaN gamma in both coupled
+stages ("Residuals are not finite in the initial point"). The VSM now also
+logs "Wing sections double back" for a genuinely folded mesh and stops its
+gamma loops on the first non-finite iterate. Reproduce with
+`scripts/personal/wes-quasi-steady/probe_vsm_steered_divergence.py` on an
+`attached_failed_vw_*/deformation` snapshot.
 
 ### Convergence criterion
 

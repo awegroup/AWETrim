@@ -36,6 +36,7 @@ from awetrim.aerodynamics.line_drag import (
     settings_from_config,
 )
 from awetrim.aerodynamics.vsm_quasi_steady import (
+    extend_polar_past_onset,
     solve_quasi_steady_state,
     solve_vsm_qs_trim_with_williams_tether,
     DEFAULT_TRANSFORMATION_C_FROM_VSM,
@@ -270,6 +271,13 @@ def initialize(
             "is_with_artificial_viscosity", False
         ),
         artificial_viscosity_factor=aero_cfg.get("artificial_viscosity_factor", 0.035),
+        # Inner circulation solver. "base" is the relaxed-Picard loop and stays
+        # the default. "anderson" is Anderson-accelerated (O(10s) rather than
+        # O(100s) of iterations) but terminates on a superlinear, non-smooth
+        # residual, which corrupts the finite-difference Jacobian of the QSM
+        # trim this solver calls unless `allowed_error` is ~1e-8. Set the two
+        # together or not at all.
+        gamma_loop_type=aero_cfg.get("gamma_loop_type", "base"),
     )
 
     # For QSM, wind speed comes from system model configuration (wind_speed_wind_ref).
@@ -282,6 +290,32 @@ def initialize(
     initial_polar_data = []
     for new_section in new_sections:
         initial_polar_data.append(new_section.polar_data)
+    # ATTACHED-BRANCH FINDER (aerodynamic.attached_polars, off by default):
+    # every section polar continued linearly past its stall onset, so the
+    # coupled solve cannot lock into the AV stalled-tip family. Only a state
+    # with every panel below its ORIGINAL onset is a solution of the true
+    # model; the caller (the sweep's attached guard) validates that with a
+    # trim on the true polars and discards the rest. The stall mask this
+    # adapter logs is built from the extended polars and reports nothing --
+    # the validation is the caller's, not this log line.
+    if bool(aero_cfg.get("attached_polars", False)):
+        initial_polar_data = [
+            extend_polar_past_onset(polar) for polar in initial_polar_data
+        ]
+        body_aero.update_from_points(
+            *(
+                np.array([[s.LE_point for s in new_sections]][0]),
+                np.array([[s.TE_point for s in new_sections]][0]),
+            ),
+            aero_input_type="reuse_initial_polar_data",
+            initial_polar_data=initial_polar_data,
+        )
+        logging.warning(
+            "attached_polars: %d section polars continued linearly past their "
+            "stall onset -- the coupled solve targets the ATTACHED family; "
+            "validate the result on the true polars",
+            len(initial_polar_data),
+        )
 
     return body_aero, vsm_solver, vel_app, initial_polar_data
 
@@ -528,7 +562,12 @@ def run_vsm_package(
             # box. ``success`` is still True there, so this would otherwise pass
             # silently and every downstream result would inherit a state the
             # kite cannot actually fly.
-            _warn_if_trim_on_bounds(results.get("opt_x"), bounds_lower, bounds_upper)
+            pinned = _warn_if_trim_on_bounds(
+                results.get("opt_x"), bounds_lower, bounds_upper
+            )
+            # Names of the trim unknowns sitting on a bound (empty when none):
+            # the coupled loop's runaway stop reads ``"kite_speed"`` here.
+            results["trim_on_bounds"] = [name for name, _value, _which in pinned]
     except ValueError as exc:
         # Typical case: non-finite residual in initial optimizer point.
         print(
