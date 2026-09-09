@@ -44,6 +44,13 @@ src/awetrim/aerostructural/
     __init__.py                    PssKineticDampingSolver, PssQsmCoupler
     coupling.py                    PssQsmCoupler (fixed-point loop)
     structural_pss.py              PSS instantiation and kinetic-damping solve
+    structural_nlp.py              Exact minimum-energy inner solve (CasADi/IPOPT):
+                                   NlpStructuralSolver (run_pss call contract) +
+                                   resolve_structural_solver dispatch. Same spring
+                                   physics as PSS (tension-only cutoffs, pulley
+                                   pairs), solved to ~1e-8 instead of kinetic
+                                   damping's ~1 N leftover. Selected by
+                                   structural_pss.solver: nlp (default pss).
     structural_geometry_io.py      Parse struc_geometry.yaml → StructuralGeometry arrays
     actuation.py                   update_steering_tape_actuation, update_power_tape_actuation
     aerostructural_coupled_solver_qsm.py  Legacy high-level driver (used by production scripts)
@@ -140,7 +147,9 @@ Node positions are updated as `nodes += factor * (solved_nodes - nodes)` where `
 
 ## Boundary
 
-- No CasADi symbolics enter this module. All quantities are numeric numpy arrays.
+- No CasADi symbolics enter this module. All quantities are numeric numpy
+  arrays. (`pss/structural_nlp.py` uses CasADi INTERNALLY to build its solver —
+  nothing symbolic crosses its function boundaries.)
 - VSM solver internals (`VSM.core`) are accessed only through `aerodynamic_vsm.py`; the rest of the module is VSM-agnostic.
 - `aerodynamic_vsm.py` and `aerodynamic_bridle_line_drag.py` live at the root level and are shared by all solvers. `aerodynamic_vsm.run_vsm_package` also builds the KCU bluff-body drag model (`awetrim.aerodynamics.kcu_drag`, gated by the `is_with_kcu_drag` config key, default true) and hands it to whichever trim it dispatches to. It is deliberately NOT distributed onto structural nodes: the KCU is node 0, a FIXED node, so a force there is absorbed by the constraint and cannot deform anything — the KCU drag reaches the structure only through the trim state the wing is loaded at. `pss/structural_pss.py` holds the PSS dependency. All other common files (`mapping.py`, `convergence.py`, etc.) depend only on numpy and the module's own protocols.
 - `pss/aerostructural_coupled_solver_qsm.py` is a legacy high-level driver retained for production scripts. New protocol-level code should go through `pss/coupling.PssQsmCoupler`.
@@ -185,6 +194,20 @@ same model as the deformation.
 
 ```yaml
 structural_pss:
+  solver: pss                  # 'pss' (kinetic damping, default) | 'nlp'
+                               # (exact CasADi/IPOPT minimum-energy solve).
+                               # Same spring physics; measured 2026-09-09 on the
+                               # actuated reference case: nlp is 100-300x faster
+                               # per inner solve (2-3 s -> ~10 ms) and removes
+                               # the ~1 N kinetic-damping leftover that floors
+                               # the coupled relative residual at ~4e-4 -- the
+                               # only way this case converged a 1e-4 gate.
+                               # PSS state (psystem) stays the owner of rest
+                               # lengths/stiffness, so actuation, the stiffness
+                               # ramp and handover are solver-agnostic.
+  nlp_tolerance: 1.0e-8        # IPOPT tol (nlp only)
+  nlp_max_iterations: 1000     # IPOPT iteration cap (nlp only)
+  nlp_anchor_stiffness: 1.0e-3 # [N/m] pins force-free fully-slack nodes (nlp only)
   dt: 0.005
   n_internal_time_steps: 100   # must be >> 2000 for convergence check to fire
   abs_tol: 1.0e-50

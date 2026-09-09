@@ -21,6 +21,7 @@ import logging
 import math
 import matplotlib.pyplot as plt
 from . import structural_pss
+from . import structural_nlp
 from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking
 from awetrim import plotting
 from .actuation import (
@@ -175,7 +176,19 @@ def main(
         tracking_data (dict): Dictionary containing time histories of positions, forces, etc.
         meta (dict): Dictionary with meta information about the simulation (timing, convergence, etc).
     """
-    print("--> Running structural solver: pss")
+    # Inner structural solver: PSS kinetic damping (default) or the exact
+    # minimum-energy NLP (structural_pss.solver: nlp). Both share the same
+    # call contract and operate on the same particle-system state, so
+    # actuation, the stiffness ramp and handover work identically.
+    structural_solver_name, structural_solve = (
+        structural_nlp.resolve_structural_solver(
+            config["structural_pss"],
+            psystem,
+            kite_connectivity_arr,
+            pulley_line_indices,
+        )
+    )
+    print(f"--> Running structural solver: {structural_solver_name}")
 
     ## PRELOOP
     f_ext_gravity = np.zeros(struc_nodes.shape)
@@ -838,7 +851,7 @@ def main(
                 )
                 print(f"Adaptive dt: {adaptive_dt:.6f} s at iteration {i}")
             psystem, is_structural_converged, struc_nodes, f_int = (
-                structural_pss.run_pss(
+                structural_solve(
                     psystem,
                     f_ext_flat,
                     config["structural_pss"],
