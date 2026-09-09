@@ -642,6 +642,57 @@ def main(
     relaxation_min = float(
         config["aero_structural_solver"].get("relaxation_min", 0.05)
     )
+    # ADAPTIVE floor (opt-in). The 0.05 floor above is what a NOISY inner
+    # solve needs near the fixed point, but far from it the same floor is a
+    # crawl: measured with the exact NLP inner solve, a 0.3 floor reaches the
+    # 1e-4 neighbourhood 4.5x faster and THEN limit-cycles because Aitken is
+    # not allowed the small step it asks for. ``relaxation_min_far`` (> min)
+    # is the floor used while the residual is still above
+    # ``relaxation_release_factor`` x tolerance; once the residual first drops
+    # below that threshold the floor RELEASES to ``relaxation_min`` and stays
+    # released (latched -- bouncing across the threshold would re-widen the
+    # floor mid-damping). Default far == min keeps the historical behaviour.
+    relaxation_min_far = float(
+        config["aero_structural_solver"].get("relaxation_min_far", relaxation_min)
+    )
+    relaxation_release_factor = float(
+        config["aero_structural_solver"].get("relaxation_release_factor", 30.0)
+    )
+    relaxation_released = relaxation_min_far <= relaxation_min
+    # Outer update scheme (opt-in). "aitken" is the historical scalar-relaxed
+    # fixed point. "anderson" replaces it with Anderson acceleration on the
+    # NODE-POSITION fixed point: a vector extrapolation over the last
+    # ``anderson_outer_depth`` iterates that can damp the oscillatory
+    # (period-4) coupling mode no scalar omega can -- the same acceleration
+    # idea the VSM gamma loop uses. Only sensible with an EXACT inner solve
+    # (structural_pss.solver: nlp): PSS's ~1 N inner noise corrupts the
+    # residual differences the extrapolation is built from. The history is
+    # reset whenever the fixed-point MAP changes (tape actuation or a
+    # stiffness event), and a step whose largest node move exceeds
+    # ``anderson_outer_max_step_m`` falls back to the plain beta-relaxed step.
+    outer_acceleration = str(
+        config["aero_structural_solver"].get("outer_acceleration", "aitken")
+    ).lower()
+    if outer_acceleration not in ("aitken", "anderson"):
+        raise ValueError(
+            f"Unknown outer_acceleration {outer_acceleration!r}; "
+            "expected 'aitken' or 'anderson'."
+        )
+    anderson_outer_depth = int(
+        config["aero_structural_solver"].get("anderson_outer_depth", 4)
+    )
+    anderson_outer_beta = float(
+        config["aero_structural_solver"].get("anderson_outer_beta", 0.5)
+    )
+    anderson_outer_reg = float(
+        config["aero_structural_solver"].get("anderson_outer_reg", 1e-8)
+    )
+    anderson_outer_max_step = float(
+        config["aero_structural_solver"].get("anderson_outer_max_step_m", 0.5)
+    )
+    anderson_xs: list = []
+    anderson_rs: list = []
+    anderson_map_signature = None
     omega_relaxation = float(
         handover.get(
             "relaxation_factor",
@@ -859,8 +910,75 @@ def main(
             )
             end_time_f_int = time.time()
 
+            ### Outer update: Aitken relaxation (default) or Anderson
+            if struc_nodes_prev is not None and outer_acceleration == "anderson":
+                r_k = struc_nodes - struc_nodes_prev
+                r_k_flat = r_k.flatten()
+                x_k = struc_nodes_prev.flatten()
+
+                # The stored iterates describe ONE fixed-point map; actuation
+                # or a stiffness event redefines it, so extrapolating across
+                # the change would mix two maps.
+                signature = (
+                    np.asarray(psystem.extract_rest_length, dtype=float).tobytes()
+                    + structural_pss.get_stiffnesses(psystem).tobytes()
+                )
+                if signature != anderson_map_signature:
+                    anderson_xs.clear()
+                    anderson_rs.clear()
+                    anderson_map_signature = signature
+
+                anderson_xs.append(x_k.copy())
+                anderson_rs.append(r_k_flat.copy())
+                if len(anderson_xs) > anderson_outer_depth + 1:
+                    anderson_xs.pop(0)
+                    anderson_rs.pop(0)
+
+                beta = anderson_outer_beta
+                x_next = x_k + beta * r_k_flat
+                if len(anderson_xs) >= 2:
+                    dX = np.diff(np.column_stack(anderson_xs), axis=1)
+                    dR = np.diff(np.column_stack(anderson_rs), axis=1)
+                    n_cols = dR.shape[1]
+                    gram = dR.T @ dR
+                    ridge = anderson_outer_reg * max(
+                        float(np.trace(gram)) / max(n_cols, 1), 1e-30
+                    )
+                    try:
+                        gamma = np.linalg.solve(
+                            gram + ridge * np.eye(n_cols), dR.T @ r_k_flat
+                        )
+                        x_next = (
+                            x_k + beta * r_k_flat - (dX + beta * dR) @ gamma
+                        )
+                    except np.linalg.LinAlgError:
+                        pass  # keep the plain relaxed step
+
+                max_move = float(
+                    np.max(
+                        np.linalg.norm((x_next - x_k).reshape(-1, 3), axis=1)
+                    )
+                )
+                if not np.isfinite(max_move) or max_move > anderson_outer_max_step:
+                    logging.info(
+                        "Anderson outer step rejected (max node move %.3f m); "
+                        "plain beta step, history reset.",
+                        max_move,
+                    )
+                    x_next = x_k + beta * r_k_flat
+                    anderson_xs[:] = anderson_xs[-1:]
+                    anderson_rs[:] = anderson_rs[-1:]
+
+                struc_nodes = x_next.reshape(-1, 3)
+                r_prev_flat = r_k_flat.copy()
+
+                # Sync accepted positions back to structural solver state.
+                for idx, particle in enumerate(psystem.particles):
+                    particle.update_pos(struc_nodes[idx])
+                    particle.update_vel(np.zeros(3))
+
             ### Aitken relaxation of structural nodes
-            if struc_nodes_prev is not None:
+            elif struc_nodes_prev is not None:
                 r_k = struc_nodes - struc_nodes_prev
                 r_k_flat = r_k.flatten()
 
@@ -870,6 +988,23 @@ def main(
                     )
                     and r_prev_flat is not None
                 ):
+                    if not relaxation_released and f_residual_list:
+                        if (
+                            f_residual_list[-1]
+                            <= relaxation_release_factor * residual_tol_active
+                        ):
+                            relaxation_released = True
+                            logging.info(
+                                "Aitken floor released: residual %.3e <= %g x tol, "
+                                "floor %.3g -> %.3g",
+                                f_residual_list[-1],
+                                relaxation_release_factor,
+                                relaxation_min_far,
+                                relaxation_min,
+                            )
+                    relaxation_min_active = (
+                        relaxation_min if relaxation_released else relaxation_min_far
+                    )
                     delta_r = r_k_flat - r_prev_flat
                     denom = np.dot(delta_r, delta_r)
                     if denom > 1e-30:
@@ -877,7 +1012,7 @@ def main(
                             np.dot(r_prev_flat, delta_r) / denom
                         )
                         omega_relaxation = np.clip(
-                            omega_relaxation, relaxation_min, 1.0
+                            omega_relaxation, relaxation_min_active, 1.0
                         )
 
                 struc_nodes = struc_nodes_prev + omega_relaxation * r_k

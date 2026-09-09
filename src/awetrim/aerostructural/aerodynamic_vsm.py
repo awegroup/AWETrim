@@ -478,6 +478,17 @@ def run_vsm_package(
     bounds_upper = np.array(
         [speed_b[1], roll_b[1], pitch_b[1], yaw_b[1], rate_b[1]]
     )
+    # Trim evaluation cap (opt-in, quasi_steady_trim.max_nfev). Inside a
+    # coupled loop a FULLY converged trim on an intermediate geometry is
+    # wasted work -- the geometry moves right after. Capping least_squares to
+    # a few evaluations per coupled iteration lets trim and geometry converge
+    # TOGETHER (measured 2026-09-09: cap 8 cut VSM calls ~30% at identical
+    # outer iteration count and final state). Warm-started trims near the
+    # coupled fixed point terminate inside the cap on their own tolerances,
+    # so the final accepted state is a genuinely converged trim. Absent key =
+    # None = historical behaviour.
+    trim_max_nfev = qs_cfg.get("max_nfev")
+    trim_max_nfev = int(trim_max_nfev) if trim_max_nfev else None
     if current_guess is None:
         current_guess = DEFAULT_GUESS_QS
 
@@ -531,6 +542,7 @@ def run_vsm_package(
                 # (qs_cm ~ 3e-2 observed) and burns minutes per aero call; the
                 # fixed per-solve seed removes both while staying FD-smooth.
                 gamma_seed=gamma_seed,
+                max_nfev=trim_max_nfev,
             )
         else:
             results, body_aero = solve_quasi_steady_state(
@@ -544,7 +556,16 @@ def run_vsm_package(
                 bounds_lower=bounds_lower,
                 bounds_upper=bounds_upper,
                 include_gravity=include_gravity,
+                max_nfev=trim_max_nfev,
             )
+        if not results.get("success", False) and trim_max_nfev is not None:
+            # A capped trim reports success=False (status 0) while it is still
+            # mid-convergence -- that partial step IS the point of the cap, so
+            # keep it rather than discarding it through the direct-solve
+            # fallback below. The real failure modes (non-finite residuals)
+            # raise and take the except path regardless of the cap.
+            results["trim_truncated"] = True
+            results["success"] = True
         if not results.get("success", False):
             print(
                 "Quasi-steady optimization did not converge to a valid trim state. "

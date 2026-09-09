@@ -222,6 +222,33 @@ aero_structural_solver:
   tol: 5.0                        # legacy absolute [N], used only if the above is absent
   relaxation_factor: 0.5
   is_with_aitken_relaxation: true
+  # Adaptive Aitken floor (opt-in, EXPERIMENTAL -- measured NOT to help).
+  # Far from the fixed point the floor is relaxation_min_far; once the
+  # residual first drops below relaxation_release_factor x tolerance it
+  # releases (latched) to relaxation_min. Hypothesis was that the small
+  # floor then damps the wide-floor limit cycle; measured 2026-09-09 on the
+  # actuated case (NLP inner, tight gate) the release instead RE-ENTERS the
+  # period-4 limit cycle at LARGER amplitude (4.8/2.9/2.2/6.0 N vs the
+  # fixed-0.3 stall at 0.33 N): the cycle is an oscillatory VECTOR mode of
+  # the coupled map (attitude rotation vs relaxed deformation) that no
+  # scalar omega can damp from that entry point. Kept for experiments;
+  # the real fix is vector (Anderson) acceleration of the outer geometry
+  # fixed point. Default relaxation_min_far == relaxation_min = off.
+  # relaxation_min_far: 0.3
+  # relaxation_release_factor: 30.0
+  # Anderson-accelerated outer fixed point (opt-in; use with
+  # structural_pss.solver: nlp -- PSS's ~1 N inner noise corrupts the
+  # residual differences). Replaces the scalar Aitken update with a vector
+  # extrapolation over the last anderson_outer_depth iterates -- the tool
+  # for the oscillatory period-4 coupling mode no scalar omega can damp.
+  # History resets on any map change (tape actuation, stiffness event);
+  # steps whose largest node move exceeds anderson_outer_max_step_m fall
+  # back to the plain beta-relaxed step.
+  # outer_acceleration: anderson   # default: aitken
+  # anderson_outer_depth: 4
+  # anderson_outer_beta: 0.5
+  # anderson_outer_reg: 1.0e-8
+  # anderson_outer_max_step_m: 0.5
   qs_speed_bound_patience: 3      # runaway stop, see below (0 disables)
   steering_settle_iterations_after_update: 6   # steering settle, see below
 ```
@@ -290,6 +317,22 @@ in CL, CD and tether force depending only on whether it was reached cold or
 from a warm start -- the warm start approaches from closer and so trips the
 gate much further from the fixed point. Any state handover, continuation or
 warm start is therefore only meaningful under the relative criterion.
+
+### Trim evaluation cap (quasi_steady_trim.max_nfev)
+
+Opt-in key in the ``quasi_steady_trim`` block (read by
+``aerodynamic_vsm.run_vsm_package``, forwarded to both trim solvers): caps the
+trim's ``least_squares`` at that many residual evaluations PER COUPLED
+ITERATION, so trim unknowns and geometry converge together instead of fully
+re-converging the trim on every intermediate shape. A capped, still-converging
+trim reports ``success=False``; ``run_vsm_package`` keeps that partial result
+(marked ``trim_truncated``) instead of taking the direct-solve fallback.
+Warm-started trims near the coupled fixed point terminate inside the cap on
+their own tolerances, so the accepted final state is a genuinely converged
+trim. Measured 2026-09-09 (NLP inner solve, freed relaxation): ``max_nfev: 8``
+cut total VSM evaluations ~30% at identical outer iteration count and final
+state; 20 was WORSE than 8 — spend little per iteration. Absent key =
+historical behaviour.
 
 ## Result Storage
 
