@@ -244,11 +244,32 @@ aero_structural_solver:
   # History resets on any map change (tape actuation, stiffness event);
   # steps whose largest node move exceeds anderson_outer_max_step_m fall
   # back to the plain beta-relaxed step.
+  # FRAME-CONSISTENT since 2026-09-10: the driver rotates struc_nodes by
+  # the solved trim attitude every iteration, so consecutive outer iterates
+  # live in different frames; the first Anderson attempt extrapolated
+  # across them and its differences were dominated by the attitude
+  # increment (100 iters stuck at 2.5e-3--4.6e-3, worse than Aitken). The
+  # stored history (positions, residuals, previous increment) is now
+  # rotated with exactly the geometry's rotation at each attitude update
+  # (_rotate_anderson_history, matrix from utils.rotation_matrix_from_angles),
+  # the de-rotated smooth-map formulation. Aitken is deliberately
+  # untouched -- its historical behaviour is the campaign baseline.
+  # MEASURED on the rotated history (actuated case, NLP inner, full trim):
+  # with the noise-robust defaults below the outer iteration contracts
+  # MONOTONICALLY ~1e-3 -> 1.2e-4 in ~25 post-actuation iterations on the
+  # correct branch, then floors at the map's own evaluation noise
+  # (~1.2e-4 relative); beta 0.3 floors at 1.5e-4 in 45 iters; the old
+  # aggressive knobs (depth 4, reg 1e-8, beta 0.5) still bounce and beta
+  # 1.0 diverges onto a wrong branch. The tight 1e-4 gate therefore still
+  # belongs to pinned Aitken 0.05 (91 iters to 5.4e-5, averaging through
+  # the noise); identified follow-ups are an Anderson->Aitken handoff near
+  # the fixed point or cutting the map noise (tighter trim/gamma
+  # tolerances) below 1e-4.
   # outer_acceleration: anderson   # default: aitken
-  # anderson_outer_depth: 4
-  # anderson_outer_beta: 0.5
-  # anderson_outer_reg: 1.0e-8
-  # anderson_outer_max_step_m: 0.5
+  # anderson_outer_depth: 2
+  # anderson_outer_beta: 0.2
+  # anderson_outer_reg: 1.0e-4
+  # anderson_outer_max_step_m: 0.1
   qs_speed_bound_patience: 3      # runaway stop, see below (0 disables)
   steering_settle_iterations_after_update: 6   # steering settle, see below
 ```

@@ -456,30 +456,8 @@ def calculate_moments_of_inertia(
     )
 
 
-def rotate_geometry(
-    struc_nodes,
-    angle_deg=None,
-    angle_rad=None,
-    point=(0.0, 0.0, 0.0),
-    axes=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
-):
-    """
-    Rotate structural nodes with three sequential axis-angle rotations.
-
-    Args:
-        struc_nodes (np.ndarray): Array of node positions (n_nodes, 3).
-        angle_deg (array-like, optional): Three angles in degrees.
-        angle_rad (array-like, optional): Three angles in radians.
-        point (array-like, optional): Pivot point for rotation. Defaults to origin.
-        axes (array-like, optional): Three axis definitions defining order.
-            Each entry can be a label ("x"/"y"/"z") or a 3D axis vector.
-            Defaults to canonical Cartesian vectors (x, y, z).
-
-    Notes:
-        - Exactly one of `angle_deg` or `angle_rad` must be provided.
-        - For backward compatibility, a single scalar angle is still accepted and
-          interpreted as a rotation about +Y only (legacy behavior).
-    """
+def _resolve_rotation_angles(angle_deg, angle_rad, axes):
+    """Normalize `rotate_geometry`-style angle/axes inputs to radians + unit axes."""
     if (angle_deg is None) == (angle_rad is None):
         raise ValueError("Provide exactly one of `angle_deg` or `angle_rad`.")
 
@@ -506,6 +484,55 @@ def rotate_geometry(
 
         axes_norm = _normalize_axes(axes)
 
+    return angle_vec_rad, axes_norm
+
+
+def rotation_matrix_from_angles(
+    angle_deg=None,
+    angle_rad=None,
+    axes=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+):
+    """
+    Composed 3x3 matrix of the three sequential rotations `rotate_geometry`
+    applies, so a caller can transform OTHER quantities (stored solver
+    history, force vectors) with exactly the geometry's rotation:
+    ``rotate_geometry(x, ...) == (x - point) @ R.T + point``.
+    """
+    angle_vec_rad, axes_norm = _resolve_rotation_angles(angle_deg, angle_rad, axes)
+    rotation = np.eye(3)
+    for ax, ang in zip(axes_norm, angle_vec_rad):
+        rotation = _rotation_matrix_from_axis(ax, ang) @ rotation
+    return rotation
+
+
+def rotate_geometry(
+    struc_nodes,
+    angle_deg=None,
+    angle_rad=None,
+    point=(0.0, 0.0, 0.0),
+    axes=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+):
+    """
+    Rotate structural nodes with three sequential axis-angle rotations.
+
+    Args:
+        struc_nodes (np.ndarray): Array of node positions (n_nodes, 3).
+        angle_deg (array-like, optional): Three angles in degrees.
+        angle_rad (array-like, optional): Three angles in radians.
+        point (array-like, optional): Pivot point for rotation. Defaults to origin.
+        axes (array-like, optional): Three axis definitions defining order.
+            Each entry can be a label ("x"/"y"/"z") or a 3D axis vector.
+            Defaults to canonical Cartesian vectors (x, y, z).
+
+    Notes:
+        - Exactly one of `angle_deg` or `angle_rad` must be provided.
+        - For backward compatibility, a single scalar angle is still accepted and
+          interpreted as a rotation about +Y only (legacy behavior).
+    """
+    rotation = rotation_matrix_from_angles(
+        angle_deg=angle_deg, angle_rad=angle_rad, axes=axes
+    )
+
     pivot = _to_3_vector(point, "point")
     nodes = np.asarray(struc_nodes, dtype=float)
     if nodes.ndim != 2 or nodes.shape[1] != 3:
@@ -513,9 +540,4 @@ def rotate_geometry(
             f"`struc_nodes` must have shape (n_nodes, 3). Got shape {nodes.shape}."
         )
 
-    rotated = nodes - pivot
-    for ax, ang in zip(axes_norm, angle_vec_rad):
-        R = _rotation_matrix_from_axis(ax, ang)
-        rotated = rotated @ R.T
-
-    return rotated + pivot
+    return (nodes - pivot) @ rotation.T + pivot

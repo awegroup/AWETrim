@@ -48,6 +48,7 @@ from ..protocols import AeroToStructureMap
 from ..utils import (
     calculate_cg,
     rotate_geometry,
+    rotation_matrix_from_angles,
 )
 
 
@@ -678,21 +679,63 @@ def main(
             f"Unknown outer_acceleration {outer_acceleration!r}; "
             "expected 'aitken' or 'anderson'."
         )
+    # Defaults are the NOISE-ROBUST setting measured 2026-09-10 on the
+    # frame-consistent history (actuated case, exact NLP inner solve, full
+    # trim): depth 2 / ridge 1e-4 / beta 0.2 / max step 0.1 m contracts
+    # monotonically ~1e-3 -> 1.2e-4 in ~25 post-actuation iterations and then
+    # floors at the outer map's own evaluation noise. The original aggressive
+    # setting (depth 4, ridge 1e-8, beta 0.5) BOUNCES 2e-4..1e-2 even with
+    # the rotated history -- near the fixed point the iterate differences
+    # approach the noise floor and the barely-regularized extrapolation
+    # amplifies them; beta 1.0 diverges onto a wrong branch.
     anderson_outer_depth = int(
-        config["aero_structural_solver"].get("anderson_outer_depth", 4)
+        config["aero_structural_solver"].get("anderson_outer_depth", 2)
     )
     anderson_outer_beta = float(
-        config["aero_structural_solver"].get("anderson_outer_beta", 0.5)
+        config["aero_structural_solver"].get("anderson_outer_beta", 0.2)
     )
     anderson_outer_reg = float(
-        config["aero_structural_solver"].get("anderson_outer_reg", 1e-8)
+        config["aero_structural_solver"].get("anderson_outer_reg", 1e-4)
     )
     anderson_outer_max_step = float(
-        config["aero_structural_solver"].get("anderson_outer_max_step_m", 0.5)
+        config["aero_structural_solver"].get("anderson_outer_max_step_m", 0.1)
     )
     anderson_xs: list = []
     anderson_rs: list = []
     anderson_map_signature = None
+
+    def _rotate_anderson_history(roll_deg, pitch_deg, yaw_deg):
+        """Carry the Anderson history into the frame the geometry just rotated to.
+
+        The driver applies the solved trim attitude to ``struc_nodes`` every
+        iteration, so consecutive outer iterates live in DIFFERENT frames.
+        Anderson extrapolates over differences of stored iterates; left
+        unrotated, those differences are dominated by the attitude increment
+        (a 1 deg rotation moves outboard nodes centimetres, against
+        millimetre structural increments near the fixed point), which is the
+        measured 2026-09-10 failure of the outer acceleration. Rotating the
+        stored positions and residuals with exactly the geometry's rotation
+        keeps the whole history in the current frame; in de-rotated
+        coordinates the outer map is smooth again. Aitken is deliberately
+        untouched -- its scalar update only spans two consecutive frames and
+        its historical behaviour is the campaign baseline.
+        """
+        nonlocal r_prev_flat
+        if not anderson_xs and r_prev_flat is None:
+            return
+        rotation = rotation_matrix_from_angles(
+            angle_deg=[roll_deg, pitch_deg, yaw_deg]
+        )
+        anderson_xs[:] = [
+            (x.reshape(-1, 3) @ rotation.T).reshape(-1) for x in anderson_xs
+        ]
+        anderson_rs[:] = [
+            (r.reshape(-1, 3) @ rotation.T).reshape(-1) for r in anderson_rs
+        ]
+        if r_prev_flat is not None:
+            r_prev_flat = (
+                (r_prev_flat.reshape(-1, 3) @ rotation.T).reshape(-1)
+            )
     omega_relaxation = float(
         handover.get(
             "relaxation_factor",
@@ -823,6 +866,8 @@ def main(
     gamma_seed_prev = results_aero.get("gamma_distribution", gamma_seed_prev)
     roll, pitch, yaw = results_aero["opt_x"][1:4]
     struc_nodes = rotate_geometry(struc_nodes, angle_deg=[roll, pitch, yaw])
+    if outer_acceleration == "anderson":
+        _rotate_anderson_history(roll, pitch, yaw)
     ### AERO --> STRUC
     f_aero_wing = _map_aero_loads_to_structure(
         f_aero_wing_vsm_format,
@@ -1142,6 +1187,8 @@ def main(
             gamma_seed_prev = results_aero.get("gamma_distribution", gamma_seed_prev)
             roll, pitch, yaw = results_aero["opt_x"][1:4]
             struc_nodes = rotate_geometry(struc_nodes, angle_deg=[roll, pitch, yaw])
+            if outer_acceleration == "anderson":
+                _rotate_anderson_history(roll, pitch, yaw)
             ### AERO --> STRUC
             f_aero_wing = _map_aero_loads_to_structure(
                 f_aero_wing_vsm_format,

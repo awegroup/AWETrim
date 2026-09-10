@@ -17,6 +17,7 @@ import pytest
 
 from awetrim.aerostructural.utils import (
     rotate_geometry,
+    rotation_matrix_from_angles,
     calculate_cg,
     calculate_inertia,
     calculate_moments_of_inertia,
@@ -96,6 +97,43 @@ class TestRotateGeometryErrors:
         nodes = np.array([1.0, 0.0, 0.0])  # 1-D, not (n, 3)
         with pytest.raises(ValueError, match=r"shape \(n_nodes, 3\)"):
             rotate_geometry(nodes, angle_deg=[0, 0, 0])
+
+
+# ============================================================================
+# rotation_matrix_from_angles
+# ============================================================================
+
+
+class TestRotationMatrixFromAngles:
+    def test_matches_rotate_geometry(self):
+        """The exported matrix must reproduce rotate_geometry exactly: the
+        coupled solver uses it to carry the Anderson outer history through
+        the per-iteration attitude rotation, and any mismatch de-syncs the
+        history from the geometry."""
+        nodes = np.array([[1.0, 2.0, 3.0], [-4.0, 5.0, 6.0], [0.5, -0.5, 2.0]])
+        angles = [3.1, -2.4, 1.7]
+        rotation = rotation_matrix_from_angles(angle_deg=angles)
+        assert np.allclose(nodes @ rotation.T, rotate_geometry(nodes, angle_deg=angles))
+
+    def test_matches_rotate_geometry_about_pivot(self):
+        nodes = np.array([[1.0, 2.0, 3.0], [-4.0, 5.0, 6.0]])
+        angles = [10.0, 20.0, -30.0]
+        pivot = np.array([0.3, -0.2, 1.5])
+        rotation = rotation_matrix_from_angles(angle_deg=angles)
+        assert np.allclose(
+            (nodes - pivot) @ rotation.T + pivot,
+            rotate_geometry(nodes, angle_deg=angles, point=pivot),
+        )
+
+    def test_is_orthonormal(self):
+        rotation = rotation_matrix_from_angles(angle_deg=[5.0, -7.0, 12.0])
+        assert np.allclose(rotation @ rotation.T, np.eye(3))
+        assert np.isclose(np.linalg.det(rotation), 1.0)
+
+    def test_zero_angles_identity(self):
+        assert np.allclose(
+            rotation_matrix_from_angles(angle_deg=[0.0, 0.0, 0.0]), np.eye(3)
+        )
 
 
 # ============================================================================

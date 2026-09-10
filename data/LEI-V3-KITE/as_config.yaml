@@ -76,6 +76,18 @@ quasi_steady_trim:
   # Typical range: 1e-5 (very tight) to 1e-3 (loose)
   moment_tolerance: !!float 1e-4
 
+  # Cap on trim residual evaluations per coupled iteration (scipy
+  # least_squares max_nfev). 8 = roughly one warm-started Gauss-Newton step:
+  # the trim and the geometry then converge TOGETHER instead of the trim
+  # being polished against every intermediate shape (quasi-monolithic).
+  # Truncated trims are kept, flagged trim_truncated, never sent to the
+  # direct-solve fallback. Validated 2026-09-10: identical physics, chain
+  # wall 355 -> 311 s on the depower A/B; 20 measured WORSE than 8 -- spend
+  # little per iteration. Comment out for the uncapped historical trim
+  # (standalone single-solve scripts want that; this cap is only sound
+  # inside the coupled loop's warm restarts).
+  max_nfev: !!int 8
+
   # Force residual scaling factor for optimization objective.
   # The course and normal forces are divided by this factor before optimization.
   # Smaller values (0.001) make forces more important in trim; larger values (0.1) de-weight them.
@@ -107,6 +119,16 @@ aerodynamic_bridle:
 
 ## structural pss
 structural_pss:
+  # Inner structural solver. 'nlp' = exact minimum-energy solve (CasADi/
+  # IPOPT, aerostructural/pss/structural_nlp.py): same springs, pulleys and
+  # tension-only physics as PSS, but converged to machine equilibrium each
+  # call instead of PSS's ~1 N kinetic-damping leftover -- which is what let
+  # the coupled loop close the 1e-4 relative gate and hold one aero branch
+  # through deep depower (2026-09-09 A/B: depower chain 558 -> 311 s with the
+  # trim cap below, steered chain 1.75x + converges u_s 0.20 where PSS
+  # grinds). 'pss' = the historical kinetic-damping solver, byte-identical
+  # legacy path; dt/dt_max/n_internal_time_steps below only apply to it.
+  solver: !!str 'nlp'
   dt: !!float 0.005 #crucial that this remains low
   dt_max: !!float 0.01
   n_internal_time_steps: !!int 100 #was 20, then 200
