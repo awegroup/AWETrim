@@ -42,6 +42,19 @@ src/awetrim/
                          builds fully numeric models; wind_profiles.py maps the
                          co-sim InflowConditions struct (laws 0-6, CUSTOM_* fits)
                          onto create_wind_model kwargs.
+  structural/        🟡  STANDALONE minimum-energy structural model (new, not
+                         yet coupled): cables, frictionless pulleys,
+                         geometrically exact Timoshenko beams and wrinkling
+                         (tension-field) membrane fabric, assembled into one
+                         total potential energy and solved with IPOPT.
+                         Imports ONLY numpy + casadi -- no PSS, no VSM, no
+                         YAML schema -- and nothing in aerostructural/ imports
+                         it. Element kernels are compiled once per element
+                         TYPE and evaluated with casadi Function.map, so the
+                         graph does not grow with the mesh (9k DOF: 3 s build,
+                         6 s solve, 9 IPOPT iterations).
+                         Demos: scripts/structural/run_demo_cases.py
+                         -- see src/awetrim/structural/AGENTS.md
   server/            ✅  REST API for reelout trajectory optimization
                          (FastAPI, optional [server] extra; endpoints
                          /init /status /step /trajectory /reset; one
@@ -87,6 +100,20 @@ src/awetrim/
 ROM is **script-based**, not a `src/` module: see `scripts/reduced-order-model/`
 (`optimization/`, `validation/`), configured via each kite's `rom_config.yaml`.
 
+**Three structural paths now exist** and their force laws must stay
+consistent: `aerostructural/pss/` (springs; kinetic damping or the
+min-energy `structural_nlp.py`), `aerostructural/fem/` (`kite_fem`/`pyfe3d`,
+Newton-Raphson, inflatable Timoshenko beams) and the standalone
+`structural/` above. The spring/pulley force law agrees across all three;
+the pulley rest-length convention does NOT (the PSS reader splits `l0`
+across the two arms, `kite_fem` stores the total on each). `kite_fem`'s
+inflatable-beam `EI`/`GJ` are empirical *secant* stiffnesses that depend on
+the current deflection, twist and inflation pressure -- a force law, not a
+potential. They have been **integrated** into a strain energy in
+`structural/elements/inflatable.py` (`InflatableTubeLaw`), which is the correct
+way to reuse them; never substitute a state-dependent `EI` into `1/2 EI k^2`.
+See `src/awetrim/structural/AGENTS.md`.
+
 **FEM known limitation:** the aero→struc coupling currently spreads each spanwise
 VSM force over 10 chordwise nodes using weights from a single-AoA Cp file
 (`cp_AOA_8.dat`), with a uniform fallback — see
@@ -95,7 +122,7 @@ distribution (from CFD or another source) is still needed, and the FEM structura
 solver itself needs further work.
 
 **Read the module's `AGENTS.md` before modifying `aerodynamics/`, `aerostructural/`,
-or `plotting/`.
+`structural/`, or `plotting/`.
 When you add, remove, or rename public functions, dataclasses, config keys, or file layout in any module that has an `AGENTS.md`, update that file in the same commit.**
 
 ## Physics references
@@ -192,7 +219,7 @@ Notes
 
 Each kite under `data/<kite_name>/` should include at minimum the following files and folders so scripts and tools can locate inputs automatically:
 
-- `system.yaml` — hardware and system-level configuration (kite mass, KCU, tether properties, winch, mass/inertia). This is the primary source for `SystemModel` properties. **KCU mass is the single source of truth here** (`components.kite.control_system.structure.mass`); both the structural KCU node mass and the QSM `mass_kcu` are resolved from it.
+- `system.yaml` — hardware and system-level configuration (kite mass, KCU, tether properties, winch, mass/inertia). This is the primary source for `SystemModel` properties. **KCU mass is the single source of truth here** (`components.kite.control_system.structure.mass`); both the structural KCU node mass and the QSM `mass_kcu` are resolved from it. **The winch drive envelope is the single source of truth here too** (`components.ground_station.drums[0]`: `min_tether_speed` / `max_tether_speed` / `max_winch_acceleration` / `max_tether_force`); `factory._extract_hardware_limits` maps it onto the optimizer's `speed_radial` bounds and the `winch_acceleration` slew limit, so cycle configs must not restate it.
 - `struc_geometry.yaml` — structural geometry describing wing nodes, LE/TE positions, bridle nodes and connectivity, spring/rest-length definitions, pulley info. A `bridle_lines` row may carry an optional `w` (flat-tape width [m]); `d` then stays the AREA-equivalent diameter used for mass and EA, while the drag uses the projected width (`awetrim.aerodynamics.line_drag`). Does **not** carry `kcu_mass` (deprecated; ignored with a warning if present — set it in `system.yaml`).
 - `aero_geometry.yaml` — VSM aerodynamic geometry describing wing sections, paneling, and references to airfoil polars; may reference a subfolder with airfoil `.dat` or polar CSVs.
 - `as_config.yaml` (or `aerostructural_configs/config.yaml`) — aerostructural solver settings (time-step, tolerances, actuation options, initialisation flags).
