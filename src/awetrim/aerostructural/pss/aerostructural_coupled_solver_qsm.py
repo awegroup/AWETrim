@@ -973,8 +973,15 @@ def main(
             ############## INTERNAL FORCE CALCULATION ##############
             ########################################################
             begin_time_f_int = time.time()
-            # Apply adaptive dt based on convergence progress
-            if len(f_residual_list) > 0:
+            # Apply adaptive dt based on convergence progress.
+            #
+            # PSS ONLY: dt is the kinetic-damping solver's continuation
+            # parameter. The energy-minimisation solver has no time step --
+            # stiffness is just a coefficient of its objective -- so with
+            # `solver: nlp` this computed a value nothing reads and printed a
+            # per-iteration "Adaptive dt" line that suggested a time step was
+            # in play when none was (2026-09-10).
+            if structural_solver_name == "pss" and len(f_residual_list) > 0:
                 adaptive_dt = compute_adaptive_dt(
                     f_residual_list,
                     dt_initial,
