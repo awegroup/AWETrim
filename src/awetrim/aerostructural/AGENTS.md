@@ -284,6 +284,22 @@ constrained optimum, not an equilibrium; before this a handover-seeded
 deep-depower point burned its whole iteration budget pinned at 40 m/s
 before the sweep's cold retry.
 
+**Trim-state history / unloaded-branch reference (2026-09-10).** The coupled
+solver's meta now carries `opt_x_history` — the trim state
+`[kite_speed, roll, pitch, yaw, course_rate]` at every coupled iteration,
+shape (n, 5) — and `course_rate_max_settled`, the largest |course rate| on
+iterations where the steering actuation was fully applied and settled.
+Because the in-loop actuation ramp makes every cold solve its own
+continuation in tape length, a final |opt_x[4]| far below
+`course_rate_max_settled` marks a solve that fell off the LOADED steering
+branch onto the second, UNLOADED attached equilibrium of the tension-only
+bridle (steering input absorbed by slack lines — measured 2026-09-10 on the
+2019 reel-out steering chains: roll 11.6 -> 5.2 deg, chi_dot -17..-54% at
+MORE steering, tips unfolded, zero stalled panels, so the attached/fold
+checks alone cannot catch it). Sweep callers use this as the donor-free
+branch check; chained rows compare against the donor row's course rate
+instead.
+
 **Steering settle (2026-09-01).** `steering_settle_iterations_after_update`
 (default 6) blocks every convergence exit for that many coupled iterations
 after a steering tape update, the way `depower_settle_iterations_after_update`

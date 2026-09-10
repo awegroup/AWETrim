@@ -587,6 +587,11 @@ def main(
     qs_opt_prev_rounded = None
     qs_stag_counter = 0
     qs_state_should_break = False
+    #: Per-iteration trim state [kite_speed, roll, pitch, yaw, course_rate]
+    #: and the largest |course_rate| seen on iterations where the steering
+    #: actuation was fully applied and settled -- see the in-loop comment.
+    opt_x_history: list = []
+    course_rate_max_settled = 0.0
     depower_settle_counter = 0
     steering_settle_counter = 0
     logging.info(
@@ -1140,6 +1145,27 @@ def main(
             print(f"  Pitch: {results_aero['opt_x'][2]:.2f} deg")
             print(f"  Yaw: {results_aero['opt_x'][3]:.2f} deg")
             print(f"  Course rate: {results_aero['opt_x'][4]:.2f} rad/s")
+
+            # Trim-state history across the coupled iterations, and the
+            # largest settled course rate. The actuation ramp makes every
+            # cold solve its own continuation in the tape length, so a final
+            # |course rate| far below the maximum it reached AFTER the
+            # steering was fully applied marks a solve that fell off the
+            # loaded steering branch onto the unloaded (slack-path) attached
+            # equilibrium -- a donor-free branch check for sweep callers.
+            opt_x_history.append(
+                np.asarray(results_aero.get("opt_x", np.full(5, np.nan)),
+                           dtype=float).ravel()
+            )
+            if (
+                is_steering_finalized
+                and steering_settle_counter == 0
+                and opt_x_history[-1].size == 5
+                and np.isfinite(opt_x_history[-1][4])
+            ):
+                course_rate_max_settled = max(
+                    course_rate_max_settled, abs(float(opt_x_history[-1][4]))
+                )
 
             # Runaway stop (see qs_speed_bound_patience above).
             if qs_speed_bound_patience > 0:
@@ -1984,6 +2010,15 @@ def main(
         ),
         "qs_success": bool(results_aero.get("success", False)),
         "opt_x": opt_x,
+        # Trim state per coupled iteration, (n, 5). With the largest settled
+        # |course_rate| below it gives sweep callers a donor-free branch
+        # check: a final |opt_x[4]| far under course_rate_max_settled means
+        # the solve fell off the loaded steering branch during its own
+        # actuation ramp (unloaded slack-path attached equilibrium).
+        "opt_x_history": (
+            np.vstack(opt_x_history) if opt_x_history else np.zeros((0, 5))
+        ),
+        "course_rate_max_settled": float(course_rate_max_settled),
         # The gravity flag this solve actually ran with: it gates BOTH the
         # structural weight and the internal trim, so callers audit it rather
         # than trust whatever the kite's as_config.yaml said at launch time.
