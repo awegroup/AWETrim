@@ -1,0 +1,1228 @@
+% Copyright (c) 2023-2026 Oriol Cayon, Delft University of Technology
+% SPDX-License-Identifier: Apache-2.0
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage[hidelinks]{hyperref}
+
+\graphicspath{{../../results/structural/demo/}{../../results/structural/validation/}}
+
+\definecolor{accent}{HTML}{D55E00}
+\definecolor{muted}{HTML}{555555}
+
+\captionsetup{font=small,labelfont=bf}
+\setlist{itemsep=2pt,parsep=0pt,topsep=3pt}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textsc{Billow}}
+\fancyhead[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+\newcommand{\code}[1]{\texttt{\small #1}}
+
+\title{%
+  \vspace{-1.5cm}
+  {\Huge\textbf{Billow}}\\[6pt]
+  {\large A minimum-energy structural model for soft kites}\\[10pt]
+  {\normalsize Timoshenko beams, inflatable tubes, wrinkling membranes,\\
+   cables and pulleys --- one potential energy, one NLP}
+}
+\author{Oriol Cayon \\ \small Delft University of Technology}
+\date{\today}
+
+\begin{document}
+\maketitle
+\thispagestyle{fancy}
+
+\begin{abstract}
+\noindent
+Billow is a standalone structural library for soft-wing airborne wind energy
+systems. It assembles cables, frictionless pulleys, geometrically exact
+Timoshenko beams, inflatable tubes and wrinkling membrane fabric into a single
+total potential energy, and finds static equilibrium by minimising it with
+IPOPT. Stationarity of the energy \emph{is} the equilibrium equation, so a
+converged solve satisfies the nodal force balance to solver tolerance rather
+than to whatever residual a relaxation scheme happens to leave behind.
+
+This document specifies the formulation, the element library, the validation
+against benchmarks external to the code, a set of demonstration cases, and a
+measured comparison against \code{kite\_fem}, the existing FEM path. Headline
+results: exact-to-$10^{-4}$ agreement with the Euler elastica, second-order
+convergence to the exact roll-up circle, agreement with published values for
+the Bathe--Bolourchi $45^\circ$ bend, reproduction of the ASKITE inflatable-tube
+fits to $0.06\%$ in bending, and a full-kite structural solve in $5.9$\,s cold
+and $0.58$\,s warm at 1893 degrees of freedom.
+
+Billow currently lives as \code{awetrim.structural} and imports only NumPy and
+CasADi. It is intended to become its own repository.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%======================================================================
+\section{Scope and design intent}
+
+\subsection{What Billow is}
+
+A static structural solver for the kinds of structures soft kites are made of:
+thin lines that cannot push, ropes that run over sheaves, inflated tubes that
+bend until they collapse, and fabric that carries tension but wrinkles instead
+of carrying compression. Given a geometry, material properties and a set of
+nodal loads, it returns the deformed shape and the internal force distribution.
+
+\subsection{What Billow is not}
+
+It contains \textbf{no aerodynamics}. There are no polars, no airfoils, no
+lift model. Loads arrive as nodal forces from outside. Everything in this
+document that involves pressure uses a prescribed uniform differential
+pressure, not an aerodynamic solution. The same is true of \code{kite\_fem},
+which is also purely structural.
+
+It is also not a dynamics code: there are no inertial terms and no time
+integration. Equilibrium is quasi-static.
+
+\subsection{Isolation}
+
+Billow depends only on NumPy and CasADi. It does not import the particle-system
+solver (PSS), the vortex-step method (VSM), the aerostructural coupling loop or
+any kite YAML schema, and nothing in those modules imports it. This is
+deliberate and is the first invariant to preserve: it allows the element physics
+to be validated against closed-form solutions before any of it touches a coupled
+run. A coupling adapter, when written, belongs on the aerostructural side, not
+inside Billow.
+
+\subsection{Why a new model}
+
+The existing minimum-energy solver in the AWETrim tree
+(\code{aerostructural/pss/structural\_nlp.py}) already solves the current bridle
+well. It does not extend, for two independent reasons.
+
+\begin{description}[style=unboxed,leftmargin=1.2em]
+\item[Physics.] Its element vocabulary is axial springs. Battens and
+leading-edge tubes need bending and torsion; the canopy needs a membrane that
+cannot carry compression.
+\item[Scale.] It builds the objective with a Python loop over elements in
+CasADi \code{MX}, so the expression graph grows with the element count. At tens
+of springs this is free. At tens of thousands of fabric triangles, graph
+construction --- and especially \code{gradient} and \code{hessian} over it ---
+becomes the bottleneck long before the numerical solver does.
+\end{description}
+
+Billow keeps the formulation (still an NLP, still IPOPT, still minimum potential
+energy) and replaces the assembly.
+
+%======================================================================
+\section{Formulation}
+
+\subsection{Total potential energy}
+
+The unknown configuration $X$ minimises
+\begin{equation}
+  \Pi(X) \;=\; \sum_{\text{sets}} U_{\text{set}}(X)
+  \;-\; \mathbf{f}_{\text{ext}}\!\cdot\!\mathbf{x}
+  \;-\; \mathbf{m}_{\text{ext}}\!\cdot\!\boldsymbol{\theta}(\boldsymbol{\psi})
+  \;+\; \tfrac{1}{2}k_a\lVert \mathbf{x}-\mathbf{x}_{\text{seed}}\rVert^2 ,
+  \label{eq:pi}
+\end{equation}
+subject only to bounds on pinned degrees of freedom. The last term is a weak
+anchor discussed in \S\ref{sec:anchor}.
+
+Because $\partial\Pi/\partial X = 0$ is the equilibrium equation, a converged
+solve satisfies $\mathbf{f}_{\text{int}} + \mathbf{f}_{\text{ext}} = 0$ at every
+free node to solver tolerance. There is no separate residual criterion to tune.
+
+\subsection{Degrees of freedom}
+
+\begin{equation}
+  X = \big[\; \underbrace{\mathbf{x}_0 \ldots \mathbf{x}_{n-1}}_{\text{3 per node}}
+  \;\big|\;
+  \underbrace{\boldsymbol{\psi}_0 \ldots \boldsymbol{\psi}_{r-1}}_{\text{3 per rotational node}} \;\big]
+\end{equation}
+
+Three translations for \emph{every} node, and three incremental rotations only
+for the $r$ nodes that some beam element needs a material frame for. Cable,
+pulley and membrane nodes stay at three degrees of freedom. A canopy of 10\,000
+fabric nodes therefore costs 30\,000 unknowns, not 60\,000, regardless of what
+beams are attached elsewhere. For contrast, \code{kite\_fem} allocates six
+degrees of freedom per node everywhere and masks the unused ones.
+
+\subsection{Finite rotations: the Cayley parameterisation}
+
+Rotations use the \textbf{Rodrigues (Cayley) vector}
+$\boldsymbol{\psi} = 2\tan(\phi/2)\,\mathbf{n}$ rather than the exponential
+map's rotation vector $\phi\,\mathbf{n}$. With $S = \operatorname{skew}(\boldsymbol{\psi})$,
+\begin{align}
+  R(\boldsymbol{\psi}) &= I + \frac{4}{4+\boldsymbol{\psi}\cdot\boldsymbol{\psi}}
+    \left(S + \tfrac{1}{2}S^2\right), \label{eq:cayley}\\
+  \boldsymbol{\psi}(R) &= \frac{2\,\operatorname{axial}(R-R^{\mathsf T})}{1+\operatorname{tr}R},
+    \label{eq:cayleyinv}\\
+  \boldsymbol{\psi}_{1/2} &= \frac{\boldsymbol{\psi}}
+    {1+\sqrt{1+\tfrac{1}{4}\boldsymbol{\psi}\cdot\boldsymbol{\psi}}},
+    \qquad R(\boldsymbol{\psi}_{1/2})^2 = R(\boldsymbol{\psi}).
+    \label{eq:cayleyhalf}
+\end{align}
+
+The motivation is entirely numerical. Every map above is a \emph{rational}
+function of its argument. There is no $\sin\phi/\phi$ removable singularity, so
+no \code{if\_else} branch is needed at $\phi=0$, so the Hessian that IPOPT
+differentiates is continuous everywhere in $|\phi| < \pi$. The half-angle
+identity \eqref{eq:cayleyhalf} is worth noting: the naive form
+$\tan(\phi/4) = (\sqrt{1+t^2}-1)/t$ has a removable $0/0$ at $t=0$;
+rationalising it removes the singularity exactly.
+
+\subsection{Incremental rotations and frame updates}
+
+$\boldsymbol{\psi}_j$ is measured against a stored reference frame, so the
+configuration is $R_j = R(\boldsymbol{\psi}_j)\,R_{\text{ref},j}$ and every
+solve starts from $\boldsymbol{\psi} = 0$. After each solve the increment is
+absorbed, $R_{\text{ref}} \leftarrow R(\boldsymbol{\psi}^\star) R_{\text{ref}}$,
+and re-projected onto $SO(3)$ so repeated absorption cannot drift.
+
+The Cayley chart is singular at $\phi = \pi$. Incremental rotations mean a node
+can turn arbitrarily far \emph{across a load ramp} while each individual solve
+stays well inside the chart. This is why applied moments require load stepping
+(\S\ref{sec:moments}); nodal forces do not.
+
+\subsection{Applied moments are not conjugate to \texorpdfstring{$\boldsymbol{\psi}$}{psi}}
+\label{sec:moments}
+
+A moment does work against the \emph{exponential-map} rotation vector, not
+against the Rodrigues vector the degrees of freedom carry. The external work
+term therefore converts,
+\begin{equation}
+  \boldsymbol{\theta}(\boldsymbol{\psi}) = \boldsymbol{\psi}\,
+  \frac{2\arctan\!\left(\lVert\boldsymbol{\psi}\rVert/2\right)}{\lVert\boldsymbol{\psi}\rVert},
+\end{equation}
+which tends to $\boldsymbol{\psi}$ as $\lVert\boldsymbol{\psi}\rVert \to 0$.
+
+This is not cosmetic. Using $-\mathbf{m}\cdot\boldsymbol{\psi}$ directly is
+correct only to first order, and the roll-up benchmark
+(\S\ref{sec:rollup}) exposed it as a \emph{load-path dependence}: the same
+static problem gave $8.1\times10^{-3}L$ with four load steps and
+$2.1\times10^{-1}L$ with eight. Statics must be path independent. With the
+conversion in place the answer is identical to five digits across 4, 8 and 16
+steps, and this is guarded by a regression test.
+
+Two limitations remain, both fundamental rather than implementation artefacts:
+
+\begin{itemize}
+\item Applied moments need load stepping, because the chart is singular at
+$\phi = \pi$. Four steps suffice for a full $2\pi$ roll-up.
+\item A constant (``dead'') moment in three dimensions is \textbf{genuinely
+non-conservative} and therefore has no potential at all. Energy minimisation can
+represent only the fixed-axis case.
+\end{itemize}
+
+Nodal \emph{forces} --- which is what an aerodynamic coupling applies --- carry
+none of these caveats and are exact in a single solve.
+
+\subsection{Assembly: one mapped kernel per element type}
+\label{sec:assembly}
+
+This is the single design decision that makes the model scale. Each element
+kernel is compiled once to a small CasADi \code{SX} function over \emph{one}
+element and evaluated across the whole set with \code{Function.map} on a
+gathered index matrix:
+\[
+  Q = \operatorname{reshape}\big(X[\,\mathrm{idx}\,],\; n_{\text{dof/el}},\; n_{\text{el}}\big),
+  \qquad
+  U_{\text{set}} = \textstyle\sum_e \mathcal{U}(Q_{:,e}, F_{:,e}, P_{:,e}).
+\]
+The objective graph therefore holds one node per element \emph{type}, not per
+element. Graph construction, gradient and Hessian generation cost
+$O(\text{number of element types})$, not $O(\text{number of elements})$.
+
+The Hessian retains the sparsity of the element connectivity graph, so IPOPT's
+sparse linear algebra sees a mesh-stencil matrix and scales accordingly. The
+measured consequence is Table~\ref{tab:scaling}.
+
+\begin{table}[H]
+\centering
+\caption{Flat clamped canopy, uniform out-of-plane load. Iteration count is
+essentially mesh independent; cost sits in the sparse linear algebra.
+Source: \code{run\_demo\_cases.py --case scaling}.}
+\label{tab:scaling}
+\begin{tabular}{rrrrr}
+\toprule
+Triangles & DOF & Build (s) & Solve (s) & IPOPT iterations \\
+\midrule
+128  & 243  & 0.07 & 0.05 & 6 \\
+1800 & 2883 & 0.67 & 1.25 & 9 \\
+5832 & 9075 & 3.0  & 6.1  & 9 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Everything numeric is a parameter}
+
+Reference frames, every element parameter column (rest lengths, stiffnesses,
+section properties), the external loads and the anchor are NLP
+\emph{parameters}, not baked constants. One solver build therefore serves an
+entire sweep: tape actuation, a stiffness ramp or a load sweep change parameter
+values, never topology.
+
+\subsection{The anchor term}
+\label{sec:anchor}
+
+The final term of \eqref{eq:pi} is a weak spring to the seed positions, present
+only to pin a node that no taut element reaches and whose equilibrium position
+would otherwise be indeterminate. It biases the reported force balance by at
+most $k_a\lVert\mathbf{x}-\mathbf{x}_{\text{seed}}\rVert$; the default
+$k_a = 10^{-6}$\,N/m puts that far below any coupling tolerance.
+
+\subsection{Convergence criterion}
+
+\code{converged} is the \emph{physical} verdict: the solve is accepted when the
+free nodes are in force balance to
+\[
+  \max\big(\varepsilon_{\text{abs}},\; \varepsilon_{\text{rel}}\max_i\lVert \mathbf{f}_{\text{ext},i}\rVert\big),
+  \qquad \varepsilon_{\text{abs}} = 10^{-6}\,\text{N},\;\; \varepsilon_{\text{rel}} = 10^{-6},
+\]
+whether or not IPOPT liked its own termination test. The relative term matters:
+an absolute newton means very different things on a 1\,N bridle line and a
+600\,N benchmark beam. IPOPT's own verdict is preserved alongside as
+\code{ipopt\_success} and \code{status} --- on stiff, nearly quadratic
+structures it routinely reports \code{Search\_Direction\_Becomes\_Too\_Small} at
+an answer already exact to machine precision.
+
+%======================================================================
+\section{Element library}
+
+Every kernel returns the strain energy of one element. Kernels are pure: no
+loops over elements, no global indexing, no closing over per-element data.
+Everything element-specific arrives through the parameter row.
+
+\subsection{Cable}
+
+A linear axial spring with stretch $s = \ell - \ell_0$:
+\begin{equation}
+  U = \tfrac{1}{2}k\,\langle s\rangle^2,
+  \qquad \langle s\rangle = \max(0, s)\ \text{when tension-only}.
+\end{equation}
+The tension-only cut is $C^1$ but not $C^2$: the stiffness jumps across the
+taut/slack boundary. An optional \code{slack\_smoothing} width rounds the corner
+to recover a continuous Hessian at the cost of a small spurious compressive
+stiffness.
+
+\subsection{Pulley}
+
+A rope running over a frictionless sheave at the middle node, with a single
+shared stretch across both arms:
+\begin{equation}
+  U = \tfrac{1}{2}k\,\big\langle \lVert\mathbf{x}_2-\mathbf{x}_1\rVert
+    + \lVert\mathbf{x}_3-\mathbf{x}_2\rVert - \ell_0 \big\rangle^2 .
+\end{equation}
+One shared stretch is exactly the statement that rope tension is equal either
+side of the sheave, and it lets the pulley node find its own position along the
+rope.
+
+\paragraph{Convention warning.} \code{rest\_length} here is the \textbf{whole
+rope}, both arms. This is not universal: the PSS geometry reader splits $\ell_0$
+across the two arms, while \code{kite\_fem} stores the total on each arm. Any
+geometry adapter must state which convention it is reading.
+
+\subsection{Geometrically exact Timoshenko beam}
+
+Two-node Simo--Reissner beam with one-point (mid-element) integration. Each node
+carries a position and an orthonormal material frame $R = [\mathbf{d}_1\,
+\mathbf{d}_2\, \mathbf{d}_3]$: twelve degrees of freedom per element.
+
+With $\boldsymbol{\psi}$ the relative rotation between the two node frames from
+\eqref{eq:cayleyinv}, and $R_m$ the exact half-way frame from
+\eqref{eq:cayleyhalf}:
+\begin{align}
+  \boldsymbol{\Gamma} &= R_m^{\mathsf T}(\mathbf{x}_2-\mathbf{x}_1)/L_0
+    && \text{axial stretch and two transverse shears},\\
+  \boldsymbol{\Omega} &= R_m^{\mathsf T}\boldsymbol{\psi}/L_0
+    && \text{torsion and two bending curvatures},\\
+  U &= \tfrac{L_0}{2}\Big[
+     \Delta\boldsymbol{\Gamma}^{\mathsf T}\operatorname{diag}(EA, GA_2, GA_3)\Delta\boldsymbol{\Gamma}
+   + \Delta\boldsymbol{\Omega}^{\mathsf T}\operatorname{diag}(GJ, EI_2, EI_3)\Delta\boldsymbol{\Omega}
+    \Big],
+\end{align}
+with $\Delta(\cdot) = (\cdot) - (\cdot)_0$ measured against the reference
+configuration, so an initially curved or pre-twisted member is stress-free as
+built.
+
+Three properties make this element usable inside an NLP objective:
+
+\begin{description}[style=unboxed,leftmargin=1.2em]
+\item[Objective.] Under a superposed rigid rotation $Q$, both $\boldsymbol{\psi}$
+and $\mathbf{x}_2-\mathbf{x}_1$ map to $Q(\cdot)$ while $R_m \to QR_m$, so
+$\boldsymbol{\Gamma}$ and $\boldsymbol{\Omega}$ are invariant and rigid-body
+motion costs exactly zero energy. A slack member that swings freely is not
+spuriously stiffened.
+\item[Shear-locking free.] The single midpoint sample is the standard reduced
+integration cure. Kite battens and leading-edge tubes are slender, so this is
+not optional; \S\ref{sec:locking} verifies it at slenderness 800.
+\item[Branch-free.] Using the Cayley vector as the curvature measure makes the
+element strain $\boldsymbol{\Omega}_{\text{exact}} + O(\phi^3)$ per element ---
+the same order as the one-point quadrature error, and vanishing under mesh
+refinement. This is a deliberate trade: the exponential map's $\sin\phi/\phi$
+would need a branch at $\phi=0$.
+\end{description}
+
+\subsection{Inflatable tube}
+\label{sec:inflatable}
+
+An inflated leading-edge tube is not linear-elastic. Its bending stiffness falls
+away as the compressed side wrinkles, until the section carries a limiting
+moment and then collapses. \code{kite\_fem} captures this with empirical fits
+(coefficients $C_1 \ldots C_{19}$, from the ASKITE work) applied as \emph{secant}
+stiffnesses: $EI$ and $GJ$ are recomputed each iteration from the current
+deflection and twist.
+
+That is consistent inside a Newton residual, but it is \textbf{not a potential}.
+Substituting a state-dependent $EI(\kappa)$ into $\tfrac{1}{2}EI\kappa^2$
+silently drops the $\mathrm{d}EI/\mathrm{d}\kappa$ terms, so the gradient would
+no longer be the internal moment and a minimum-energy solve would converge to
+the wrong equilibrium. The fits must be \emph{integrated}, not substituted.
+
+\paragraph{From tip-load fit to moment--curvature law.}
+The bending fit is published as tip load against normalised tip deflection
+$v = \delta/L$ of a \textbf{one-metre} cantilever:
+$P(v) = D\big(1-e^{-(N/D)v}\big)$. For a linear cantilever
+$\delta = PL^3/3EI$ and $\kappa_{\text{root}} = PL/EI$, so $\kappa = 3v/L$, and
+the root moment is $M = PL$. At the calibration length $L = 1$\,m this converts
+the fit into an intrinsic constitutive law:
+\begin{align}
+  M(\kappa) &= M_{\max}\left(1 - e^{-EI_0\kappa/M_{\max}}\right),
+   \qquad EI_0 = N/3, \quad M_{\max} = D, \label{eq:tubemoment}\\
+  W_b(\kappa) &= M_{\max}\left[\,|\kappa| - k_0\left(1 - e^{-|\kappa|/k_0}\right)\right],
+   \qquad k_0 = M_{\max}/EI_0 . \label{eq:tubeenergy}
+\end{align}
+$W_b$ is quadratic ($\tfrac{1}{2}EI_0\kappa^2$) near zero, so it is smooth there
+despite the $|\kappa|$, and saturates at $M_{\max}$.
+
+Recasting this way also removes a length inconsistency: \code{kite\_fem} infers
+$EI = P/(3v)$, which equals the true $EI$ only for a one-metre element, because
+$v$ is already normalised by element length. A moment--curvature law is
+length-independent by construction.
+
+\paragraph{Torsion} is already intrinsic (twist per unit length) and integrates
+directly:
+\begin{equation}
+  T(\omega) = c_1\arctan(c_2\omega),
+  \qquad
+  W_t(\omega) = c_1\!\left[\omega\arctan(c_2\omega)
+    - \frac{\ln\!\left(1+c_2^2\omega^2\right)}{2c_2}\right],
+\end{equation}
+with $GJ_0 = c_1c_2$ and a limiting torque $c_1\pi/2$.
+
+Biaxial bending uses the resultant curvature $\sqrt{\Omega_2^2+\Omega_3^2}$, the
+correct isotropic extension for an axisymmetric tube. Axial and shear stiffness
+are \emph{not} covered by the fits and stay linear; supply them from the tube
+geometry.
+
+\begin{table}[H]
+\centering
+\caption{Derived tube properties from the ASKITE fits.
+Higher pressure stiffens and strengthens; the thinner tube collapses
+\emph{before} its moment saturates ($\kappa_{\text{collapse}} < k_0$).}
+\label{tab:tube}
+\begin{tabular}{llrrrrrr}
+\toprule
+$d$ (m) & $p$ (bar) & $EI_0$ (N\,m$^2$) & $M_{\max}$ (N\,m) & $k_0$ (m$^{-1}$)
+ & $\kappa_{\text{collapse}}$ (m$^{-1}$) & $GJ_0$ (N\,m$^2$) & $T_{\max}$ (N\,m)\\
+\midrule
+0.16 & 0.3 & 288.2 & 58.10 & 0.2016 & 0.2751 & 91.3 & 124.9 \\
+0.16 & 0.5 & 362.0 & 98.78 & 0.2728 & 0.2973 & 86.5 & 174.7 \\
+0.12 & 0.3 & 126.8 & 34.16 & 0.2694 & 0.2217 & 33.2 & 117.1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Collapse is reported, not enforced.}
+A genuinely dropping post-collapse moment would make the energy \emph{decrease}
+with curvature --- an unbounded mechanism that minimisation would simply run
+away from. The law therefore stops at saturation, and
+\code{inflatable\_beam\_state} returns a \code{utilisation} ratio
+$\kappa/\kappa_{\text{collapse}}$ and a \code{collapsed} flag, so leaving the
+calibrated range is visible rather than silent.
+
+\subsection{Wrinkling membrane}
+\label{sec:membrane}
+
+Constant-strain triangle with a Saint-Venant--Kirchhoff plane-stress law, in the
+finite-strain (Green--Lagrange) measure so a canopy panel can rotate and billow
+arbitrarily without spurious stiffening. Translation-only: a membrane carries no
+bending.
+
+The reference triangle is flattened once into its own in-plane basis and stored
+as the inverse edge matrix $D_0^{-1}$, so the kernel only ever sees a $2\times2$
+map:
+\begin{equation}
+  F = [\,\mathbf{a}\;\mathbf{b}\,]\,D_0^{-1}, \quad
+  C = F^{\mathsf T}F, \quad
+  E = \tfrac{1}{2}(C-I),
+\end{equation}
+\begin{equation}
+  W_{\text{taut}} = \frac{E_{\text{mod}}}{2(1-\nu^2)}
+   \left[(\operatorname{tr}E)^2 - 2(1-\nu)\left(E_{11}E_{22}-E_{12}^2\right)\right].
+\end{equation}
+
+\paragraph{Wrinkling.} A membrane cannot carry compression. Left alone, the SVK
+law lets the canopy mesh buckle into whatever compressive mode the
+discretisation offers, and the result depends on mesh density rather than on
+physics. The relaxed (tension-field) energy in principal Green strains
+$e_1 \ge e_2$ is the classical Pipkin form:
+\begin{equation}
+  W_{\text{relaxed}} =
+  \begin{cases}
+    W_{\text{taut}}, & e_2 + \nu e_1 \ge 0 \quad\text{(taut)},\\[2pt]
+    \tfrac{1}{2}E_{\text{mod}}\,e_1^2, & e_1 > 0 \ \text{otherwise}\quad\text{(wrinkled)},\\[2pt]
+    0, & e_1 \le 0 \quad\text{(slack)}.
+  \end{cases}
+\end{equation}
+
+This is exactly what a minimum-energy formulation wants: the relaxed functional
+is the quasiconvex envelope, so the minimiser lands on the wrinkled state
+directly instead of chasing the near-singular tangent a residual-form Newton
+solve has to fight through. \textbf{Solving fabric by energy minimisation is not
+a workaround --- it is the better-posed formulation.}
+
+\paragraph{Slack fabric needs a residual stiffness.} A fully slack region stores
+\emph{exactly} zero energy, so its Hessian block is exactly zero and the Newton
+step is undefined; IPOPT reports \code{Error\_In\_Step\_Computation} on a panel
+clamped into a frame smaller than itself. Blending a small fraction of the
+unrelaxed law back in,
+\begin{equation}
+  W = (1-r)\,W_{\text{relaxed}} + r\,W_{\text{taut}}, \qquad r = 10^{-4},
+\end{equation}
+leaves the taut region untouched (there the two coincide) while giving slack
+fabric a definite tangent. It is also not a fiction: real fabric has some
+compressive and bending resistance. Do not set $r=0$ on a canopy that can go
+slack.
+
+%======================================================================
+\section{Validation}
+
+All references in this section come from \emph{outside} the code: an exact
+boundary-value solution, an exact circle, published tabulated values, or the
+independent fits themselves. Nothing here can drift with the implementation.
+
+Where \code{kite\_fem} appears it is driven with matched linear section
+properties and its inflatable constitutive update disabled, so the two share one
+material model. Section properties are deliberately slender: the classical
+references are inextensible and shear-rigid, so axial and shear flexibility are
+kept below $\sim0.1\%$ and cannot be mistaken for discretisation error.
+
+\subsection{Euler elastica}
+
+A tip-loaded cantilever at load parameter $\alpha = PL^2/EI$ up to 10. The
+reference is the exact elastica, obtained by solving
+$\theta'' = -\alpha\cos\theta$, $\theta(0)=0$, $\theta'(1)=0$ as a
+boundary-value problem to $10^{-10}$ with continuation in $\alpha$ --- no beam
+element is involved.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{elastica.png}
+\caption{Tip locus and error against the exact elastica, 40 elements.
+Billow tracks the exact curve across the whole range; \code{kite\_fem}
+departs progressively and its tip deflection saturates beyond $\alpha \approx 2$.}
+\label{fig:elastica}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Tip position error normalised by length, 40 elements.}
+\begin{tabular}{lrrrr}
+\toprule
+$\alpha$ & 0.5 & 2 & 6 & 10 \\
+\midrule
+Billow           & $9.0\times10^{-5}$ & $2.4\times10^{-4}$ & $6.5\times10^{-4}$ & $1.1\times10^{-3}$\\
+\code{kite\_fem} & $1.6\times10^{-2}$ & $1.8\times10^{-1}$ & $4.2\times10^{-1}$ & $4.9\times10^{-1}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Mesh refinement separates discretisation from formulation.}
+At $\alpha = 3$, refining from 10 to 160 elements:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrrrr}
+\toprule
+Elements & 10 & 20 & 40 & 80 & 160\\
+\midrule
+Billow           & $3.8\times10^{-3}$ & $7.0\times10^{-4}$ & $3.1\times10^{-4}$
+                 & $4.6\times10^{-4}$ & $5.0\times10^{-4}$\\
+\code{kite\_fem} & $2.908\times10^{-1}$ & $2.914\times10^{-1}$ & $2.916\times10^{-1}$
+                 & $2.917\times10^{-1}$ & $2.917\times10^{-1}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The \code{kite\_fem} error is \textbf{mesh independent}, which places it in the
+formulation rather than the discretisation. Its beam matches linear theory to
+$0.02\%$ below about one degree of tip rotation, so the property matching used
+here is correct; the error is purely rotation-driven. Envelope: below $1\%$ up
+to roughly $10^\circ$, about $15\%$ at $\alpha=1$, saturating beyond $\alpha=2$.
+It reports \code{converged=True} at those answers.
+
+\subsection{Roll-up under an end moment}
+\label{sec:rollup}
+
+A cantilever under $M = 2\pi EI/L$ must roll into an exact closed circle, so the
+reference requires no lookup at all.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{rollup.png}
+\caption{Roll-up at 30, 60 and 100\% of $2\pi EI/L$, and the distance from the
+exact circular arc. Billow converges at second order; \code{kite\_fem} moves
+away from the exact answer under refinement.}
+\label{fig:rollup}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Tip distance from the exact arc, normalised by length.}
+\begin{tabular}{lrrr}
+\toprule
+Elements & 10 & 20 & 40 \\
+\midrule
+Billow (4 load steps) & $1.13\times10^{-1}$ & $3.16\times10^{-2}$ & $8.14\times10^{-3}$\\
+\code{kite\_fem} (single shot) & $5.90\times10^{-2}$ & $1.71\times10^{-1}$ & $2.32\times10^{-1}$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Billow's error ratios are $3.6$ and $3.9$, i.e.\ second order. Extending to 80
+elements gives $2.05\times10^{-3}$, confirming the trend. This benchmark is what
+exposed the moment-conjugacy defect of \S\ref{sec:moments}.
+
+\subsection{Bathe--Bolourchi \texorpdfstring{$45^\circ$}{45-degree} bend}
+
+The standard three-dimensional finite-rotation benchmark: a $45^\circ$ circular
+arc of radius 100, square section, out-of-plane tip load $F = 600$. Published
+tip \emph{displacements} differ by about $1\%$ between authors, so the reference
+is a band.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{bend45.png}
+\caption{Tip displacement against published references, and convergence.}
+\label{fig:bend45}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Tip displacement, 32 elements. The arc here starts at the origin with
+its tangent along $+x$ and sweeps towards $+y$, which swaps the two in-plane
+components relative to the usual tabulation.}
+\begin{tabular}{lrrrr}
+\toprule
+& $u_x$ & $u_y$ & $u_z$ & $\lVert\mathbf{u}\rVert$\\
+\midrule
+Simo \& Vu-Quoc (1986) & $-23.48$ & $-13.50$ & $53.37$ & $59.85$\\
+Bathe \& Bolourchi (1979) & $-23.5$ & $-13.4$ & $53.4$ & $59.85$\\
+Crisfield (1990) & $-23.5$ & $-13.6$ & $53.4$ & $59.88$\\
+\midrule
+\textbf{Billow} & $\mathbf{-23.52}$ & $\mathbf{-13.60}$ & $\mathbf{53.44}$ & $\mathbf{59.95}$\\
+\code{kite\_fem} & $-37.74$ & $-22.14$ & $28.17$ & $52.04$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Billow sits within the spread between published references ($0.17\%$ on the
+magnitude). \code{kite\_fem} is $47\%$ low out of plane.
+
+\subsection{Inflatable tube law}
+
+The port of \S\ref{sec:inflatable} is verified with \textbf{pure end moments},
+where the exact solution is a constant-curvature arc at whatever curvature the
+fit prescribes. That check is exact at any deflection --- unlike the tip-load
+form the fit was published in, whose own inversion assumes linear cantilever
+theory and therefore cannot serve as a verification instrument.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{inflatable.png}
+\caption{ASKITE fits (lines) with Billow end-moment solves on top (markers).
+Hollow markers lie beyond the collapse curvature, where the fit is
+extrapolation: the solve is fine, the calibration is not.
+This figure completes \code{kite\_fem/examples/FEM\_beam\_verification.py},
+which plots the fitted curves but leaves the simulation loop as comments.}
+\label{fig:inflatable}
+\end{figure}
+
+Worst errors: $0.031\%$ (bending, 0.3\,bar), $0.057\%$ (bending, 0.5\,bar),
+$0.749\%$ and $1.491\%$ (torsion).
+
+\subsection{Beam convergence and shear locking}
+\label{sec:locking}
+
+Tip deflection of a slender cantilever must approach
+$PL^3/3EI + PL/\kappa GA$ at second order:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrrrrr}
+\toprule
+Elements & 2 & 4 & 10 & 20 & 40 & 80\\
+\midrule
+Error vs Timoshenko & $-6.25\%$ & $-1.56\%$ & $-0.250\%$ & $-0.063\%$
+ & $-0.016\%$ & $-0.004\%$\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The error falls by a factor of four per refinement. Locking is checked
+separately by holding the load and lengthening the beam through slenderness
+ratios of 50, 200 and 800: the tip deflection tracks beam theory to $0.2\%$
+throughout, where a locking element would stiffen towards zero.
+
+\subsection{Membrane}
+
+Checked against closed form rather than against another code:
+
+\begin{itemize}
+\item \textbf{Rigid-body motion} costs zero energy under arbitrary rotation and
+translation --- what the finite-strain measure buys over a small-strain one.
+\item \textbf{Equibiaxial stretch} matches the analytic SVK plane-stress energy
+to $10^{-9}$ relative.
+\item \textbf{Wrinkled branch} is exactly uniaxial: stretching along $x$ while
+squashing along $y$ gives $\tfrac{1}{2}E t A e_1^2$, and squashing further
+changes nothing.
+\item \textbf{Slack panel} stores exactly zero, where the unrelaxed law would
+store large energy.
+\item \textbf{Flat-plate inflation} converges under mesh refinement from a
+configuration with zero out-of-plane stiffness --- the singular start that a
+residual-form Newton method has nothing to invert at.
+\end{itemize}
+
+\subsection{Test suite}
+
+86 tests, all passing, organised one file per concern:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{ll}
+\toprule
+\code{test\_rotations.py} & Cayley round trips, half-angle identity\\
+\code{test\_cable.py} & Hooke parity with PSS, slack cut, pulley tension equalisation\\
+\code{test\_beam.py} & objectivity, $O(h^2)$ convergence, no locking, torsion vs $GJ$\\
+\code{test\_membrane.py} & analytic SVK, three wrinkling branches, inflation, scale\\
+\code{test\_inflatable.py} & energy integrates the fitted moment; end-moment solves\\
+\code{test\_benchmarks.py} & roll-up vs exact circle, load-step independence, bend45\\
+\code{test\_energy.py} & mapped assembly vs a naive per-element sum; DOF layout\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The most important of these is in \code{test\_energy.py}: the total energy
+computed through the gather-and-map machinery is compared against the same
+energy assembled one element at a time in plain Python, on a deliberately
+irregular model containing every element type with a beam running over a
+scattered, out-of-order subset of the node numbering. That machinery is easy to
+get subtly wrong --- a column-major reshape, a rotational slot off by one ---
+and wrong in a way that still converges to a plausible-looking shape.
+
+%======================================================================
+\section{Demonstration cases}
+
+\subsection{Wrinkling: fabric in a frame smaller than itself}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{wrinkling.png}
+\caption{A panel clamped into a frame 6\% smaller than itself, then pushed out
+of plane. The relaxed law converges in 31 iterations to a smooth billow; the
+unrelaxed one takes 211 and buckles into mesh-scale crumple at less than
+two-thirds the deflection.}
+\label{fig:wrinkling}
+\end{figure}
+
+This is the clearest illustration of why the relaxed energy is not optional.
+The unrelaxed panel stores $40.6$\,J against the relaxed panel's $0.116$\,J,
+almost all of it fighting compression that fabric cannot carry.
+
+\subsection{Large-deflection cantilever}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{cantilever.png}
+\caption{Deflected shapes under a tip load swept from 50 to 900\,N, and tip
+deflection against linear theory. The beam visibly shortens in $x$ as it bends
+--- the geometric nonlinearity linear theory omits. At the largest load, linear
+theory overshoots by 51\%.}
+\label{fig:cantilever}
+\end{figure}
+
+Median 9 IPOPT iterations per load step with warm starting.
+
+\subsection{Batten-stiffened sail}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{sail.png}
+\caption{Beams, membranes, cables and a trailing-edge hem in one energy: a
+spar carrying bending and torsion, a wrinkling canopy hanging off it, three
+bridles to a fixed anchor. 393 DOF, 54 iterations, 1.4\,s, residual
+$1.0\times10^{-9}$\,N.}
+\label{fig:sail}
+\end{figure}
+
+Note that only 13 of the nodes carry a material frame; the canopy nodes stay at
+three degrees of freedom.
+
+\subsection{Scaling}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{scaling.png}
+\caption{Build and solve time against problem size, and iteration count.
+Because the graph is built once per element \emph{type}, build cost tracks the
+solve rather than the element count, and the iteration count is nearly mesh
+independent across a 37$\times$ range in degrees of freedom.}
+\label{fig:scaling}
+\end{figure}
+
+%======================================================================
+\section{Comparison with \texorpdfstring{\code{kite\_fem}}{kite\_fem}}
+
+\code{kite\_fem} (with \code{pyfe3d}) is the existing FEM path in the AWETrim
+tree. This section states what differs, what was measured, and where the
+comparison is and is not fair.
+
+\subsection{Capability}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{p{4.0cm}p{5.1cm}p{5.1cm}}
+\toprule
+& \code{kite\_fem} / \code{pyfe3d} & \textbf{Billow}\\
+\midrule
+Elements & springs, pulleys, inflatable Timoshenko beams
+         & cables, pulleys, geometrically exact Timoshenko beams,
+           inflatable tubes, wrinkling membranes\\
+Canopy fabric & noncompressive spring net (no membrane element exists)
+              & CST membrane, Pipkin relaxed energy\\
+Degrees of freedom & 6 per node everywhere, masked via \code{bc}
+                   & 3 per node, $+3$ only on beam nodes\\
+Formulation & Newton--Raphson on $\mathbf{f}_e-\mathbf{f}_i$
+            & minimum potential energy (IPOPT)\\
+Assembly & scipy sparse COO per element & one mapped kernel per element type\\
+Regularisation & \code{I\_stiffness=25}, \code{step\_limit=0.2},
+                 \code{relax=0.5}, optional pseudo-transient
+               & IPOPT inertia correction; membrane slack blend\\
+Warm start & none (\code{solve} resets to undeformed) & state and duals\\
+Default tolerance & $10^{-2}$\,N & $10^{-8}$ IPOPT, accepted at $10^{-6}$\,N\\
+Inflatable tube & secant $EI$/$GJ$ plus collapse flag
+                & the same fits integrated to $W(\kappa)$\\
+Experimental validation & hanging-kite test against measured data & none\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Two traps in making it a fair comparison}
+
+\begin{enumerate}
+\item \code{FEM\_structure.solve} defaults to \code{I\_stiffness=25}, an
+\textbf{absolute} regularisation in N/m added to every degree of freedom of the
+tangent. The benchmark beams here have $EI/L^3 = 10$\,N/m, so the default is
+larger than the structure: 2000 iterations with the residual stuck at 20\,N.
+With it at zero the same problem converges in 38. It is a kite-scale tuning
+constant, not a universal one. All results above use zero.
+\item The property matching was verified in the linear limit before any
+conclusion was drawn: below about one degree of rotation the two codes agree to
+$0.02\%$.
+\end{enumerate}
+
+\subsection{Cost and accuracy on a common problem}
+
+Tip-loaded slender cantilever, matched properties, same mesh, one machine, one
+run.
+
+\begin{table}[H]
+\centering
+\small
+\caption{Source: \code{run\_cost\_comparison.py}. ``Warm'' is a second solve at
+a 5\% different load; \code{kite\_fem} restarts from the undeformed
+configuration on every call, so its warm column is a second cold solve.}
+\begin{tabular}{rrlrrrrrr}
+\toprule
+$\alpha$ & El. & Model & DOF & Setup (s) & Cold (s) & Warm (s) & Iter. & ms/iter\\
+\midrule
+1 & 20 & Billow           & 126 & 0.133 & 0.249 & \textbf{0.081} & 16 & 15.6\\
+1 & 20 & \code{kite\_fem} & 126 & \textbf{0.004} & \textbf{0.132} & 0.151 & 39 & \textbf{3.4}\\
+1 & 80 & Billow           & 486 & 0.217 & 0.733 & \textbf{0.282} & 17 & 43\\
+1 & 80 & \code{kite\_fem} & 486 & \textbf{0.009} & \textbf{0.189} & 0.192 & 39 & \textbf{4.8}\\
+6 & 40 & Billow           & 246 & 0.076 & \textbf{0.333} & \textbf{0.062} & \textbf{22} & 15\\
+6 & 40 & \code{kite\_fem} & 246 & \textbf{0.005} & 1.384 & 1.526 & 444 & \textbf{3.1}\\
+6 & 80 & Billow           & 486 & 0.186 & \textbf{0.669} & \textbf{0.233} & \textbf{23} & 29\\
+6 & 80 & \code{kite\_fem} & 486 & \textbf{0.005} & 2.270 & 2.658 & 490 & \textbf{4.8}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\code{kite\_fem} has roughly $6\times$ cheaper iterations (compiled \code{pyfe3d}
+plus scipy sparse) and $30\times$ faster setup. Billow uses 2--20$\times$ fewer
+iterations, and its count is nearly independent of both mesh and load
+(16--23 throughout) where \code{kite\_fem}'s climbs from 39 to about 490 as the
+load grows. \code{kite\_fem} therefore wins on easy, small, one-shot problems;
+Billow wins as soon as the problem is hard, reused, or large. Billow's setup
+cost is a one-off amortised across a sweep --- exactly the coupled-loop pattern.
+
+\subsection{The canopy model: spring net versus membrane}
+
+Since \code{kite\_fem} has no membrane element, its canopy is a noncompressive
+spring net (chordwise and spanwise links, \emph{no diagonals}; its own example
+carries a commented-out block of ``fictional springs constraining the canopy from
+collapse''). Billow can build exactly that net from its cable elements, which
+makes a genuine like-for-like study possible.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{canopy_model.png}
+\caption{Spring net versus CST membrane on identical meshes, both minimised.
+Left: both converge under out-of-plane load, to answers 7\% apart. Middle: under
+equibiaxial stretch the net is too soft by exactly $1-\nu$. Right: under in-plane
+shear the membrane energy scales as $\gamma^{2.0}$ and the net as $\gamma^{4.0}$
+--- the net has \emph{no shear stiffness at leading order}.}
+\label{fig:canopymodel}
+\end{figure}
+
+Measured: biaxial energy ratio $0.728$ against $1-\nu = 0.70$; shear exponents
+$2.018$ (membrane) and $3.999$ (net).
+
+\subsubsection{Taut: shape and cost}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{taut_net_vs_membrane.png}
+\caption{Taut bay, $24\times18$, both minimised on the same mesh with the same
+1425 degrees of freedom, so this is purely the canopy model. The net billows
+$9.6\%$ deeper; the best single scale factor is $1.120$, and a $3.31$\,mm
+residual shape difference remains after removing it.}
+\label{fig:tautshape}
+\end{figure}
+
+The local softness ratio is not constant: $1.10$ at mid-chord rising to $1.145$
+near the clamped edges, where the fabric carries biaxial tension and shear that
+the net cannot represent. The residual map shows the net relatively too deep in
+the corners and too shallow in the middle --- it billows into a slightly
+different surface, not merely a deeper one.
+
+\textbf{The scale factor cannot be calibrated away}, because it depends on the
+stress state: about $1.10$--$1.12$ when taut, but $1.00$ when fully wrinkled
+(the slack cases agree within $1\%$, since a deeply slack panel carries
+essentially uniaxial chordwise tension where the two models coincide). The
+correction needed would change with flight condition.
+
+Cost is not a differentiator. At $24\times18$: net $0.092$\,s setup and
+$0.227$\,s solve in 12 iterations; membrane $0.176$\,s and $0.245$\,s in 8. The
+membrane's per-iteration cost is higher but it needs fewer iterations, and the
+two roughly cancel.
+
+\subsubsection{Robustness}
+
+\begin{table}[H]
+\centering
+\small
+\caption{Peak billow (\% chord) and section RMS against each model's own finest
+mesh. The net fails outright at one intermediate slack mesh --- the signature of
+its zero-energy shear mode. The membrane never failed.}
+\begin{tabular}{lrrrrrr}
+\toprule
+& \multicolumn{3}{c}{Spring net} & \multicolumn{3}{c}{Membrane}\\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}
+Mesh & Camber & RMS & Conv. & Camber & RMS & Conv.\\
+\midrule
+\multicolumn{7}{l}{\emph{taut}}\\
+$4\times3$   & 2.858 & 0.388 & yes & 2.542 & 0.401 & yes\\
+$8\times6$   & 3.129 & 0.051 & yes & 2.842 & 0.051 & yes\\
+$16\times12$ & 3.117 & 0.010 & yes & 2.842 & 0.010 & yes\\
+$24\times18$ & 3.115 & ---   & yes & 2.842 & ---   & yes\\
+\multicolumn{7}{l}{\emph{slack 3\%}}\\
+$8\times6$   & 7.388 & 0.186 & yes & 7.449 & 0.143 & yes\\
+$12\times9$  & 7.240 & 0.091 & yes & 7.294 & 0.097 & yes\\
+$16\times12$ & 5.675 & 1.719 & \textbf{no} & 7.412 & 0.031 & yes\\
+$24\times18$ & 7.302 & ---   & yes & 7.402 & ---   & yes\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsubsection{Canopy model versus solver, separated}
+
+A single bay isolates the two effects that otherwise get conflated. Rows 2 and 3
+solve the \emph{identical} spring net, so their difference is the solver alone.
+
+\begin{table}[H]
+\centering
+\small
+\caption{One $2.0\times1.3$\,m bay at 250\,Pa, all edges fixed.}
+\begin{tabular}{llrrrr}
+\toprule
+Case & Configuration & Solve (s) & Iterations & Camber (\% c) & Converged\\
+\midrule
+taut $8\times6$ & Billow + membrane   & 0.030 & 7 & 2.842 & yes\\
+taut $8\times6$ & Billow + net        & 0.026 & 10 & 3.129 & yes\\
+taut $8\times6$ & \code{kite\_fem} + net & 10.04 & 2729 & 3.129 & yes\\
+\midrule
+taut $12\times9$ & Billow + net        & 0.034 & 9 & 3.083 & yes\\
+taut $12\times9$ & \code{kite\_fem} + net & 22.00 & 3001 & 5.283 & \textbf{no}\\
+\midrule
+slack $8\times6$ & Billow + net        & 0.049 & 23 & 7.388 & yes\\
+slack $8\times6$ & \code{kite\_fem} + net & 9.06 & 3001 & 7.363 & \textbf{no}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Where both converge they agree exactly ($3.129\%$ both), which is what makes the
+\code{kite\_fem} driver used throughout this document trustworthy. On the
+identical net, minimum energy is roughly $390\times$ faster than the damped
+Newton solve, and remains convergent where the Newton solve does not.
+
+\subsection{Full kite}
+
+A V3-scale structure --- inflated leading-edge tube, inflated struts at every bay
+boundary, canopy over nine bays, trailing-edge hem, bridle to a fixed anchor,
+uniform 250\,Pa --- was built with the same nodes, tubes and cables in both codes.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{lrrrrrl}
+\toprule
+Model & DOF & Setup (s) & Cold (s) & Warm (s) & Iter. & Residual (N)\\
+\midrule
+\textbf{Billow} & 1893 & 0.61 & \textbf{5.91} & \textbf{0.58} & 73
+ & $7.2\times10^{-9}$ (converged)\\
+\code{kite\_fem} ($I{=}25$) & 2976 & 0.05 & 76.2 & 72.0 & 2001 (cap)
+ & $4.1\times10^{5}$ (diverged)\\
+\code{kite\_fem} ($I{=}0$) & 2976 & 0.06 & 108.9 & 68.9 & 2001 (cap)
+ & $1.3\times10^{8}$ (diverged)\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Interpretation, carefully.} No usable \code{kite\_fem} full-kite
+number was obtained. Diagonals, canopy curvature, both regularisation settings
+and load stepping with rebuilt initial conditions were all tried; all diverged,
+with residuals roughly $100\times$ the applied load. \textbf{This is consistent
+with a known open issue on the \code{kite\_fem} side} rather than a defect in the
+driver used here --- the ASKITE integration commit records ``kite\_fem still
+diverging, but not due to the coupling''. The only kite-scale figure that comes
+from its own workflow is its hanging-kite validation, at 442--671\,s per load
+case. The single-bay comparison above is the trustworthy cost comparison.
+
+%======================================================================
+\section{How many membrane triangles?}
+
+Chordwise and spanwise resolution are swept independently, because they are not
+the same problem: a canopy bay billows across the chord --- which sets the
+section the aerodynamics sees --- while spanwise it varies slowly between struts.
+
+The test case is one bay of the LEI-V3 canopy: chord 2.0\,m, strut spacing
+1.3\,m (the V3 spans 8.28\,m over 10 stations), held on all four edges, under
+250\,Pa. Both a taut panel and a realistically slack one (reference cut 3\%
+oversize) are run.
+
+Convergence is judged on quantities the coupling actually consumes: peak billow
+over chord, and the RMS deviation of the mid-span chordwise profile from the
+finest mesh. \textbf{Peak local strain is deliberately not a criterion}: in a
+wrinkling membrane it does not converge, and nothing downstream reads it.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{mesh_shapes.png}
+\caption{One bay under uniform refinement. A $2\times2$ bay is a tent, not a
+canopy: the camber is only 2.8\% low but the section is two straight lines.
+By $8\times8$ the profile is visually converged.}
+\label{fig:meshshapes}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{mesh_requirement.png}
+\caption{Camber and section-shape convergence, chordwise (solid) and spanwise
+(dashed), and cost per bay.}
+\label{fig:meshreq}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{Candidate meshes against a $24\times24$ reference, slack 3\%.}
+\begin{tabular}{lrrrrr}
+\toprule
+Mesh & Triangles & Camber error & Section RMS (\% c) & Build $+$ solve (s) & Iter.\\
+\midrule
+$4\times4$   & 32  & 0.88\% & 0.967 & 0.03 & 12\\
+$6\times6$   & 72  & 0.61\% & 0.338 & 0.07 & 17\\
+\textbf{$8\times6$} & \textbf{96} & \textbf{0.71\%} & \textbf{0.145} & \textbf{0.09} & 19\\
+$8\times8$   & 128 & 0.16\% & 0.140 & 0.17 & 15\\
+$12\times8$  & 192 & 0.18\% & 0.075 & 0.18 & 21\\
+$16\times12$ & 384 & 0.21\% & 0.033 & 0.44 & 22\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Recommendation.} $\mathbf{8}$ \textbf{chordwise} $\times$
+$\mathbf{6}$ \textbf{spanwise per bay}, 96 triangles, about 900 for the whole
+nine-bay canopy. Camber error $0.71\%$ and section RMS $0.145\%$ of chord ---
+2.9\,mm on a 2\,m chord, comfortably below what an airfoil parameterisation
+resolves. Use $12\times8$ for final runs: it halves the shape error for twice
+the cost.
+
+\paragraph{Slack costs roughly twice the mesh.} At 3\% oversize the panel is
+88\% wrinkled (against 1--4\% taut) and needs about $12\times8$ for the same
+accuracy, with 4$\times$ the iterations. Since a real canopy flies slack, the
+as-cut slack of the actual sail drives the mesh requirement more than anything
+else here and is worth pinning down.
+
+\paragraph{Caveat.} These numbers are for \emph{uniform} pressure. A real
+chordwise pressure distribution is peaked near the leading edge and may demand
+more chordwise resolution; the study should be repeated once loads come from an
+aerodynamic solve.
+
+%======================================================================
+\section{Known limitations}
+
+\begin{description}[style=unboxed,leftmargin=1.2em]
+\item[No experimental validation.] Every check in this document is against
+closed-form solutions, published benchmarks, or the ASKITE fits. The claim that
+the membrane is ``more correct'' than a spring net rests on it being the
+physically appropriate model, not on measurement. \code{kite\_fem} has a
+hanging-kite test against real data; Billow has nothing equivalent yet.
+
+\item[Applied moments.] Need load stepping, and are exact only about a fixed
+axis; a dead three-dimensional moment is non-conservative and has no potential.
+Nodal forces are unaffected.
+
+\item[Post-collapse tubes.] Reported, not modelled. The fits cover bending and
+torsion only; axial and shear stiffness must be supplied from tube geometry.
+
+\item[Dead loads.] Loads are frozen per solve, which matches a staggered
+coupling loop. A true follower pressure would not be conservative and could not
+be posed as a potential --- worth remembering before anyone tries to fold
+aerodynamics into the same minimisation.
+
+\item[No contact.] Contact and self-contact are not modelled.
+
+\item[Setup cost.] About $0.2$\,s of graph construction for a 486-DOF beam is
+disproportionate against \code{kite\_fem}'s $0.005$\,s, even though it is a
+one-off and stops mattering at membrane scale.
+
+\item[Threaded assembly.] \code{PotentialEnergy(parallelization=...)} exposes
+CasADi threaded maps but is untested at scale; serial is the default.
+
+\item[Not coupled.] There is no aerodynamic coupling adapter yet.
+\end{description}
+
+%======================================================================
+\section{Reproducing everything in this document}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ll}
+\toprule
+Figure / table & Command\\
+\midrule
+Figs.~\ref{fig:wrinkling}--\ref{fig:scaling}, \ref{fig:canopymodel}
+ & \code{python scripts/structural/run\_demo\_cases.py}\\
+Figs.~\ref{fig:elastica}--\ref{fig:inflatable}
+ & \code{python scripts/structural/run\_validation\_benchmarks.py}\\
+Cantilever cost table & \code{python scripts/structural/run\_cost\_comparison.py}\\
+Figs.~\ref{fig:meshshapes}, \ref{fig:meshreq}
+ & \code{python scripts/structural/run\_mesh\_requirement.py}\\
+Single-bay comparison & \code{python scripts/structural/run\_panel\_cost.py}\\
+Full-kite table & \code{python scripts/structural/run\_full\_kite\_cost.py}\\
+Test suite & \code{pytest tests/structural/}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Package layout}
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ll}
+\toprule
+\code{rotations.py} & $SO(3)$ kernels over an \code{xp} namespace (NumPy or CasADi)\\
+\code{model.py} & \code{DofLayout}, \code{StructuralState}, \code{StructuralModel}\\
+\code{energy.py} & \code{PotentialEnergy}: mapped assembly, gradient, tangent stiffness\\
+\code{solver.py} & \code{MinimumEnergySolver}, \code{StructuralSolution}\\
+\code{elements/base.py} & \code{ElementKernel} protocol, \code{ElementSet}\\
+\code{elements/cable.py} & \code{CableKernel}, \code{PulleyKernel}\\
+\code{elements/beam.py} & \code{TimoshenkoBeamKernel}, \code{BeamSection}\\
+\code{elements/inflatable.py} & \code{InflatableTubeLaw}, \code{InflatableBeamKernel}\\
+\code{elements/membrane.py} & \code{MembraneKernel}, \code{membrane\_regimes}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Minimal example}
+
+\begin{quote}\small\ttfamily
+\noindent
+import numpy as np\\
+from awetrim.structural import MinimumEnergySolver, StructuralModel\\
+from awetrim.structural.elements import build\_cable\_elements\\[4pt]
+nodes = np.array([[0., 0, 0], [1., 0, 0]])\\
+cables = build\_cable\_elements([[0, 1]], rest\_lengths=[1.0], stiffness=[1e4])\\
+model = StructuralModel(nodes, [cables], fixed\_translation\_nodes=[0])\\
+solution = MinimumEnergySolver(model).solve(np.array([[0., 0, 0], [10., 0, 0]]))
+\end{quote}
+
+\subsection{Invariants to preserve}
+
+\begin{itemize}
+\item \textbf{Isolation.} NumPy and CasADi only.
+\item \textbf{One mapped kernel per element type.} Never reintroduce a Python
+loop over elements that builds \code{MX}.
+\item \textbf{Single source for every formula.} \code{rotations.py} holds the
+$SO(3)$ maps against an \code{xp} namespace so NumPy and CasADi share one
+implementation; \code{beam\_strains} and \code{green\_strain} are called by both
+the kernels and the NumPy setup and diagnostic paths.
+\item \textbf{No CasADi across the module boundary.} Symbolics are created inside
+\code{energy.py} and stay there.
+\item \textbf{Kernels are pure.}
+\item \textbf{\code{converged} is the physical verdict}, with IPOPT's own kept
+alongside.
+\end{itemize}
+
+%======================================================================
+\section*{References}
+\addcontentsline{toc}{section}{References}
+
+\begin{enumerate}[label={[\arabic*]}]
+\item J.C. Simo and L. Vu-Quoc, ``A three-dimensional finite-strain rod model.
+Part II: computational aspects'', \emph{Comput. Methods Appl. Mech. Engrg.}
+\textbf{58} (1986) 79--116.
+\item A. Ibrahimbegovi\'c, ``On the choice of finite rotation parameters'',
+\emph{Comput. Methods Appl. Mech. Engrg.} \textbf{149} (1997) 49--71.
+\item K.-J. Bathe and S. Bolourchi, ``Large displacement analysis of
+three-dimensional beam structures'', \emph{Int. J. Numer. Meth. Engng.}
+\textbf{14} (1979) 961--986.
+\item A.C. Pipkin, ``The relaxed energy density for isotropic elastic
+membranes'', \emph{IMA J. Appl. Math.} \textbf{36} (1986) 85--99.
+\item D.G. Roddeman, J. Drukker, C.W.J. Oomens and J.D. Janssen, ``The wrinkling
+of thin membranes'', \emph{J. Appl. Mech.} \textbf{54} (1987) 884--892.
+\item K.E. Bisshopp and D.C. Drucker, ``Large deflection of cantilever beams'',
+\emph{Q. Appl. Math.} \textbf{3} (1945) 272--275.
+\item Y. Luo, ``An efficient 3D Timoshenko beam element with consistent shape
+functions'', \emph{Adv. Theor. Appl. Mech.} \textbf{1}(3) (2008) 95--106.
+\item O. Cayon, M. Gaunaa and R. Schmehl, ``Fast aero-structural model of a
+leading-edge inflatable kite'', \emph{Energies} \textbf{16} (2023) 3061.
+\item ASKITE, \url{https://github.com/awegroup/ASKITE};
+\code{kite\_fem}, \url{https://github.com/awegroup/kite_fem}.
+\end{enumerate}
+
+\end{document}
