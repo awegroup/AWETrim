@@ -284,6 +284,18 @@ constrained optimum, not an equilibrium; before this a handover-seeded
 deep-depower point burned its whole iteration budget pinned at 40 m/s
 before the sweep's cold retry.
 
+**Direct steering preset (2026-09-10).** Opt-in config key
+`steering_tape_preset_extension`: sets the asymmetric steering tape rest
+lengths (left = initial − δ, right = initial + δ) once, BEFORE the coupled
+loop. Exists because the geometry file format carries one symmetric row per
+tape, so a snapshot of a steered state cannot store its own actuation and
+every restart otherwise re-walks the steering from zero — which re-selects
+the solution family instead of resuming the state. Preset == 
+`steering_tape_final_extension` → no walk at all; a different final target
+walks only the difference. Cold solves must NOT preset (the ramp doubles as
+their load continuation); preset only from a deformed snapshot equilibrated
+at these lengths.
+
 **Trim-state history / unloaded-branch reference (2026-09-10).** The coupled
 solver's meta now carries `opt_x_history` — the trim state
 `[kite_speed, roll, pitch, yaw, course_rate]` at every coupled iteration,

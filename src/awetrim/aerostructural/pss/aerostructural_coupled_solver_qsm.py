@@ -26,6 +26,7 @@ from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking
 from awetrim import plotting
 from .actuation import (
     update_power_tape_actuation,
+    update_steering_tape_actuation,
     update_steering_tape_actuation_progressive,
 )
 from ..convergence import (
@@ -190,6 +191,41 @@ def main(
         )
     )
     print(f"--> Running structural solver: {structural_solver_name}")
+
+    # DIRECT steering preset (opt-in, ``steering_tape_preset_extension``):
+    # set the asymmetric tape rest lengths (left = initial - delta, right =
+    # initial + delta) BEFORE the loop. The geometry file format carries one
+    # symmetric row per tape, so a snapshot of a STEERED state cannot store
+    # its own actuation -- without this every restart silently re-walks the
+    # steering from zero through the progressive ramp, which re-selects the
+    # solution family instead of resuming the state. With the preset equal
+    # to ``steering_tape_final_extension`` the progressive update sees
+    # current == target at iteration 0 and no walk happens; with a different
+    # final target only the difference is walked. The ramp remains the right
+    # tool for COLD solves (it doubles as the load continuation) -- preset
+    # only from a deformed snapshot equilibrated at these lengths.
+    steering_preset = config.get("steering_tape_preset_extension")
+    if (
+        steering_preset is not None
+        and steering_tape_indices is not None
+        and len(steering_tape_indices) >= 2
+        and abs(float(steering_preset)) > 1e-12
+    ):
+        update_steering_tape_actuation(
+            psystem=psystem,
+            steering_tape_indices=steering_tape_indices,
+            steering_tape_extension_step=float(steering_preset),
+            initial_length_steering_left=initial_length_steering_left,
+            initial_length_steering_right=initial_length_steering_right,
+            steering_tape_final_extension=float(steering_preset),
+        )
+        logging.info(
+            "Steering preset applied directly: tape delta %+.4f m "
+            "(left %.4f, right %.4f)",
+            float(steering_preset),
+            float(initial_length_steering_left) - float(steering_preset),
+            float(initial_length_steering_right) + float(steering_preset),
+        )
 
     ## PRELOOP
     f_ext_gravity = np.zeros(struc_nodes.shape)
