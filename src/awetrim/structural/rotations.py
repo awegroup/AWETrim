@@ -131,6 +131,33 @@ def rotate_frame(psi, frame, xp) -> Any:
     return cayley(psi, xp) @ frame
 
 
+def minimal_rotation(from_vector, to_vector) -> np.ndarray:
+    """Smallest rotation carrying ``from_vector`` onto ``to_vector``. NumPy only.
+
+    The rotation about the shared axis is zero, so chaining it along a polyline
+    or across a structure transports a frame with no artificial twist. Anti-
+    parallel inputs have no smallest rotation; the half-turn about ``a`` is
+    returned, which is the limit reached from either side.
+    """
+    a = unit_vector(from_vector)
+    b = unit_vector(to_vector)
+    axis = np.cross(a, b)
+    sine = float(np.linalg.norm(axis))
+    cosine = float(np.dot(a, b))
+    if sine < 1e-12:
+        return np.eye(3) if cosine > 0.0 else 2.0 * np.outer(a, a) - np.eye(3)
+    skew_axis = skew(axis, np)
+    return np.eye(3) + skew_axis + skew_axis @ skew_axis * ((1.0 - cosine) / sine**2)
+
+
+def unit_vector(vector) -> np.ndarray:
+    """Normalise a 3-vector, rejecting a zero-length one. NumPy only."""
+    norm = float(np.linalg.norm(vector))
+    if norm < 1e-14:
+        raise ValueError("cannot normalise a zero-length vector")
+    return np.asarray(vector, dtype=float) / norm
+
+
 def orthonormalize(rotation: np.ndarray) -> np.ndarray:
     """Nearest orthonormal matrix (polar projection). NumPy only.
 

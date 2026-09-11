@@ -51,7 +51,7 @@ from awetrim.structural.elements import (
     build_membrane_elements,
     build_pulley_elements,
 )
-from awetrim.structural.rotations import orthonormalize
+from awetrim.structural.rotations import minimal_rotation, orthonormalize
 
 DATA = Path(__file__).resolve().parents[2] / "data" / "LEI-V3-KITE" / "hanging_validation"
 
@@ -277,20 +277,6 @@ def _tangents(points: np.ndarray) -> np.ndarray:
     return tangents / np.linalg.norm(tangents, axis=1, keepdims=True)
 
 
-def _minimal_rotation(source: np.ndarray, target: np.ndarray) -> np.ndarray:
-    axis = np.cross(source, target)
-    sine = float(np.linalg.norm(axis))
-    cosine = float(np.dot(source, target))
-    if sine < 1e-12:
-        return np.eye(3) if cosine > 0 else -np.eye(3) + 2 * np.outer(source, source)
-    axis = axis / sine
-    cross = np.array([[0.0, -axis[2], axis[1]],
-                      [axis[2], 0.0, -axis[0]],
-                      [-axis[1], axis[0], 0.0]])
-    angle = np.arctan2(sine, cosine)
-    return np.eye(3) + np.sin(angle) * cross + (1.0 - np.cos(angle)) * cross @ cross
-
-
 def build_frames(reference: Reference, grid: np.ndarray,
                  junction_frame: str = "leading_edge") -> np.ndarray:
     """Nodal material frames, tangent-aligned along each beam chain.
@@ -322,7 +308,7 @@ def build_frames(reference: Reference, grid: np.ndarray,
         frame = np.column_stack([tangents[0], seed, np.cross(tangents[0], seed)])
         frames[chain[0]] = orthonormalize(frame)
         for index in range(1, len(chain)):
-            frame = _minimal_rotation(tangents[index - 1], tangents[index]) @ frame
+            frame = minimal_rotation(tangents[index - 1], tangents[index]) @ frame
             frames[chain[index]] = orthonormalize(frame)
     return frames
 

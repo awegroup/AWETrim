@@ -17,7 +17,7 @@
 import numpy as np
 
 
-def setup_tracking_arrays(n_pts, t_vector, n_panels=0):
+def setup_tracking_arrays(n_pts, t_vector, n_panels=0, with_frames=False):
     """
     Initialize tracking arrays for simulation results.
 
@@ -25,6 +25,12 @@ def setup_tracking_arrays(n_pts, t_vector, n_panels=0):
         n_pts (int): Number of nodes/particles.
         t_vector (np.ndarray): Array of time steps.
         n_panels (int): Number of aerodynamic panels (0 skips aero tracking arrays).
+        with_frames (bool): Also store the nodal material frames. Needed by any
+            backend whose elements carry ROTATIONAL state -- a geometrically
+            exact beam's curvature lives in the frames, not in the node
+            positions, so without them a saved run cannot be asked afterwards
+            how bent its tubes were, or whether they had passed collapse.
+            Costs 9 floats per node per iteration.
 
     Returns:
         dict: Dictionary with preallocated arrays for positions, forces, and tracking metrics.
@@ -40,6 +46,8 @@ def setup_tracking_arrays(n_pts, t_vector, n_panels=0):
     if n_panels > 0:
         arrays["alpha_at_ac"] = np.full((nt, n_panels), np.nan)
         arrays["stall_mask"] = np.zeros((nt, n_panels), dtype=bool)
+    if with_frames:
+        arrays["frames"] = np.tile(np.eye(3), (nt, n_pts, 1, 1))
     return arrays
 
 
@@ -68,6 +76,7 @@ def update_tracking_arrays(
     struc_nodes,
     f_ext_flat,
     f_int_flat,
+    frames=None,
 ):
     """
     Update tracking arrays with simulation results for a single time step.
@@ -78,6 +87,8 @@ def update_tracking_arrays(
         pos3d (np.ndarray): Current 3D positions (n_nodes, 3).
         f_ext_flat (np.ndarray): Flattened external force vector (n_nodes*3,).
         f_int_flat (np.ndarray): Flattened internal force vector (n_nodes*3,).
+        frames (np.ndarray or None): Nodal material frames (n_nodes, 3, 3).
+            Stored only when the arrays were built with ``with_frames=True``.
 
     Returns:
         None. Updates tracking_data in place.
@@ -99,3 +110,9 @@ def update_tracking_arrays(
     # 3) Norms
     tracking_data["residual_norm"][idx] = np.linalg.norm(f_int_flat)
     tracking_data["max_residual"][idx] = np.max(np.abs(f_int_flat))
+
+    # 4) Rotational state, where the backend has any
+    if frames is not None and "frames" in tracking_data:
+        tracking_data["frames"][idx] = np.asarray(frames, dtype=float).reshape(
+            n_pts, 3, 3
+        )

@@ -56,7 +56,7 @@ def _resolve_kcu_mass(struc_geometry, config=None, system_config=None):
     return 0.0
 
 
-def initialize_particles(struc_geometry, struc_nodes, m_arr):
+def initialize_particles(struc_geometry, struc_nodes, m_arr, strut_padding="legacy"):
     """
     Initialize particles for the kite structure.
 
@@ -125,10 +125,45 @@ def initialize_particles(struc_geometry, struc_nodes, m_arr):
     # TODO: Add extra nodes along chord here, make input through configuration file?
     nodes_per_strut += 1
 
-    # add extra nodes along struts such that the amount per strut is the same
-    for i, indices in enumerate(strut_indices):
-        nodes = len(indices)
-        missing_nodes = nodes_per_strut - nodes
+    # Pad every strut up to a common node count so the wing is a structured
+    # grid. Where the padding nodes go is a real mesh-quality decision:
+    #
+    #   "legacy"          all of them into the second-to-last gap, wherever
+    #                     that happens to be. On the LEI-V3 that crams four
+    #                     nodes into the 33 mm between two tip bridle
+    #                     attachments and leaves a 780 mm element next door --
+    #                     a 118x spread in element length, and the canopy
+    #                     sections inherit the same spacing ratios.
+    #   "bisect_longest"  each padding node bisects the longest segment the
+    #                     strut currently has, which is the standard greedy
+    #                     refinement and grades the mesh evenly around the
+    #                     bridle attachments that have to stay put.
+    #
+    # "legacy" is the default because it is what every stored FEM result was
+    # produced with; "bisect_longest" is what a fresh model should use.
+    if strut_padding not in ("legacy", "bisect_longest"):
+        raise ValueError(
+            f"strut_padding must be 'legacy' or 'bisect_longest', got {strut_padding!r}"
+        )
+
+    for indices in strut_indices:
+        missing_nodes = nodes_per_strut - len(indices)
+        if strut_padding == "bisect_longest":
+            for _ in range(missing_nodes):
+                segments = [
+                    np.linalg.norm(struc_nodes[indices[j + 1]] - struc_nodes[indices[j]])
+                    for j in range(len(indices) - 1)
+                ]
+                longest = int(np.argmax(segments))
+                struc_nodes.append(
+                    0.5
+                    * (struc_nodes[indices[longest]] + struc_nodes[indices[longest + 1]])
+                )
+                m_arr.append(0)
+                node_idx += 1
+                indices.insert(longest + 1, node_idx)
+            continue
+
         for i in range(missing_nodes):
             coords_front = struc_nodes[indices[-3]]
             coords_back = struc_nodes[indices[-2]]
@@ -628,7 +663,7 @@ def initialize_bridle_line_system(
             bridle_connectivity_arr.append([ci, cj])
             bridle_diameter_arr.append(bridle_lines_dict[conn_name]["d"])
             l0_arr.append(l0)
-            k_arr.append(5000)
+            k_arr.append(k)  # EA/l0, computed above
             c_arr.append(c)
             linktype_arr.append(bridle_lines_dict[conn_name]["linktype"])
 
@@ -658,7 +693,7 @@ def initialize_bridle_line_system(
             bridle_connectivity_arr.append([cj, ck])
             bridle_diameter_arr.append(bridle_lines_dict[conn_name]["d"])
             l0_arr.append(l0)
-            k_arr.append(5000)
+            k_arr.append(k)  # EA/l0, computed above
             c_arr.append(c)
             linktype_arr.append(bridle_lines_dict[conn_name]["linktype"])
             # add mass
@@ -719,7 +754,7 @@ def initialize_bridle_line_system(
             bridle_connectivity_arr.append([ci, cj])
             bridle_diameter_arr.append(bridle_lines_dict[conn_name]["d"])
             l0_arr.append(l0)
-            k_arr.append(5000)
+            k_arr.append(k)  # EA/l0, computed above
             c_arr.append(c)
             linktype_arr.append(bridle_lines_dict[conn_name]["linktype"])
 
@@ -727,15 +762,15 @@ def initialize_bridle_line_system(
             raise ValueError(
                 "bridle_connections should have 2 or 3 connections (ci,cj,ck), not more or less"
             )
-        try:
-            if conn_name == "Power Tape":
-                power_tape_index = conn_idx_counter
+        # Tape names follow the YAML's bridle_lines table, the same strings the
+        # PSS reader matches (pss/structural_geometry_io.py). They used to be
+        # matched as "Power Tape" / "Steering Tape", which appear in no kite
+        # YAML, so tape actuation was a silent no-op on the FEM path.
+        if conn_name == "depower_tape":
+            power_tape_index = conn_idx_counter
 
-            if conn_name == "Steering Tape":
-                steering_tape_indices.append(conn_idx_counter)
-        except Exception:
-            power_tape_index = 0
-            steering_tape_indices.append(0)
+        if conn_name == "steering_tape":
+            steering_tape_indices.append(conn_idx_counter)
 
         ## increasing the counter
         conn_idx_counter += 1
@@ -788,7 +823,12 @@ def main(struc_geometry, config=None, system_config=None):
         canopy_sections,
         strut_sections,
         simplified_bridle_points,
-    ) = initialize_particles(struc_geometry, struc_nodes, m_arr)
+    ) = initialize_particles(
+        struc_geometry,
+        struc_nodes,
+        m_arr,
+        strut_padding=(config or {}).get("strut_padding", "legacy"),
+    )
 
     ### Analyze Wing Structure
     (

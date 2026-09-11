@@ -162,6 +162,40 @@ def build_deformed_struc_geometry(
     return sg
 
 
+def _normalised_span(points: np.ndarray) -> np.ndarray:
+    """Cumulative chord length along a polyline, normalised to [0, 1].
+
+    Arc length rather than the raw spanwise coordinate, so a swept or anhedral
+    wing resamples where the material is rather than where its shadow is, and a
+    tip that folds back does not fold the parameter with it.
+    """
+    steps = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    total = float(steps.sum())
+    if total <= 0.0:
+        raise ValueError("edge polyline has zero length")
+    return np.concatenate([[0.0], np.cumsum(steps)]) / total
+
+
+def _resample_edges_onto_sections(
+    le_points: np.ndarray, te_points: np.ndarray, sections
+) -> tuple[np.ndarray, np.ndarray]:
+    """Deformed LE/TE evaluated at the aero file's own spanwise stations.
+
+    Both meshes are parameterised by normalised arc length along their own
+    leading edge and the deformed edges are sampled at the aero stations, so the
+    two need not be commensurate. Exact wherever they are: a station that
+    coincides with a structural node picks that node up unchanged.
+    """
+    reference_le = np.array([[float(row[1]), float(row[2]), float(row[3])]
+                             for row in sections])
+    target = _normalised_span(reference_le)
+    source = _normalised_span(le_points)
+    resample = lambda points: np.column_stack(
+        [np.interp(target, source, points[:, axis]) for axis in range(3)]
+    )
+    return resample(le_points), resample(te_points)
+
+
 def build_deformed_aero_geometry(
     aero_geometry: dict[str, Any],
     struc_nodes: np.ndarray,
@@ -170,10 +204,17 @@ def build_deformed_aero_geometry(
 ) -> dict[str, Any]:
     """Return a copy of aero_geometry with LE/TE positions replaced by deformed values.
 
-    When the aero mesh is finer than the structural mesh, the same linear
-    interpolation used by LinearStructuralToAeroMapper is applied to subdivide
-    each structural section into the correct number of aero panels.  The
-    airfoil_id column is preserved unchanged.
+    When the aero mesh is a whole-number refinement of the structural mesh, the
+    same linear interpolation used by LinearStructuralToAeroMapper subdivides
+    each structural section into the correct number of aero panels.
+
+    The two meshes need not be commensurate, though. The aero YAML's section
+    count is an input description -- it sets the airfoil polars -- while the
+    planform VSM actually flies is rebuilt from the structural nodes every
+    coupled iteration, so a file may perfectly well carry 37 sections against
+    28 structural ones (the LEI-V3 pairing). In that case the deformed edges are
+    resampled onto the aero file's own spanwise stations, which preserves both
+    the section count and the airfoil_id column.
     """
     from awetrim.aerostructural.mapping import interpolate_points
 
@@ -182,19 +223,26 @@ def build_deformed_aero_geometry(
     n_aero = len(sections)
     n_struc = len(le_indices)
 
-    if n_aero == n_struc:
-        n_panels_per_section = 1
-    else:
-        n_sections = n_struc - 1
-        if n_sections == 0 or (n_aero - 1) % n_sections != 0:
-            raise ValueError(
-                f"Cannot infer panels-per-section from {n_aero} aero sections "
-                f"and {n_struc} structural LE nodes."
-            )
-        n_panels_per_section = (n_aero - 1) // n_sections
+    if n_struc < 2:
+        raise ValueError(
+            f"need at least two structural LE nodes to rebuild a planform, got {n_struc}"
+        )
 
-    deformed_le = interpolate_points(struc_nodes[le_indices], n_panels_per_section)
-    deformed_te = interpolate_points(struc_nodes[te_indices], n_panels_per_section)
+    n_sections = n_struc - 1
+    if n_aero == n_struc:
+        commensurate, n_panels_per_section = True, 1
+    elif (n_aero - 1) % n_sections == 0:
+        commensurate, n_panels_per_section = True, (n_aero - 1) // n_sections
+    else:
+        commensurate = False
+
+    if commensurate:
+        deformed_le = interpolate_points(struc_nodes[le_indices], n_panels_per_section)
+        deformed_te = interpolate_points(struc_nodes[te_indices], n_panels_per_section)
+    else:
+        deformed_le, deformed_te = _resample_edges_onto_sections(
+            struc_nodes[le_indices], struc_nodes[te_indices], sections
+        )
 
     for i, row in enumerate(sections):
         le, te = deformed_le[i], deformed_te[i]

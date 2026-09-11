@@ -347,6 +347,81 @@ def _split_surfaces_by_order(x, y, cp):
     return (x_u, y_u, cp_u), (x_l, y_l, cp_l)
 
 
+def weights_at_centre_of_pressure(
+    base_weights: np.ndarray,
+    stations: np.ndarray,
+    target: float,
+    *,
+    margin: float = 1e-3,
+    tolerance: float = 1e-12,
+    max_iterations: int = 60,
+) -> np.ndarray:
+    """Re-weight a chordwise distribution so its centroid lands on ``target``.
+
+    The chordwise weights decide where along the chord a panel's force ends up
+    acting, and that station *is* the panel's local pitching moment. A fixed
+    weight set therefore imposes one fixed local ``C_m`` on every panel at every
+    angle of attack, which is wrong in general and wrong in a way the coupled
+    loop cannot settle: the wing's trim is a moment balance, so each outer
+    iteration re-trims against a moment the structure was never given.
+
+    ``base_weights`` is the prior -- the measured ``Delta C_p`` shape -- and
+    ``target`` the chordwise fraction the panel's force must act at to
+    reproduce its own moment. The correction is the exponential tilt
+
+        w_i  =  w0_i exp(lambda t_i) / sum_j w0_j exp(lambda t_j)
+
+    with ``lambda`` solved from ``sum_i w_i t_i = target``. Three properties
+    make this the right choice over, say, a least-squares correction:
+
+    * every weight stays **strictly positive**, so the distribution never
+      develops an unphysical negative patch of load;
+    * the weights still sum to one, so the panel force is preserved exactly;
+    * ``lambda`` is the natural parameter of an exponential family, whose mean
+      is strictly increasing in it, so the root exists, is unique for any
+      target strictly inside the station range, and Newton converges from
+      ``lambda = 0`` (the derivative is a variance, hence positive).
+
+    It is also the minimum-relative-entropy correction: of all distributions
+    with the required mean, this is the one closest to the measured shape, so
+    the ``Delta C_p`` prior is kept wherever the moment does not contradict it.
+    """
+    base = np.asarray(base_weights, dtype=float)
+    stations = np.asarray(stations, dtype=float)
+    total = base.sum()
+    if total <= 0.0:
+        raise ValueError("base_weights must have a positive sum")
+    base = base / total
+
+    support = base > 0.0
+    lowest, highest = stations[support].min(), stations[support].max()
+    span = highest - lowest
+    # lambda diverges as the target approaches the ends of the support, so hold
+    # it just inside. VSM already clamps the centre of pressure to [LE, TE], so
+    # this only bites on a panel whose moment puts the load right at an edge.
+    target = float(np.clip(target, lowest + margin * span, highest - margin * span))
+
+    tilt = 0.0
+    for _ in range(max_iterations):
+        weights = base * np.exp(tilt * (stations - target))
+        weights /= weights.sum()
+        mean = float(weights @ stations)
+        residual = mean - target
+        if abs(residual) <= tolerance * max(span, 1.0):
+            return weights
+        variance = float(weights @ (stations - mean) ** 2)
+        if variance <= 1e-30:
+            break
+        tilt -= residual / variance
+    logging.warning(
+        "chordwise centre-of-pressure tilt did not converge (target %.4f, "
+        "reached %.4f); using the untilted weights",
+        target,
+        float(base @ stations),
+    )
+    return base
+
+
 def chordwise_weights_from_cp_file(cp_path, x_targets):
     """
     Compute normalized chordwise weights from a Cp distribution file.
@@ -519,7 +594,29 @@ def main(
         chordwise_weights = chordwise_weights_from_cp_file(cp_distribution_path, t_vals)
     else:
         chordwise_weights = np.full(n_chordwise_nodes, 1.0 / n_chordwise_nodes)
-    for panel, f_panel in zip(panels, f_aero_wing_vsm_format):
+
+    # Where the chordwise weights put a panel's resultant IS that panel's local
+    # pitching moment. "cp_file" uses one measured Delta C_p shape for every
+    # panel, which pins the resultant at a single chordwise station (0.291 c on
+    # the LEI-V3 file) whatever the panel's own C_m says -- so the structure is
+    # loaded with a moment the aerodynamics never produced, and the coupled loop
+    # re-trims each iteration against a moment balance it was never given.
+    # "moment_matched" keeps that shape as a prior and tilts it onto the panel's
+    # own centre of pressure, which VSM already computes from F and M.
+    distribution = config_aer2struc.get("chordwise_distribution", "cp_file")
+    if distribution not in ("cp_file", "moment_matched"):
+        raise ValueError(
+            "aero2struc.chordwise_distribution must be 'cp_file' or "
+            f"'moment_matched', got {distribution!r}"
+        )
+    centres_of_pressure = np.asarray(panel_cp_locations, dtype=float)
+    if distribution == "moment_matched" and len(centres_of_pressure) != len(panels):
+        raise ValueError(
+            f"{len(centres_of_pressure)} centres of pressure for {len(panels)} "
+            "panels; moment matching needs one per panel"
+        )
+
+    for index, (panel, f_panel) in enumerate(zip(panels, f_aero_wing_vsm_format)):
         le_mid = 0.5 * (panel.LE_point_1 + panel.LE_point_2)
         te_mid = 0.5 * (panel.TE_point_1 + panel.TE_point_2)
         vec_chord = te_mid - le_mid
@@ -527,7 +624,19 @@ def main(
         chord_nodes = le_mid[None, :] + t_vals[:, None] * vec_chord[None, :]
         vsm_wing_nodes_distributed_chordwise.append(chord_nodes)
 
-        f_nodes = chordwise_weights[:, None] * f_panel[None, :]
+        weights = chordwise_weights
+        if distribution == "moment_matched":
+            # Chordwise fraction of the panel's centre of pressure. VSM builds
+            # it as ac + lever * y_airf with the lever clamped to [LE, TE], so
+            # this lands in [0, 1] on a well-posed panel.
+            chord_squared = float(vec_chord @ vec_chord)
+            if chord_squared > 1e-24:
+                t_cp = float((centres_of_pressure[index] - le_mid) @ vec_chord)
+                weights = weights_at_centre_of_pressure(
+                    chordwise_weights, t_vals, t_cp / chord_squared
+                )
+
+        f_nodes = weights[:, None] * f_panel[None, :]
         vsm_wing_forces_distributed_chordwise.append(f_nodes)
 
     vsm_wing_nodes_distributed_chordwise = np.vstack(

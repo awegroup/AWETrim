@@ -25,7 +25,9 @@ import numpy as np
 import logging
 from pathlib import Path
 import copy
+import dataclasses
 from . import aero2struc, structural_kite_fem
+from ..billow import structural_billow
 from ..pss import structural_pss
 from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking
 from awetrim import plotting
@@ -162,6 +164,7 @@ def update_power_tape_actuation(
     psystem,
     kite_fem_structure,
     kite_connectivity_arr,
+    billow_structure,
     power_tape_index,
     power_tape_extension_step,
     initial_length_power_tape,
@@ -177,6 +180,7 @@ def update_power_tape_actuation(
         config: Configuration dictionary
         psystem: Particle system (for PSS solver)
         kite_fem_structure: FEM structure (for kite_fem solver)
+        billow_structure: BillowStructure (for the billow solver)
         kite_connectivity_arr: ASKITE connectivity array
         power_tape_index: Index of power tape in connectivity array
         power_tape_extension_step: Increment for power tape extension
@@ -242,6 +246,34 @@ def update_power_tape_actuation(
                 delta_power_tape = new_length - initial_length_power_tape
                 logging.info(
                     f"||--- delta l_d: {delta_power_tape:.3f}m | new l_d: {new_length:.3f}m | Steps required: {n_power_tape_steps}"
+                )
+                is_actuation_finalized = False
+
+    elif config["structural_solver"] == "billow":
+        # Rest lengths are NLP parameters, so this rebuilds the parameter table
+        # and never the compiled graph; the element index is the reader's own,
+        # so power_tape_index needs no translation.
+        current_length = structural_billow.get_rest_length(
+            billow_structure, power_tape_index
+        )
+        delta_power_tape = current_length - initial_length_power_tape
+
+        if is_residual_below_tol:
+            increment, should_update = _compute_power_tape_increment(
+                delta_power_tape=delta_power_tape,
+                power_tape_final_extension=power_tape_final_extension,
+                power_tape_extension_step=power_tape_extension_step,
+            )
+            if should_update:
+                structural_billow.update_rest_length(
+                    billow_structure, power_tape_index, increment
+                )
+                current_length = structural_billow.get_rest_length(
+                    billow_structure, power_tape_index
+                )
+                delta_power_tape = current_length - initial_length_power_tape
+                logging.info(
+                    f"||--- delta l_d: {delta_power_tape:.3f}m | new l_d: {current_length:.3f}m | Steps required: {n_power_tape_steps}"
                 )
                 is_actuation_finalized = False
 
@@ -409,6 +441,7 @@ def main(
     ### STRUC
     psystem=None,
     kite_fem_structure=None,
+    billow_structure=None,
     canopy_sections=None,
     strut_sections=None,
 ):
@@ -437,6 +470,10 @@ def main(
 
     if config["structural_solver"] == "kite_fem":
         rest_lengths = kite_fem_structure.modify_get_spring_rest_length()
+    elif config["structural_solver"] == "billow":
+        rest_lengths = structural_billow.get_rest_lengths(
+            billow_structure, kite_connectivity_arr
+        )
 
     max_iter = config["aero_structural_solver"]["max_iter"]
     # Keep index 0 for the pre-loop initial state and reserve max_iter loop slots.
@@ -648,6 +685,12 @@ def main(
                         kite_fem_structure, f_ext_flat, config["structural_kite_fem"]
                     )
                 )
+            elif config["structural_solver"] == "billow":
+                billow_structure, is_structural_converged, struc_nodes, f_int = (
+                    structural_billow.run_billow(
+                        billow_structure, f_ext_flat, config.get("structural_billow")
+                    )
+                )
             end_time_f_int = time.time()
 
             ### Aitken relaxation of structural nodes
@@ -693,6 +736,15 @@ def main(
                         coords_rot[6 * ni : 6 * ni + 3] = struc_nodes[ni]
                     kite_fem_structure.coords_rotations_init = coords_rot.copy()
                     kite_fem_structure.coords_rotations_current = coords_rot.copy()
+                elif config["structural_solver"] == "billow":
+                    # Seed the next minimum-energy solve from the relaxed
+                    # geometry. The reference FRAMES are kept: they carry the
+                    # absorbed rotation increments, and the element reference
+                    # strains are measured against them, so replacing them with
+                    # the relaxed positions alone would re-zero every beam.
+                    billow_structure.state = dataclasses.replace(
+                        billow_structure.state, positions=struc_nodes.copy()
+                    )
 
             ### PLOT per iteration
             if config["is_with_struc_plot_per_iteration"]:
@@ -703,6 +755,10 @@ def main(
                         kite_fem_structure, kite_connectivity_arr
                     )
                     # kite_fem_structure.plot_convergence()  # not available in kite_fem
+                elif config["structural_solver"] == "billow":
+                    rest_lengths = structural_billow.get_rest_lengths(
+                        billow_structure, kite_connectivity_arr
+                    )
 
                 plotting.main(
                     struc_nodes,
@@ -930,6 +986,7 @@ def main(
                     config=config,
                     psystem=psystem,
                     kite_fem_structure=kite_fem_structure,
+                    billow_structure=billow_structure,
                     kite_connectivity_arr=kite_connectivity_arr,
                     power_tape_index=power_tape_index,
                     power_tape_extension_step=power_tape_extension_step,
@@ -939,7 +996,7 @@ def main(
                     n_power_tape_steps=n_power_tape_steps,
                     rest_lengths=(
                         rest_lengths
-                        if config["structural_solver"] == "kite_fem"
+                        if config["structural_solver"] in ("kite_fem", "billow")
                         else None
                     ),
                 )
@@ -997,6 +1054,10 @@ def main(
     elif config["structural_solver"] == "kite_fem":
         rest_lengths = structural_kite_fem.get_rest_lengths(
             kite_fem_structure, kite_connectivity_arr
+        )
+    elif config["structural_solver"] == "billow":
+        rest_lengths = structural_billow.get_rest_lengths(
+            billow_structure, kite_connectivity_arr
         )
 
     if config["is_with_final_plot"]:

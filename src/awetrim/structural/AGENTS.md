@@ -1,15 +1,20 @@
 # AWETrim Structural Module
 
-## Status: 🟡 Standalone and validated, not yet coupled
+## Status: ✅ Standalone, validated, and coupled
 
 A self-contained minimum-energy structural library: cables, frictionless pulleys,
 geometrically exact Timoshenko beams and wrinkling membrane fabric, assembled into
 one total potential energy and solved for static equilibrium with IPOPT.
 
-**Nothing in `aerostructural/` imports this yet, and this package imports nothing
-from AWETrim.** It depends only on NumPy and CasADi. That isolation is deliberate
-and is the first rule to preserve: it lets the element physics be validated against
-closed-form solutions before any of it touches a coupled run.
+**This package imports nothing from AWETrim.** It depends only on NumPy and
+CasADi. That isolation is deliberate and is the first rule to preserve: it lets
+the element physics be validated against closed-form solutions before any of it
+touches a coupled run.
+
+The coupling adapter lives on the other side of the boundary, in
+`aerostructural/billow/structural_billow.py`: it reads the kite YAML, maps VSM
+loads onto nodes, and is the only module that imports both packages. Nothing
+here knows about PSS, VSM or the YAML schema, and it must stay that way.
 
 ## Documentation
 
@@ -45,7 +50,13 @@ src/awetrim/structural/
                   MinimumEnergySolver, StructuralSolution
   rotations.py    SO(3) kernels over an `xp` namespace (NumPy or CasADi):
                   cayley, cayley_vector, half_vector, skew, axial,
-                  orthonormalize, frames_to_flat / flat_to_frames / unflatten_frame
+                  orthonormalize, minimal_rotation, unit_vector,
+                  frames_to_flat / flat_to_frames / unflatten_frame
+                  (`minimal_rotation` -- the smallest rotation carrying one
+                   vector onto another -- lives here rather than in beam.py
+                   because the coupling adapter transports frames with it too;
+                   it had been copy-pasted into `scripts/structural/
+                   hanging_kite.py`, which now imports it)
   model.py        DofLayout (gather maps), StructuralState (positions + frames),
                   StructuralModel (elements + reference config + pinned DOF)
   energy.py       PotentialEnergy: mapped assembly, objective, internal_load,
@@ -250,9 +261,25 @@ Consistency notes established by reading `kite_fem/SpringElement.py`,
 - The inflatable tube law is ported (see above). Remaining gap: the post-collapse
   branch is reported rather than modelled, and the fits cover only bending and
   torsion -- axial and shear stay linear.
-- No coupling adapter yet. When one is written it belongs in `aerostructural/`,
-  reading the kite YAML and mapping VSM loads onto nodes; this package must stay
-  free of PSS, VSM and schema knowledge.
+- The coupling adapter exists: `aerostructural/billow/structural_billow.py`,
+  driven by `scripts/aerostructural/run_simulation_BILLOW.py`. Two findings from
+  building it that belong here rather than there:
+  * **Reference curvature is the quantity that breaks first on a real kite.**
+    `omega_0 = psi / L0` with `psi` a Rodrigues vector grows like
+    `tan(theta/2)` and is singular at `theta = pi`, so a short element bridging
+    a large frame change is numerically hostile long before it is physically
+    wrong. On the LEI-V3 an independently-seeded roll per member put the worst
+    element at 173 degrees, `omega_0 = 753 /m` on a 17 mm element. The tube
+    section is isotropic in roll, so `d1` is the only physically determined
+    director and the roll is free: transporting it by minimal rotation over the
+    beam network, and letting the LONG member own the joint, gives 10.6 /m.
+  * **An unbalanced free body is reported, not hidden.** A gravity-only load on
+    a kite pinned at the KCU slackens every bridle line and the knots become a
+    mechanism; the residual then sits at exactly their weight and no amount of
+    solver tuning moves it. `kite_fem` never shows this because its
+    `I_stiffness=25` acts as a ground spring on every node. Read a stuck
+    residual equal to some node's load as "this node has no load path", not as
+    a conditioning problem.
 - Loads are dead (frozen) per solve. That matches the staggered coupling loop, but
   a true follower pressure would not be conservative and could not be posed as a
   potential — worth remembering before anyone tries to fold aero into the same

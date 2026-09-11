@@ -28,8 +28,22 @@ src/awetrim/
                          — see src/awetrim/aerodynamics/AGENTS.md
   aerostructural/    ✅  Shared interfaces: protocols, mapping, convergence, forces, results, utils
     pss/             ✅  PSS/QSM coupled solver — see src/awetrim/aerostructural/AGENTS.md
-    fem/             🟡  FEM coupling implemented; structural solver and
-                         chordwise force distribution still need improvement (see note)
+    fem/             🟡  FEM coupling implemented; structural solver still needs
+                         improvement. Its aerostructural_coupled_solver.py is the
+                         SHARED coupled driver — it dispatches over pss /
+                         kite_fem / billow, so a new backend is a branch there,
+                         not a copy. aero2struc.chordwise_distribution now
+                         offers "moment_matched", which places each panel's
+                         load at its own centre of pressure so the LOCAL
+                         pitching moment is conserved (default stays
+                         "cp_file", one fixed 0.291 c station for every panel,
+                         which reproduces stored results)
+    billow/          ✅  Billow/QSM coupling: the standalone minimum-energy
+                         structural model driven against the VSM trim. Reads
+                         struc_geometry_FEM_full.yaml (the only geometry with
+                         tubes and pressure) and replaces the FEM canopy spring
+                         net with wrinkling membrane triangles. Converged on
+                         the LEI-V3 unactuated baseline
   kinematics/        ✅  course-frame kinematics, B-spline path patterns
   timeseries/        ✅  PhaseParameterized, ReeloutSimple, ReelinSimple, Cycle
   environment/       ✅  Wind (uniform / logarithmic / power_law / explog /
@@ -42,8 +56,8 @@ src/awetrim/
                          builds fully numeric models; wind_profiles.py maps the
                          co-sim InflowConditions struct (laws 0-6, CUSTOM_* fits)
                          onto create_wind_model kwargs.
-  structural/        🟡  STANDALONE minimum-energy structural model (new, not
-                         yet coupled): cables, frictionless pulleys,
+  structural/        ✅  Minimum-energy structural model, coupled via
+                         aerostructural/billow/: cables, frictionless pulleys,
                          geometrically exact Timoshenko beams and wrinkling
                          (tension-field) membrane fabric, assembled into one
                          total potential energy and solved with IPOPT.
@@ -114,12 +128,22 @@ potential. They have been **integrated** into a strain energy in
 way to reuse them; never substitute a state-dependent `EI` into `1/2 EI k^2`.
 See `src/awetrim/structural/AGENTS.md`.
 
-**FEM known limitation:** the aero→struc coupling currently spreads each spanwise
-VSM force over 10 chordwise nodes using weights from a single-AoA Cp file
-(`cp_AOA_8.dat`), with a uniform fallback — see
-`aerostructural/fem/aero2struc.py`. A physically correct chordwise force
-distribution (from CFD or another source) is still needed, and the FEM structural
-solver itself needs further work.
+**Chordwise force distribution.** The aero→struc coupling spreads each spanwise
+VSM force over 10 chordwise nodes. Where it puts the resultant IS the panel's
+local pitching moment, and the wing's trim is a moment balance, so this is a
+first-order modelling choice rather than a detail — see
+`aerostructural/fem/aero2struc.py`. `chordwise_distribution: moment_matched`
+tilts the measured `Delta C_p` shape onto the centre of pressure VSM computes
+from each panel's own force and moment, conserving both; the `cp_file` default
+applies one fixed shape to every panel (0.291 c on the LEI-V3), which imposes
+~917 N m of same-sign spurious moment across the wing. A genuinely resolved
+chordwise *shape* (from CFD) would still be an improvement on the tilted prior.
+
+**Still open in the same family:** `map_aero_forces_to_struct_nodes`, the
+nearest-node spatial step that follows, loses ~20% of the moment once the kite
+has deformed (0.09% on the built shape). `check_moment_preservation` measures
+that step alone, not the chordwise placement. The FEM structural solver itself
+also needs further work.
 
 **Read the module's `AGENTS.md` before modifying `aerodynamics/`, `aerostructural/`,
 `structural/`, or `plotting/`.

@@ -72,7 +72,13 @@ from typing import Sequence
 import casadi as ca
 import numpy as np
 
-from ..rotations import cayley, cayley_vector, half_vector
+from ..rotations import (
+    unit_vector,
+    cayley,
+    cayley_vector,
+    half_vector,
+    minimal_rotation,
+)
 from .base import ElementSet, element_frame, element_rotation, element_translations
 
 Array = np.ndarray
@@ -184,27 +190,6 @@ class BeamSection:
         )
 
 
-def _unit(vector: Array) -> Array:
-    norm = float(np.linalg.norm(vector))
-    if norm < 1e-14:
-        raise ValueError("cannot normalise a zero-length vector")
-    return np.asarray(vector, dtype=float) / norm
-
-
-def _minimal_rotation(from_vector: Array, to_vector: Array) -> Array:
-    """Smallest rotation carrying ``from_vector`` onto ``to_vector``."""
-    a, b = _unit(from_vector), _unit(to_vector)
-    axis = np.cross(a, b)
-    sine = float(np.linalg.norm(axis))
-    cosine = float(np.dot(a, b))
-    if sine < 1e-12:
-        return np.eye(3) if cosine > 0.0 else 2.0 * np.outer(a, a) - np.eye(3)
-    skew_axis = np.array(
-        [[0.0, -axis[2], axis[1]], [axis[2], 0.0, -axis[0]], [-axis[1], axis[0], 0.0]]
-    )
-    return np.eye(3) + skew_axis + skew_axis @ skew_axis * ((1.0 - cosine) / sine ** 2)
-
-
 def initial_frames_from_polyline(
     points: Array, reference_normal: Sequence[float] = (0.0, 0.0, 1.0)
 ) -> Array:
@@ -226,19 +211,19 @@ def initial_frames_from_polyline(
     if len(points) > 2:
         tangents[1:-1] = segments[:-1] + segments[1:]
 
-    d1 = _unit(tangents[0])
+    d1 = unit_vector(tangents[0])
     seed = np.asarray(reference_normal, dtype=float)
     seed = seed - np.dot(seed, d1) * d1
     if np.linalg.norm(seed) < 1e-8:
         seed = np.cross(d1, [1.0, 0.0, 0.0])
         if np.linalg.norm(seed) < 1e-8:
             seed = np.cross(d1, [0.0, 1.0, 0.0])
-    d2 = _unit(seed)
+    d2 = unit_vector(seed)
 
     frames = np.empty((len(points), 3, 3))
     frames[0] = np.column_stack([d1, d2, np.cross(d1, d2)])
     for index in range(1, len(points)):
-        transport = _minimal_rotation(tangents[index - 1], tangents[index])
+        transport = minimal_rotation(tangents[index - 1], tangents[index])
         frames[index] = transport @ frames[index - 1]
     return frames
 

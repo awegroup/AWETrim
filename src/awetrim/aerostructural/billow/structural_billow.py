@@ -1,0 +1,893 @@
+# Copyright (c) 2023-2026 Oriol Cayon, Delft University of Technology
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Billow structural backend for the aero-structural coupling.
+
+Adapts the standalone minimum-energy library in :mod:`awetrim.structural` to
+the call contract the coupled drivers already use for ``kite_fem``
+(``instantiate`` / ``run_billow`` / ``get_rest_lengths``), so the outer
+fixed-point loop, the VSM trim and the load mapping are untouched.
+
+The element mapping, read off the geometry the FEM reader already produces:
+
+===========================  ===============================================
+ reader element               Billow element
+===========================  ===============================================
+ ``inflatable_beam``          ``InflatableBeamKernel`` tube beams
+ ``pulley`` (arm pairs)       ``PulleyKernel`` three-node ropes
+ bridle ``noncompressive``    ``CableKernel`` tension-only cables
+ canopy grid springs          **dropped** -- replaced by wrinkling membrane
+                              triangles on the same structured grid
+===========================  ===============================================
+
+Dropping the canopy spring net is the point of this backend. The FEM path
+models the fabric as a square net with diagonals, which is too soft by
+``1 - nu`` in tension and carries shear only as a fourth-order effect of the
+diagonal stretch; a relaxed (Pipkin) CST membrane carries the fabric's real
+biaxial law and settles into a wrinkled state instead of mesh-scale crumple.
+The bridle, the pulleys and the inflatable tubes are element-for-element the
+same as the FEM model, so a Billow-vs-FEM difference is attributable to the
+canopy and to the solver formulation, and to nothing else.
+
+This module is the only place that knows about both packages:
+:mod:`awetrim.structural` stays free of schema, VSM and PSS knowledge.
+"""
+
+from __future__ import annotations
+
+import dataclasses
+import logging
+from dataclasses import dataclass, field
+from typing import Any, Mapping, Sequence
+
+import numpy as np
+
+from awetrim.structural import MinimumEnergySolver, StructuralModel, StructuralState
+from awetrim.structural.rotations import minimal_rotation, orthonormalize
+from awetrim.structural.elements import (
+    InflatableTubeLaw,
+    build_cable_elements,
+    build_inflatable_beam_elements,
+    build_membrane_elements,
+    build_pulley_elements,
+    initial_frames_from_polyline,
+)
+
+logger = logging.getLogger(__name__)
+
+Array = np.ndarray
+
+#: Timoshenko shear correction for a thin-walled circular tube -- the same
+#: ``8/9`` kite_fem's ``BeamElement`` uses, so the two shear stiffnesses are
+#: directly comparable.
+SHEAR_CORRECTION = 8.0 / 9.0
+
+#: Element-set names, fixed so diagnostics and actuation can address them.
+CABLES = "bridle"
+PULLEYS = "pulleys"
+TUBES = "tubes"
+CANOPY = "canopy"
+
+DEFAULTS: dict[str, Any] = {
+    # -- canopy fabric --------------------------------------------------
+    # E*t [N/m], the membrane stress resultant per unit strain, and the fabric
+    # thickness that splits it. These are the REAL fabric, not a number chosen
+    # to agree with another model: the V3 canopy is a polyester ripstop at the
+    # 170 g/m2 the geometry YAML records, so the solid-equivalent thickness is
+    # 0.170 / 1380 = 123 um, and at a crimp-derated in-plane modulus of 4 GPa
+    # that is E*t ~ 4.9e5 N/m.
+    #
+    # The FEM canopy is a spring net at 5000 N/m, whose uniaxial membrane
+    # equivalent is E*t = 5000 -- E = 20 MPa at any plausible thickness, i.e.
+    # rubber. Matching it makes the two canopies comparable and both wrong; a
+    # canopy that soft billows instead of carrying load and bends the struts
+    # with it (measured: strut sagitta 4.5-6.7% of chord at 5e3, 0.6-4.1% at
+    # 1e6, same load).
+    #
+    # The modulus is a MATERIAL ESTIMATE, not a measurement -- a tensile test
+    # on the actual cloth would replace it, and the plausible range (2-12 GPa
+    # fibre, more crimp derating) spans 2.5e5 to 1.5e6 N/m.
+    "canopy_stiffness": 4.93e5,
+    "canopy_thickness": 1.232e-4,
+    "canopy_poisson_ratio": 0.3,
+    "canopy_wrinkling": True,
+    "canopy_slack_stiffness_ratio": 1e-4,
+    # -- inflatable tubes -----------------------------------------------
+    # ``tube_stiffness_factor`` scales the whole fitted moment-curvature curve,
+    # initial slope included, leaving its shape alone (see
+    # structural/elements/inflatable.py and the hanging-kite validation, which
+    # implies a factor well below one).
+    "tube_stiffness_factor": 1.0,
+    "tube_axial_stiffness": None,  # [N]  None -> derived from the fitted EI_0
+    "tube_shear_stiffness": None,  # [N]  None -> derived from the fitted GJ_0
+    "junction_frame": "strut",
+    # -- bridle relaxation ----------------------------------------------
+    # The kite YAMLs store measured rest lengths against measured node
+    # positions and the two do not agree; see relax_bridles.
+    "relax_bridles": True,
+    "relax_pull_force": -100.0,   # [N] downward pull on the KCU while settling
+    "relax_settle_force": -1.0,   # [N] token load for the second pass
+    "relax_move_limit": 0.25,     # [m] trust region for the relaxation solve
+    # -- solver ----------------------------------------------------------
+    "tolerance": 1e-8,
+    "force_tolerance": 1e-6,
+    "relative_force_tolerance": 1e-6,
+    "max_iterations": 1000,
+    # ``move_limit`` makes one solve a trust-region step; ``max_rounds`` is
+    # how many of those ``run_billow`` will take to reach force balance. With
+    # ``move_limit: None`` the solve is unbounded and one round is all there is.
+    "move_limit": 0.25,
+    "max_rounds": 12,
+    "anchor_stiffness": 1e-6,
+    "max_frame_updates": 3,
+    "print_info": False,
+}
+
+
+def resolve_config(config_structural_billow: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Fill a ``structural_billow`` config block with the module defaults."""
+    supplied = dict(config_structural_billow or {})
+    unknown = set(supplied) - set(DEFAULTS)
+    if unknown:
+        raise ValueError(
+            f"unknown structural_billow keys: {sorted(unknown)}; "
+            f"known keys are {sorted(DEFAULTS)}"
+        )
+    resolved = dict(DEFAULTS)
+    resolved.update(supplied)
+    return resolved
+
+
+@dataclass
+class BillowStructure:
+    """Live structural state of one Billow model, plus its compiled solver.
+
+    ``model`` carries the current element *parameters* (actuated rest lengths,
+    a ramped stiffness); ``solver`` is compiled against the topology once and
+    reused. ``state`` holds the current positions and reference frames and is
+    what the next solve is seeded from.
+    """
+
+    model: StructuralModel
+    solver: MinimumEnergySolver
+    state: StructuralState
+    grid: Array
+    #: Row of the cable set for each reader element, ``-1`` where the element is
+    #: not a Billow cable (a canopy spring, a pulley arm or a tube).
+    cable_row: Array
+    #: Row of the pulley set for each reader element, ``-1`` otherwise. Both
+    #: arms of one rope point at the same row.
+    pulley_row: Array
+    #: Row of the tube set for each reader element, ``-1`` otherwise.
+    tube_row: Array
+    tube_laws: list = field(default_factory=list)
+    fixed_node_indices: tuple[int, ...] = (0,)
+    last_solution: Any = None
+
+    @property
+    def struc_nodes(self) -> Array:
+        """Current nodal positions ``(n_nodes, 3)``."""
+        return self.state.positions
+
+
+# --------------------------------------------------------------------------
+# Geometry
+# --------------------------------------------------------------------------
+
+
+def canopy_grid(canopy_sections, strut_sections) -> Array:
+    """The structured spanwise x chordwise grid of wing nodes.
+
+    The reader emits canopy sections and strut sections separately, but together
+    they tile the whole wing: every section runs leading edge to trailing edge
+    with the same node count, and sorting by leading-edge index puts them in
+    spanwise order.
+    """
+    sections = list(canopy_sections) + list(strut_sections)
+    widths = {len(section) for section in sections}
+    if len(widths) != 1:
+        raise ValueError(
+            f"wing sections have mixed node counts {sorted(widths)}; the canopy "
+            "is not a structured grid and cannot be meshed with membranes"
+        )
+    sections.sort(key=lambda section: section[0])
+    return np.asarray([list(section) for section in sections], dtype=int)
+
+
+def grid_edges(grid: Array) -> set[frozenset[int]]:
+    """Every chordwise, spanwise and diagonal edge of the structured grid.
+
+    These are exactly the springs the FEM reader lays over the canopy, so the
+    set doubles as the classifier that tells a canopy spring from a bridle line.
+    """
+    edges: set[frozenset[int]] = set()
+    rows, columns = grid.shape
+    for i in range(rows):
+        for j in range(columns - 1):
+            edges.add(frozenset((int(grid[i, j]), int(grid[i, j + 1]))))
+    for i in range(rows - 1):
+        for j in range(columns):
+            edges.add(frozenset((int(grid[i, j]), int(grid[i + 1, j]))))
+        for j in range(columns - 1):
+            edges.add(frozenset((int(grid[i, j]), int(grid[i + 1, j + 1]))))
+            edges.add(frozenset((int(grid[i, j + 1]), int(grid[i + 1, j]))))
+    return edges
+
+
+def canopy_triangles(grid: Array) -> Array:
+    """Split every grid quad into two triangles along a consistent diagonal."""
+    rows, columns = grid.shape
+    triangles = []
+    for i in range(rows - 1):
+        for j in range(columns - 1):
+            a, b = int(grid[i, j]), int(grid[i, j + 1])
+            c, d = int(grid[i + 1, j + 1]), int(grid[i + 1, j])
+            triangles.append([a, b, c])
+            triangles.append([a, c, d])
+    return np.asarray(triangles, dtype=int)
+
+
+def leading_edge_chain(struc_geometry: Mapping[str, Any]) -> list[int]:
+    """Node path along the leading-edge tube, walked from its element list."""
+    successor: dict[int, int] = {}
+    predecessors: set[int] = set()
+    for _name, ci, cj, _diameter in struc_geometry["leading_edge_tubes"]["data"]:
+        successor[int(ci)] = int(cj)
+        predecessors.add(int(cj))
+    starts = [node for node in successor if node not in predecessors]
+    if len(starts) != 1:
+        raise ValueError(
+            f"leading_edge_tubes must form one open chain; found {len(starts)} "
+            f"start nodes {sorted(starts)}"
+        )
+    chain = [starts[0]]
+    while chain[-1] in successor:
+        chain.append(successor[chain[-1]])
+    if len(chain) != len(successor) + 1:
+        raise ValueError("leading_edge_tubes chain is broken or branches")
+    return chain
+
+
+def beam_chains(struc_geometry, strut_sections) -> list[list[int]]:
+    """The leading-edge chain plus one chain per strut, as node paths.
+
+    Frames live on nodes, so they have to be carried along something smooth.
+    Each chain is a polyline; struts and the leading edge meet at shared nodes,
+    and whichever chain is laid down last owns the frame there.
+    """
+    return [leading_edge_chain(struc_geometry)] + [
+        list(section) for section in strut_sections
+    ]
+
+
+def chain_tangents(points: Array) -> Array:
+    """Unit tangents along an open polyline, averaged at interior nodes.
+
+    The same rule :func:`initial_frames_from_polyline` uses, lifted out so the
+    tangent field and the roll can be chosen independently.
+    """
+    points = np.asarray(points, dtype=float)
+    segments = np.diff(points, axis=0)
+    tangents = np.empty_like(points)
+    tangents[0] = segments[0]
+    tangents[-1] = segments[-1]
+    if len(points) > 2:
+        tangents[1:-1] = segments[:-1] + segments[1:]
+    return tangents / np.linalg.norm(tangents, axis=1, keepdims=True)
+
+
+def build_frames(
+    struc_nodes: Array,
+    beam_connectivity: Array,
+    struc_geometry,
+    strut_sections,
+    junction_frame: str = "strut",
+) -> Array:
+    """Nodal material frames: ``d1`` along the owning member, roll transported.
+
+    The directors do two jobs -- they orient the diagonal section stiffness and
+    they fix the reference strains. An inflated tube is isotropic in roll
+    (``ga_2 == ga_3``, one bending law), so only ``d1`` is physically
+    determined and the roll is free. It is spent here on keeping every
+    element's relative rotation as small as possible, because the reference
+    curvature is ``omega_0 = psi / L0`` with ``psi`` a Rodrigues vector: it
+    grows like ``tan(theta/2)`` and is singular at ``theta = pi``. Seeding each
+    chain's roll independently piles an arbitrary roll offset on top of the
+    physical joint angle and took the worst element to 173 degrees on the
+    LEI-V3; minimal-rotation transport over the beam network leaves the joint
+    angle alone and nothing else.
+
+    ``junction_frame`` decides who owns the node where a strut meets the
+    leading edge. One nodal frame cannot be tangent to two near-perpendicular
+    members, so the ~90 degree joint rotation has to land on *somebody*; it
+    should land on the long members. The strut's first element is 17-97 mm
+    while the leading-edge runs are 300-750 mm, so ``"strut"`` is the default
+    and puts ``omega_0`` an order of magnitude lower.
+    """
+    if junction_frame not in ("leading_edge", "strut"):
+        raise ValueError("junction_frame must be 'leading_edge' or 'strut'")
+
+    # -- per-node tangents, the owning member having the last word ---------
+    chains = beam_chains(struc_geometry, strut_sections)
+    ordered = chains if junction_frame == "strut" else chains[1:] + chains[:1]
+    tangents = np.zeros((len(struc_nodes), 3))
+    for chain in ordered:
+        tangents[chain] = chain_tangents(struc_nodes[chain])
+
+    # -- roll, transported over the beam network --------------------------
+    neighbours: dict[int, list[int]] = {}
+    for node_a, node_b in np.asarray(beam_connectivity, dtype=int):
+        neighbours.setdefault(int(node_a), []).append(int(node_b))
+        neighbours.setdefault(int(node_b), []).append(int(node_a))
+
+    frames = np.tile(np.eye(3), (len(struc_nodes), 1, 1))
+    visited = set()
+    for root in sorted(neighbours):
+        if root in visited:
+            continue
+        # Seed one arbitrary roll per connected component; every other node in
+        # it inherits by minimal rotation, so only the component's own
+        # orientation is a choice and no element pays for it.
+        frames[root] = initial_frames_from_polyline(
+            np.array([struc_nodes[root], struc_nodes[root] + tangents[root]])
+        )[0]
+        visited.add(root)
+        queue = [root]
+        while queue:
+            node = queue.pop()
+            for other in neighbours[node]:
+                if other in visited:
+                    continue
+                frames[other] = orthonormalize(
+                    minimal_rotation(tangents[node], tangents[other]) @ frames[node]
+                )
+                visited.add(other)
+                queue.append(other)
+    return frames
+
+
+# --------------------------------------------------------------------------
+# Model assembly
+# --------------------------------------------------------------------------
+
+
+def _pulley_triplets(
+    kite_connectivity_arr: Array, pulley_line_indices: Sequence[int]
+) -> tuple[list[tuple[int, int, int]], list[tuple[int, int]]]:
+    """Group the reader's pulley arms into ``(i, pulley, k)`` ropes.
+
+    The reader appends the two arms of one rope back to back (``ci-cj`` then
+    ``cj-ck``), so consecutive entries pair up -- the same grouping
+    ``pss/structural_nlp.py`` relies on. It is checked here rather than assumed.
+    """
+    indices = [int(i) for i in (pulley_line_indices or [])]
+    if len(indices) % 2:
+        raise ValueError(f"pulley arms must pair up (got {len(indices)} entries)")
+
+    triplets: list[tuple[int, int, int]] = []
+    pairs: list[tuple[int, int]] = []
+    for first, second in zip(indices[0::2], indices[1::2]):
+        if second != first + 1:
+            raise ValueError(
+                f"pulley arm indices are expected consecutive (got {first}, "
+                f"{second}); the pair grouping would be wrong"
+            )
+        ci, cj = (int(n) for n in kite_connectivity_arr[first])
+        cj_other, ck = (int(n) for n in kite_connectivity_arr[second])
+        if cj_other != cj:
+            raise ValueError(
+                f"pulley arms {first}/{second} do not share a node "
+                f"({ci}-{cj} and {cj_other}-{ck})"
+            )
+        triplets.append((ci, cj, ck))
+        pairs.append((first, second))
+    return triplets, pairs
+
+
+def _tube_stiffnesses(laws, diameters: Array, settings) -> tuple[Array, Array]:
+    """Axial ``EA`` and shear ``kappa G A`` for the tube beams [N].
+
+    The ASKITE fits cover bending and torsion only, so these two have to come
+    from somewhere else. Unless the config overrides them they are derived from
+    the *same* fits, reading the initial slopes as a modulus over the tube's
+    thin-wall section: ``E = EI_0 / I`` and ``G = GJ_0 / J``. That keeps one
+    source for the tube properties, and neither stiffness is sensitive here --
+    an inflated tube is far stiffer in extension and shear than in bending, so
+    both are effectively rigid at kite loads either way.
+    """
+    radius = 0.5 * np.asarray(diameters, dtype=float)
+    area = np.pi * radius**2
+    second_moment = np.pi * radius**4 / 4.0
+    polar_moment = 2.0 * second_moment
+
+    bending = np.array([law.bending_stiffness for law in laws])
+    torsion = np.array([law.torsion_c1 * law.torsion_c2 for law in laws])
+
+    axial = settings["tube_axial_stiffness"]
+    shear = settings["tube_shear_stiffness"]
+    axial = (
+        bending / second_moment * area
+        if axial is None
+        else np.full(len(laws), float(axial))
+    )
+    shear = (
+        SHEAR_CORRECTION * torsion / polar_moment * area
+        if shear is None
+        else np.full(len(laws), float(shear))
+    )
+    return axial, shear
+
+
+def scale_tube_laws(laws, factor: float):
+    """Multiply the whole moment-curvature curve, initial slope included.
+
+    Scaling ``moment_max``, ``bending_stiffness`` and ``torsion_c1`` together
+    leaves ``curvature_scale = M_max / EI_0`` unchanged, so the curve keeps its
+    shape and only its magnitude moves -- one honest stiffness knob rather than
+    a refit of the law.
+    """
+    if factor == 1.0:
+        return list(laws)
+    return [
+        dataclasses.replace(
+            law,
+            moment_max=law.moment_max * factor,
+            bending_stiffness=law.bending_stiffness * factor,
+            torsion_c1=law.torsion_c1 * factor,
+        )
+        for law in laws
+    ]
+
+
+def relax_bridles(
+    struc_nodes: Array,
+    cables,
+    pulleys,
+    grid: Array,
+    *,
+    kcu_node: int = 0,
+    pull_force: float = -100.0,
+    settle_force: float = -1.0,
+    move_limit: float = 0.25,
+    max_rounds: int = 60,
+    residual_target: float = 1e-4,
+) -> tuple[Array, bool]:
+    """Settle the bridle onto the built wing before the coupled model is built.
+
+    The kite YAMLs store *measured* bridle rest lengths against *measured* node
+    positions, and the two are not consistent: on the LEI-V3 FEM geometry
+    ``Br_main_1`` is 11.5% long at its stored node positions, which at the real
+    ``EA/l0`` is 88 kN in one line. Starting a coupled run there is starting it
+    from an explosion. The FEM path hides this by calling
+    ``structural_kite_fem.relaxbridles`` before the loop; this is the same step
+    in Billow's own formulation.
+
+    The wing is held rigid (every grid node fixed) so only the bridle moves and
+    the canopy and tube reference configurations are untouched. The KCU is
+    pulled down so the bridle settles in tension rather than folding, then
+    settled again at a token load, then the whole structure is translated so
+    the KCU returns to where the YAML puts it -- a rigid translation, which no
+    reference strain can see.
+
+    Returns the relaxed nodes and whether the settle solve reached equilibrium.
+    """
+    struc_nodes = np.asarray(struc_nodes, dtype=float)
+    fixed = set(int(node) for node in grid.ravel())
+    touched = {
+        int(node)
+        for element_set in (cables, pulleys)
+        for node in element_set.connectivity.ravel()
+    }
+    # Anything the bridle does not touch has no load path here; pinning it
+    # removes a null mode at no physical cost.
+    fixed |= set(range(len(struc_nodes))) - touched
+    fixed.discard(int(kcu_node))
+
+    model = StructuralModel(
+        struc_nodes, [cables, pulleys], fixed_translation_nodes=sorted(fixed)
+    )
+    solver = MinimumEnergySolver(
+        model, tolerance=1e-8, max_iterations=2000, move_limit=move_limit
+    )
+
+    state, converged = None, False
+    for load in (float(pull_force), float(settle_force)):
+        forces = np.zeros_like(struc_nodes)
+        forces[int(kcu_node), 2] = load
+        for _ in range(max_rounds):
+            solution = solver.solve(forces, state=state)
+            state = solution.state
+            converged = solution.residual_norm <= residual_target
+            if converged:
+                break
+
+    relaxed = state.positions - state.positions[int(kcu_node)] + struc_nodes[int(kcu_node)]
+    logger.info(
+        "bridle relaxation: %s, %d bridle nodes moved, max displacement %.4f m",
+        "settled" if converged else "NOT settled",
+        len(touched - fixed),
+        float(np.abs(relaxed - struc_nodes).max()),
+    )
+    return relaxed, converged
+
+
+def instantiate(
+    config,
+    struc_geometry,
+    struc_nodes,
+    kite_connectivity_arr,
+    l0_arr,
+    k_arr,
+    c_arr,
+    m_arr,
+    linktype_arr,
+    pulley_line_indices,
+    canopy_sections,
+    strut_sections,
+) -> BillowStructure:
+    """Build the Billow model and compile its solver.
+
+    Takes the arrays ``fem.read_struc_geometry_yaml.main`` already returns, so
+    one geometry reader serves both structural backends. For the inflatable
+    beams that reader stores the tube diameter in ``k_arr`` and the inflation
+    pressure in ``c_arr``, which is how ``kite_fem`` receives them too.
+    """
+    settings = resolve_config(config.get("structural_billow"))
+
+    struc_nodes = np.asarray(struc_nodes, dtype=float)
+    connectivity = np.asarray(kite_connectivity_arr, dtype=int)
+    rest_lengths = np.asarray(l0_arr, dtype=float)
+    stiffness = np.asarray(k_arr, dtype=float)
+    damping = np.asarray(c_arr, dtype=float)
+    link_types = np.asarray([str(t).lower() for t in linktype_arr])
+    n_elements = len(connectivity)
+
+    fixed_nodes = tuple(int(i) for i in struc_geometry.get("fixed_point_indices", [0]))
+    grid = canopy_grid(canopy_sections, strut_sections)
+    edges = grid_edges(grid)
+
+    is_beam = link_types == "inflatable_beam"
+    triplets, arm_pairs = _pulley_triplets(connectivity, pulley_line_indices)
+    is_pulley_arm = np.zeros(n_elements, dtype=bool)
+    for first, second in arm_pairs:
+        is_pulley_arm[[first, second]] = True
+
+    pairs = [frozenset((int(a), int(b))) for a, b in connectivity]
+    is_canopy = np.array([pair in edges for pair in pairs]) & ~is_beam & ~is_pulley_arm
+    is_cable = ~(is_beam | is_pulley_arm | is_canopy)
+
+    # A bridle line that happened to join two grid nodes would be silently
+    # swallowed by the membrane, so check the split is unambiguous rather than
+    # trusting it.
+    on_grid = {int(node) for node in grid.ravel()}
+    swallowed = [
+        index
+        for index, pair in enumerate(pairs)
+        if is_cable[index] and set(pair) <= on_grid
+    ]
+    if swallowed:
+        raise RuntimeError(
+            f"{len(swallowed)} non-canopy elements join two canopy grid nodes "
+            f"without being grid edges (first: element {swallowed[0]}, nodes "
+            f"{sorted(pairs[swallowed[0]])}); the canopy split is ambiguous"
+        )
+
+    # -- cables ------------------------------------------------------------
+    cable_elements = np.flatnonzero(is_cable)
+    cables = build_cable_elements(
+        connectivity[cable_elements],
+        rest_lengths[cable_elements],
+        stiffness[cable_elements],
+        name=CABLES,
+    )
+
+    # -- pulleys -----------------------------------------------------------
+    # Billow's PulleyKernel takes the rest length of the WHOLE rope, and the
+    # reader stores that total on each arm (as kite_fem does, and unlike the PSS
+    # reader, which splits it across the two arms). Read it off the first arm.
+    first_arms = [first for first, _ in arm_pairs]
+    pulleys = build_pulley_elements(
+        np.asarray(triplets, dtype=int),
+        rest_lengths[first_arms],
+        stiffness[first_arms],
+        name=PULLEYS,
+    )
+
+    # -- bridle relaxation -------------------------------------------------
+    # Done before the tubes and the canopy are built, so their reference
+    # configurations are taken on the shape the model actually starts from.
+    # Only bridle nodes move (the wing is held), plus a rigid translation.
+    if settings["relax_bridles"]:
+        struc_nodes, settled = relax_bridles(
+            struc_nodes,
+            cables,
+            pulleys,
+            grid,
+            kcu_node=int(fixed_nodes[0]),
+            pull_force=float(settings["relax_pull_force"]),
+            settle_force=float(settings["relax_settle_force"]),
+            move_limit=float(settings["relax_move_limit"]),
+        )
+        if not settled:
+            logger.warning(
+                "the bridle did not settle; the coupled solve starts from a "
+                "pre-stressed bridle and may not converge"
+            )
+
+    # -- inflatable tubes --------------------------------------------------
+    beam_elements = np.flatnonzero(is_beam)
+    diameters = stiffness[beam_elements]  # reader stores diameter in k_arr
+    pressures = damping[beam_elements]  # ... and pressure in c_arr
+    laws = scale_tube_laws(
+        [
+            InflatableTubeLaw.from_fit(float(diameter), float(pressure))
+            for diameter, pressure in zip(diameters, pressures)
+        ],
+        float(settings["tube_stiffness_factor"]),
+    )
+    frames = build_frames(
+        struc_nodes,
+        connectivity[beam_elements],
+        struc_geometry,
+        strut_sections,
+        junction_frame=str(settings["junction_frame"]),
+    )
+    axial, shear = _tube_stiffnesses(laws, diameters, settings)
+    tubes = build_inflatable_beam_elements(
+        struc_nodes,
+        connectivity[beam_elements],
+        laws,
+        frames,
+        axial_stiffness=axial,
+        shear_stiffness=shear,
+        name=TUBES,
+    )
+
+    # -- canopy ------------------------------------------------------------
+    thickness = float(settings["canopy_thickness"])
+    canopy = build_membrane_elements(
+        struc_nodes,
+        canopy_triangles(grid),
+        thickness=thickness,
+        youngs_modulus=float(settings["canopy_stiffness"]) / thickness,
+        poisson_ratio=float(settings["canopy_poisson_ratio"]),
+        name=CANOPY,
+        wrinkling=bool(settings["canopy_wrinkling"]),
+        slack_stiffness_ratio=float(settings["canopy_slack_stiffness_ratio"]),
+    )
+
+    model = StructuralModel(
+        struc_nodes,
+        [cables, pulleys, tubes, canopy],
+        node_frames=frames,
+        fixed_translation_nodes=fixed_nodes,
+    )
+    solver = MinimumEnergySolver(
+        model,
+        tolerance=float(settings["tolerance"]),
+        force_tolerance=float(settings["force_tolerance"]),
+        relative_force_tolerance=float(settings["relative_force_tolerance"]),
+        max_iterations=int(settings["max_iterations"]),
+        move_limit=settings["move_limit"],
+        anchor_stiffness=float(settings["anchor_stiffness"]),
+        max_frame_updates=int(settings["max_frame_updates"]),
+    )
+
+    cable_row = np.full(n_elements, -1, dtype=int)
+    cable_row[cable_elements] = np.arange(len(cable_elements))
+    pulley_row = np.full(n_elements, -1, dtype=int)
+    for row, (first, second) in enumerate(arm_pairs):
+        pulley_row[[first, second]] = row
+    tube_row = np.full(n_elements, -1, dtype=int)
+    tube_row[beam_elements] = np.arange(len(beam_elements))
+
+    logger.info(
+        "Billow model: %d nodes, %d DOF | %d cables, %d pulleys, %d tubes, "
+        "%d membrane triangles (%d canopy springs replaced)",
+        model.n_nodes,
+        model.layout.n_dof,
+        len(cable_elements),
+        len(triplets),
+        len(beam_elements),
+        len(canopy.connectivity),
+        int(is_canopy.sum()),
+    )
+    return BillowStructure(
+        model=model,
+        solver=solver,
+        state=model.initial_state(),
+        grid=grid,
+        cable_row=cable_row,
+        pulley_row=pulley_row,
+        tube_row=tube_row,
+        tube_laws=laws,
+        fixed_node_indices=fixed_nodes,
+    )
+
+
+# --------------------------------------------------------------------------
+# Solve
+# --------------------------------------------------------------------------
+
+
+def run_billow(structure: BillowStructure, f_ext_flat, config_structural_billow):
+    """Solve for equilibrium under frozen nodal loads.
+
+    Mirrors ``fem.structural_kite_fem.run_kite_fem``: returns the updated
+    structure, the convergence verdict, the solved nodes and the flattened
+    internal force in the convention the drivers use, ``f_res = f_int + f_ext``.
+    Like ``run_kite_fem``, one call is a whole structural solve, not one step.
+
+    With a ``move_limit`` each ``MinimumEnergySolver.solve`` is one
+    trust-region step, so this walks them to force balance. The bound is what
+    stops a slack-dominated configuration -- slack fabric, slack tension-only
+    cable directions -- from handing IPOPT a near-zero-curvature direction
+    that it answers with a step of order 1e4, overflowing the objective before
+    restoration can help. It also means IPOPT's own verdict no longer implies
+    equilibrium (it reports success for the *boxed* problem while sitting on
+    the boundary), which is why the loop terminates on the force residual.
+    """
+    settings = resolve_config(config_structural_billow)
+    forces = np.asarray(f_ext_flat, dtype=float).reshape(-1, 3)
+
+    accept_at = max(
+        float(settings["force_tolerance"]),
+        float(settings["relative_force_tolerance"])
+        * float(np.linalg.norm(forces, axis=1).max(initial=0.0)),
+    )
+    rounds = int(settings["max_rounds"]) if settings["move_limit"] is not None else 1
+    for _ in range(max(1, rounds)):
+        solution = structure.solver.solve(
+            forces, state=structure.state, model=structure.model
+        )
+        structure.state = solution.state
+        if solution.residual_norm <= accept_at:
+            break
+    structure.last_solution = solution
+
+    f_int = solution.internal_forces.copy()
+    # At a fixed node the "internal force" is the reaction, so the residual
+    # there is meaningless. Zero it out the way the FEM backend does, so the
+    # driver's residual norms see only the free nodes.
+    for node in structure.fixed_node_indices:
+        f_int[node] = -forces[node]
+
+    converged = solution.residual_norm <= accept_at
+    if settings["print_info"]:
+        logger.info(
+            "Billow solve: %s in %d iterations (%d frame updates), residual "
+            "%.3e N (target %.3e), strain energy %.4f J",
+            solution.status,
+            solution.iterations,
+            solution.frame_updates,
+            solution.residual_norm,
+            accept_at,
+            solution.strain_energy,
+        )
+    return (
+        structure,
+        bool(converged),
+        solution.state.positions,
+        f_int.flatten(),
+    )
+
+
+# --------------------------------------------------------------------------
+# Rest lengths, stiffness and actuation
+# --------------------------------------------------------------------------
+
+#: Element sets whose rest length an actuator may drive, in lookup order.
+_ACTUATABLE = (CABLES, PULLEYS)
+
+
+def _row_of(structure: BillowStructure, element_index: int, names=_ACTUATABLE):
+    """``(set_name, row)`` for a reader element, or ``(None, -1)``."""
+    rows = {CABLES: structure.cable_row, PULLEYS: structure.pulley_row,
+            TUBES: structure.tube_row}
+    for name in names:
+        row = int(rows[name][int(element_index)])
+        if row >= 0:
+            return name, row
+    return None, -1
+
+
+def get_rest_lengths(structure: BillowStructure, kite_connectivity_arr) -> Array:
+    """Current rest lengths in the reader's element ordering.
+
+    ``NaN`` where the element has no Billow counterpart -- the canopy springs
+    the membrane replaced -- which keeps the array numeric and HDF5-friendly,
+    the same convention the FEM backend uses for unmatched elements.
+    """
+    lengths = np.full(len(np.asarray(kite_connectivity_arr)), np.nan)
+    for name, rows in (
+        (CABLES, structure.cable_row),
+        (PULLEYS, structure.pulley_row),
+        (TUBES, structure.tube_row),
+    ):
+        column = structure.model.element_set(name).params[:, 0]
+        mask = rows >= 0
+        lengths[mask] = column[rows[mask]]
+    return lengths
+
+
+def get_rest_length(structure: BillowStructure, element_index: int) -> float:
+    """One element's current rest length [m], in the reader's ordering."""
+    name, row = _row_of(structure, element_index, (CABLES, PULLEYS, TUBES))
+    if name is None:
+        raise KeyError(f"element {element_index} has no Billow counterpart")
+    return float(structure.model.element_set(name).params[row, 0])
+
+
+def set_rest_length(
+    structure: BillowStructure, element_index: int, rest_length: float
+) -> BillowStructure:
+    """Set one element's rest length [m], in the reader's element ordering.
+
+    Rest lengths are NLP parameters, so actuating a tape rebuilds the parameter
+    table but never the compiled graph. A pulley takes the length of the whole
+    rope, and either of its arms addresses the same element.
+    """
+    name, row = _row_of(structure, element_index)
+    if name is None:
+        raise KeyError(
+            f"element {element_index} is not an actuatable Billow cable or "
+            "pulley (it is a tube, or a canopy spring the membrane replaced)"
+        )
+    element_set = structure.model.element_set(name)
+    values = element_set.params[:, 0].copy()
+    values[row] = float(rest_length)
+    structure.model = structure.model.replaced(
+        element_set.with_param_column("rest_length", values)
+    )
+    return structure
+
+
+def update_rest_length(
+    structure: BillowStructure, element_index: int, delta_length: float
+) -> BillowStructure:
+    """Increment one element's rest length by ``delta_length`` [m]."""
+    current = get_rest_length(structure, element_index)
+    return set_rest_length(structure, element_index, current + float(delta_length))
+
+
+def get_stiffnesses(structure: BillowStructure, n_elements: int) -> Array:
+    """Cable and pulley stiffnesses [N/m] in the reader's ordering, NaN elsewhere."""
+    stiffness = np.full(int(n_elements), np.nan)
+    for name, rows in ((CABLES, structure.cable_row), (PULLEYS, structure.pulley_row)):
+        column = structure.model.element_set(name).params[:, 1]
+        mask = rows >= 0
+        stiffness[mask] = column[rows[mask]]
+    return stiffness
+
+
+def set_stiffnesses(structure: BillowStructure, values) -> BillowStructure:
+    """Set the cable and pulley stiffnesses [N/m], in the reader's ordering.
+
+    The counterpart of ``pss.structural_pss.set_stiffnesses``: what a stiffness
+    continuation ramp writes into. Like the rest lengths it is a parameter
+    update, not a rebuild. Entries with no cable or pulley counterpart are
+    ignored.
+    """
+    values = np.asarray(values, dtype=float)
+    for name, rows in ((CABLES, structure.cable_row), (PULLEYS, structure.pulley_row)):
+        element_set = structure.model.element_set(name)
+        column = element_set.params[:, 1].copy()
+        mask = rows >= 0
+        column[rows[mask]] = values[mask]
+        structure.model = structure.model.replaced(
+            element_set.with_param_column("stiffness", column)
+        )
+    return structure
