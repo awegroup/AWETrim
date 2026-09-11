@@ -492,6 +492,62 @@ which is what a rubber sheet would do.
 This diagnostic has no counterpart in the spring-net canopy. A net has no
 biaxial stress state and so cannot distinguish these cases at all.
 
+\subsection{Depower sweep}
+
+Continuation chains either side of the built tape length, at three winds:
+\SIrange{26}{26}{} converged points over $u_{dp} = \numrange{0.243}{0.314}$, in
+19 minutes. Each chain walks the tape inside a single coupled call so every step
+warm-starts the next; the alternative, solving each point independently, was
+measured at 14 minutes \emph{per point}.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{depower_chains.png}
+  \caption{Depower chains at the window centre. Each curve is one wind speed;
+  within a chain the wind is held, so $v_a$ slides with $u_{dp}$ and panel
+  \textbf{(d)} is a readout rather than a control. \textbf{(a)} span retained
+  against the as-built \SI{8.202}{\metre}. \textbf{(b)} arch rise --- the
+  outlier at $u_{dp}=0.278$ is the built point, the only step in each chain
+  without a warm start. \textbf{(c)} resultant aerodynamic load. The
+  $v_w=\SI{4.2}{\metre\per\second}$ curve leaves the attached branch past
+  $u_{dp}\approx0.30$ in both \textbf{(c)} and \textbf{(d)}.}
+  \label{fig:depower}
+\end{figure}
+
+\textbf{Span loss is nearly invariant over the box.} Between \SI{96.9}{\percent}
+and \SI{97.6}{\percent} of the built span is retained everywhere in the grid:
+depowering by 0.07 in $u_{dp}$ and nearly doubling the wind barely move it. The
+\SI{2.96}{\percent} of \S5.2 is therefore the wing's signature across this
+operating box rather than a property of one trim point.
+
+\textbf{What depower controls is load, not shape.} The resultant aerodynamic
+force falls \SI{29}{\percent} at $v_w=\SI{2.6}{\metre\per\second}$ and
+\SI{35}{\percent} at \SI{3.4}{\metre\per\second} across the $u_{dp}$ range,
+against about \SI{0.5}{\percent} of span movement. At least this far from stall,
+the depower tape is a load knob.
+
+Three caveats, all visible in the figure and none yet resolved:
+
+\begin{enumerate}[leftmargin=2em]
+  \item \textbf{The highest-wind chain leaves the attached branch} past
+    $u_{dp}\approx0.30$: load \SIrange{3263}{751}{\newton}, $v_a$
+    \SIrange{23.7}{11.8}{\metre\per\second}. At $u_{dp}=0.314$ the highest wind
+    pulls \emph{less} than the lowest, which is deep stall rather than depower.
+    Those points want the attached-branch guard the campaign scripts use.
+  \item \textbf{The built point of each chain is under-converged}, being the one
+    step with no warm start (\SI{4.11}{\newton} against about
+    \SI{2}{\newton}); it is the arch-rise outlier in panel~(b). An artifact of
+    chain structure, not physics.
+  \item \textbf{Span is not monotonic in wind} --- \SI{2.6}{\metre\per\second}
+    loses more span than \SI{3.4}{\metre\per\second}. Unexplained; it may be
+    caveat~2 leaking in.
+\end{enumerate}
+
+The flat $v_a$ segments in panel~(d) are \code{quasi\_steady\_trim.max\_nfev: 8}:
+the warm-started trim returns a bit-identical \code{opt\_x} when it starts inside
+tolerance, so $v_a$ repeats exactly. Harmless, but $v_a$ per step is not
+independently converged.
+
 %--------------------------------------------------------------------------
 \section{Open items}
 

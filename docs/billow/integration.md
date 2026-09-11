@@ -379,6 +379,46 @@ biaxial stress state and so cannot distinguish these cases at all.
 
 ---
 
+### Depower sweep
+
+Continuation chains either side of the built tape length, at three winds: 26
+converged points over u_dp = 0.243–0.314, in 19 minutes. Each chain walks the
+tape inside a single coupled call so every step warm-starts the next; solving
+each point independently was measured at 14 minutes *per point*.
+
+![Depower chains at the window centre](figures/depower_chains.png)
+
+*Each curve is one wind speed; within a chain the wind is held, so v_a slides
+with u_dp and (d) is a readout rather than a control. (a) span retained against
+the as-built 8.202 m. (b) arch rise — the outlier at u_dp 0.278 is the built
+point, the only step without a warm start. (c) resultant aerodynamic load. The
+v_w = 4.2 curve leaves the attached branch past u_dp ≈ 0.30 in both (c) and (d).*
+
+**Span loss is nearly invariant over the box** — 96.9% to 97.6% retained
+everywhere. Depowering by 0.07 in u_dp and nearly doubling the wind barely move
+it, so the 2.96% above is the wing's signature across this operating box rather
+than a property of one trim point.
+
+**What depower controls is load, not shape.** The resultant aerodynamic force
+falls 29% at v_w 2.6 and 35% at 3.4 across the u_dp range, against about 0.5% of
+span movement. At least this far from stall, the depower tape is a load knob.
+
+Three caveats, all visible in the figure and none yet resolved:
+
+1. **The highest-wind chain leaves the attached branch** past u_dp ≈ 0.30: load
+   3263 → 751 N, v_a 23.7 → 11.8 m/s. At u_dp 0.314 the highest wind pulls
+   *less* than the lowest — deep stall, not depower. Wants the attached-branch
+   guard the campaign scripts use.
+2. **The built point of each chain is under-converged**, being the one step with
+   no warm start (4.11 N against ~2 N); it is the arch-rise outlier in (b).
+   Chain structure, not physics.
+3. **Span is not monotonic in wind** — 2.6 loses more span than 3.4.
+   Unexplained; may be caveat 2 leaking in.
+
+The flat v_a segments in (d) are `quasi_steady_trim.max_nfev: 8` — the
+warm-started trim returns a bit-identical `opt_x` when it starts inside
+tolerance. Harmless, but v_a per step is not independently converged.
+
 ## 6. Open items
 
 Roughly in priority order.
