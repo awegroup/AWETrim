@@ -549,6 +549,153 @@ tolerance, so $v_a$ repeats exactly. Harmless, but $v_a$ per step is not
 independently converged.
 
 %--------------------------------------------------------------------------
+\section{Mirror symmetry}
+\label{sec:symmetry}
+
+An unactuated kite at the centre of the wind window with gravity off is
+mirror-symmetric in every input, so its solved shape must be mirror-symmetric
+too. It was not. Chasing that found three independent causes, two of them fixed.
+
+\subsection{The geometry was asymmetric before any solve}
+
+Two slips in the shared canopy-section interpolation, both of the same kind: a
+quantity measured one way divided by a quantity measured another.
+
+\begin{itemize}
+  \item \code{ratio\_te} took the \emph{leading}-edge distance over the
+    \emph{trailing}-edge length. That is a fraction only when the two runs
+    happen to be equal. Under $y \to -y$ the LE distance becomes its complement
+    while the TE length does not, so a section and its mirror got blend weights
+    that did not sum to one. Worst where the bounding struts differ most --- a
+    \SI{0.35}{\metre} tip chord beside a \SI{1.7}{\metre} strut --- which is
+    exactly where the error showed.
+  \item Both ratios divided a \emph{straight-line} distance by an \emph{arc}
+    length. On a curved edge the two chords from either bounding strut do not
+    add up to the arc between them, so the same complement argument fails again.
+\end{itemize}
+
+Built-geometry mirror mismatch: \textbf{\SI{171.73}{\milli\metre} $\rightarrow$
+\SI{0.000000}{\milli\metre}}. The leading and trailing edges themselves were
+always exact; only the interpolated interior was wrong. The function is shared,
+so the FEM and PSS paths were affected too.
+
+\subsection{The canopy triangulation was not mirror-symmetric}
+
+Raised by Roland Schmehl in review. Splitting every quad along the \emph{same}
+diagonal is directionally biased, and under $y \to -y$ that diagonal maps to the
+other one. On a finely resolved mesh the bias is small; here the quads are a
+sizeable fraction of the wing.
+
+Measured from the now-exactly-symmetric geometry, the solve generated
+\SIrange{3.5}{21}{\milli\metre} of left-right mismatch. The distribution
+confirms the mechanism: it is largest on the \emph{pure-canopy} sections
+(\SIrange{14}{21}{\milli\metre}) and smallest on the \emph{strut-stiffened} ones
+(about \SI{4}{\milli\metre}) --- it appears where the membrane governs and is
+suppressed where a beam carries the load.
+
+\begin{center}\small
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+\textbf{pattern} & \textbf{tri/quad} & \textbf{extra nodes} &
+\textbf{symmetric} & \textbf{can dome?} \\
+\midrule
+\code{diagonal} & 2, one diagonal & 0 & no & no \\
+\code{union} & 4, both diagonals at half $Et$ & 0 & yes & no \\
+\code{cross} & 4, via a quad-centre node & 1 per quad & yes & \textbf{yes} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+All three store identical energy under a uniform stretch
+(\SI{71.134618}{\joule} at \SI{1}{\percent}, \SI{1849.850446}{\joule} at
+\SI{5}{\percent}) --- verified, and it caught \code{union} being twice too stiff
+before the stress resultant rather than the thickness was scaled.
+
+\code{cross} is Roland's proposal and is the only one that gives a patch the
+freedom a billowing sail needs: a two-triangle quad can only \emph{fold} along
+its diagonal, it cannot bulge. It is \textbf{not yet fairly tested}, because its
+centre nodes are massless and receive no direct aerodynamic load --- the
+aero-to-structure mapping targets grid nodes only --- so they are held by the
+membrane alone. Extending the load mapping to them is the outstanding work.
+
+\subsection{What remained was aerodynamic}
+
+On an exactly symmetric wing the spanwise resultant must be zero. This needs no
+panel pairing to check, so it is immune to indexing mistakes.
+
+\begin{center}\small
+\begin{tabular}{@{}llrr@{}}
+\toprule
+\textbf{gamma loop} & \code{allowed\_error} & $F_y$ & \textbf{per-panel mirror} \\
+\midrule
+\code{base} (relaxed Picard) & 1e-8 & \textbf{\SI{0.00000}{\newton}} & \textbf{\SI{3.4e-07}{\newton}} \\
+\code{anderson} & 1e-6 & \SI{-11.079}{\newton} & --- \\
+\code{anderson} & 1e-8 & \SI{-0.7125}{\newton} & \SI{1.8e-01}{\newton} \\
+\code{anderson} & 1e-10 & \SI{-1.2337}{\newton} & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\textbf{Anderson acceleration breaks the mirror symmetry of the circulation
+solve}, by five and a half orders of magnitude, and tightening the tolerance
+makes it \emph{worse}. It is symmetry-equivariant in exact arithmetic, so the
+mechanism is almost certainly its ill-conditioned least-squares amplifying
+roundoff-level asymmetry; the tolerance signature fits, since tighter
+convergence makes the residual-difference columns more degenerate. This is not
+local to Billow: \code{as\_config} ships \code{anderson} and every
+wes-quasi-steady campaign passes it.
+
+\begin{center}\small
+\begin{tabular}{@{}lr@{}}
+\toprule
+\textbf{configuration} & \textbf{left-right mismatch} \\
+\midrule
+diagonal mesh, anderson & \SI{118.9}{\milli\metre} \\
+symmetric mesh, anderson & \SI{55.7}{\milli\metre} \\
+symmetric mesh, \code{base} & \textbf{\SI{28.2}{\milli\metre}} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The base loop was also \emph{faster} end to end here --- \SI{64}{\second}
+against \SI{144}{\second}, two coupled iterations against seven --- because it
+gives the outer loop a smoother map. An earlier ``six times slower'' figure was
+measured at a much higher load and does not generalise. The gamma loop alone
+also moves the span by \SI{51}{\milli\metre} (\SI{0.6}{\percent}), so this is
+not only a symmetry question.
+
+\subsection{The remaining 28 mm is unresolved}
+
+Geometry and canopy mesh are now provably symmetric and the aerodynamics is
+symmetric under \code{base}, yet \SI{28.2}{\milli\metre} remains. It is
+\emph{not} convergence error: tightening the coupled gate from \SI{5}{\newton}
+to \SI{0.5}{\newton} made it larger, not smaller.
+
+One observation, offered as an observation rather than a cause:
+\SI{12.4}{\percent} of mirror-paired canopy triangles (94 of 756) disagree on
+their wrinkling regime, with 59 elements within 1e-4 of the branch
+discriminant. The relaxed Pipkin energy is continuous across those branches by
+construction, so this is most likely a readout of the shape difference rather
+than its origin.
+
+The natural next test --- does the mirrored configuration have the same energy,
+in which case the minimum is nearly degenerate and the solver is choosing an
+arbitrary point in a flat valley --- was attempted and \textbf{abandoned as
+unreliable}. Reconstructing a coupled state after the fact proved harder than it
+looks: a geometrically exact beam's energy depends on positions \emph{and}
+frames together, and the saved pair was inconsistent because Aitken relaxation
+moves the positions after the solve. \code{sim\_output.h5} now stores
+\code{solved\_positions} beside \code{frames} as a consistent pair for exactly
+this reason. If the question is taken up again, the diagnostics should be
+computed \emph{inside} \code{run\_billow}, where the state is consistent by
+construction, rather than rebuilt from a saved file.
+
+Whether it is worth taking up is a fair question: \SI{28}{\milli\metre} is
+\SI{0.35}{\percent} of span, on a model whose canopy modulus is uncertain by a
+factor of three (\S\ref{sec:canopy}) and whose strut inflation pressure is
+unverified.
+
+%--------------------------------------------------------------------------
 \section{Open items}
 
 \begin{enumerate}[leftmargin=2em]

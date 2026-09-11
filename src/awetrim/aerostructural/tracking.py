@@ -17,7 +17,7 @@
 import numpy as np
 
 
-def setup_tracking_arrays(n_pts, t_vector, n_panels=0, with_frames=False):
+def setup_tracking_arrays(n_pts, t_vector, n_panels=0, n_frames=0):
     """
     Initialize tracking arrays for simulation results.
 
@@ -25,12 +25,14 @@ def setup_tracking_arrays(n_pts, t_vector, n_panels=0, with_frames=False):
         n_pts (int): Number of nodes/particles.
         t_vector (np.ndarray): Array of time steps.
         n_panels (int): Number of aerodynamic panels (0 skips aero tracking arrays).
-        with_frames (bool): Also store the nodal material frames. Needed by any
-            backend whose elements carry ROTATIONAL state -- a geometrically
-            exact beam's curvature lives in the frames, not in the node
-            positions, so without them a saved run cannot be asked afterwards
-            how bent its tubes were, or whether they had passed collapse.
-            Costs 9 floats per node per iteration.
+        n_frames (int): Number of material frames to store per iteration, or 0
+            for none. Needed by any backend whose elements carry ROTATIONAL
+            state -- a geometrically exact beam's curvature and strain energy
+            live in the frames, not in the node positions, so without them a
+            saved run cannot be asked afterwards how bent its tubes were or
+            re-evaluated at all. NOT one per node: frames are stored per
+            rotational slot, so pass ``len(state.frames)``, which on the LEI-V3
+            is 98 against 268 nodes.
 
     Returns:
         dict: Dictionary with preallocated arrays for positions, forces, and tracking metrics.
@@ -46,8 +48,16 @@ def setup_tracking_arrays(n_pts, t_vector, n_panels=0, with_frames=False):
     if n_panels > 0:
         arrays["alpha_at_ac"] = np.full((nt, n_panels), np.nan)
         arrays["stall_mask"] = np.zeros((nt, n_panels), dtype=bool)
-    if with_frames:
-        arrays["frames"] = np.tile(np.eye(3), (nt, n_pts, 1, 1))
+    if n_frames:
+        # Stored as a PAIR. The `positions` array above is the Aitken-relaxed
+        # geometry the next aero solve sees; these two are the configuration the
+        # structural solver actually returned. They are not interchangeable: a
+        # geometrically exact beam's energy depends on positions and frames
+        # together, so evaluating the relaxed positions against these frames
+        # gives a state the solver never produced (measured: a 2288 N residual
+        # where the solve reported 0.46 N).
+        arrays["solved_positions"] = np.zeros((nt, n_pts, 3))
+        arrays["frames"] = np.tile(np.eye(3), (nt, int(n_frames), 1, 1))
     # Per-iteration flight/actuation state. An actuated run walks the tape
     # through several converged states inside ONE call, so without these a saved
     # sweep cannot say which iteration belongs to which tape length or what
@@ -83,6 +93,7 @@ def update_tracking_arrays(
     f_ext_flat,
     f_int_flat,
     frames=None,
+    solved_positions=None,
     tape_length=None,
     speed_apparent=None,
 ):
@@ -95,8 +106,12 @@ def update_tracking_arrays(
         pos3d (np.ndarray): Current 3D positions (n_nodes, 3).
         f_ext_flat (np.ndarray): Flattened external force vector (n_nodes*3,).
         f_int_flat (np.ndarray): Flattened internal force vector (n_nodes*3,).
-        frames (np.ndarray or None): Nodal material frames (n_nodes, 3, 3).
-            Stored only when the arrays were built with ``with_frames=True``.
+        frames (np.ndarray or None): Material frames, ordered by rotational
+            slot, shape ``(n_frames, 3, 3)``. Stored only when the arrays were
+            built with a non-zero ``n_frames``, and only meaningful together
+            with ``solved_positions``.
+        solved_positions (np.ndarray or None): The positions those frames belong
+            to -- the structural solver's own output, before Aitken relaxation.
 
     Returns:
         None. Updates tracking_data in place.
@@ -128,5 +143,9 @@ def update_tracking_arrays(
     # 5) Rotational state, where the backend has any
     if frames is not None and "frames" in tracking_data:
         tracking_data["frames"][idx] = np.asarray(frames, dtype=float).reshape(
-            n_pts, 3, 3
+            -1, 3, 3
         )
+    if solved_positions is not None and "solved_positions" in tracking_data:
+        tracking_data["solved_positions"][idx] = np.asarray(
+            solved_positions, dtype=float
+        ).reshape(n_pts, 3)

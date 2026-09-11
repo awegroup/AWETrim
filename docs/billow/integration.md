@@ -419,6 +419,128 @@ The flat v_a segments in (d) are `quasi_steady_trim.max_nfev: 8` — the
 warm-started trim returns a bit-identical `opt_x` when it starts inside
 tolerance. Harmless, but v_a per step is not independently converged.
 
+## 8. Mirror symmetry
+
+An unactuated kite at the centre of the wind window with gravity off is
+mirror-symmetric in every input, so its solved shape must be mirror-symmetric
+too. It was not. Chasing that found three independent causes, two of them fixed.
+
+### 8.1 The geometry was asymmetric before any solve
+
+Two slips in the shared canopy-section interpolation
+(`fem/read_struc_geometry_yaml.py`), both of the same kind — a quantity measured
+one way divided by a quantity measured another:
+
+* `ratio_te` took the **leading-edge** distance over the **trailing-edge**
+  length. That is a fraction only when the two runs happen to be equal. Under
+  `y -> -y` the LE distance becomes its complement while the TE length does not,
+  so a section and its mirror got blend weights that did not sum to one. Worst
+  where the bounding struts differ most — a 0.35 m tip chord beside a 1.7 m
+  strut — which is exactly where the error showed.
+* Both ratios divided a **straight-line distance** by an **arc length**. On a
+  curved edge the two chords from either bounding strut do not add up to the arc
+  between them, so the same complement argument fails again.
+
+Built-geometry mirror mismatch: **171.73 mm → 0.000000 mm**. The leading and
+trailing edges themselves were always exact; it was only the interpolated
+interior. This function is shared, so the FEM and PSS paths were affected too.
+
+### 8.2 The canopy triangulation was not mirror-symmetric
+
+Raised by Roland Schmehl in review. Splitting every quad along the *same*
+diagonal is directionally biased, and under `y -> -y` that diagonal maps to the
+other one, so the mesh is not mirror-symmetric. On a finely resolved mesh the
+bias is small; here the quads are a sizeable fraction of the wing.
+
+Measured from the now-exactly-symmetric geometry, the solve generated
+**3.5–21 mm** of left-right mismatch. The distribution confirms the mechanism:
+the mismatch is largest on the **pure-canopy** sections (14–21 mm) and smallest
+on the **strut-stiffened** ones (~4 mm) — it appears where the membrane governs
+and is suppressed where a beam carries the load.
+
+`canopy_mesh` now offers three patterns:
+
+| pattern | triangles per quad | extra nodes | mirror-symmetric | can a quad dome? |
+|---|---|---|---|---|
+| `diagonal` | 2, one diagonal | 0 | no | no |
+| `union` | 4, both diagonals at half `E t` | 0 | yes | no |
+| `cross` | 4, via a quad-centre node | 1 per quad | yes | **yes** |
+
+All three store identical energy under a uniform stretch (71.134618 J at 1%,
+1849.850446 J at 5%) — verified, and it caught `union` being 2x too stiff before
+the stress resultant rather than the thickness was scaled.
+
+`cross` is Roland's proposal and is the only one that gives a patch the freedom a
+billowing sail needs: a two-triangle quad can only *fold* along its diagonal, it
+cannot bulge. It is **not yet fairly tested**, because its centre nodes are
+massless and receive no direct aerodynamic load — the aero-to-structure mapping
+targets grid nodes only — so they are held by the membrane alone. Extending the
+load mapping to them is the outstanding work.
+
+### 8.3 What remained was aerodynamic
+
+On an exactly symmetric wing the spanwise resultant must be zero. This needs no
+panel pairing to check, so it is immune to indexing mistakes:
+
+| gamma loop | `allowed_error` | `F_y` | per-panel mirror error |
+|---|---|---|---|
+| `base` (relaxed Picard) | 1e-8 | **0.00000 N** | **3.4e-07 N** |
+| `anderson` | 1e-6 | -11.079 N | — |
+| `anderson` | 1e-8 | -0.7125 N | 1.8e-01 N |
+| `anderson` | 1e-10 | -1.2337 N | — |
+
+**Anderson acceleration breaks the mirror symmetry of the circulation solve**,
+by five and a half orders of magnitude, and tightening the tolerance makes it
+*worse*. It is symmetry-equivariant in exact arithmetic, so the mechanism is
+almost certainly its ill-conditioned least-squares amplifying roundoff-level
+asymmetry; the tolerance signature fits, since tighter convergence makes the
+residual-difference columns more degenerate. This is not local to Billow —
+`as_config` ships `anderson` and every wes-quasi-steady campaign passes it.
+
+Coupled effect on the unsteered case:
+
+| configuration | left-right mismatch |
+|---|---|
+| diagonal mesh, anderson | 118.9 mm |
+| symmetric mesh, anderson | 55.7 mm |
+| symmetric mesh, **base** | **28.2 mm** |
+
+The base loop was also **faster end to end** here — 64 s against 144 s, two
+coupled iterations against seven — because it gives the outer loop a smoother
+map. An earlier "6x slower" figure was measured at a much higher load and does
+not generalise. The gamma loop alone also moves the span by 51 mm (0.6%), so
+this is not only a symmetry question.
+
+### 8.4 The remaining 28 mm is unresolved
+
+Both the geometry and the canopy mesh are now provably symmetric, and the
+aerodynamics is symmetric when `base` is used, yet 28.2 mm remains. It is **not**
+convergence error: tightening the coupled gate from 5 N to 0.5 N made it larger,
+not smaller.
+
+One observation, offered as an observation rather than a cause: **12.4% of
+mirror-paired canopy triangles (94 of 756) disagree on their wrinkling regime**,
+with 59 elements within 1e-4 of the branch discriminant. The relaxed Pipkin
+energy is continuous across those branches by construction, so this is most
+likely a readout of the shape difference rather than its origin.
+
+The natural next test — does the mirrored configuration have the same energy, in
+which case the minimum is nearly degenerate and the solver is picking an
+arbitrary point in a flat valley — was attempted and **abandoned as
+unreliable**. Reconstructing a coupled state after the fact proved harder than
+it looks: a geometrically exact beam's energy depends on positions *and* frames
+together, and the saved pair was inconsistent because Aitken relaxation moves the
+positions after the solve. `sim_output.h5` now stores `solved_positions`
+alongside `frames` as a consistent pair for exactly this reason.
+
+If the question is taken up again, the diagnostics should be computed **inside**
+`run_billow`, where the state is consistent by construction, rather than
+rebuilt from a saved file.
+
+Whether it is worth taking up is a fair question: 28 mm is 0.35% of span, on a
+model whose canopy modulus is uncertain by a factor of three (§3.2) and whose
+strut inflation pressure is unverified (§6).
+
 ## 6. Open items
 
 Roughly in priority order.

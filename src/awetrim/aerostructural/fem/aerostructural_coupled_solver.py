@@ -159,6 +159,15 @@ def _find_kite_fem_spring_id_from_connectivity(
     )
 
 
+def _billow_solved(config, billow_structure):
+    """True when a Billow solve has produced a state worth recording."""
+    return (
+        config.get("structural_solver") == "billow"
+        and billow_structure is not None
+        and getattr(billow_structure, "last_solution", None) is not None
+    )
+
+
 def _current_power_tape_length(
     config, power_tape_index, psystem, kite_fem_structure, billow_structure,
     kite_connectivity_arr,
@@ -510,7 +519,20 @@ def main(
     max_iter = config["aero_structural_solver"]["max_iter"]
     # Keep index 0 for the pre-loop initial state and reserve max_iter loop slots.
     t_vector = np.linspace(0, max_iter, max_iter + 1)
-    tracking_data = tracking.setup_tracking_arrays(len(struc_nodes), t_vector)
+    # Store the nodal frames for a backend whose elements carry rotational
+    # state. Without them a saved run cannot be re-evaluated at all: a
+    # geometrically exact beam's strain energy depends on the frames, not just
+    # the node positions, so any post-hoc energy or curvature computed from
+    # positions alone is wrong -- by orders of magnitude, not a little.
+    tracking_data = tracking.setup_tracking_arrays(
+        len(struc_nodes), t_vector,
+        n_frames=(
+            len(billow_structure.state.frames)
+            if config.get("structural_solver") == "billow"
+            and billow_structure is not None
+            else 0
+        ),
+    )
     is_convergence = False
     f_residual_list = []
     f_tether_drag = np.zeros(3)
@@ -975,6 +997,16 @@ def main(
                 struc_nodes,
                 f_ext_flat,
                 f_residual,
+                frames=(
+                    billow_structure.last_solution.state.frames
+                    if _billow_solved(config, billow_structure)
+                    else None
+                ),
+                solved_positions=(
+                    billow_structure.last_solution.state.positions
+                    if _billow_solved(config, billow_structure)
+                    else None
+                ),
                 tape_length=_tape,
                 speed_apparent=float(
                     np.linalg.norm(
