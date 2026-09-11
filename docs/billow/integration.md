@@ -453,7 +453,9 @@ other one, so the mesh is not mirror-symmetric. On a finely resolved mesh the
 bias is small; here the quads are a sizeable fraction of the wing.
 
 Measured from the now-exactly-symmetric geometry, the solve generated
-**3.5–21 mm** of left-right mismatch. The distribution confirms the mechanism:
+**3.5–21 mm** of left-right mismatch. (These were taken with Anderson
+still active and overstate the canopy's share — see §8.5 for the clean
+attribution.) The distribution confirms the mechanism:
 the mismatch is largest on the **pure-canopy** sections (14–21 mm) and smallest
 on the **strut-stiffened** ones (~4 mm) — it appears where the membrane governs
 and is suppressed where a beam carries the load.
@@ -540,6 +542,33 @@ rebuilt from a saved file.
 Whether it is worth taking up is a fair question: 28 mm is 0.35% of span, on a
 model whose canopy modulus is uncertain by a factor of three (§3.2) and whose
 strut inflation pressure is unverified (§6).
+
+### 8.5 Attribution, measured cleanly
+
+The figures in 8.2 were taken with Anderson still active, which **overstates the
+canopy's share**. Re-measured with everything else symmetric -- fixed geometry,
+`base` circulation loop -- and all three patterns at a matched 0.5 N gate:
+
+| pattern | nodes | DOF | triangles | mismatch | residual | iterations |
+|---|---|---|---|---|---|---|
+| `diagonal` | 268 | 1098 | 378 | 34.70 mm | 0.47 N | 2 |
+| `union` | 268 | 1098 | 756 | **28.17 mm** (-18.8%) | 0.46 N | 2 |
+| `cross` | 457 | 1665 | 756 | 31.84 mm (-8.2%) | **0.13 N** | 5 |
+
+So the honest ordering is:
+
+* **Anderson dominates.** On the diagonal mesh it alone accounts for
+  118.9 -> 34.7 mm.
+* **The canopy diagonal is a real but secondary effect**, about 6.5 mm once the
+  aerodynamics is symmetric, not the ~63 mm that 8.2 implies.
+* **28 mm remains** whatever the mesh.
+
+Two things worth noting about `cross`. It is *not* better than `union` on
+symmetry despite both meshes being exactly mirror-symmetric -- most likely
+because its centre nodes carry no direct aerodynamic load and are held by the
+membrane alone. But it converges markedly tighter (0.13 N against 0.46 N),
+consistent with the extra freedom being real: a quad that can dome has a
+lower-energy state available to it than one that can only fold.
 
 ## 6. Open items
 
