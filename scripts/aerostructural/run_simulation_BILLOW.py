@@ -233,6 +233,13 @@ def main():
     # agree with model.nodes or they silently misalign.
     struc_nodes = billow_structure.model.nodes.copy()
     m_arr = billow_structure.masses
+    # The aerodynamic load is mapped onto these sections. Use the MEMBRANE's
+    # grid, not the reader's: with a refined canopy the two differ, and mapping
+    # onto the coarse one leaves every added node unloaded. aero2struc's
+    # bracketing is symmetry-preserving for any section list, so a finer list
+    # costs nothing but resolution gained.
+    canopy_sections = [list(map(int, row)) for row in billow_structure.fine_grid]
+    strut_sections = []
     struc_nodes_initial = struc_nodes.copy()
 
     ##################

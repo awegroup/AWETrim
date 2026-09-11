@@ -175,6 +175,15 @@ aero2struc:
   eps: !!float 1e-6
   power_for_inverse_weighting: !!float 2.0
   cp_distribution_path: data/LEI-V3-KITE/cp_distributions/cp_AOA_8.dat
+  # Where the chordwise weights put a panel's resultant IS its local pitching
+  # moment, and the wing's trim is a moment balance.
+  #   cp_file        one measured Delta C_p shape for every panel, so the
+  #                  resultant sits at 0.291 c regardless of the panel's own
+  #                  C_m. Reproduces every stored FEM result.
+  #   moment_matched keeps that shape as a prior and tilts it onto the centre
+  #                  of pressure VSM computes from the panel's own F and M, so
+  #                  force AND moment are both conserved.
+  chordwise_distribution: !!str 'cp_file'
 
 ## coupled
 aero_structural_solver:
@@ -264,6 +273,50 @@ structural_kite_fem:
   # A too-small force leaves bridles slack; too large may cause FEM divergence.
   relaxbridles_pull_down_force_z: !!float -1000.0
   relaxbridles_settle_force_z: !!float -200.0
+
+
+## structural billow  (minimum-energy: cables, pulleys, inflatable tube beams,
+## wrinkling membrane canopy -- see src/awetrim/aerostructural/billow/)
+structural_billow:
+  # -- canopy fabric --
+  # The REAL cloth, not a value matched to the kite_fem spring net. Polyester
+  # ripstop at the 170 g/m2 struc_geometry records: solid-equivalent thickness
+  # 0.170/1380 = 123 um, in-plane modulus ~4 GPa (crimp-derated), so
+  # E*t ~ 4.9e5 N/m. The net's 5000 N/m is E = 20 MPa -- rubber -- and a canopy
+  # that soft billows instead of carrying load and bends the struts with it.
+  # The modulus is a material ESTIMATE; a tensile test on the cloth replaces it.
+  canopy_stiffness: !!float 4.93e5
+  canopy_thickness: !!float 1.232e-4
+  canopy_poisson_ratio: !!float 0.3
+  canopy_wrinkling: !!bool true        # Pipkin relaxed (tension-field) energy
+  canopy_slack_stiffness_ratio: !!float 1.0e-4  # never 0 on a canopy that can go slack
+  # -- inflatable tubes --
+  # Scales the whole fitted moment-curvature curve, initial slope included.
+  # The hanging-kite validation implies a factor well below one.
+  tube_stiffness_factor: !!float 1.0
+  junction_frame: !!str 'strut'        # who owns the LE/strut joint frame
+  # -- bridle relaxation --
+  # The YAML stores measured rest lengths against measured node positions and
+  # the two disagree (Br_main_1 is 11.5% long, i.e. 88 kN at the real EA/l0).
+  # This settles the bridle onto the built wing before the coupled run starts,
+  # the same role structural_kite_fem.relaxbridles plays on the FEM path.
+  relax_bridles: !!bool true
+  relax_pull_force: !!float -100.0
+  relax_settle_force: !!float -1.0
+  relax_move_limit: !!float 0.25
+  # -- solver --
+  # move_limit turns one solve into one trust-region step and an outer loop
+  # drives it to force balance; without it a slack-dominated configuration
+  # hands IPOPT a flat direction and the line search collapses.
+  move_limit: !!float 0.25
+  max_rounds: !!int 12
+  max_iterations: !!int 400
+  tolerance: !!float 1.0e-8
+  # Proportionate to the outer gate above, not far tighter than it: this is a
+  # floor, and relative_force_tolerance x total load is what normally decides.
+  force_tolerance: !!float 1.0e-3
+  relative_force_tolerance: !!float 1.0e-5
+  print_info: !!bool false
 
 
 # tether.diameter is now defined in system.yml (awesIO format)

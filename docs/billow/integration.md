@@ -465,8 +465,31 @@ and is suppressed where a beam carries the load.
 | pattern | triangles per quad | extra nodes | mirror-symmetric | can a quad dome? |
 |---|---|---|---|---|
 | `diagonal` | 2, one diagonal | 0 | no | no |
-| `union` | 4, both diagonals at half `E t` | 0 | yes | no |
+| `union` | 2+2, superposed at half `E t` | 0 | yes | no |
 | `cross` | 4, via a quad-centre node | 1 per quad | yes | **yes** |
+
+`union` is an **overlay, not a subdivision**, and the distinction matters. You
+cannot cut a quad into four triangles with both diagonals — on a non-planar quad
+the diagonals do not even intersect, and that is precisely what a centre node is
+for. What `union` does instead is lay the two possible 2-triangle
+triangulations, `(abc, acd)` and `(abd, bcd)`, on top of each other, each
+carrying half the stress resultant. The quad is covered twice, by two
+independent sheets, and the two diagonals never meet.
+
+Two consequences follow, and both are why it is a control rather than a
+recommendation:
+
+- A quad need not be planar, and on a non-planar quad the two triangulations
+  describe **two different surfaces**. The patch is then modelled as two
+  interpenetrating half-stiffness sheets rather than as one surface.
+- It still **cannot dome**. Every triangle has all three corners on the quad
+  corners, so the patch has no interior freedom, and superposing two fold-only
+  surfaces gives a fold-only patch.
+
+Its one virtue is what it was built for: it is exactly mirror-symmetric (the
+reflection maps one triangulation onto the other) at zero added DOF, so it
+separates the diagonal bias from the DOF count in the A/B below. `cross` changes
+both at once.
 
 All three store identical energy under a uniform stretch (71.134618 J at 1%,
 1849.850446 J at 5%) — verified, and it caught `union` being 2x too stiff before

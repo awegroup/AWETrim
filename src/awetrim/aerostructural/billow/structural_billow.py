@@ -117,6 +117,12 @@ DEFAULTS: dict[str, Any] = {
     # Canopy triangulation; see canopy_mesh. "diagonal" is the historical,
     # mirror-ASYMMETRIC two-triangle split and reproduces earlier results.
     "canopy_pattern": "cross",
+    # Canopy mesh refinement: subdivide every quad k x k before triangulating.
+    # 1 keeps the structural grid. The coarse lattice is preserved exactly, so
+    # the leading and trailing edges, the strut stations and every bridle
+    # attachment keep their nodes and the tubes and cables are untouched; only
+    # the fabric is refined. See refine_grid for what the added nodes do NOT get.
+    "canopy_refinement": 1,
     # -- bridle relaxation ----------------------------------------------
     # The kite YAMLs store measured rest lengths against measured node
     # positions and the two do not agree; see relax_bridles.
@@ -126,8 +132,22 @@ DEFAULTS: dict[str, Any] = {
     "relax_move_limit": 0.25,     # [m] trust region for the relaxation solve
     # -- solver ----------------------------------------------------------
     "tolerance": 1e-8,
+    # Inner acceptance for one run_billow call, as
+    # max(force_tolerance, relative_force_tolerance * total aerodynamic load).
+    # Relative to the TOTAL load, not the largest nodal one: the total is a
+    # property of the flight state, the per-node maximum a property of the
+    # discretisation, so keying off the latter would tighten the demand every
+    # time the mesh is refined -- the opposite of mesh independence.
+    #
+    # Keep this proportionate to the OUTER coupled gate. Asking the inner solve
+    # for 1e-3 N while the loop accepts 0.5 N is 500x tighter than anything
+    # downstream can use: a coarse mesh happens to manage it, a 5838-DOF largely
+    # slack membrane does not, and then every solve burns its whole round budget
+    # and returns its best iterate anyway (measured at refinement 3: 250 s a
+    # solve, still at 50 N). At the LEI-V3's ~1.3 kN this gives 1.3e-2 N, still
+    # nearly forty times tighter than the gate.
     "force_tolerance": 1e-6,
-    "relative_force_tolerance": 1e-6,
+    "relative_force_tolerance": 1e-5,
     "max_iterations": 1000,
     # ``move_limit`` makes one solve a trust-region step; ``max_rounds`` is
     # how many of those ``run_billow`` will take to reach force balance. With
@@ -167,7 +187,17 @@ class BillowStructure:
     model: StructuralModel
     solver: MinimumEnergySolver
     state: StructuralState
+    #: The structural canopy grid -- the sections the reader produced.
     grid: Array
+    #: The grid the MEMBRANE is meshed on. Equal to ``grid`` unless
+    #: ``canopy_refinement`` subdivided it. Load the aerodynamics onto THIS one:
+    #: mapping onto the coarse grid leaves every refined node unloaded, which is
+    #: not merely a resolution question -- those nodes are also massless, so a
+    #: large share of the degrees of freedom would have nothing determining them
+    #: and the structural solve becomes badly conditioned (measured at
+    #: refinement 3: the inner solve stalled at 9-25 N and cost 275 s against
+    #: 2 s coarse, while the aerodynamic side was unchanged at 10 s).
+    fine_grid: Array
     #: Row of the cable set for each reader element, ``-1`` where the element is
     #: not a Billow cable (a canopy spring, a pulley arm or a tube).
     cable_row: Array
@@ -251,6 +281,58 @@ def canopy_triangles(grid: Array) -> Array:
     return np.asarray(triangles, dtype=int)
 
 
+def refine_grid(grid: Array, nodes: Array, factor: int):
+    """Subdivide the canopy grid ``factor`` x ``factor``. Returns ``(grid, extra)``.
+
+    Bilinear within each quad, which keeps the refined lattice exactly
+    mirror-symmetric whenever the coarse one is: the interpolation of a
+    symmetric set of corners is symmetric. The original nodes are reused in
+    place, so the leading and trailing edges, the strut stations and the bridle
+    attachments all keep their identity and the tube, cable and pulley elements
+    need no remapping at all.
+
+    **The added nodes carry no mass and receive no direct aerodynamic load.**
+    The reader weighed the canopy onto the coarse nodes, and the
+    aero-to-structure mapping targets the coarse sections, so a refined interior
+    node is held by the membrane alone. That is tolerable for shape, and it is
+    the same limitation the ``cross`` pattern has, but it means a refined canopy
+    is not simply a better-resolved version of the same load case: the pressure
+    is still applied at the coarse stations.
+    """
+    factor = int(factor)
+    if factor < 1:
+        raise ValueError(f"canopy_refinement must be >= 1, got {factor}")
+    if factor == 1:
+        return np.asarray(grid, dtype=int), np.empty((0, 3))
+
+    grid = np.asarray(grid, dtype=int)
+    nodes = np.asarray(nodes, dtype=float)
+    rows, columns = grid.shape
+    fine_rows, fine_columns = (rows - 1) * factor + 1, (columns - 1) * factor + 1
+
+    fine = np.full((fine_rows, fine_columns), -1, dtype=int)
+    fine[::factor, ::factor] = grid            # the coarse lattice, kept in place
+
+    extra: list[Array] = []
+    next_index = len(nodes)
+    for i in range(fine_rows):
+        for j in range(fine_columns):
+            if fine[i, j] >= 0:
+                continue
+            # Bilinear blend of the four coarse corners bounding this station.
+            i0, j0 = min(i // factor, rows - 2), min(j // factor, columns - 2)
+            u, v = (i - i0 * factor) / factor, (j - j0 * factor) / factor
+            corner = [nodes[grid[i0, j0]], nodes[grid[i0, j0 + 1]],
+                      nodes[grid[i0 + 1, j0 + 1]], nodes[grid[i0 + 1, j0]]]
+            extra.append(
+                (1 - u) * ((1 - v) * corner[0] + v * corner[1])
+                + u * ((1 - v) * corner[3] + v * corner[2])
+            )
+            fine[i, j] = next_index
+            next_index += 1
+    return fine, np.asarray(extra, dtype=float).reshape(-1, 3)
+
+
 def canopy_mesh(grid: Array, nodes: Array, pattern: str = "cross"):
     """Triangulate the canopy grid. Returns ``(triangles, extra_nodes, scale)``.
 
@@ -267,17 +349,34 @@ def canopy_mesh(grid: Array, nodes: Array, pattern: str = "cross"):
     ``diagonal``
         One diagonal per quad, two triangles. The historical mesh; biased.
     ``union``
-        Both diagonals, four overlapping triangles at half thickness. Exactly
-        mirror-symmetric and adds no degrees of freedom, but a quad still
-        cannot dome: every triangle has its three corners on the quad.
+        Both 2-triangle triangulations SUPERPOSED, each at half the stress
+        resultant. This is an overlay, not a subdivision: the quad is covered
+        twice, by ``(abc, acd)`` on one diagonal and ``(abd, bcd)`` on the
+        other, and the two diagonals never meet -- they belong to two
+        independent sheets, so no centre node is needed or implied.
+
+        Two consequences follow, and both are why this is a control rather
+        than a recommendation. A quad need not be planar, and on a non-planar
+        quad the two triangulations describe two DIFFERENT surfaces, so the
+        patch is modelled as two interpenetrating half-stiffness sheets rather
+        than one surface. And it still cannot dome: every triangle has all
+        three corners on the quad corners, so there is no interior freedom,
+        and superposing two fold-only surfaces gives a fold-only patch.
+
+        What it is good for is exactly one thing: it is mirror-symmetric (the
+        reflection swaps the two triangulations) at zero added DOF, so it
+        isolates the diagonal bias from the DOF count in an A/B.
     ``cross`` (default)
         A node at each quad centre joined to the four corners. Exactly
         mirror-symmetric, and the centre node gives the patch the one freedom a
         billowing sail most needs -- a two-triangle quad can only FOLD along its
         diagonal, it cannot bulge. Costs one node per quad.
 
-    ``scale`` multiplies the fabric thickness, so the ``union`` pattern's
-    doubled element count does not double the canopy stiffness.
+    ``scale`` divides the stress resultant ``E*t`` between the overlapping
+    sheets, so the ``union`` pattern's doubled element count does not double
+    the canopy stiffness. It scales the RESULTANT and not the thickness: the
+    wrinkling discriminant is a stress state, and halving ``t`` instead would
+    move the slack/wrinkled/taut branch as well as the stiffness.
     """
     rows, columns = grid.shape
     nodes = np.asarray(nodes, dtype=float)
@@ -735,8 +834,14 @@ def instantiate(
     # model is built, so the node count the caller reads back from
     # ``structure.model.nodes`` already includes them -- every downstream array
     # (masses, external forces, tracking) is sized from that.
+    fine_grid, refined_nodes = refine_grid(
+        grid, struc_nodes, int(settings["canopy_refinement"])
+    )
+    if len(refined_nodes):
+        struc_nodes = np.vstack([struc_nodes, refined_nodes])
+        masses = np.concatenate([masses, np.zeros(len(refined_nodes))])
     triangles, extra_nodes, thickness_scale = canopy_mesh(
-        grid, struc_nodes, str(settings["canopy_pattern"])
+        fine_grid, struc_nodes, str(settings["canopy_pattern"])
     )
     if len(extra_nodes):
         struc_nodes = np.vstack([struc_nodes, extra_nodes])
@@ -802,6 +907,7 @@ def instantiate(
         solver=solver,
         state=model.initial_state(),
         grid=grid,
+        fine_grid=fine_grid,
         cable_row=cable_row,
         pulley_row=pulley_row,
         tube_row=tube_row,
@@ -836,12 +942,18 @@ def run_billow(structure: BillowStructure, f_ext_flat, config_structural_billow)
     settings = resolve_config(config_structural_billow)
     forces = np.asarray(f_ext_flat, dtype=float).reshape(-1, 3)
 
+    # Scale with the TOTAL load, not the largest nodal one. The total is a
+    # property of the flight state; the per-node maximum is a property of the
+    # discretisation, so keying off it makes the demand tighten as the mesh is
+    # refined -- the opposite of what mesh independence requires.
+    total_load = float(np.linalg.norm(forces.sum(axis=0)))
+    peak_nodal = float(np.linalg.norm(forces, axis=1).max(initial=0.0))
     accept_at = max(
         float(settings["force_tolerance"]),
-        float(settings["relative_force_tolerance"])
-        * float(np.linalg.norm(forces, axis=1).max(initial=0.0)),
+        float(settings["relative_force_tolerance"]) * max(total_load, peak_nodal),
     )
     rounds = int(settings["max_rounds"]) if settings["move_limit"] is not None else 1
+    stalled = 0
     for _ in range(max(1, rounds)):
         solution = structure.solver.solve(
             forces, state=structure.state, model=structure.model
@@ -849,6 +961,20 @@ def run_billow(structure: BillowStructure, f_ext_flat, config_structural_billow)
         structure.state = solution.state
         if solution.residual_norm <= accept_at:
             break
+        # A trust-region round that barely moves is not going to be rescued by
+        # more of them; spending the whole budget on it just hides the stall.
+        if solution.status == "Search_Direction_Becomes_Too_Small":
+            stalled += 1
+            if stalled >= 2:
+                logger.info(
+                    "minimum-energy solve stalled twice at residual %.3e N "
+                    "(target %.3e N); accepting the best iterate",
+                    solution.residual_norm,
+                    accept_at,
+                )
+                break
+        else:
+            stalled = 0
     structure.last_solution = solution
 
     f_int = solution.internal_forces.copy()

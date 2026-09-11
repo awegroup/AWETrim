@@ -232,6 +232,367 @@ def map_aero_forces_to_struct_nodes(aero_points, aero_forces, struc_nodes, secti
     return nodal_forces
 
 
+def consistent_chordwise_density(weights, stations):
+    """Piecewise-linear chordwise density whose consistent nodal loads are ``weights``.
+
+    The aerodynamic side hands over a DISCRETE chordwise distribution: weights
+    ``w_j`` at stations ``xi_j``. To integrate a load over structural elements it
+    has to be a FUNCTION of ``xi``. This returns the nodal values ``q_j`` of the
+    piecewise-linear ``q(xi) = sum_j q_j N_j(xi)`` whose consistent loads
+    ``int q N_i dxi`` reproduce ``w`` exactly, i.e. ``q = M^-1 w`` with ``M`` the
+    one-dimensional consistent mass matrix of the station mesh.
+
+    That choice is what makes the transfer exact at the panel level. It keeps
+    the zeroth moment, ``int q = sum_j w_j``, because the hats are a partition of
+    unity; and it keeps the first, ``int xi q = sum_j xi_j w_j``, because ``xi``
+    is itself linear on the mesh, ``xi = sum_j xi_j N_j``. So the panel's force
+    AND its centre of pressure survive the reconstruction. A lumped (row-sum)
+    reconstruction keeps only the first: it moves each end station's load a
+    third of a bin inward, which on a suction peak at the leading edge is a
+    moment the aerodynamics never produced.
+
+    Args:
+        weights: ``(n_stations,)`` or ``(n_panels, n_stations)``.
+        stations: ``(n_stations,)`` increasing chordwise fractions.
+
+    Returns:
+        Array shaped like ``weights``: the density's nodal values.
+    """
+    stations = np.asarray(stations, dtype=float)
+    weights = np.asarray(weights, dtype=float)
+    n_stations = len(stations)
+    mass = np.zeros((n_stations, n_stations))
+    for element, length in enumerate(np.diff(stations)):
+        mass[element:element + 2, element:element + 2] += (
+            length / 6.0 * np.array([[2.0, 1.0], [1.0, 2.0]])
+        )
+    return np.linalg.solve(mass, weights.T).T
+
+
+def canopy_surface_coordinates(struc_nodes, grid, triangles):
+    """Surface coordinates ``(s, xi)`` of every canopy node.
+
+    ``s`` is the canopy grid's row index, the spanwise coordinate in which the
+    aerodynamic sections are laid out: they are linear subdivisions between
+    consecutive structural sections, so aero section ``m`` sits at exactly
+    ``s = m (rows - 1) / n_panels`` at any refinement.
+
+    ``xi`` is the chordwise fraction: the projection onto that row's own
+    leading-edge-to-trailing-edge chord line. That is how the aerodynamic side
+    places its chordwise stations, so a load meant for ``xi`` lands on the
+    surface point directly above the chord-line point it was computed at --
+    offset along the section normal, roughly along the load itself, which is
+    why this costs almost no moment. It is recomputed from the CURRENT shape,
+    so a node that slides chordwise as the canopy billows carries the load for
+    where it now is.
+
+    Nodes off the grid -- the ``cross`` pattern's quad centres -- take the mean
+    of the grid nodes they share an element with: the material point at the
+    centre of the quad.
+    """
+    struc_nodes = np.asarray(struc_nodes, dtype=float)
+    grid = np.asarray(grid, dtype=int)
+    triangles = np.asarray(triangles, dtype=int)
+    coordinates = np.full((len(struc_nodes), 2), np.nan)
+    for row_index, row in enumerate(grid):
+        leading, trailing = struc_nodes[row[0]], struc_nodes[row[-1]]
+        chord = trailing - leading
+        coordinates[row, 0] = row_index
+        coordinates[row, 1] = (struc_nodes[row] - leading) @ chord / float(chord @ chord)
+
+    missing = np.isnan(coordinates[:, 0])
+    if missing[triangles].any():
+        sums = np.zeros((len(struc_nodes), 2))
+        counts = np.zeros(len(struc_nodes))
+        corner_missing = missing[triangles]
+        for a in range(3):
+            for b in range(3):
+                if a == b:
+                    continue
+                take = corner_missing[:, a] & ~corner_missing[:, b]
+                np.add.at(sums, triangles[take, a], coordinates[triangles[take, b]])
+                np.add.at(counts, triangles[take, a], 1.0)
+        fill = missing & (counts > 0)
+        coordinates[fill] = sums[fill] / counts[fill, None]
+    return coordinates
+
+
+def _clip_to_box(polygon, s_low, s_high, xi_low, xi_high):
+    """Sutherland-Hodgman clip of a convex polygon to an axis-aligned box."""
+    for axis, bound, keep_above in (
+        (0, s_low, True), (0, s_high, False), (1, xi_low, True), (1, xi_high, False)
+    ):
+        if not polygon:
+            return polygon
+        clipped = []
+        previous = polygon[-1]
+        previous_in = (previous[axis] >= bound) if keep_above else (previous[axis] <= bound)
+        for current in polygon:
+            current_in = (current[axis] >= bound) if keep_above else (current[axis] <= bound)
+            if current_in != previous_in:
+                t = (bound - previous[axis]) / (current[axis] - previous[axis])
+                clipped.append(previous + t * (current - previous))
+            if current_in:
+                clipped.append(current)
+            previous, previous_in = current, current_in
+        polygon = clipped
+    return polygon
+
+
+def map_aero_traction_to_membrane(panel_forces, panel_weights, stations,
+                                  struc_nodes, grid, triangles):
+    """Consistent nodal loads from the aerodynamic TRACTION over every canopy element.
+
+    The aerodynamic result is a load distributed over the canopy surface, not a
+    set of point loads, and a canopy node should carry what the elements around
+    it carry. Point-load transfers -- to node chains, or to the nearest element
+    -- cannot do that: each point reaches at most three nodes, so once the
+    structural mesh is finer than the aerodynamic sampling the total is right
+    but it lands on a sparse subset of nodes (measured: 61% of a refined
+    canopy unloaded).
+
+    This builds the traction as a field and integrates it. On the surface
+    coordinates of ``canopy_surface_coordinates``, panel ``k`` covers the strip
+    ``s_k <= s <= s_k+1`` and carries
+
+        tau(s, xi) = F_k q_k(xi) / (s_k+1 - s_k),
+
+    uniform along the span of its strip -- which is what the lifting line
+    computes -- and chordwise the piecewise-linear density of
+    ``consistent_chordwise_density``. Each element then receives the standard
+    consistent load vector
+
+        f_a = int_element tau N_a dA,
+
+    with ``N_a`` its linear shape functions, so every canopy node is loaded by
+    every element adjacent to it, at any refinement.
+
+    The integral is evaluated EXACTLY. Each element is clipped against the
+    strip and chord-interval boxes it overlaps; on each piece the integrand is
+    a product of two linear functions, which the three-edge-midpoint rule
+    integrates exactly. Because the elements tile the surface coordinates and
+    the strips tile them too, the nodal loads sum to ``sum_k F_k`` to roundoff:
+    the transfer is conservative by construction, not by calibration.
+
+    Force is therefore exact. The moment differs from the one the aerodynamic
+    side would compute with its loads on the chord LINE by exactly the load's
+    offset from that line to the canopy SURFACE -- the pressure acts on the
+    surface, so that difference is the point, not an error.
+
+    Args:
+        panel_forces: ``(n_panels, 3)``, ordered along the grid rows.
+        panel_weights: ``(n_panels, n_stations)`` chordwise weights per panel.
+        stations: ``(n_stations,)`` chordwise fractions of those weights.
+        struc_nodes: ``(n_nodes, 3)`` current node positions.
+        grid: ``(rows, columns)`` canopy grid, rows spanning leading to
+            trailing edge in the same order as the aerodynamic sections.
+        triangles: ``(n_elements, 3)`` canopy elements.
+
+    Returns:
+        ``(n_nodes, 3)`` nodal forces.
+    """
+    panel_forces = np.asarray(panel_forces, dtype=float)
+    stations = np.asarray(stations, dtype=float)
+    grid = np.asarray(grid, dtype=int)
+    triangles = np.asarray(triangles, dtype=int)
+    n_panels = len(panel_forces)
+    density = consistent_chordwise_density(panel_weights, stations)
+    coordinates = canopy_surface_coordinates(struc_nodes, grid, triangles)
+    span_edges = np.linspace(0.0, grid.shape[0] - 1.0, n_panels + 1)
+    widths = np.diff(span_edges)
+    midpoint_pairs = ((0, 1), (1, 2), (2, 0))
+
+    nodal = np.zeros((len(struc_nodes), 3))
+    covered = 0.0
+    for element in triangles:
+        corners = coordinates[element]
+        edge_1, edge_2 = corners[1] - corners[0], corners[2] - corners[0]
+        twice_area = edge_1[0] * edge_2[1] - edge_1[1] * edge_2[0]
+        if twice_area == 0.0:
+            continue
+        covered += 0.5 * abs(twice_area)
+        inverse = np.linalg.inv(np.array([edge_1, edge_2]).T)
+
+        low, high = corners.min(axis=0), corners.max(axis=0)
+        first_panel = max(int(np.searchsorted(span_edges, low[0], "right")) - 1, 0)
+        last_panel = min(int(np.searchsorted(span_edges, high[0], "left")), n_panels)
+        first_bin = max(int(np.searchsorted(stations, low[1], "right")) - 1, 0)
+        last_bin = min(int(np.searchsorted(stations, high[1], "left")), len(stations) - 1)
+
+        loads = np.zeros((3, 3))
+        for k in range(first_panel, last_panel):
+            share = np.zeros(3)
+            for j in range(first_bin, last_bin):
+                piece = _clip_to_box(
+                    [corners[0], corners[1], corners[2]],
+                    span_edges[k], span_edges[k + 1], stations[j], stations[j + 1],
+                )
+                if len(piece) < 3:
+                    continue
+                bin_width = stations[j + 1] - stations[j]
+                for fan in range(1, len(piece) - 1):
+                    vertices = (piece[0], piece[fan], piece[fan + 1])
+                    a, b = vertices[1] - vertices[0], vertices[2] - vertices[0]
+                    area = 0.5 * abs(a[0] * b[1] - a[1] * b[0])
+                    if area == 0.0:
+                        continue
+                    for p, q in midpoint_pairs:
+                        point = 0.5 * (vertices[p] + vertices[q])
+                        local = inverse @ (point - corners[0])
+                        shape = np.array([1.0 - local[0] - local[1], local[0], local[1]])
+                        t = (point[1] - stations[j]) / bin_width
+                        value = (1.0 - t) * density[k, j] + t * density[k, j + 1]
+                        share += (area / 3.0) * value * shape
+            loads += share[:, None] * (panel_forces[k] / widths[k])[None, :]
+        np.add.at(nodal, element, loads)
+
+    # The elements must tile the surface once. A pattern that covers it twice
+    # (``union`` superposes two sheets) would double the load; a gap or a fold
+    # in the surface coordinates would lose or double part of it. Say which.
+    domain = float(grid.shape[0] - 1)
+    multiplicity = covered / domain
+    sheets = max(int(round(multiplicity)), 1)
+    if abs(multiplicity - sheets) > 1e-9:
+        logging.warning(
+            "canopy elements cover %.9f of the wing surface (expected a whole "
+            "number of sheets): a gap or a fold in the surface coordinates; "
+            "the traction transfer is not conservative by %.3e of the load",
+            multiplicity, abs(multiplicity - sheets) / sheets,
+        )
+    return nodal / sheets
+
+
+def _panels_follow_grid(panels, struc_nodes, grid):
+    """True if panel 0 sits at grid row 0, False if the span runs backwards."""
+    first = 0.5 * (panels[0].LE_point_1 + panels[0].LE_point_2)
+    struc_nodes = np.asarray(struc_nodes, dtype=float)
+    return (np.linalg.norm(first - struc_nodes[grid[0, 0]])
+            <= np.linalg.norm(first - struc_nodes[grid[-1, 0]]))
+
+def map_aero_forces_to_membrane(aero_points, aero_forces, struc_nodes, triangles):
+    """Distribute aerodynamic point loads through the canopy ELEMENTS.
+
+    The lattice mapping above routes every load to the chordwise node chains
+    read from the YAML, so a node that is not on one of those chains receives
+    nothing however much canopy surrounds it. That is wrong in principle -- a
+    canopy node should be loaded by the elements adjacent to it, and the
+    pressure it carries is a property of that surface, not of the bookkeeping
+    used to list the nodes -- and it is wrong in practice for any mesh richer
+    than the YAML's: the ``cross`` pattern's quad-centre nodes and every
+    interior node added by refinement are held by the membrane alone.
+
+    This routes the load the way the surface does. Each application point is
+    assigned to the canopy triangle whose closest point to it is nearest, and
+    its force is split over that triangle's three vertices by the barycentric
+    coordinates of that closest point.
+
+    Barycentric rather than a third each: the weights then reproduce the point's
+    LINE OF ACTION within the element, so the in-plane moment about the element
+    is preserved exactly rather than smeared to the centroid. What remains is
+    the out-of-plane offset between the centre of pressure and the membrane
+    surface, which no nodal lumping can represent -- the same residual the
+    lattice mapping has, minus the in-plane part.
+
+    Symmetry: the closest-point test and the barycentric weights are both
+    isometry-invariant, so a mirrored point on a mirrored triangle gets the same
+    weights. Ties are broken on the lowest triangle index, which is deterministic
+    but NOT mirror-invariant, so exact ties would break symmetry; they require a
+    point equidistant from two triangles to the last bit and have not been
+    observed. Force is exactly preserved: the three weights sum to one.
+
+    Args:
+        aero_points (np.ndarray): (N_aero, 3) coordinates where forces act.
+        aero_forces (np.ndarray): (N_aero, 3) force vectors.
+        struc_nodes (np.ndarray): (N_struc, 3) structural node positions.
+        triangles (np.ndarray): (N_tri, 3) canopy element connectivity.
+
+    Returns:
+        np.ndarray: (N_struc, 3) lumped force vectors at structural nodes.
+    """
+    aero_points = np.asarray(aero_points, dtype=float)
+    aero_forces = np.asarray(aero_forces, dtype=float)
+    struc_nodes = np.asarray(struc_nodes, dtype=float)
+    triangles = np.asarray(triangles, dtype=int)
+
+    nodal_forces = np.zeros_like(struc_nodes)
+    if len(triangles) == 0 or len(aero_points) == 0:
+        return nodal_forces
+
+    a = struc_nodes[triangles[:, 0]]
+    b = struc_nodes[triangles[:, 1]]
+    c = struc_nodes[triangles[:, 2]]
+
+    for point, force in zip(aero_points, aero_forces):
+        weights, index = _closest_barycentric(point, a, b, c)
+        for corner in range(3):
+            nodal_forces[triangles[index, corner]] += weights[corner] * force
+    return nodal_forces
+
+
+def _closest_barycentric(point, a, b, c):
+    """Barycentric weights of ``point`` on the nearest of the triangles ``abc``.
+
+    Ericson's closest-point-on-triangle, vectorised over the whole element set:
+    the seven Voronoi regions of a triangle (three vertices, three edges, the
+    interior) are evaluated for every triangle at once and the nearest is taken.
+    Returns ``(weights, triangle index)``.
+    """
+    ab, ac, ap = b - a, c - a, point - a
+    d1 = np.einsum("ij,ij->i", ab, ap)
+    d2 = np.einsum("ij,ij->i", ac, ap)
+    bp = point - b
+    d3 = np.einsum("ij,ij->i", ab, bp)
+    d4 = np.einsum("ij,ij->i", ac, bp)
+    cp = point - c
+    d5 = np.einsum("ij,ij->i", ab, cp)
+    d6 = np.einsum("ij,ij->i", ac, cp)
+
+    # Interior of the triangle: the plane projection, in barycentric form.
+    va = d3 * d6 - d5 * d4
+    vb = d5 * d2 - d1 * d6
+    vc = d1 * d4 - d3 * d2
+    denom = va + vb + vc
+    safe = np.where(np.abs(denom) < 1e-300, 1.0, denom)
+    v, w = vb / safe, vc / safe
+    u = 1.0 - v - w
+    bary = np.stack([u, v, w], axis=1)
+
+    # Degenerate or outside: clamp onto the nearest vertex or edge.
+    outside = (np.abs(denom) < 1e-300) | (u < 0) | (v < 0) | (w < 0)
+    if outside.any():
+        i = np.flatnonzero(outside)
+        clamped = np.zeros((len(i), 3))
+        # vertex regions
+        at_a = (d1[i] <= 0) & (d2[i] <= 0)
+        at_b = (d3[i] >= 0) & (d4[i] <= d3[i])
+        at_c = (d6[i] >= 0) & (d5[i] <= d6[i])
+        clamped[at_a] = (1.0, 0.0, 0.0)
+        clamped[at_b & ~at_a] = (0.0, 1.0, 0.0)
+        clamped[at_c & ~at_a & ~at_b] = (0.0, 0.0, 1.0)
+        done = at_a | at_b | at_c
+        # edge regions
+        for mask, num, den, slot in (
+            (vc[i] <= 0, d1[i], d1[i] - d3[i], (0, 1)),
+            (vb[i] <= 0, d2[i], d2[i] - d6[i], (0, 2)),
+            (va[i] <= 0, d4[i] - d3[i], (d4[i] - d3[i]) + (d5[i] - d6[i]), (1, 2)),
+        ):
+            take = mask & ~done
+            if take.any():
+                t = np.clip(np.divide(num[take], den[take],
+                                      out=np.zeros(int(take.sum())),
+                                      where=np.abs(den[take]) > 1e-300), 0.0, 1.0)
+                clamped[take] = 0.0
+                clamped[np.flatnonzero(take), slot[0]] = 1.0 - t
+                clamped[np.flatnonzero(take), slot[1]] = t
+                done |= take
+        # anything left (a fully degenerate element) goes to its first vertex
+        clamped[~done] = (1.0, 0.0, 0.0)
+        bary[i] = clamped
+
+    closest = (bary[:, :1] * a + bary[:, 1:2] * b + bary[:, 2:3] * c)
+    index = int(np.argmin(np.einsum("ij,ij->i", closest - point, closest - point)))
+    return bary[index], index
+
 def verify_force_moment_conservation(
     aero_points, aero_forces, struc_nodes, nodal_forces, ref_point=None
 ):
@@ -552,6 +913,8 @@ def main(
     strut_sections,
     panels,
     section_ids=None,
+    canopy_triangles=None,
+    canopy_grid=None,
     cp_distribution_path=None,
     is_with_delta_cp_and_weights_plot=False,
     is_with_conservation_check=False,
@@ -616,6 +979,7 @@ def main(
             "panels; moment matching needs one per panel"
         )
 
+    panel_weights = []
     for index, (panel, f_panel) in enumerate(zip(panels, f_aero_wing_vsm_format)):
         le_mid = 0.5 * (panel.LE_point_1 + panel.LE_point_2)
         te_mid = 0.5 * (panel.TE_point_1 + panel.TE_point_2)
@@ -636,6 +1000,7 @@ def main(
                     chordwise_weights, t_vals, t_cp / chord_squared
                 )
 
+        panel_weights.append(weights)
         f_nodes = weights[:, None] * f_panel[None, :]
         vsm_wing_forces_distributed_chordwise.append(f_nodes)
 
@@ -653,6 +1018,61 @@ def main(
         )
 
     # mapping the distributed aerodynamic forces to the structural nodes
+    # Element-consistent transfer when the caller knows the canopy elements.
+    # The lattice path below can only reach nodes that sit on a chordwise chain
+    # from the YAML, so on any mesh richer than that one -- a quad-centre node,
+    # a refined interior node -- it silently leaves nodes unloaded. Both routes
+    # conserve the resultant force exactly; this one also keeps the in-plane
+    # moment, because barycentric weights reproduce the load's line of action
+    # inside the element instead of smearing it to the chain.
+    #
+    #   traction          the aerodynamic load as a field over the canopy,
+    #                     integrated over every element (the default whenever
+    #                     the elements are known): every canopy node is loaded
+    #                     by the elements around it, and the force is exact.
+    #   nearest_element   each point load through its nearest element: exact
+    #                     force and in-plane moment, but a point reaches only
+    #                     three nodes, so a fine mesh is mostly left unloaded.
+    #   sections          the lattice below.
+    route = str(config_aer2struc.get("load_transfer", "traction"))
+    if route not in ("traction", "nearest_element", "sections"):
+        raise ValueError(
+            "aero2struc.load_transfer must be 'traction', 'nearest_element' or "
+            f"'sections', got {route!r}"
+        )
+    if canopy_triangles is not None and route != "sections":
+        if route == "traction":
+            if canopy_grid is None:
+                raise ValueError("the traction transfer needs the canopy grid")
+            forces_k = np.asarray(f_aero_wing_vsm_format, dtype=float)
+            weights_k = np.asarray(panel_weights, dtype=float)
+            if not _panels_follow_grid(panels, struc_nodes, canopy_grid):
+                forces_k, weights_k = forces_k[::-1], weights_k[::-1]
+            f_aero_wing = map_aero_traction_to_membrane(
+                forces_k, weights_k, t_vals, struc_nodes, canopy_grid,
+                canopy_triangles,
+            )
+        else:
+            f_aero_wing = map_aero_forces_to_membrane(
+                aero_points=vsm_wing_nodes_distributed_chordwise,
+                aero_forces=vsm_wing_forces_distributed_chordwise,
+                struc_nodes=struc_nodes,
+                triangles=canopy_triangles,
+            )
+        if is_with_conservation_check:
+            verify_force_moment_conservation(
+                aero_points=vsm_wing_nodes_distributed_chordwise,
+                aero_forces=vsm_wing_forces_distributed_chordwise,
+                struc_nodes=struc_nodes,
+                nodal_forces=f_aero_wing,
+            )
+        if return_distributed_aero:
+            return f_aero_wing, {
+                "points": vsm_wing_nodes_distributed_chordwise,
+                "forces": vsm_wing_forces_distributed_chordwise,
+            }
+        return f_aero_wing
+
     sections = build_ordered_sections(struc_nodes, canopy_sections, strut_sections)[0]
 
     if section_ids is None:

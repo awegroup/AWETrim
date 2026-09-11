@@ -159,6 +159,15 @@ def _find_kite_fem_spring_id_from_connectivity(
     )
 
 
+def _canopy_triangles(config, billow_structure):
+    """Canopy element connectivity, when the backend has one to offer."""
+    if config.get("structural_solver") != "billow" or billow_structure is None:
+        return None
+    from awetrim.aerostructural.billow import structural_billow as _sb
+
+    return billow_structure.model.element_set(_sb.CANOPY).connectivity
+
+
 def _billow_solved(config, billow_structure):
     """True when a Billow solve has produced a state worth recording."""
     return (
@@ -651,6 +660,13 @@ def main(
         canopy_sections,
         strut_sections,
         body_aero.panels,
+        # Billow knows its canopy elements, so the load can be transferred
+        # through them rather than through the YAML's node chains -- which is
+        # the only route that reaches a quad-centre or refined interior node.
+        canopy_triangles=_canopy_triangles(config, billow_structure),
+        canopy_grid=(billow_structure.fine_grid
+                     if _canopy_triangles(config, billow_structure) is not None
+                     else None),
         is_with_conservation_check=False,
         return_distributed_aero=True,
     )

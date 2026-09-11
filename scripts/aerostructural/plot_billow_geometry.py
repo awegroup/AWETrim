@@ -36,8 +36,15 @@ STRUC_GEOMETRY_FILENAME = "struc_geometry_FEM_full.yaml"
 REGIME_LABELS = {SLACK: "slack", WRINKLED: "wrinkled", TAUT: "taut"}
 
 
-def rebuild(project_dir, kite_name, panels_per_section=None):
-    """The Billow model the run used, rebuilt from the YAML."""
+def rebuild(project_dir, kite_name, panels_per_section=None, billow_settings=None):
+    """The Billow model the run used, rebuilt from the YAML.
+
+    ``billow_settings`` overrides ``structural_billow`` keys, which is how a
+    run that used a different canopy mesh -- another triangulation, a refined
+    one -- is reproduced: the mesh is a build-time choice, so rebuilding with
+    the default would give a model whose element set does not match the saved
+    positions.
+    """
     config_path, _, _ = resolve_kite_paths(project_dir, kite_name)
     struc_geometry_path = project_dir / "data" / kite_name / STRUC_GEOMETRY_FILENAME
     with (project_dir / "data" / kite_name / "system.yaml").open(encoding="utf-8") as f:
@@ -46,6 +53,10 @@ def rebuild(project_dir, kite_name, panels_per_section=None):
     config = load_yaml(config_path)
     if panels_per_section is not None:
         config["aerodynamic"]["n_aero_panels_per_struc_section"] = panels_per_section
+    if billow_settings:
+        config["structural_billow"] = {
+            **(config.get("structural_billow") or {}), **billow_settings
+        }
     struc_geometry = load_yaml(struc_geometry_path)
 
     reader = read_struc_geometry_yaml.main(

@@ -70,14 +70,48 @@ def main():
                              "mirror-symmetric (3e-7 N per panel); 'anderson' is "
                              "not (0.18 N), and tightening its tolerance does not "
                              "help. Default: leave as_config alone.")
+    parser.add_argument("--refine", type=int, default=1,
+                        help="canopy mesh refinement k: every quad becomes k x k "
+                             "before triangulating. The coarse lattice is kept, "
+                             "so tubes, cables and bridle attachments are "
+                             "untouched; only the fabric is refined.")
     parser.add_argument("--patterns", nargs="+", default=list(PATTERNS),
                         choices=list(PATTERNS))
+    parser.add_argument("--attached-polars", action="store_true",
+                        help="solve on polars continued past the stall onset "
+                             "(aerodynamic.attached_polars). With artificial "
+                             "viscosity on, a tip past the onset can lock onto "
+                             "a stalled branch, often on ONE side only, which "
+                             "breaks symmetry however symmetric the structure "
+                             "is; the attached polars have no such fixed point.")
+    parser.add_argument("--no-av", action="store_true",
+                        help="artificial viscosity off (aerodynamic."
+                             "is_with_artificial_viscosity). Default: inherit "
+                             "as_config, which has it on.")
+    parser.add_argument("--inner-tol", type=float, default=None,
+                        help="structural_billow.force_tolerance [N]: the inner "
+                             "solve's absolute floor. Default: as_config.")
+    parser.add_argument("--inner-tol-rel", type=float, default=None,
+                        help="structural_billow.relative_force_tolerance, times "
+                             "the total load. Default: as_config.")
+    parser.add_argument("--tag", default="",
+                        help="suffix for the result folders and summary, so a "
+                             "rerun under a changed model (a new load transfer, "
+                             "say) sits beside the earlier results instead of "
+                             "overwriting them")
     parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
     args = parser.parse_args()
+    suffix = f"_{args.tag}" if args.tag else ""
 
     project = Path(__file__).resolve().parents[2]
-    overrides = ({"aerodynamic": {"gamma_loop_type": args.gamma_loop}}
-                 if args.gamma_loop else None)
+    aerodynamic = {}
+    if args.gamma_loop:
+        aerodynamic["gamma_loop_type"] = args.gamma_loop
+    if args.attached_polars:
+        aerodynamic["attached_polars"] = True
+    if args.no_av:
+        aerodynamic["is_with_artificial_viscosity"] = False
+    overrides = {"aerodynamic": aerodynamic} if aerodynamic else None
     shared = build_once(project, args.kite, args.panels_per_section, overrides)
     shared["config"]["wind_speed_wind_ref"] = float(args.wind)
     shared["config"]["aero_structural_solver"]["tol"] = float(args.tol)
@@ -98,10 +132,16 @@ def main():
         shared["config"].setdefault("structural_billow", {})
         settings = dict(shared["config"].get("structural_billow") or {})
         settings["canopy_pattern"] = pattern
+        if args.inner_tol is not None:
+            settings["force_tolerance"] = float(args.inner_tol)
+        if args.inner_tol_rel is not None:
+            settings["relative_force_tolerance"] = float(args.inner_tol_rel)
+        settings["canopy_refinement"] = args.refine
         config_backup = copy.deepcopy(shared["config"])
         shared["config"]["structural_billow"] = settings
 
-        folder = root / pattern
+        folder = root / ((pattern if args.refine == 1
+                          else f"{pattern}_x{args.refine}") + suffix)
         # reach = 0 -> no actuation, a single converged unsteered state.
         tracking, meta, geometry, structure = run_chain(
             shared, args.wind, 0.0, 0.0, folder
@@ -134,7 +174,8 @@ def main():
               f"{residual:6.2f} {s['iterations']:3d} | {span:6.3f} | {elapsed:5.0f}",
               flush=True)
 
-    (root / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    summary_path = root / f"summary{suffix}.json"
+    summary_path.write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print("-" * 96)
     print("mismatch columns are millimetres, max over the wing grid.\n")
 
@@ -145,7 +186,7 @@ def main():
         got = summary[pattern]["trimmed_max_mm"]
         print(f"  {pattern:9s}: {got:7.3f} mm vs {base:7.3f} mm "
               f"({100 * (got - base) / base:+.1f}%)")
-    print(f"\nwritten to {root / 'summary.json'}")
+    print(f"\nwritten to {summary_path}")
 
 
 if __name__ == "__main__":

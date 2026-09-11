@@ -163,6 +163,13 @@ def run_chain(shared, wind_speed, reach, step, results_dir):
     # agree with model.nodes or they silently misalign.
     struc_nodes = structure.model.nodes.copy()
     m_arr = structure.masses
+    # The aerodynamic load is mapped onto these sections. Use the MEMBRANE's
+    # grid, not the reader's: with a refined canopy the two differ, and mapping
+    # onto the coarse one leaves every added node unloaded. aero2struc's
+    # bracketing is symmetry-preserving for any section list, so a finer list
+    # costs nothing but resolution gained.
+    canopy_sections = [list(map(int, row)) for row in structure.fine_grid]
+    strut_sections = []
     mapping = (
         BilinearAeroToStructuralLoadMapper()
         .initialize(shared["body_aero"].panels, struc_nodes, le_indices, te_indices)

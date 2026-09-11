@@ -58,10 +58,30 @@ src/awetrim/aerostructural/
   # ── FEM-based solver ──────────────────────────────────────────────────────
   fem/
     __init__.py                    Re-exports all four FEM modules
-    aerostructural_coupled_solver.py  FEM/QSM high-level driver
-    aero2struc.py                  Aero-to-structural force mapping and moment preservation check
+    aerostructural_coupled_solver.py  The coupled QSM driver. Despite living
+                                   here it is NOT FEM-only: it dispatches on
+                                   config["structural_solver"] over pss /
+                                   kite_fem / billow. Add a backend by adding
+                                   a branch, not by copying the driver.
+    aero2struc.py                  Aero-to-structural force mapping and moment
+                                   preservation check. chordwise_distribution
+                                   (see below) decides whether the panel's
+                                   pitching moment is conserved; load_transfer
+                                   decides how the load reaches the nodes
+                                   (traction integral for billow, see below).
     read_struc_geometry_yaml.py    Parse struc_geometry YAML (strut tubes, LE tubes)
     structural_kite_fem.py         FEM structure instantiation and solve
+
+  # ── Billow-based solver ───────────────────────────────────────────────────
+  billow/
+    __init__.py                    Re-exports the structural_billow API
+    structural_billow.py           Adapts awetrim.structural (minimum-energy
+                                   cables, pulleys, inflatable Timoshenko tube
+                                   beams, wrinkling CST membrane canopy) to the
+                                   run_kite_fem call contract. Reads the SAME
+                                   arrays fem/read_struc_geometry_yaml.main
+                                   returns, so one geometry reader serves both.
+                                   See "Billow backend" below.
 
 scripts/aerostructural/
   common.py                        CONFIG_DEFAULTS, build_system_model, shared helpers
@@ -105,7 +125,10 @@ Fixed-point loop (pss/coupling.PssQsmCoupler.solve  or  pss/aerostructural_coupl
   4. mapping.BilinearAeroToStructuralLoadMapper.map_loads(panel_forces) → nodal aero forces  [common]
   5. forces.distribute_total_force_by_particle_mass(inertial+gravity) → nodal inertial forces [common]
   6. aerodynamic_bridle_line_drag.main() → nodal bridle drag forces           [common]
-  7. pss/structural_pss.run_pss(psystem, total_external_force) → new node positions           [pss]
+  7. structural solve → new node positions
+       pss/structural_pss.run_pss                    [pss]
+       fem/structural_kite_fem.run_kite_fem          [kite_fem]
+       billow/structural_billow.run_billow           [billow]
   8. Aitken relaxation on node displacement
   9. pss/actuation.update_*_tape_actuation() (every N iterations)            [pss]
   10. convergence.check_convergence() → break or continue                    [common]
@@ -153,7 +176,125 @@ Node positions are updated as `nodes += factor * (solved_nodes - nodes)` where `
 - VSM solver internals (`VSM.core`) are accessed only through `aerodynamic_vsm.py`; the rest of the module is VSM-agnostic.
 - `aerodynamic_vsm.py` and `aerodynamic_bridle_line_drag.py` live at the root level and are shared by all solvers. `aerodynamic_vsm.run_vsm_package` also builds the KCU bluff-body drag model (`awetrim.aerodynamics.kcu_drag`, gated by the `is_with_kcu_drag` config key, default true) and hands it to whichever trim it dispatches to. It is deliberately NOT distributed onto structural nodes: the KCU is node 0, a FIXED node, so a force there is absorbed by the constraint and cannot deform anything — the KCU drag reaches the structure only through the trim state the wing is loaded at. `pss/structural_pss.py` holds the PSS dependency. All other common files (`mapping.py`, `convergence.py`, etc.) depend only on numpy and the module's own protocols.
 - `pss/aerostructural_coupled_solver_qsm.py` is a legacy high-level driver retained for production scripts. New protocol-level code should go through `pss/coupling.PssQsmCoupler`.
-- When adding a new structural solver, create a new subfolder (e.g., `fem/`) mirroring the `pss/` layout. Common files at the root level are shared by all solvers.
+- When adding a new structural solver, create a new subfolder (e.g., `fem/`, `billow/`) for the BACKEND, mirroring the `pss/` layout. Common files at the root level are shared by all solvers. The coupled driver in `fem/` is already backend-agnostic — add a branch to its `config["structural_solver"]` dispatch rather than copying its ~1000 lines.
+
+## Billow backend (`billow/`)
+
+`structural_billow.instantiate` consumes the arrays
+`fem/read_struc_geometry_yaml.main` already returns and turns them into a
+`awetrim.structural` minimum-energy model. The element mapping:
+
+| reader element | Billow element |
+|----------------|----------------|
+| `inflatable_beam` | `InflatableBeamKernel` tube beams (diameter from `k_arr`, pressure from `c_arr`) |
+| `pulley` arm pairs | `PulleyKernel` ropes, rest length = the WHOLE rope |
+| bridle `noncompressive` | `CableKernel` tension-only cables |
+| canopy grid springs | **dropped**, replaced by wrinkling CST membrane triangles |
+
+On the LEI-V3 `struc_geometry_FEM_full.yaml`: 268 nodes / 1098 DOF, 47 cables,
+20 pulleys, 97 tubes, 378 membrane triangles, 693 canopy springs replaced.
+Build ~0.9 s, structural solve ~2 s per coupled iteration (the VSM trim is
+~25 s, so the structure is not the cost).
+
+Three things the adapter has to do that are not obvious:
+
+- **The bridle is relaxed before the model is built.** The YAMLs store measured
+  rest lengths against measured node positions and the two disagree — on the
+  LEI-V3 `Br_main_1` is 11.5% long, which at the real `EA/l0` is 88 kN in one
+  line. `relax_bridles` settles it with the wing held (so the canopy and tube
+  reference configurations are untouched), then re-centres. This is the same
+  role `structural_kite_fem.relaxbridles` plays on the FEM path. **The nodes the
+  coupled loop starts from are therefore not the raw YAML nodes** — read them
+  back from `structure.model.nodes`.
+- **Frames are transported over the beam tree, not seeded per chain.** The
+  reference curvature is `omega_0 = psi / L0` with `psi` a Rodrigues vector, so
+  it grows like `tan(theta/2)` and is singular at `theta = pi`. Seeding each
+  chain's roll independently piles an arbitrary roll on top of the physical
+  LE/strut joint angle and took the worst element to 173 degrees, i.e.
+  `omega_0 = 753 /m` on a 17 mm element. Minimal-rotation transport over the
+  beam network plus `junction_frame="strut"` (the joint rotation lands on the
+  long LE runs, not the short strut stubs) gives 10.6 /m. The tube section is
+  isotropic in roll (`ga_2 == ga_3`, one bending law), so only `d1` is
+  physically determined and the roll is free to spend this way.
+- **`run_billow` is a whole solve, not one step.** With a `move_limit` each
+  `MinimumEnergySolver.solve` is one trust-region step and `run_billow` walks
+  them to force balance, terminating on the residual — IPOPT reports success for
+  the *boxed* problem while sitting on the boundary, so its verdict does not
+  imply equilibrium.
+
+A gravity-only load case is NOT a valid smoke test: the KCU is pinned below the
+wing, so gravity slackens every bridle line and the bridle knots become a
+mechanism. Billow reports that faithfully (residual = the free knots' weight);
+`kite_fem` hides it because `I_stiffness=25` acts as a ground spring on every
+node. Load the wing away from the KCU, as the aero does.
+
+## Chordwise load distribution and the pitching moment
+
+`aero2struc.main`'s `chordwise_distribution` key decides where along each chord
+a panel's force is placed, and **that station is the panel's local pitching
+moment**:
+
+- `cp_file` (default, reproduces every stored result) applies one measured
+  `Delta C_p` shape to every panel. On the LEI-V3 file its centroid is
+  `0.291 c`, so every panel gets that station whatever its own `C_m` says.
+- `moment_matched` keeps that shape as a prior and tilts it onto the centre of
+  pressure VSM already computes from each panel's `F` and `M`
+  (`panel_cp_locations`), via `weights_at_centre_of_pressure`. The tilt is
+  `w_i ∝ w0_i exp(lambda t_i)` with `lambda` solved from the required centroid:
+  strictly positive weights, force preserved exactly, and the
+  minimum-relative-entropy correction, so the measured shape is kept wherever
+  the moment does not contradict it.
+
+Measured on one LEI-V3 trim (135 panels): the actual centre of pressure runs
+`0.303 .. 0.805 c` (the high end is the stalled tips), and the fixed station
+imposes **917 N m** of spurious pitching moment, ~-10 N m on nearly every
+panel with the SAME sign — a systematic bias, which is exactly what shifts a
+moment balance. `moment_matched` takes it to 6e-9 N m.
+
+**`check_moment_preservation` does not measure this.** Both call sites hand it
+the already-distributed loads, so it reports the error of the *spatial*
+nearest-node step (`map_aero_forces_to_struct_nodes`) alone. That error is
+0.09% pre-loop but **22% once the kite has deformed** — a separate, open defect
+in the same family.
+
+## Load transfer onto the canopy (`load_transfer`)
+
+Where the chordwise weights put each panel's load is one question; how that
+load then reaches the structural NODES is another. `aero2struc.main`'s
+`load_transfer` key (used whenever the caller passes `canopy_triangles` and
+`canopy_grid`, i.e. the billow backend) picks the route:
+
+- `traction` (default) -- the load as a FIELD over the canopy, integrated over
+  every element: `map_aero_traction_to_membrane`. Panel `k` covers a strip of
+  the canopy's surface coordinates `(s, xi)` (`canopy_surface_coordinates`: `s`
+  the grid row, `xi` the projection onto that row's chord) with traction
+  `F_k q_k(xi) / ds_k`, where `q_k` is the piecewise-linear density whose
+  consistent nodal loads reproduce the panel's chordwise weights exactly
+  (`consistent_chordwise_density`, keeps force AND centre of pressure). Each
+  element gets `f_a = int tau N_a dA`, evaluated exactly by clipping against the
+  strip/chord-bin boxes. So every canopy node -- quad centres and refined
+  interior nodes included -- is loaded by the elements around it, and the total
+  force is conserved to roundoff by construction.
+- `nearest_element` -- each chordwise point load through its nearest triangle
+  (barycentric). Exact force and in-plane moment, but a point reaches three
+  nodes: on a x3 canopy 61% of the nodes stay unloaded.
+- `sections` -- the historical lattice mapping onto the YAML's chordwise node
+  chains; the only route for pss / kite_fem.
+
+`scripts/aerostructural/check_load_transfer.py` compares the three on one aero
+state. Measured on the coarse `cross` canopy (413 canopy nodes):
+
+| route | loaded | force rel. error | moment rel. diff. |
+|---|---|---|---|
+| `sections` | 224 | 1e-15 | 3.9e-3 |
+| `nearest_element` | 368 | 1e-15 | 6.8e-7 |
+| `traction` | **413** | 2e-15 | 6.3e-4 |
+
+The `traction` moment is measured against the loads on the aero CHORD LINE; it
+places them on the cambered SURFACE instead, which is where the pressure acts,
+so its difference is the camber offset and not a transfer error. On a planar
+wing, where the two coincide, the moment is exact
+(`tests/aerostructural/test_aero2struc.py`).
 
 ## Config Keys (aerostructural_configs/config.yaml)
 
