@@ -1,0 +1,665 @@
+<title>Billow Kite Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+
+<style>
+:root {
+  --ground:      #eef0f4;
+  --viewport:    #f7f8fa;
+  --surface:     #ffffff;
+  --line:        #d2d7e0;
+  --ink:         #171b25;
+  --ink-soft:    #5b6478;
+  --ink-faint:   #8a93a6;
+  --accent:      #2c497f;
+  --accent-soft: #e3e9f5;
+  --tube:        #23293a;
+  --cable:       #1d7a5e;
+  --rope:        #2c497f;
+  --kcu:         #a4548a;
+  --slack:       #3a9dc5;
+  --wrinkled:    #e69f00;
+  --taut:        #d55e00;
+  --plain:       #7f8ba3;
+  --shadow:      0 1px 2px rgba(23, 27, 37, .08), 0 8px 24px rgba(23, 27, 37, .06);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground:      #0e1118;
+    --viewport:    #141924;
+    --surface:     #1a1f2b;
+    --line:        #2b3241;
+    --ink:         #e6e9f0;
+    --ink-soft:    #a3abbd;
+    --ink-faint:   #6f7889;
+    --accent:      #7ba3e0;
+    --accent-soft: #1e2534;
+    --tube:        #c9d0de;
+    --cable:       #3fbf93;
+    --rope:        #7ba3e0;
+    --kcu:         #d98ec0;
+    --slack:       #3a9dc5;
+    --wrinkled:    #e69f00;
+    --taut:        #d55e00;
+    --plain:       #5d6880;
+    --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+  }
+}
+:root[data-theme="dark"] {
+  --ground:      #0e1118;
+  --viewport:    #141924;
+  --surface:     #1a1f2b;
+  --line:        #2b3241;
+  --ink:         #e6e9f0;
+  --ink-soft:    #a3abbd;
+  --ink-faint:   #6f7889;
+  --accent:      #7ba3e0;
+  --accent-soft: #1e2534;
+  --tube:        #c9d0de;
+  --cable:       #3fbf93;
+  --rope:        #7ba3e0;
+  --kcu:         #d98ec0;
+  --slack:       #3a9dc5;
+  --wrinkled:    #e69f00;
+  --taut:        #d55e00;
+  --plain:       #5d6880;
+  --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px 18px;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+h1 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  letter-spacing: -.01em;
+}
+.sub {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: .82rem;
+  max-width: 62ch;
+}
+
+main {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 232px 1fr;
+  min-height: 0;
+}
+@media (max-width: 760px) {
+  main { grid-template-columns: 1fr; }
+  .rail { border-right: 0; border-bottom: 1px solid var(--line); }
+}
+
+.rail {
+  border-right: 1px solid var(--line);
+  background: var(--surface);
+  padding: 16px 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  overflow-y: auto;
+}
+
+.group { display: flex; flex-direction: column; gap: 8px; }
+.group > h2 {
+  margin: 0;
+  font-size: .66rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: .09em;
+  color: var(--ink-faint);
+}
+
+.seg { display: flex; flex-direction: column; gap: 4px; }
+.seg button {
+  appearance: none;
+  text-align: left;
+  font: inherit;
+  font-size: .82rem;
+  padding: 7px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+  transition: background .12s, color .12s, border-color .12s;
+}
+.seg button:hover { border-color: var(--accent); color: var(--ink); }
+.seg button[aria-pressed="true"] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--ink);
+  font-weight: 500;
+}
+.seg button .meta {
+  display: block;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: .7rem;
+  color: var(--ink-faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.check { display: flex; align-items: center; gap: 8px; font-size: .82rem; color: var(--ink-soft); cursor: pointer; }
+.check input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+.check:hover { color: var(--ink); }
+
+.legend { display: flex; flex-direction: column; gap: 5px; }
+.legend .row {
+  display: grid;
+  grid-template-columns: 12px 1fr auto;
+  align-items: center;
+  gap: 8px;
+  font-size: .78rem;
+  color: var(--ink-soft);
+}
+.legend .sw { width: 12px; height: 12px; border-radius: 2px; }
+.legend .pct {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+}
+
+.viewport { position: relative; background: var(--viewport); min-height: 420px; }
+canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+canvas:active { cursor: grabbing; }
+
+.note {
+  position: absolute;
+  left: 1rem;
+  bottom: 1rem;
+  max-width: 30rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--rule);
+  border-left: 3px solid var(--accent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  backdrop-filter: blur(6px);
+  color: var(--ink-soft);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+.note:empty { display: none; }
+.note strong { color: var(--ink); font-weight: 600; }
+@media (max-width: 900px) { .note { position: static; max-width: none; margin: 0.75rem 0 0; } }
+.readout {
+  position: absolute;
+  left: 14px;
+  bottom: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 20px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(6px);
+  font-size: .74rem;
+}
+.readout div { display: flex; flex-direction: column; gap: 1px; }
+.readout dt {
+  margin: 0;
+  font-size: .62rem;
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  color: var(--ink-faint);
+}
+.readout dd {
+  margin: 0;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: .84rem;
+  color: var(--ink);
+}
+
+.hint {
+  position: absolute;
+  right: 14px;
+  top: 14px;
+  font-size: .72rem;
+  color: var(--ink-faint);
+  text-align: right;
+  pointer-events: none;
+}
+.hint kbd {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: .68rem;
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 0 4px;
+  color: var(--ink-soft);
+}
+
+button.ghost {
+  appearance: none;
+  font: inherit;
+  font-size: .78rem;
+  padding: 6px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+button.ghost:hover { border-color: var(--accent); color: var(--ink); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+footer {
+  padding: 12px 22px 18px;
+  border-top: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--ink-faint);
+  font-size: .74rem;
+}
+footer code {
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  color: var(--ink-soft);
+}
+</style>
+
+<header>
+  <h1>Billow Kite Viewer</h1>
+  <p class="sub">TU&nbsp;Delft V3, trimmed by the coupled VSM&nbsp;+&nbsp;minimum-energy solve. The canopy is a wrinkling membrane, not a spring net, so every triangle carries a biaxial stress state and can be shaded by the regime it is actually in. Turn on <em>mesh edges</em> to see the triangulation.</p>
+</header>
+
+<main>
+  <div class="rail">
+    <div class="group">
+      <h2>Solved state</h2>
+      <div class="seg" id="states"></div>
+    </div>
+
+    <div class="group">
+      <h2>Canopy</h2>
+      <label class="check"><input type="checkbox" id="byRegime" checked> Shade by wrinkling state</label>
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <div class="group">
+      <h2>Show</h2>
+      <label class="check"><input type="checkbox" id="showCanopy" checked> Canopy</label>
+      <label class="check"><input type="checkbox" id="showTubes" checked> Inflated tubes</label>
+      <label class="check"><input type="checkbox" id="showBridle" checked> Bridle and pulleys</label>
+      <label class="check"><input type="checkbox" id="showMesh" checked> Mesh edges</label>
+      <label class="check"><input type="checkbox" id="asBuilt"> As built (no aero load)</label>
+    </div>
+
+    <div class="group">
+      <h2>View</h2>
+      <button class="ghost" id="reset">Reset camera</button>
+    </div>
+  </div>
+
+  <div class="viewport">
+    <canvas id="view"></canvas>
+    <div class="hint">
+      <div>drag to orbit &middot; scroll to zoom</div>
+      <div><kbd>shift</kbd> + drag to pan</div>
+    </div>
+    <dl class="readout" id="readout"></dl>
+    <aside class="note" id="note"></aside>
+  </div>
+</main>
+
+<footer>
+97 inflatable tube beams &middot; 47 cables &middot; 20 pulleys. Unsteered, at the centre of the wind
+  window with gravity off, either unactuated or with the depower tape shortened &mdash; one central line,
+  so the load case stays mirror&#8209;symmetric in every input and any left&ndash;right mismatch is model
+  error whose correct value is zero. The <strong>symmetric</strong> states carry both fixes of
+  2026&#8209;09&#8209;11: the traction load transfer in every coupled iteration, and tube frames
+  <em>mirrored</em> onto the far half instead of transported from one tip &mdash; transported, they arrived
+  rolled by up to 60&deg;, so the tube energy was not mirror&#8209;symmetric even though every node
+  position was. With both, the unsteered solve is symmetric to 2&times;10<sup>&minus;5</sup>&nbsp;mm built
+  and 4&times;10<sup>&minus;5</sup>&nbsp;mm powered, and the symmetric equilibrium is stable. The states
+  marked <em>pre&#8209;fix</em> show the artefact: largest at the tips and toward the trailing edge;
+  <em>of which shape</em> excludes the small rigid rotation of the whole kite about its single support.
+  <code>struc_geometry_FEM_full.yaml</code>, solved by <code>awetrim.structural</code> through
+  <code>aerostructural/billow</code>.
+</footer>
+
+<script>
+const DATA = __DATA__;
+
+const REGIMES = [
+  { key: 0, name: "slack",    varName: "--slack",    note: "carrying nothing" },
+  { key: 1, name: "wrinkled", varName: "--wrinkled", note: "tension field, one direction" },
+  { key: 2, name: "taut",     varName: "--taut",     note: "biaxial tension" },
+];
+
+const canvas = document.getElementById("view");
+const ctx = canvas.getContext("2d");
+
+const cam = { yaw: -0.62, pitch: 0.28, zoom: 1, panX: 0, panY: 0 };
+const HOME = { ...cam };
+
+const view = {
+  state: Object.keys(DATA.states)[0],
+  built: false,
+  byRegime: true,
+  canopy: true,
+  tubes: true,
+  bridle: true,
+  mesh: false,
+};
+
+function cssVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
+function current() {
+  return DATA.states[view.state];
+}
+function positionsFor() {
+  const s = current();
+  return view.built ? s.reference : s.positions;
+}
+function regimeFor() {
+  const s = current();
+  return view.built ? s.referenceRegime : s.regime;
+}
+function trianglesFor() {
+  return current().triangles;
+}
+
+/* ---- camera -------------------------------------------------------- */
+
+function centreAndSpan(points) {
+  const lo = [Infinity, Infinity, Infinity];
+  const hi = [-Infinity, -Infinity, -Infinity];
+  for (const p of points) {
+    for (let i = 0; i < 3; i++) {
+      if (p[i] < lo[i]) lo[i] = p[i];
+      if (p[i] > hi[i]) hi[i] = p[i];
+    }
+  }
+  return {
+    centre: [0, 1, 2].map((i) => 0.5 * (lo[i] + hi[i])),
+    span: Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]),
+  };
+}
+
+function makeProjector(points) {
+  const { centre, span } = centreAndSpan(points);
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width, h = rect.height;
+  const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+  const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  const dist = span * 2.6;
+  const focal = Math.min(w, h) * 0.52 * cam.zoom * (dist / span);
+
+  function rotate(v) {
+    const x = v[0] * cy - v[1] * sy;
+    const y0 = v[0] * sy + v[1] * cy;
+    const z = v[2];
+    return [x, y0 * cp - z * sp, y0 * sp + z * cp];
+  }
+
+  function project(p) {
+    const r = rotate([p[0] - centre[0], p[1] - centre[1], p[2] - centre[2]]);
+    const depth = r[1] + dist;
+    const f = focal / Math.max(depth, 1e-3);
+    return [w / 2 + r[0] * f + cam.panX, h / 2 - r[2] * f + cam.panY, depth];
+  }
+
+  return { project, rotate, w, h, span };
+}
+
+/* ---- drawing ------------------------------------------------------- */
+
+function shade(hex, amount) {
+  const n = parseInt(hex.slice(1), 16);
+  const r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  const mix = (c) => Math.round(Math.min(255, Math.max(0, c * amount)));
+  return `rgb(${mix(r)},${mix(g)},${mix(b)})`;
+}
+
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  if (canvas.width !== Math.round(rect.width * dpr)) {
+    canvas.width = Math.round(rect.width * dpr);
+    canvas.height = Math.round(rect.height * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+
+  const pos = positionsFor();
+  const regime = regimeFor();
+  const triangles = trianglesFor();
+  const { project, rotate } = makeProjector(pos);
+  const screen = pos.map(project);
+
+  const colours = {
+    slack: cssVar("--slack"), wrinkled: cssVar("--wrinkled"), taut: cssVar("--taut"),
+    plain: cssVar("--plain"), tube: cssVar("--tube"),
+    cable: cssVar("--cable"), rope: cssVar("--rope"), kcu: cssVar("--kcu"),
+    line: cssVar("--line"),
+  };
+  const regimeColour = [colours.slack, colours.wrinkled, colours.taut];
+  const light = [0.32, -0.78, 0.54];
+
+  const prims = [];
+
+  if (view.canopy) {
+    triangles.forEach((tri, i) => {
+      const a = pos[tri[0]], b = pos[tri[1]], c = pos[tri[2]];
+      const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+      const v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+      let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+      const len = Math.hypot(n[0], n[1], n[2]) || 1;
+      n = rotate([n[0] / len, n[1] / len, n[2] / len]);
+      const lambert = Math.abs(n[0] * light[0] + n[1] * light[1] + n[2] * light[2]);
+      const base = view.byRegime ? regimeColour[regime[i]] : colours.plain;
+      prims.push({
+        depth: (screen[tri[0]][2] + screen[tri[1]][2] + screen[tri[2]][2]) / 3,
+        kind: "tri",
+        pts: [screen[tri[0]], screen[tri[1]], screen[tri[2]]],
+        fill: shade(base, 0.6 + 0.55 * lambert),
+      });
+    });
+  }
+
+  if (view.tubes) {
+    const dMax = Math.max(...DATA.tubeDiameter);
+    DATA.tubes.forEach((e, i) => {
+      prims.push({
+        depth: (screen[e[0]][2] + screen[e[1]][2]) / 2 - 0.02,
+        kind: "line",
+        pts: [screen[e[0]], screen[e[1]]],
+        colour: colours.tube,
+        width: 1.6 + 6.4 * (DATA.tubeDiameter[i] / dMax),
+        cap: "round",
+      });
+    });
+  }
+
+  if (view.bridle) {
+    for (const e of DATA.cables) {
+      prims.push({
+        depth: (screen[e[0]][2] + screen[e[1]][2]) / 2,
+        kind: "line", pts: [screen[e[0]], screen[e[1]]],
+        colour: colours.cable, width: 1.15, cap: "butt",
+      });
+    }
+    for (const p of DATA.pulleys) {
+      for (const e of [[p[0], p[1]], [p[1], p[2]]]) {
+        prims.push({
+          depth: (screen[e[0]][2] + screen[e[1]][2]) / 2,
+          kind: "line", pts: [screen[e[0]], screen[e[1]]],
+          colour: colours.rope, width: 1.15, cap: "butt",
+        });
+      }
+    }
+  }
+
+  prims.sort((a, b) => b.depth - a.depth);
+
+  for (const prim of prims) {
+    if (prim.kind === "tri") {
+      ctx.beginPath();
+      ctx.moveTo(prim.pts[0][0], prim.pts[0][1]);
+      ctx.lineTo(prim.pts[1][0], prim.pts[1][1]);
+      ctx.lineTo(prim.pts[2][0], prim.pts[2][1]);
+      ctx.closePath();
+      ctx.fillStyle = prim.fill;
+      ctx.fill();
+      if (view.mesh) {
+        ctx.strokeStyle = colours.line;
+        ctx.lineWidth = 0.35;
+        ctx.stroke();
+      }
+    } else {
+      ctx.beginPath();
+      ctx.moveTo(prim.pts[0][0], prim.pts[0][1]);
+      ctx.lineTo(prim.pts[1][0], prim.pts[1][1]);
+      ctx.strokeStyle = prim.colour;
+      ctx.lineWidth = prim.width;
+      ctx.lineCap = prim.cap;
+      ctx.stroke();
+    }
+  }
+
+  if (view.bridle) {
+    for (const i of DATA.fixed) {
+      const s = screen[i];
+      ctx.beginPath();
+      ctx.arc(s[0], s[1], 5, 0, Math.PI * 2);
+      ctx.fillStyle = colours.kcu;
+      ctx.fill();
+    }
+  }
+}
+
+/* ---- interaction --------------------------------------------------- */
+
+let dragging = null;
+canvas.addEventListener("pointerdown", (e) => {
+  dragging = { x: e.clientX, y: e.clientY, pan: e.shiftKey };
+  canvas.setPointerCapture(e.pointerId);
+});
+canvas.addEventListener("pointermove", (e) => {
+  if (!dragging) return;
+  const dx = e.clientX - dragging.x, dy = e.clientY - dragging.y;
+  dragging.x = e.clientX; dragging.y = e.clientY;
+  if (dragging.pan) {
+    cam.panX += dx; cam.panY += dy;
+  } else {
+    cam.yaw += dx * 0.0072;
+    cam.pitch = Math.max(-1.45, Math.min(1.45, cam.pitch + dy * 0.0072));
+  }
+  draw();
+});
+for (const type of ["pointerup", "pointercancel", "pointerleave"]) {
+  canvas.addEventListener(type, () => { dragging = null; });
+}
+canvas.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  cam.zoom = Math.max(0.28, Math.min(7, cam.zoom * Math.exp(-e.deltaY * 0.0012)));
+  draw();
+}, { passive: false });
+
+document.getElementById("reset").addEventListener("click", () => {
+  Object.assign(cam, HOME);
+  draw();
+});
+
+/* ---- chrome -------------------------------------------------------- */
+
+const stateKeys = Object.keys(DATA.states);
+const stateLabel = (key) => {
+  const s = DATA.states[key];
+  return {
+    title: s.label,
+    meta: `${s.triangles.length} triangles · ${s.nodes} nodes · `
+        + `${s.symmetric ? "symmetric" : "NOT symmetric"}`,
+  };
+};
+
+const seg = document.getElementById("states");
+if (stateKeys.length < 2) seg.closest(".group").hidden = true;
+for (const key of stateKeys) {
+  const { title, meta } = stateLabel(key);
+  const button = document.createElement("button");
+  button.type = "button";
+  button.innerHTML = `${title}<span class="meta">${meta}</span>`;
+  button.setAttribute("aria-pressed", String(key === view.state));
+  button.addEventListener("click", () => {
+    view.state = key;
+    for (const other of seg.children) other.setAttribute("aria-pressed", "false");
+    button.setAttribute("aria-pressed", "true");
+    Object.assign(cam, HOME);
+    refresh();
+  });
+  seg.appendChild(button);
+}
+
+const bindings = [
+  ["byRegime", "byRegime"], ["showCanopy", "canopy"], ["showTubes", "tubes"],
+  ["showBridle", "bridle"], ["showMesh", "mesh"], ["asBuilt", "built"],
+];
+for (const [id, key] of bindings) {
+  const input = document.getElementById(id);
+  input.checked = view[key];
+  input.addEventListener("change", () => { view[key] = input.checked; refresh(); });
+}
+
+function refresh() {
+  const regime = regimeFor();
+  const total = regime.length;
+  const counts = REGIMES.map((r) => regime.filter((v) => v === r.key).length);
+
+  document.getElementById("legend").innerHTML = REGIMES.map((r, i) => `
+    <div class="row">
+      <span class="sw" style="background: var(${r.varName})"></span>
+      <span title="${r.note}">${r.name}</span>
+      <span class="pct">${((100 * counts[i]) / total).toFixed(0)}%</span>
+    </div>`).join("");
+
+  const s = current();
+  const rows = [
+    ["Triangles", s.triangles.length],
+    ["DOF", s.dof],
+    ["Residual", view.built ? "—" : `${s.residual.toFixed(2)} N`],
+    ["Left–right mismatch", view.built ? "0.000 mm" : `${s.mismatch.toFixed(1)} mm`],
+    ["of which shape", view.built ? "0.000 mm"
+        : (s.intrinsic == null ? "—" : `${s.intrinsic.toFixed(1)} mm`)],
+    ["Wrinkled", `${((100 * counts[1]) / total).toFixed(0)}%`],
+  ];
+  document.getElementById("readout").innerHTML = rows
+    .map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`)
+    .join("");
+  document.getElementById("note").innerHTML = s.note || "";
+
+  draw();
+}
+
+new ResizeObserver(() => draw()).observe(canvas);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => draw());
+refresh();
+</script>
