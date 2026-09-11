@@ -469,6 +469,21 @@ python scripts/aerostructural/plot_billow_geometry.py            # 3-D shape, ca
 python scripts/aerostructural/plot_chordwise_moment_matching.py  # §4, before and after
 ```
 
+A depower sweep is a pair of continuation chains per wind:
+
+```bash
+python scripts/aerostructural/run_chain_depower_BILLOW.py --wind 2.6 3.4 4.2
+python scripts/aerostructural/plot_billow_depower_chains.py
+```
+
+That writes `chains.csv` and one `sim_output.h5` per chain under
+`results/<kite>/aerostructural/billow_depower_chains/`. Each row carries a
+`converged` flag: a step that missed the residual gate is recorded rather than
+dropped, so a short chain cannot read as a complete one.
+`run_sweep_depower_BILLOW.py` solves each point independently and iterates the
+wind onto a target apparent speed instead — about twenty times more expensive,
+worth it only when a few points must sit at an exact v_a.
+
 `sim_output.h5` now stores the nodal material frames alongside the positions
 (`setup_tracking_arrays(..., with_frames=True)`). A geometrically exact beam's
 curvature lives in the frames, not in the node positions, so without them a

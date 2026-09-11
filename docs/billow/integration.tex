@@ -495,7 +495,7 @@ biaxial stress state and so cannot distinguish these cases at all.
 \subsection{Depower sweep}
 
 Continuation chains either side of the built tape length, at three winds:
-\SIrange{26}{26}{} converged points over $u_{dp} = \numrange{0.243}{0.314}$, in
+26 converged points over $u_{dp} = \numrange{0.243}{0.314}$, in
 19 minutes. Each chain walks the tape inside a single coupled call so every step
 warm-starts the next; the alternative, solving each point independently, was
 measured at 14 minutes \emph{per point}.
@@ -596,6 +596,22 @@ unknown keys are rejected rather than ignored. Two diagnostics:
 python scripts/aerostructural/plot_billow_geometry.py
 python scripts/aerostructural/plot_chordwise_moment_matching.py
 \end{verbatim}
+
+A depower sweep is a pair of continuation chains per wind, walking the tape
+either side of its built length and converging at every step:
+
+\begin{verbatim}
+python scripts/aerostructural/run_chain_depower_BILLOW.py --wind 2.6 3.4 4.2
+python scripts/aerostructural/plot_billow_depower_chains.py
+\end{verbatim}
+
+\noindent That writes \code{chains.csv} and one \code{sim\_output.h5} per chain
+under \code{results/<kite>/aerostructural/billow\_depower\_chains/}. Each row
+carries a \code{converged} flag: a step that missed the residual gate is
+recorded rather than dropped, so a short chain cannot read as a complete one.
+\code{run\_sweep\_depower\_BILLOW.py} solves each point independently instead
+and iterates the wind onto a target apparent speed --- about twenty times more
+expensive, and worth it only when a few points must sit at an exact $v_a$.
 
 \code{sim\_output.h5} now stores the nodal material frames alongside the
 positions (\code{setup\_tracking\_arrays(..., with\_frames=True)}). A
