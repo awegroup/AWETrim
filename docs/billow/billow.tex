@@ -345,18 +345,24 @@ With $\boldsymbol{\psi}$ the relative rotation between the two node frames from
 \eqref{eq:cayleyinv}, and $R_m$ the exact half-way frame from
 \eqref{eq:cayleyhalf}:
 \begin{align}
-  \boldsymbol{\Gamma} &= R_m^{\mathsf T}(\mathbf{x}_2-\mathbf{x}_1)/L_0
-    && \text{axial stretch and two transverse shears},\\
-  \boldsymbol{\Omega} &= R_m^{\mathsf T}\boldsymbol{\psi}/L_0
-    && \text{torsion and two bending curvatures},\\
-  U &= \tfrac{L_0}{2}\Big[
-     \Delta\boldsymbol{\Gamma}^{\mathsf T}\operatorname{diag}(EA, GA_2, GA_3)\Delta\boldsymbol{\Gamma}
-   + \Delta\boldsymbol{\Omega}^{\mathsf T}\operatorname{diag}(GJ, EI_2, EI_3)\Delta\boldsymbol{\Omega}
-    \Big],
+  \boldsymbol{\Gamma} &= R_m^{\mathsf T}(\mathbf{x}_2-\mathbf{x}_1)/L_0,
+    \label{eq:beamgamma}\\[2pt]
+  \boldsymbol{\Omega} &= R_m^{\mathsf T}\boldsymbol{\psi}/L_0,
+    \label{eq:beamomega}\\[2pt]
+  U &= \frac{L_0}{2}\Big[
+     \Delta\boldsymbol{\Gamma}^{\mathsf T}\operatorname{diag}(EA, GA_2, GA_3)\,\Delta\boldsymbol{\Gamma}
+   + \Delta\boldsymbol{\Omega}^{\mathsf T}\operatorname{diag}(GJ, EI_2, EI_3)\,\Delta\boldsymbol{\Omega}
+    \Big].
+    \label{eq:beamenergy}
 \end{align}
-with $\Delta(\cdot) = (\cdot) - (\cdot)_0$ measured against the reference
-configuration, so an initially curved or pre-twisted member is stress-free as
-built.
+
+$\boldsymbol{\Gamma}$ is a \emph{deformation} measure rather than a strain: its
+first component is the axial stretch, which is unity in the reference
+configuration, and the other two are the transverse shears.
+$\boldsymbol{\Omega}$ holds the torsion and the two bending curvatures. What
+drives the energy is the change against the reference,
+$\Delta(\cdot) = (\cdot) - (\cdot)_0$, so an initially curved or pre-twisted
+member --- a leading-edge tube, a strut --- is stress-free as built.
 
 Three properties make this element usable inside an NLP objective:
 
@@ -524,11 +530,20 @@ kept below $\sim0.1\%$ and cannot be mistaken for discretisation error.
 
 \subsection{Euler elastica}
 
-A tip-loaded cantilever at load parameter $\alpha = PL^2/EI$ up to 10. The
-reference is the exact elastica, obtained by solving
-$\theta'' = -\alpha\cos\theta$, $\theta(0)=0$, $\theta'(1)=0$ as a
-boundary-value problem to $10^{-10}$ with continuation in $\alpha$ --- no beam
-element is involved.
+The \emph{elastica} is the classical large-deflection equilibrium shape of a
+thin, inextensible, shear-rigid rod --- the problem Jacob Bernoulli posed and
+Euler solved in 1744, whose exact solution is expressible in elliptic integrals.
+It is a \textbf{reference solution, not a beam formulation}: it generalises
+nothing about the element used here, and no beam element is involved in
+producing it. Its value as a benchmark is that it stays exact at arbitrarily
+large rotation, which is precisely where a geometrically exact element has to be
+tested and where a linearised one fails.
+
+The case is a tip-loaded cantilever at load parameter $\alpha = PL^2/EI$ up to
+10, which takes the rod through most of a quarter turn. The reference comes from
+solving the elastica equation $\theta'' = -\alpha\cos\theta$, $\theta(0)=0$,
+$\theta'(1)=0$ as a boundary-value problem to $10^{-10}$ with continuation in
+$\alpha$.
 
 \begin{figure}[H]
 \centering
