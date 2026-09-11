@@ -91,7 +91,7 @@ part of the law, and a flying kite carries a distributed bridle-reacted load
 that keeps its tubes there too. Saturation is adequate because collapse is not
 reached, not because collapse is handled -- and ``kappa_collapse`` is reported
 so that assumption stays checkable. See :func:`inflatable_beam_state` and
-``docs/hanging_validation/``.
+``docs/billow/`` (validation against a measured kite).
 
 A further caveat on transferability: the fit comes from a *free* 1 m cantilever,
 able to ovalise and wrinkle over its whole length. A kite leading edge is

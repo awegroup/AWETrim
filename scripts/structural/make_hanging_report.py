@@ -158,7 +158,7 @@ def main() -> None:
                         default=Path("results/structural/hanging/validation_thesis.npz"))
     parser.add_argument("--kite-fem-seconds", type=float, default=None,
                         help="same-machine kite_fem runtime for one case (s)")
-    parser.add_argument("--output", type=Path, default=Path("docs/hanging_validation"))
+    parser.add_argument("--output", type=Path, default=Path("docs/billow"))
     arguments = parser.parse_args()
 
     data = np.load(arguments.results, allow_pickle=True)
