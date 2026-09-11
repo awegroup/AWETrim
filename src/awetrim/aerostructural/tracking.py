@@ -48,6 +48,12 @@ def setup_tracking_arrays(n_pts, t_vector, n_panels=0, with_frames=False):
         arrays["stall_mask"] = np.zeros((nt, n_panels), dtype=bool)
     if with_frames:
         arrays["frames"] = np.tile(np.eye(3), (nt, n_pts, 1, 1))
+    # Per-iteration flight/actuation state. An actuated run walks the tape
+    # through several converged states inside ONE call, so without these a saved
+    # sweep cannot say which iteration belongs to which tape length or what
+    # apparent speed it flew at -- the whole chain collapses to its last point.
+    arrays["tape_length"] = np.full(nt, np.nan)
+    arrays["speed_apparent"] = np.full(nt, np.nan)
     return arrays
 
 
@@ -77,6 +83,8 @@ def update_tracking_arrays(
     f_ext_flat,
     f_int_flat,
     frames=None,
+    tape_length=None,
+    speed_apparent=None,
 ):
     """
     Update tracking arrays with simulation results for a single time step.
@@ -111,7 +119,13 @@ def update_tracking_arrays(
     tracking_data["residual_norm"][idx] = np.linalg.norm(f_int_flat)
     tracking_data["max_residual"][idx] = np.max(np.abs(f_int_flat))
 
-    # 4) Rotational state, where the backend has any
+    # 4) Flight and actuation state, so a chain can be sliced apart later
+    for name, value in (("tape_length", tape_length),
+                        ("speed_apparent", speed_apparent)):
+        if value is not None and name in tracking_data:
+            tracking_data[name][idx] = float(value)
+
+    # 5) Rotational state, where the backend has any
     if frames is not None and "frames" in tracking_data:
         tracking_data["frames"][idx] = np.asarray(frames, dtype=float).reshape(
             n_pts, 3, 3

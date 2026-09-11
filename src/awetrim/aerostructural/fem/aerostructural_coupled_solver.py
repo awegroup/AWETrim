@@ -159,6 +159,38 @@ def _find_kite_fem_spring_id_from_connectivity(
     )
 
 
+def _current_power_tape_length(
+    config, power_tape_index, psystem, kite_fem_structure, billow_structure,
+    kite_connectivity_arr,
+):
+    """Live rest length of the depower tape [m], whichever backend owns it.
+
+    NaN when the backend cannot be asked, which is better than a stale number:
+    an actuated run walks the tape through several converged states inside one
+    call, and mislabelling those states is worse than not labelling them.
+    """
+    if power_tape_index is None:
+        return float("nan")
+    solver = config.get("structural_solver")
+    try:
+        if solver == "pss":
+            return float(psystem.extract_rest_length[power_tape_index])
+        if solver == "billow":
+            return structural_billow.get_rest_length(
+                billow_structure, power_tape_index
+            )
+        if solver == "kite_fem":
+            spring_id = _find_kite_fem_spring_id_from_connectivity(
+                kite_fem_structure=kite_fem_structure,
+                kite_connectivity_arr=kite_connectivity_arr,
+                connectivity_idx=power_tape_index,
+            )
+            return float(kite_fem_structure.spring_elements[spring_id].l0)
+    except Exception:  # a diagnostic must never take the run down
+        return float("nan")
+    return float("nan")
+
+
 def update_power_tape_actuation(
     config,
     psystem,
@@ -929,12 +961,28 @@ def main(
             # Update unified tracking dataframe (replaces position update)
             # Use i+1 so that positions[0] retains the true initial geometry
             # stored in the pre-loop call.
+            # Read the tape length from the STRUCTURAL BACKEND, not from the
+            # `rest_lengths` local: that is only refreshed inside the
+            # per-iteration plot block, so it is stale on a normal run and would
+            # silently label every actuation step with the built length.
+            _tape = _current_power_tape_length(
+                config, power_tape_index, psystem, kite_fem_structure,
+                billow_structure, kite_connectivity_arr,
+            )
             tracking.update_tracking_arrays(
                 tracking_data,
                 i + 1,
                 struc_nodes,
                 f_ext_flat,
                 f_residual,
+                tape_length=_tape,
+                speed_apparent=float(
+                    np.linalg.norm(
+                        np.asarray(
+                            results_aero.get("va_vel_world", [np.nan] * 3), dtype=float
+                        )
+                    )
+                ),
             )
 
             ### PROGRESS BAR
@@ -1072,7 +1120,25 @@ def main(
             pulley_line_indices=pulley_line_indices,
             pulley_line_to_other_node_pair_dict=pulley_line_to_other_node_pair_dict,
         )
+    # Trim state of the converged solve. Without these a saved run cannot be
+    # asked what flight condition it is, which a sweep targeting an apparent
+    # speed needs: opt_x[0] is the tangential (kite) speed and opt_x[4] the
+    # course rate, the same entries vsm_quasi_steady reports them as.
+    _opt_x = np.asarray(results_aero.get("opt_x", []), dtype=float).ravel()
     meta = {
+        "speed_tangential": float(_opt_x[0]) if _opt_x.size else float("nan"),
+        "roll_body_deg": float(_opt_x[1]) if _opt_x.size > 1 else float("nan"),
+        "course_rate": float(_opt_x[4]) if _opt_x.size > 4 else float("nan"),
+        "tether_force": float(results_aero.get("tether_force", float("nan"))),
+        # va_vel_world is the apparent wind vector on the kite; "va" is a
+        # nested payload key, not a result key, and reads back NaN.
+        "speed_apparent": float(
+            np.linalg.norm(
+                np.asarray(
+                    results_aero.get("va_vel_world", [np.nan] * 3), dtype=float
+                )
+            )
+        ),
         "total_time_s": time.time() - start_time,
         # +1 for the pre-loop initial state at tracking index 0.
         # Each loop iteration appends one entry, so total stored frames are:

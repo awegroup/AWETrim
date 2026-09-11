@@ -1,0 +1,304 @@
+"""Depower continuation chains at the centre of the wind window.
+
+One chain per wind speed, walking the depower tape away from the length the
+geometry stores and converging at every step. Each step warm-starts the next, so
+a chain costs about one tape walk rather than one walk per point --- the
+difference between roughly forty minutes and three and a half hours for the same
+grid. This is how ``run_center_sweeps_continuation.sh`` does it.
+
+Two chains are run per wind: one shortening the tape (powering the kite up) and
+one lengthening it (depowering), both starting from the built length. The
+coupled driver already walks the tape and re-converges at each step inside a
+single call, so a chain is one call; the converged states are then sliced out of
+the tracking record by tape length.
+
+Within a chain the wind is held, so the apparent speed slides as the depower
+changes --- measured L/D runs about 7.9 powered to 5.2 depowered, which is
+exactly why the campaigns keep a ratio table. Here v_a is recorded per point
+rather than targeted, so a chain is a curve through the v_a-u_dp plane rather
+than a line of constant v_a. Cross-chain interpolation onto constant v_a is left
+to the analysis.
+
+Usage (from project root):
+    python scripts/aerostructural/run_chain_depower_BILLOW.py
+    python scripts/aerostructural/run_chain_depower_BILLOW.py --wind 3 4 5 --reach 0.2
+"""
+
+import argparse
+import copy
+import csv
+import time
+from pathlib import Path
+
+import h5py
+import numpy as np
+import yaml as _yaml
+
+from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
+from awetrim.aerostructural.mapping import BilinearAeroToStructuralLoadMapper
+from awetrim.aerostructural.results import aerostructural_results_root, save_sim_output
+from awetrim.aerostructural.utils import load_yaml, rotate_geometry
+from awetrim.aerostructural import aerodynamic_vsm
+from awetrim.aerostructural.billow import structural_billow
+from awetrim.aerostructural.fem import aerostructural_coupled_solver, read_struc_geometry_yaml
+from awetrim.system.tether import RigidLumpedTether
+from awetrim.utils.system_config import get_tether
+from common import (
+    DEFAULT_KITE_NAME,
+    build_system_model,
+    resolve_initial_geometry_rotation_kwargs,
+    resolve_kite_paths,
+)
+
+STRUC_GEOMETRY_FILENAME = "struc_geometry_FEM_full.yaml"
+
+#: l_dp = -1.724 u^2 + 6.624 u + 0.192  [m], the kite's own depower calibration.
+DEPOWER_QUADRATIC = (-1.724, 6.624, 0.192)
+
+
+def depower_input(tape_length):
+    """Invert the depower map: tape length [m] -> u_dp. Lower root is physical."""
+    a, b, c = DEPOWER_QUADRATIC
+    discriminant = b**2 + 4.0 * a * (np.asarray(tape_length, float) - c)
+    return np.where(
+        discriminant < 0.0,
+        np.nan,
+        (b - np.sqrt(np.maximum(discriminant, 0.0))) / (-2.0 * a),
+    )
+
+
+def build_once(project_dir, kite_name, panels_per_section):
+    """Everything that does not change across the chains."""
+    config_path, aero_geometry_path, _ = resolve_kite_paths(project_dir, kite_name)
+    struc_geometry_path = project_dir / "data" / kite_name / STRUC_GEOMETRY_FILENAME
+    system_config_path = project_dir / "data" / kite_name / "system.yaml"
+    with system_config_path.open("r", encoding="utf-8") as handle:
+        system_config = _yaml.safe_load(handle)
+
+    config = load_yaml(config_path)
+    config["structural_solver"] = "billow"
+    config.setdefault("aero2struc", {})["chordwise_distribution"] = "moment_matched"
+    config["aerodynamic"]["n_aero_panels_per_struc_section"] = panels_per_section
+    config["steering_tape_final_extension"] = 0.0
+    config["steering_tape_extension_step"] = 0.0
+    cp_rel = config.get("aero2struc", {}).get("cp_distribution_path")
+    if cp_rel:
+        config["aero2struc"]["cp_distribution_path"] = str(project_dir / cp_rel)
+
+    struc_geometry = load_yaml(struc_geometry_path)
+    n_struc_ribs = len(struc_geometry["wing_particles"]["data"]) / 2
+    n_panels = (n_struc_ribs - 1) * panels_per_section
+    bridle_path = (
+        struc_geometry_path if config.get("is_with_aero_bridle", False) else None
+    )
+    body_aero, vsm_solver, vel_app, polars = aerodynamic_vsm.initialize(
+        aero_geometry_path, config, n_panels, bridle_path=bridle_path
+    )
+    tether_struct = get_tether(system_config)["structure"]
+    return dict(
+        config=config,
+        struc_geometry=struc_geometry,
+        system_config=system_config,
+        system_config_path=system_config_path,
+        body_aero=body_aero,
+        vsm_solver=vsm_solver,
+        vel_app=vel_app,
+        polars=polars,
+        tether=RigidLumpedTether(
+            diameter=tether_struct["diameter"],
+            density=tether_struct.get("density", 970.0),
+        ),
+    )
+
+
+def run_chain(shared, wind_speed, reach, step, results_dir):
+    """Walk the tape from its built length to ``reach``, converging at each step."""
+    config = copy.deepcopy(shared["config"])
+    config["wind_speed_wind_ref"] = float(wind_speed)
+    config["power_tape_final_extension"] = float(reach)
+    config["power_tape_extension_step"] = float(step)
+
+    # The reader MUTATES the geometry it is handed (initialize_particles inserts
+    # the strut padding into strut_tubes' node_indices), so every chain gets its
+    # own copy or the second one walks off the end of an already-padded strut.
+    geometry = copy.deepcopy(shared["struc_geometry"])
+    reader = read_struc_geometry_yaml.main(
+        geometry, config=config, system_config=shared["system_config"]
+    )
+    (struc_nodes, m_arr, le_indices, te_indices, power_tape_index, _st, _pn,
+     canopy_sections, strut_sections, _sbp, connectivity, bridle_connectivity,
+     bridle_diameter, l0_arr, k_arr, c_arr, link_types, pulley_line_indices,
+     pulley_dict) = reader
+
+    struc_nodes = rotate_geometry(
+        struc_nodes, **resolve_initial_geometry_rotation_kwargs(config)
+    )
+    structure = structural_billow.instantiate(
+        config=config,
+        struc_geometry=geometry,
+        struc_nodes=struc_nodes,
+        kite_connectivity_arr=connectivity,
+        l0_arr=l0_arr,
+        k_arr=k_arr,
+        c_arr=c_arr,
+        m_arr=m_arr,
+        linktype_arr=link_types,
+        pulley_line_indices=pulley_line_indices,
+        canopy_sections=canopy_sections,
+        strut_sections=strut_sections,
+    )
+    struc_nodes = structure.model.nodes.copy()
+    mapping = (
+        BilinearAeroToStructuralLoadMapper()
+        .initialize(shared["body_aero"].panels, struc_nodes, le_indices, te_indices)
+        .panel_corner_map
+    )
+
+    tracking, meta = aerostructural_coupled_solver.main(
+        m_arr=m_arr,
+        struc_nodes=struc_nodes,
+        struc_nodes_initial=struc_nodes.copy(),
+        system_model=build_system_model(
+            shared["system_config_path"], shared["tether"], m_arr, config
+        ),
+        config=config,
+        initial_length_power_tape=l0_arr[power_tape_index],
+        n_power_tape_steps=int(abs(reach) / abs(step)) if step else 0,
+        power_tape_final_extension=config["power_tape_final_extension"],
+        power_tape_extension_step=config["power_tape_extension_step"],
+        kite_connectivity_arr=connectivity,
+        bridle_connectivity_arr=bridle_connectivity,
+        pulley_line_indices=pulley_line_indices,
+        pulley_line_to_other_node_pair_dict=pulley_dict,
+        struc_node_le_indices=le_indices,
+        struc_node_te_indices=te_indices,
+        body_aero=copy.deepcopy(shared["body_aero"]),
+        vsm_solver=copy.deepcopy(shared["vsm_solver"]),
+        vel_app=shared["vel_app"],
+        initial_polar_data=copy.deepcopy(shared["polars"]),
+        bridle_diameter_arr=bridle_diameter,
+        aero2struc_mapping=mapping,
+        power_tape_index=power_tape_index,
+        billow_structure=structure,
+        canopy_sections=canopy_sections,
+        strut_sections=strut_sections,
+    )
+    results_dir.mkdir(parents=True, exist_ok=True)
+    save_sim_output(tracking, meta, results_dir)
+    return tracking, meta, geometry, structure
+
+
+def converged_steps(tracking, n_iter, tolerance):
+    """Indices of the converged iterate at each distinct tape length.
+
+    The driver only actuates once the residual gate is met, so the iteration
+    immediately BEFORE a tape change is a converged state. Taking the last
+    iterate at each length therefore takes the converged one, and the final
+    iterate closes the last step.
+    """
+    lengths = np.asarray(tracking["tape_length"])[:n_iter]
+    residual = np.asarray(tracking["residual_norm"])[:n_iter]
+    picks = []  # (index, converged)
+    for index in range(len(lengths)):
+        if not np.isfinite(lengths[index]):
+            continue
+        is_last = index == len(lengths) - 1
+        changes = not is_last and not np.isclose(
+            lengths[index + 1], lengths[index], atol=1e-9
+        )
+        if changes or is_last:
+            # Report the verdict rather than filtering: a step dropped for
+            # missing the gate looks identical to a step that was never run,
+            # and a silently short chain reads as a complete one.
+            picks.append((index, bool(residual[index] <= tolerance)))
+    return picks
+
+
+def span_metrics(positions, geometry):
+    """Tip-to-tip span, leading-edge arc length and arch rise [m]."""
+    chain = structural_billow.leading_edge_chain(geometry)
+    edge = positions[chain]
+    start, end = edge[0], edge[-1]
+    axis = end - start
+    span = float(np.linalg.norm(axis))
+    axis = axis / span
+    relative = edge - start
+    rise = float(np.linalg.norm(relative - np.outer(relative @ axis, axis), axis=1).max())
+    return span, float(np.linalg.norm(np.diff(edge, axis=0), axis=1).sum()), rise
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--wind", type=float, nargs="+", default=[3.0, 4.2, 5.5],
+                        help="wind speeds at the reference height [m/s]")
+    parser.add_argument("--reach", type=float, default=0.2,
+                        help="how far the tape walks each way [m]")
+    parser.add_argument("--step", type=float, default=0.05, help="tape step [m]")
+    parser.add_argument("--panels-per-section", type=int, default=2)
+    parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
+    args = parser.parse_args()
+
+    project_dir = Path(__file__).resolve().parents[2]
+    shared = build_once(project_dir, args.kite, args.panels_per_section)
+    gate = float(shared["config"]["aero_structural_solver"]["tol"])
+    root = aerostructural_results_root(project_dir, args.kite) / "billow_depower_chains"
+    root.mkdir(parents=True, exist_ok=True)
+    csv_path = root / "chains.csv"
+
+    fields = ["wind_speed", "direction", "tape_length", "u_dp", "speed_apparent",
+              "residual", "span", "le_arc", "arch_rise", "aero_force", "converged"]
+    rows, started = [], time.perf_counter()
+
+    print(f"{len(args.wind)} winds x 2 directions, tape +/-{args.reach} m "
+          f"in {args.step} m steps\n")
+    print(f"{'wind':>5} {'dir':>5} {'l_dp':>6} {'u_dp':>6} {'v_a':>6} | "
+          f"{'res':>6} | {'span':>6} {'rise':>6} | {'F':>7}")
+    print("-" * 74)
+
+    for wind in args.wind:
+        for direction, reach in (("down", -abs(args.reach)), ("up", +abs(args.reach))):
+            folder = root / f"wind{wind:04.1f}_{direction}".replace(".", "p")
+            chain_started = time.perf_counter()
+            try:
+                tracking, meta, geometry, _ = run_chain(
+                    shared, wind, reach, args.step, folder
+                )
+            except Exception as error:                      # keep the grid going
+                print(f"{wind:5.2f} {direction:>5}  chain FAILED: {error}", flush=True)
+                continue
+
+            n_iter = int(meta["n_iter"])
+            for index, converged in converged_steps(tracking, n_iter, gate):
+                positions = np.asarray(tracking["positions"][index])
+                span, arc, rise = span_metrics(positions, geometry)
+                length = float(np.asarray(tracking["tape_length"])[index])
+                row = dict(
+                    wind_speed=wind, direction=direction, tape_length=length,
+                    u_dp=float(depower_input(length)),
+                    speed_apparent=float(np.asarray(tracking["speed_apparent"])[index]),
+                    residual=float(np.asarray(tracking["residual_norm"])[index]),
+                    span=span, le_arc=arc, arch_rise=rise,
+                    aero_force=float(np.linalg.norm(
+                        np.asarray(tracking["f_ext"][index]).sum(axis=0))),
+                    converged=converged,
+                )
+                rows.append(row)
+                print(f"{wind:5.2f} {direction:>5} {length:6.3f} {row['u_dp']:6.3f} "
+                      f"{row['speed_apparent']:6.2f} | {row['residual']:6.2f} | "
+                      f"{span:6.3f} {rise:6.3f} | {row['aero_force']:7.0f}"
+                      f"{'' if converged else '   NOT CONVERGED'}", flush=True)
+
+            print(f"      -> chain in {(time.perf_counter() - chain_started)/60:.1f} min",
+                  flush=True)
+            with csv_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fields)
+                writer.writeheader()
+                writer.writerows(rows)
+
+    print("-" * 74)
+    print(f"{len(rows)} converged points in "
+          f"{(time.perf_counter() - started)/60:.1f} min -> {csv_path}")
+
+
+if __name__ == "__main__":
+    main()
