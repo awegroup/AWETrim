@@ -62,6 +62,12 @@ src/awetrim/structural/
   energy.py       PotentialEnergy: mapped assembly, objective, internal_load,
                   tangent_stiffness, parameter packing
   solver.py       MinimumEnergySolver, StructuralSolution
+                  (optional equalities=LinearEqualities: C X = 0 compiled into
+                   the NLP as g, for constrained solves)
+  symmetry.py     mirror symmetry: mirror_partners, mirror_equalities
+                  (x_p = M x_i for positions, psi_p = -M psi_i for the rotation
+                  increments, which are pseudovectors), LinearEqualities,
+                  mirror_frames (R_p = M R diag(-1,1,1)), frame_mirror_mismatch
   elements/
     base.py       ElementKernel protocol, ElementSet, local DOF accessors
     cable.py      CableKernel, PulleyKernel + build_cable_elements / build_pulley_elements
@@ -86,6 +92,9 @@ tests/structural/
                      independence), Bathe and Bolourchi 45 degree bend
   test_inflatable.py energy integrates the fitted moment; pure end-moment
                      solves land on the fitted curve; collapse reporting
+  test_symmetry.py   pairing and equalities; frames transported through strut
+                     junctions break mirror symmetry, mirror_frames restores it
+                     to roundoff; constrained solves and their reactions
 
 scripts/structural/
   run_demo_cases.py           wrinkling / canopy_model / cantilever / sail /
@@ -273,6 +282,19 @@ Consistency notes established by reading `kite_fem/SpringElement.py`,
     section is isotropic in roll, so `d1` is the only physically determined
     director and the roll is free: transporting it by minimal rotation over the
     beam network, and letting the LONG member own the joint, gives 10.6 /m.
+  * **The roll is a gauge only along a member, not node by node -- and a
+    mirror-symmetric structure needs mirror-consistent frames.** The element
+    measures the relative rotation of its end frames, so rolls that differ
+    between neighbours change the energy. Minimal-rotation transport over a
+    network mixing a member that crosses the mirror plane (tangent maps as
+    `-M t`) with members beside it (`+M t`) is not mirror-equivariant: on the
+    LEI-V3 the far half arrived rolled by up to 60 degrees with positions
+    symmetric to 4e-15 m, and the kite solved to one deterministic asymmetric
+    shape. `symmetry.mirror_frames` fixes it with ONE director-sign matrix `S`
+    for every node, `R_p = M R S`: each element's strains then map to a
+    sign-flipped copy of its mirror element's, and every kernel here is even in
+    each strain component. Check any new kernel for that evenness before
+    relying on it. Worked through in `docs/billow/integration.md` §8.6.
   * **An unbalanced free body is reported, not hidden.** A gravity-only load on
     a kite pinned at the KCU slackens every bridle line and the knots become a
     mechanism; the residual then sits at exactly their weight and no amount of
@@ -325,7 +347,12 @@ Consistency notes established by reading `kite_fem/SpringElement.py`,
   **`ipopt_success` no longer implies equilibrium**, because IPOPT reports
   success for the *boxed* problem while the iterate sits on the boundary;
   `converged` therefore keys off the force residual alone whenever a move limit
-  is active. `scripts/structural/run_hanging_validation.py` is the worked
+  is active. The same holds with `equalities`: IPOPT solves the constrained
+  problem, whose optimum may be held by a reaction, and the reported residual
+  INCLUDES that reaction -- zero only when the constrained state is an
+  equilibrium of the free problem too, which makes it a check on the
+  constraints (a symmetric-constrained solve of a model that is not really
+  symmetric shows the defect as a residual). `scripts/structural/run_hanging_validation.py` is the worked
   example.
 - Tests assert against closed-form solutions and convergence orders, not against
   stored solver output.

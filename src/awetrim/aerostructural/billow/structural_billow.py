@@ -57,6 +57,7 @@ import numpy as np
 
 from awetrim.structural import MinimumEnergySolver, StructuralModel, StructuralState
 from awetrim.structural.rotations import minimal_rotation, orthonormalize
+from awetrim.structural.symmetry import mirror_equalities, mirror_frames, mirror_partners
 from awetrim.structural.elements import (
     InflatableTubeLaw,
     build_cable_elements,
@@ -114,6 +115,12 @@ DEFAULTS: dict[str, Any] = {
     "tube_axial_stiffness": None,  # [N]  None -> derived from the fitted EI_0
     "tube_shear_stiffness": None,  # [N]  None -> derived from the fitted GJ_0
     "junction_frame": "strut",
+    # Mirror the tube frames of a mirror-symmetric kite from one half onto the
+    # other (see symmetric_frames). Without it the frames transported from one
+    # tip reach the other rolled by up to 60 degrees, the tube energy is not
+    # mirror-symmetric, and an unsteered kite solves to an asymmetric shape
+    # whatever the load. False reproduces results from before 2026-09-11.
+    "mirror_frames": True,
     # Canopy triangulation; see canopy_mesh. "diagonal" is the historical,
     # mirror-ASYMMETRIC two-triangle split and reproduces earlier results.
     "canopy_pattern": "cross",
@@ -531,6 +538,61 @@ def build_frames(
     return frames
 
 
+def symmetric_frames(struc_nodes: Array, frames: Array, beam_connectivity: Array) -> Array:
+    """Mirror-consistent tube frames for a mirror-symmetric kite.
+
+    :func:`build_frames` transports the roll over the beam network from ONE
+    root, and that transport is not mirror-equivariant on an LEI kite: the
+    leading edge crosses the symmetry plane, so the reflection reverses its
+    tangent, while the struts' tangents keep their sense -- and every hop
+    between the two at a strut junction turns the roll the wrong way on one
+    side. On the LEI-V3 the far half arrived rolled by up to 60 degrees against
+    the mirror image of the near half (96 of 98 frames). Positions stayed
+    symmetric to 4e-15 m, so every position check passed, but the geometrically
+    exact tube energy depends on the frames: the internal load at a symmetric
+    configuration was off by 40% of the largest moment, a symmetric load had no
+    symmetric equilibrium, and the unsteered kite solved to the SAME asymmetric
+    shape from any start.
+
+    Keeping the near half (``y > 0``) and mirroring it, ``R_p = M R diag(-1, 1,
+    1)``, makes every tube element exactly mirror-invariant; the near half's
+    frames, and so its reference curvatures, are untouched. An asymmetric
+    geometry is left as built.
+    """
+    try:
+        partner = mirror_partners(struc_nodes)
+    except ValueError as error:
+        logger.info("tube frames not mirrored, the geometry is not symmetric: %s", error)
+        return frames
+    beam_connectivity = np.asarray(beam_connectivity, dtype=int)
+    beam_nodes = np.unique(beam_connectivity)
+    mirrored = mirror_frames(frames, struc_nodes, partner, beam_nodes)
+
+    def angle(first, second):
+        cosine = (np.einsum("nij,nij->n", first, second) - 1.0) / 2.0
+        return np.degrees(np.arccos(np.clip(cosine, -1.0, 1.0)))
+
+    changed = angle(frames[beam_nodes], mirrored[beam_nodes])
+    # The seam: elements crossing the plane now join a kept frame to a mirrored
+    # one. Across a leading edge that is the ordinary discrete curvature; if a
+    # plane-crossing element joined two strut-owned nodes, the convention would
+    # reverse one d1 and the element would sit near the Cayley singularity.
+    side = np.sign(struc_nodes[beam_connectivity, 1])
+    seam = beam_connectivity[side[:, 0] * side[:, 1] < 0]
+    seam_angle = float(angle(mirrored[seam[:, 0]], mirrored[seam[:, 1]]).max(initial=0.0))
+    logger.info(
+        "tube frames mirrored onto the y < 0 half: largest change %.2f deg over %d "
+        "beam nodes; largest relative rotation across the plane %.2f deg",
+        float(changed.max(initial=0.0)), len(beam_nodes), seam_angle,
+    )
+    if seam_angle > 90.0:
+        logger.warning(
+            "an element crossing the mirror plane joins frames %.1f deg apart; its "
+            "reference curvature is near the Cayley singularity", seam_angle,
+        )
+    return mirrored
+
+
 # --------------------------------------------------------------------------
 # Model assembly
 # --------------------------------------------------------------------------
@@ -696,6 +758,42 @@ def relax_bridles(
     return relaxed, converged
 
 
+def build_solver(model: StructuralModel, settings, equalities=None) -> MinimumEnergySolver:
+    """The minimum-energy solver for ``model`` with the ``structural_billow`` numerics.
+
+    One place for the settings, so a constrained solve (``equalities``, e.g.
+    the mirror symmetry of :func:`symmetric_equalities`) runs with exactly the
+    numerics of the unconstrained one it is compared against.
+    """
+    return MinimumEnergySolver(
+        model,
+        tolerance=float(settings["tolerance"]),
+        force_tolerance=float(settings["force_tolerance"]),
+        relative_force_tolerance=float(settings["relative_force_tolerance"]),
+        max_iterations=int(settings["max_iterations"]),
+        move_limit=settings["move_limit"],
+        anchor_stiffness=float(settings["anchor_stiffness"]),
+        max_frame_updates=int(settings["max_frame_updates"]),
+        equalities=equalities,
+    )
+
+
+def symmetric_equalities(structure: "BillowStructure"):
+    """Mirror-symmetry constraints over EVERY node of the built model.
+
+    Pairs are taken from the reference configuration (``model.nodes``), which
+    is exactly symmetric for an unactuated kite; pairing fails loudly if it is
+    not. Covering all nodes matters: the bridle knots and the quad-centre nodes
+    are free DOF too, and leaving them out constrains only part of the shape.
+    """
+    partner = mirror_partners(structure.model.nodes)
+    return mirror_equalities(
+        structure.model.layout,
+        partner,
+        pinned_nodes=structure.model.fixed_translation_nodes,
+    ), partner
+
+
 def instantiate(
     config,
     struc_geometry,
@@ -818,6 +916,8 @@ def instantiate(
         strut_sections,
         junction_frame=str(settings["junction_frame"]),
     )
+    if settings["mirror_frames"]:
+        frames = symmetric_frames(struc_nodes, frames, connectivity[beam_elements])
     axial, shear = _tube_stiffnesses(laws, diameters, settings)
     tubes = build_inflatable_beam_elements(
         struc_nodes,
@@ -872,16 +972,7 @@ def instantiate(
         node_frames=frames,
         fixed_translation_nodes=fixed_nodes,
     )
-    solver = MinimumEnergySolver(
-        model,
-        tolerance=float(settings["tolerance"]),
-        force_tolerance=float(settings["force_tolerance"]),
-        relative_force_tolerance=float(settings["relative_force_tolerance"]),
-        max_iterations=int(settings["max_iterations"]),
-        move_limit=settings["move_limit"],
-        anchor_stiffness=float(settings["anchor_stiffness"]),
-        max_frame_updates=int(settings["max_frame_updates"]),
-    )
+    solver = build_solver(model, settings)
 
     cable_row = np.full(n_elements, -1, dtype=int)
     cable_row[cable_elements] = np.arange(len(cable_elements))

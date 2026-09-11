@@ -32,6 +32,7 @@ from pathlib import Path
 import h5py
 import numpy as np
 
+from awetrim.aerostructural.billow import structural_billow as sb
 from common import DEFAULT_KITE_NAME
 from plot_billow_geometry import rebuild
 
@@ -92,6 +93,37 @@ def decompose(positions, built, grid, partner):
     return per_pair, angle, axis
 
 
+def intrinsic_per_node(positions, partner):
+    """``|R x_i + t - M x_p(i)|`` per node [m], after the best rigid alignment."""
+    mirrored = positions[partner] * MIRROR
+    rotation, shift = kabsch(positions, mirrored)
+    return np.linalg.norm(positions @ rotation.T + shift - mirrored, axis=1)
+
+
+def chordwise_table(positions, built, grid, partner, canopy_nodes):
+    """Intrinsic mismatch per section pair x chordwise station, LE (col 0) to TE.
+
+    Also the non-grid nodes grouped by role: quad centres (canopy nodes off the
+    grid) and the bridle (every node the canopy does not touch). Columns are
+    labelled by their mean chordwise fraction on the built shape, so which end
+    is the trailing edge is read off the data rather than assumed.
+    """
+    intrinsic = intrinsic_per_node(positions, partner)
+    rows, columns = grid.shape
+    chord = np.linalg.norm(built[grid[:, -1]] - built[grid[:, 0]], axis=1)
+    fraction = np.mean(
+        np.linalg.norm(built[grid] - built[grid[:, :1]], axis=2) / chord[:, None], axis=0
+    )
+    table = np.array([[intrinsic[grid[i, k]] for k in range(columns)]
+                      for i in range(rows // 2)])
+    centres = np.setdiff1d(canopy_nodes, np.unique(grid))
+    bridle = np.setdiff1d(np.arange(len(positions)), canopy_nodes)
+    return table, fraction, {
+        "quad centres": intrinsic[centres] if centres.size else np.zeros(1),
+        "bridle": intrinsic[bridle] if bridle.size else np.zeros(1),
+    }, bridle[np.argmax(intrinsic[bridle])] if bridle.size else -1
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("folders", nargs="+", help="result folders under billow_canopy_ab/")
@@ -109,8 +141,8 @@ def main():
     root = project / "results" / args.kite / "aerostructural" / "billow_canopy_ab"
 
     for name in args.folders:
-        per_pair, angle, axis = decompose(final_positions(root / name), built,
-                                          structure.grid, partner)
+        positions = final_positions(root / name)
+        per_pair, angle, axis = decompose(positions, built, structure.grid, partner)
         glob = max(p[2] for p in per_pair)
         intr = max(p[3] for p in per_pair)
         print(f"\n{name}: global {1e3 * glob:.2f} mm, intrinsic {1e3 * intr:.2f} mm, "
@@ -121,6 +153,21 @@ def main():
         for i, y, g, m, d in per_pair:
             print(f"  {i:2d}-{structure.grid.shape[0] - 1 - i:<3d} {y:+7.2f} | "
                   f"{1e3 * g:9.1f} {1e3 * m:12.1f} | {1e3 * d:15.1f} {m / d:6.1%}")
+
+        table, fraction, groups, worst_bridle = chordwise_table(
+            positions, built, structure.grid, partner,
+            np.unique(structure.model.element_set(sb.CANOPY).connectivity),
+        )
+        print(f"\n  intrinsic mm per chordwise station (x/c on the built shape):")
+        print("  " + f"{'pair':>6} | " + " ".join(f"{f:6.2f}" for f in fraction))
+        for i, row in enumerate(table):
+            print(f"  {i:2d}-{structure.grid.shape[0] - 1 - i:<3d} | "
+                  + " ".join(f"{1e3 * v:6.1f}" for v in row))
+        print("  " + f"{'max':>6} | " + " ".join(f"{1e3 * v:6.1f}" for v in table.max(axis=0)))
+        for name, values in groups.items():
+            print(f"  {name}: max {1e3 * values.max():.1f} mm, "
+                  f"mean {1e3 * values.mean():.1f} mm")
+        print(f"  worst bridle node: {worst_bridle}")
 
 
 if __name__ == "__main__":

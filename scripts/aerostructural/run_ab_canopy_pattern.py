@@ -31,11 +31,30 @@ import numpy as np
 from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
 from awetrim.aerostructural.results import aerostructural_results_root, save_sim_output
 from awetrim.aerostructural.billow import structural_billow as sb
+from awetrim.aerostructural.fem import read_struc_geometry_yaml
 from common import DEFAULT_KITE_NAME
 
-from run_chain_depower_BILLOW import build_once, run_chain, span_metrics
+from run_chain_depower_BILLOW import DEPOWER_QUADRATIC, build_once, run_chain, span_metrics
 
 PATTERNS = ("diagonal", "union", "cross")
+
+
+def built_tape_length(shared):
+    """Depower tape rest length [m] as the geometry stores it."""
+    # The reader mutates its input, so hand it a copy.
+    reader = read_struc_geometry_yaml.main(
+        copy.deepcopy(shared["struc_geometry"]),
+        config=shared["config"],
+        system_config=shared["system_config"],
+    )
+    power_tape_index, l0_arr = reader[4], reader[13]
+    return float(l0_arr[power_tape_index])
+
+
+def tape_length(u_dp):
+    """The kite's depower calibration, u_dp -> tape length [m]."""
+    a, b, c = DEPOWER_QUADRATIC
+    return a * u_dp**2 + b * u_dp + c
 
 
 def mirror_mismatch(positions, grid):
@@ -94,6 +113,22 @@ def main():
     parser.add_argument("--inner-tol-rel", type=float, default=None,
                         help="structural_billow.relative_force_tolerance, times "
                              "the total load. Default: as_config.")
+    parser.add_argument("--udp", type=float, default=None,
+                        help="walk the depower tape from its built length to "
+                             "this u_dp before the state is recorded (the "
+                             "kite's quadratic tape calibration). The tape is "
+                             "one central element, so the walk is symmetric. "
+                             "Default: stay at the built length.")
+    parser.add_argument("--tape-step", type=float, default=0.04,
+                        help="tape step of the --udp walk [m]")
+    parser.add_argument("--no-stagnation-stop", action="store_true",
+                        help="disable the driver's stagnation stop, leaving "
+                             "--max-iter as the only guard. That check compares "
+                             "TWO residuals n_max_constant_residual_force apart, "
+                             "so an oscillating residual trips it by "
+                             "coincidence: a u_dp 0.25 walk was stopped at "
+                             "21.5 N, one iteration after a tape step, because "
+                             "iteration 5 had happened to sit at 23.2 N.")
     parser.add_argument("--tag", default="",
                         help="suffix for the result folders and summary, so a "
                              "rerun under a changed model (a new load transfer, "
@@ -116,11 +151,23 @@ def main():
     shared["config"]["wind_speed_wind_ref"] = float(args.wind)
     shared["config"]["aero_structural_solver"]["tol"] = float(args.tol)
     shared["config"]["aero_structural_solver"]["max_iter"] = int(args.max_iter)
+    if args.no_stagnation_stop:
+        shared["config"]["aero_structural_solver"]["n_max_constant_residual_force"] = (
+            int(args.max_iter) + 1
+        )
     root = aerostructural_results_root(project, args.kite) / "billow_canopy_ab"
     root.mkdir(parents=True, exist_ok=True)
 
-    print(f"unsteered, unactuated, v_w = {args.wind} m/s, "
-          f"{args.panels_per_section} panels per section\n")
+    reach, step = 0.0, 0.0
+    if args.udp is not None:
+        built_length = built_tape_length(shared)
+        reach = tape_length(args.udp) - built_length
+        step = abs(float(args.tape_step))
+        print(f"depower tape {built_length:.4f} -> {built_length + reach:.4f} m "
+              f"(u_dp {args.udp}), walked in {step} m steps")
+
+    print(f"unsteered, {'unactuated' if args.udp is None else 'depower-actuated'}, "
+          f"v_w = {args.wind} m/s, {args.panels_per_section} panels per section\n")
     print(f"{'pattern':10s} {'nodes':>6} {'DOF':>6} {'tri':>5} | "
           f"{'built':>8} {'trimmed':>9} {'generated':>10} | "
           f"{'res':>6} {'it':>3} | {'span':>6} | {'s':>5}")
@@ -142,9 +189,10 @@ def main():
 
         folder = root / ((pattern if args.refine == 1
                           else f"{pattern}_x{args.refine}") + suffix)
-        # reach = 0 -> no actuation, a single converged unsteered state.
+        # reach = 0 -> no actuation, a single converged unsteered state;
+        # otherwise the recorded state is the end of the depower walk.
         tracking, meta, geometry, structure = run_chain(
-            shared, args.wind, 0.0, 0.0, folder
+            shared, args.wind, reach, step, folder
         )
         shared["config"] = config_backup
 

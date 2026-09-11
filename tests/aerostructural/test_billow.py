@@ -341,6 +341,68 @@ def test_tree_transport_beats_per_chain_seeding_on_relative_rotation(toy_geometr
         np.testing.assert_allclose(relative, np.eye(3), atol=1e-9)
 
 
+def symmetric_wing_frames_input(strut_at=(1, 2), n_leading_edge=8):
+    """A mirror-symmetric arched leading edge plus struts, in the reader's shape.
+
+    Struts sit off the two leading-edge nodes either side of the plane, as on
+    the LEI-V3, and each strut section starts at its leading-edge junction.
+    """
+    angle = np.radians(np.linspace(70.0, -70.0, n_leading_edge))
+    nodes = [*np.column_stack([0.3 * np.cos(angle) ** 2, 4.0 * np.sin(angle),
+                               4.0 * np.cos(angle)])]
+    leading_edge = [["le", k, k + 1, 0.2] for k in range(n_leading_edge - 1)]
+    struts = []
+    for k in [*strut_at, *(n_leading_edge - 1 - np.asarray(strut_at))]:
+        section = [int(k)]
+        for j in (1, 2):
+            nodes.append(nodes[k] + np.array([0.6 * j, 0.0, -0.1 * j**2]))
+            section.append(len(nodes) - 1)
+        struts.append(section)
+    beams = [[row[1], row[2]] for row in leading_edge]
+    beams += [[s[i], s[i + 1]] for s in struts for i in range(len(s) - 1)]
+    geometry = {"leading_edge_tubes": {"data": leading_edge}}
+    return np.asarray(nodes), np.asarray(beams), geometry, struts
+
+
+def frames_mirror_mismatch_deg(nodes, beams, frames):
+    from awetrim.structural import DofLayout
+    from awetrim.structural.symmetry import frame_mirror_mismatch, mirror_partners
+
+    beam_nodes = np.unique(beams)
+    layout = DofLayout(n_nodes=len(nodes), rotational_nodes=beam_nodes)
+    partner = mirror_partners(nodes)
+    return np.degrees(frame_mirror_mismatch(frames[beam_nodes], layout, partner)).max()
+
+
+def test_transported_frames_of_a_symmetric_wing_are_not_mirror_consistent():
+    """The defect behind the unsteered LEI-V3's asymmetry, on a toy wing."""
+    nodes, beams, geometry, struts = symmetric_wing_frames_input()
+    frames = sb.build_frames(nodes, beams, geometry, struts)
+    assert frames_mirror_mismatch_deg(nodes, beams, frames) > 1.0
+
+
+def test_symmetric_frames_mirror_the_near_half_and_keep_it(caplog):
+    nodes, beams, geometry, struts = symmetric_wing_frames_input()
+    frames = sb.build_frames(nodes, beams, geometry, struts)
+    with caplog.at_level("WARNING"):
+        mirrored = sb.symmetric_frames(nodes, frames, beams)
+    assert frames_mirror_mismatch_deg(nodes, beams, mirrored) < 1e-6
+    near = nodes[:, 1] > 0
+    np.testing.assert_array_equal(mirrored[near], frames[near])
+    assert "Cayley singularity" not in caplog.text
+
+
+def test_symmetric_frames_leave_an_asymmetric_wing_as_built():
+    nodes, beams, geometry, struts = symmetric_wing_frames_input()
+    nodes[struts[0][-1], 2] += 0.05
+    frames = sb.build_frames(nodes, beams, geometry, struts)
+    np.testing.assert_array_equal(sb.symmetric_frames(nodes, frames, beams), frames)
+
+
+def test_mirror_frames_is_on_by_default():
+    assert sb.resolve_config(None)["mirror_frames"] is True
+
+
 def test_junction_frame_must_be_a_known_choice(toy_geometry):
     with pytest.raises(ValueError, match="junction_frame"):
         sb.build_frames(

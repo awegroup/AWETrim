@@ -536,7 +536,11 @@ map. An earlier "6x slower" figure was measured at a much higher load and does
 not generalise. The gamma loop alone also moves the span by 51 mm (0.6%), so
 this is not only a symmetry question.
 
-### 8.4 The remaining 28 mm is unresolved
+### 8.4 The remaining 28 mm (resolved in §8.6)
+
+**Resolved:** it was the tube frames, which were not mirror-symmetric even
+though every node position was -- see §8.6. The text below is the state of the
+investigation before that was found.
 
 Both the geometry and the canopy mesh are now provably symmetric, and the
 aerodynamics is symmetric when `base` is used, yet 28.2 mm remains. It is **not**
@@ -584,7 +588,7 @@ So the honest ordering is:
   118.9 -> 34.7 mm.
 * **The canopy diagonal is a real but secondary effect**, about 6.5 mm once the
   aerodynamics is symmetric, not the ~63 mm that 8.2 implies.
-* **28 mm remains** whatever the mesh.
+* **28 mm remains** whatever the mesh -- the tube frames, §8.6.
 
 Two things worth noting about `cross`. It is *not* better than `union` on
 symmetry despite both meshes being exactly mirror-symmetric -- most likely
@@ -592,6 +596,104 @@ because its centre nodes carry no direct aerodynamic load and are held by the
 membrane alone. But it converges markedly tighter (0.13 N against 0.46 N),
 consistent with the extra freedom being real: a quad that can dome has a
 lower-energy state available to it than one that can only fold.
+
+### 8.6 The tube frames were not mirror-symmetric
+
+The question left open by §8.4 was whether the leftover asymmetry was **(a)** a
+solver artefact -- the minimum-energy solve picking a side of a flat valley from
+a slack, near-singular start -- or **(b)** genuine symmetry breaking, a
+symmetric equilibrium that is unstable under the frozen aerodynamic load. It was
+neither. **The structural model itself was not mirror-symmetric.**
+
+Before it was found, the traction load transfer had moved the number (68.7 mm of
+shape on the coarse `cross` canopy, 40.1 mm once da49d19 applied the transfer in
+every coupled iteration), always with the same signature: concentrated at the
+two outermost section pairs and growing toward the **trailing edge**, and just as
+large powered to u_dp 0.25 (71.2 mm). The convergence tolerance was already ruled
+out (inner tolerance bit-identical from 1.3e-2 to 1e-4 N; the structure alone,
+under an exactly symmetric load, converged to 2.4e-6 N and was still 18.8 mm off).
+
+**The decisive test** (`scripts/aerostructural/check_symmetric_equilibrium.py`)
+takes the structure alone under the exactly mirror-symmetric first-iteration load
+(2253 N, symmetric to 4e-14 N) and solves it four ways with the same numerics:
+free from the built state, constrained to the mirror-symmetric subspace
+(positions `x_p = M x_i` and rotation increments `psi_p = -M psi_i` over every
+node, bridle and quad centres included), then released, and released after a
+5 mm antisymmetric kick. Two model checks run first, because positions alone
+cannot show a frame asymmetry:
+
+| check | frames transported (before) | frames mirrored (after) |
+|---|---|---|
+| tube frame vs mirror of its partner | up to **60.2 deg**, 96 of 98 frames | 0 (roundoff) |
+| internal moment mirror error at a random symmetric configuration | **1.1e3** of 2.8e3 N m | 2e-11 N m |
+| internal force mirror error, same configuration | 1.0e4 of 2.4e6 N | 6e-8 N |
+| mirror operator vs tangent stiffness, `[P, K]` | 8.4e5 | 1.4e-2 |
+| constraint reaction of the symmetric solve | **190 N** | 1.2e-8 N |
+| `Pi_sym - Pi_free` | +1.28 J | -4e-12 J |
+| free solve from the built state, intrinsic mismatch | 232.6 mm | **0.00 mm** |
+| released from the exact symmetric state | the same asymmetric minimum (`Pi` equal to 1e-6 J) | stays symmetric |
+
+A symmetric model under a symmetric load has a symmetric equilibrium with zero
+constraint reaction; 190 N says the model was not symmetric, and the free solve
+reaching the *same* minimum from the slack start and from an exactly symmetric
+one says the side was fixed by the model, not by roundoff.
+
+**Mechanism.** `structural_billow.build_frames` transports the tube roll by
+minimal rotation over the beam network from one root (the left tip). The tube
+section is isotropic, so the roll was believed free. It is free as a uniform
+gauge along a member, but the discrete element measures the relative rotation of
+its two end frames, so a roll that differs between neighbouring nodes is not a
+gauge. And the transport is not mirror-equivariant on an LEI kite: the leading
+edge crosses the plane, so the reflection reverses its tangent, while the struts
+keep theirs -- and at every strut junction the transport hops between the two.
+Each hop leaves a roll that the mirror image of the same hop does not, so the
+far half arrives rolled against the mirror image of the near half -- by up to
+60 degrees on the LEI-V3, past its eight interior strut junctions.
+
+**Fix.** `structural_billow.symmetric_frames` (config `mirror_frames: true`, the
+default) keeps the near half's frames and mirrors them onto the far half,
+`R_p = M R diag(-1, 1, 1)`. With one director-sign matrix for every node, each
+element's strains map to a sign-flipped copy of its mirror element's, and the
+tube kernels are even in every strain component, so the energy is exactly
+mirror-symmetric. The near half, and so its reference curvatures, are untouched;
+an asymmetric geometry is left as built; a beam member lying *in* the plane (a
+centre strut) cannot share the leading edge's signs and raises. The generic
+pieces live in `awetrim.structural.symmetry`.
+
+**After the fix the symmetric equilibrium is stable, and the free solve finds
+it.** At the symmetric equilibrium the lowest antisymmetric stiffnesses are four
+numerical zeros -- slack bridle knots (nodes 71/105 and 80/114) that carry no
+load -- and then 0.53 and 0.75 N/m, all positive. After the 5 mm kick the wing
+returns to 0.00 mm; the loadless knots keep their share of the kick, and that
+is all the 0.06 mm "shape" figure picks up, through the rigid alignment (a
+0.0005 degree rotation). There is no bifurcation and no deadband around
+u_s = 0 at this load.
+
+Coupled runs, coarse `cross`, `base` circulation loop, 0.5 N gate:
+
+| run | global | of which shape | residual | iterations |
+|---|---|---|---|---|
+| traction on the first solve only, frames transported | 97.5 mm | 68.7 mm | 0.37 N | 9 |
+| same, powered to u_dp 0.25 | 100.4 mm | 71.2 mm | 0.01 N | 26 |
+| traction every iteration (da49d19), frames transported | 57.1 mm | 40.1 mm | 0.04 N | 5 |
+| traction every iteration, **frames mirrored** | **2e-5 mm** | -- | 0.04 N | 5 |
+| same, powered to u_dp 0.25 | **4e-5 mm** | -- | 0.18 N | 22 |
+
+Mirroring also changes the answer, not only its symmetry: the far half's tubes
+had been carrying the wrong reference curvature and twist, and the outermost
+section pair's elastic deformation drops from 165 to 126 mm.
+
+**What this means for steering.** The clean u_s = 0 baseline comes out of the
+ordinary free solve, from the slack built state; no constrained first solve is
+needed, so none was added. The constraint machinery stays as a diagnostic
+(`MinimumEnergySolver(equalities=...)`, `structural.symmetry.mirror_equalities`,
+`structural_billow.symmetric_equalities`).
+
+Every Billow result before 2026-09-11 used transported frames; `mirror_frames:
+false` reproduces them. The powered walks need `run_ab_canopy_pattern.py
+--no-stagnation-stop`: the driver's stagnation test compares two residuals ten
+iterations apart, and an oscillating residual after a tape step tripped it by
+coincidence at 21.5 N.
 
 ## 6. Open items
 

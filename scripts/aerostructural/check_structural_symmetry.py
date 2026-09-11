@@ -16,7 +16,12 @@ How the answer reads:
 
 Measured 2026-09-11 on the coarse ``cross`` canopy: 25 mm at 1% load (22.5 N),
 then 25 / 99 / 35 / 235 mm at 3 / 10 / 30 / 100% -- present at every load and
-erratic, which is neither clean case.
+erratic, which is neither clean case. It was the first: the model was not
+mirror-symmetric, because the tube FRAMES were not (transported from one tip,
+the far half arrived rolled by up to 60 degrees; positions were exact). With
+``structural_billow.mirror_frames`` (default since 2026-09-11) every scale is
+0.00 mm global and <= 0.01 mm intrinsic, converged to 1e-8 N -- see
+``check_symmetric_equilibrium.py`` and docs/billow/integration.md section 8.6.
 
 Usage (from project root):
     python scripts/aerostructural/check_structural_symmetry.py

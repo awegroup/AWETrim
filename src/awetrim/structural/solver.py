@@ -57,6 +57,7 @@ import numpy as np
 
 from .energy import PotentialEnergy
 from .model import StructuralModel, StructuralState
+from .symmetry import LinearEqualities
 
 Array = np.ndarray
 
@@ -118,8 +119,17 @@ class MinimumEnergySolver:
         parallelization: str = "serial",
         n_threads: int = 1,
         ipopt_options: dict[str, Any] | None = None,
+        equalities: LinearEqualities | None = None,
     ) -> None:
         self.model = model
+        #: Optional homogeneous linear equalities ``C X = 0`` on the unknowns
+        #: (e.g. :func:`awetrim.structural.symmetry.mirror_equalities`). Part of
+        #: the compiled problem, so a constrained and an unconstrained solve of
+        #: the same model are two solver objects. With constraints active the
+        #: reported residual includes their REACTION: it is zero only when the
+        #: constrained state is an equilibrium of the unconstrained problem too,
+        #: which makes it a check on the constraints rather than a nuisance.
+        self.equalities = equalities
         self.move_limit = None if move_limit is None else float(move_limit)
         self.force_tolerance = float(force_tolerance)
         self.relative_force_tolerance = float(relative_force_tolerance)
@@ -137,7 +147,12 @@ class MinimumEnergySolver:
         options["ipopt.tol"] = float(tolerance)
         options["ipopt.max_iter"] = int(max_iterations)
         options.update(ipopt_options or {})
-        self._solver = ca.nlpsol("minimum_energy", "ipopt", self.energy.nlp, options)
+        nlp = dict(self.energy.nlp)
+        if equalities is not None:
+            nlp["g"] = ca.mtimes(
+                equalities.casadi_matrix(model.layout.n_dof), self.energy.unknowns
+            )
+        self._solver = ca.nlpsol("minimum_energy", "ipopt", nlp, options)
         self._warm: dict[str, Any] | None = None
 
     def reset_warm_start(self) -> None:
@@ -216,6 +231,8 @@ class MinimumEnergySolver:
             )
 
             arguments = {"x0": initial, "p": parameters, "lbx": lower, "ubx": upper}
+            if self.equalities is not None:
+                arguments["lbg"] = arguments["ubg"] = 0.0
             if warm_start and self._warm is not None:
                 arguments["lam_x0"] = self._warm["lam_x"]
             solution = self._solver(**arguments)
@@ -284,9 +301,10 @@ class MinimumEnergySolver:
         )
         # With a move limit the iterate can sit on the trust-region boundary,
         # where IPOPT reports success for the *boxed* problem while the
-        # structure is nowhere near equilibrium. Force balance is then the only
-        # admissible verdict.
-        if self.move_limit is not None:
+        # structure is nowhere near equilibrium. Equalities are the same trap:
+        # IPOPT solves the CONSTRAINED problem, whose optimum may be held by a
+        # reaction. Force balance is then the only admissible verdict.
+        if self.move_limit is not None or self.equalities is not None:
             converged = residual_norm <= accept_at
         else:
             converged = ipopt_success or residual_norm <= accept_at

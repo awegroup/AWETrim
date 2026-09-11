@@ -196,7 +196,7 @@ On the LEI-V3 `struc_geometry_FEM_full.yaml`: 268 nodes / 1098 DOF, 47 cables,
 Build ~0.9 s, structural solve ~2 s per coupled iteration (the VSM trim is
 ~25 s, so the structure is not the cost).
 
-Three things the adapter has to do that are not obvious:
+Four things the adapter has to do that are not obvious:
 
 - **The bridle is relaxed before the model is built.** The YAMLs store measured
   rest lengths against measured node positions and the two disagree — on the
@@ -215,12 +215,44 @@ Three things the adapter has to do that are not obvious:
   beam network plus `junction_frame="strut"` (the joint rotation lands on the
   long LE runs, not the short strut stubs) gives 10.6 /m. The tube section is
   isotropic in roll (`ga_2 == ga_3`, one bending law), so only `d1` is
-  physically determined and the roll is free to spend this way.
+  physically determined and the roll is free to spend this way -- as a gauge
+  along a member, NOT node by node: the element sees the relative rotation of
+  its two end frames, so the roll field also has to be mirror-consistent (next
+  item).
+- **The frames of a mirror-symmetric kite are mirrored, not transported, onto
+  the far half** (`symmetric_frames`, config `mirror_frames: true`, default).
+  The transport above is not mirror-equivariant on an LEI kite: the LE crosses
+  the plane (the reflection reverses its tangent) and the struts do not, so
+  every hop through a strut junction rolls the far half the wrong way -- up to
+  60 degrees on the LEI-V3, with every node position still symmetric to
+  4e-15 m. The tube energy then was not mirror-symmetric (internal moment
+  mirror error 40%, a 190 N reaction on a symmetric-constrained solve) and the
+  unsteered kite solved to one deterministic asymmetric shape, worst at the
+  tips and trailing edge (40-69 mm of shape coarse). Mirrored with one
+  director-sign matrix, `R_p = M R diag(-1, 1, 1)`, every element is exactly
+  mirror-invariant and the coupled unsteered solve is symmetric to 2e-5 mm.
+  Near half untouched; asymmetric geometry left as built; a beam member lying
+  IN the plane (a centre strut) raises, and a plane-crossing element joining
+  frames > 90 degrees apart is warned about (Cayley singularity). Before
+  2026-09-11 every Billow run used transported frames; `mirror_frames: false`
+  reproduces them. See `docs/billow/integration.md` §8.6.
 - **`run_billow` is a whole solve, not one step.** With a `move_limit` each
   `MinimumEnergySolver.solve` is one trust-region step and `run_billow` walks
   them to force balance, terminating on the residual — IPOPT reports success for
   the *boxed* problem while sitting on the boundary, so its verdict does not
   imply equilibrium.
+
+`build_solver(model, settings, equalities=None)` is the one place the
+`structural_billow` numerics become a `MinimumEnergySolver`, so a constrained
+solve runs with exactly the numerics of the free one it is compared against;
+`symmetric_equalities(structure)` returns the mirror-symmetry equalities over
+EVERY node of the built model (bridle knots and quad centres included) and the
+partner map. Diagnostics: `scripts/aerostructural/check_symmetric_equilibrium.py`
+(free vs symmetric-constrained vs released solves, `Pi`, and the tangent
+stiffness on the symmetric/antisymmetric subspaces -- IPOPT checks first-order
+optimality only, so a released solve alone would stop on a symmetric saddle),
+`check_mirror_asymmetry.py` (global vs rigid-aligned mismatch per section pair
+and per chordwise station, LE to TE).
 
 A gravity-only load case is NOT a valid smoke test: the KCU is pinned below the
 wing, so gravity slackens every bridle line and the bridle knots become a
