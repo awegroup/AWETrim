@@ -168,6 +168,42 @@ def _canopy_triangles(config, billow_structure):
     return billow_structure.model.element_set(_sb.CANOPY).connectivity
 
 
+def _map_aero_to_structure(
+    config, f_aero_wing_vsm_format, struc_nodes, results_aero, aero2struc_mapping,
+    canopy_sections, strut_sections, panels, billow_structure, *,
+    is_with_conservation_check,
+):
+    """The coupled loop's ONE aero -> structure load mapping.
+
+    Both call sites -- the pre-loop solve and every coupled iteration -- go
+    through here. They used to be two copies of the same call, and when the
+    billow canopy mesh was added to one and not the other, only the first
+    structural solve got the element-consistent traction transfer; every
+    later iteration silently fell back to point loads on the YAML's node
+    chains, which never reach a quad-centre node. One call cannot drift.
+    """
+    canopy_triangles = _canopy_triangles(config, billow_structure)
+    return aero2struc.main(
+        config["aero2struc"]["coupling_method"],
+        f_aero_wing_vsm_format,
+        struc_nodes,
+        np.array(results_aero["panel_cp_locations"]),
+        aero2struc_mapping,
+        config["is_with_coupling_plot_per_iteration"],
+        config["aero2struc"],
+        canopy_sections,
+        strut_sections,
+        panels,
+        # Billow knows its canopy elements, so the load can be transferred
+        # through them rather than through the YAML's node chains -- which is
+        # the only route that reaches a quad-centre or refined interior node.
+        canopy_triangles=canopy_triangles,
+        canopy_grid=billow_structure.fine_grid if canopy_triangles is not None else None,
+        is_with_conservation_check=is_with_conservation_check,
+        return_distributed_aero=True,
+    )
+
+
 def _billow_solved(config, billow_structure):
     """True when a Billow solve has produced a state worth recording."""
     return (
@@ -649,26 +685,10 @@ def main(
     #     )
 
     ### AERO --> STRUC
-    f_aero_wing, aero_mapping_debug = aero2struc.main(
-        config["aero2struc"]["coupling_method"],
-        f_aero_wing_vsm_format,
-        struc_nodes,
-        np.array(results_aero["panel_cp_locations"]),
-        aero2struc_mapping,
-        config["is_with_coupling_plot_per_iteration"],
-        config["aero2struc"],
-        canopy_sections,
-        strut_sections,
-        body_aero.panels,
-        # Billow knows its canopy elements, so the load can be transferred
-        # through them rather than through the YAML's node chains -- which is
-        # the only route that reaches a quad-centre or refined interior node.
-        canopy_triangles=_canopy_triangles(config, billow_structure),
-        canopy_grid=(billow_structure.fine_grid
-                     if _canopy_triangles(config, billow_structure) is not None
-                     else None),
+    f_aero_wing, aero_mapping_debug = _map_aero_to_structure(
+        config, f_aero_wing_vsm_format, struc_nodes, results_aero, aero2struc_mapping,
+        canopy_sections, strut_sections, body_aero.panels, billow_structure,
         is_with_conservation_check=False,
-        return_distributed_aero=True,
     )
 
     # Check moment preservation of aero→struc mapping (pre-loop)
@@ -893,19 +913,11 @@ def main(
             roll, pitch, yaw = results_aero["opt_x"][1:4]
             struc_nodes = rotate_geometry(struc_nodes, angle_deg=[roll, pitch, yaw])
             ### AERO --> STRUC
-            f_aero_wing, aero_mapping_debug = aero2struc.main(
-                config["aero2struc"]["coupling_method"],
-                f_aero_wing_vsm_format,
-                struc_nodes,
-                np.array(results_aero["panel_cp_locations"]),
-                aero2struc_mapping,
-                config["is_with_coupling_plot_per_iteration"],
-                config["aero2struc"],
-                canopy_sections,
-                strut_sections,
-                body_aero.panels,
+            f_aero_wing, aero_mapping_debug = _map_aero_to_structure(
+                config, f_aero_wing_vsm_format, struc_nodes, results_aero,
+                aero2struc_mapping, canopy_sections, strut_sections,
+                body_aero.panels, billow_structure,
                 is_with_conservation_check=(i == 0),
-                return_distributed_aero=True,
             )
 
             # Check moment preservation (only first coupling iteration to limit log spam)
