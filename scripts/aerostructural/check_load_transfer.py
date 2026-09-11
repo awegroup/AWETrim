@@ -25,9 +25,19 @@ Also counted: how many structural nodes actually receive load. That number is
 why conservation alone is not enough -- the totals can balance perfectly while
 part of the mesh is held by the membrane alone.
 
+With ``--from-result`` the comparison runs on a converged, DEFORMED shape
+instead of the built one, and the traction transfer is shown twice: on its
+default coordinates, taken from the deformed shape and made strictly increasing
+per row (what the coupled loop uses), and frozen on the built shape. Frozen,
+every load follows its material point, which slides aft as the canopy
+deforms, so the centre of pressure moves with it -- measured on x2, 17% of the
+moment about the KCU.
+
 Usage (from project root):
     python scripts/aerostructural/check_load_transfer.py
     python scripts/aerostructural/check_load_transfer.py --patterns cross --refine 3
+    python scripts/aerostructural/check_load_transfer.py --refine 2 \
+        --from-result cross_x2_traction_fixed
 """
 
 import argparse
@@ -54,13 +64,17 @@ from common import (
 from run_chain_depower_BILLOW import build_once
 
 
+def project_root():
+    return Path(__file__).resolve().parents[2]
+
+
 def resultants(points, forces, reference):
     """Resultant force [N] and moment [N m] about ``reference`` of point loads."""
     points, forces = np.asarray(points, float), np.asarray(forces, float)
     return forces.sum(axis=0), np.cross(points - reference, forces).sum(axis=0)
 
 
-def transfer(route, state):
+def transfer(route, state, coordinates=None):
     """One mapping route, as ``(nodal forces, aero points, aero forces)``."""
     config = copy.deepcopy(state["config"])
     config["aero2struc"]["load_transfer"] = route
@@ -77,13 +91,18 @@ def transfer(route, state):
         state["panels"],
         canopy_triangles=None if route == "sections" else state["triangles"],
         canopy_grid=state["grid"],
+        canopy_coordinates=coordinates,
         return_distributed_aero=True,
     )
     return nodal, debug["points"], debug["forces"]
 
 
-def build(shared, pattern, refine):
-    """The Billow model and the aerodynamic state to transfer onto it."""
+def build(shared, pattern, refine, positions=None):
+    """The Billow model and the aerodynamic state to transfer onto it.
+
+    ``positions`` replaces the built node positions -- a converged shape -- so
+    the aerodynamics is solved on, and transferred onto, the deformed canopy.
+    """
     config = copy.deepcopy(shared["config"])
     config["structural_billow"] = {
         **(config.get("structural_billow") or {}),
@@ -109,6 +128,14 @@ def build(shared, pattern, refine):
         canopy_sections=canopy_sections, strut_sections=strut_sections,
     )
     nodes = structure.model.nodes.copy()
+    built = nodes.copy()
+    triangles = structure.model.element_set(structural_billow.CANOPY).connectivity
+    material = aero2struc.canopy_surface_coordinates(built, structure.fine_grid, triangles)
+    if positions is not None:
+        if positions.shape != nodes.shape:
+            raise ValueError(f"result has {len(positions)} nodes, the model {len(nodes)}: "
+                             "pass the --pattern/--refine the run used")
+        nodes = np.asarray(positions, dtype=float).copy()
 
     update = LinearStructuralToAeroMapper().map(
         nodes, le_indices, te_indices,
@@ -144,6 +171,7 @@ def build(shared, pattern, refine):
         # Exactly what run_chain hands the mapper: the membrane's own grid.
         canopy_sections=[list(map(int, row)) for row in structure.fine_grid],
         grid=structure.fine_grid,
+        material_coordinates=material,
         triangles=structure.model.element_set(structural_billow.CANOPY).connectivity,
         mapping=(BilinearAeroToStructuralLoadMapper()
                  .initialize(shared["body_aero"].panels, nodes,
@@ -157,24 +185,44 @@ def main():
     parser.add_argument("--panels-per-section", type=int, default=2)
     parser.add_argument("--patterns", nargs="+", default=["cross"])
     parser.add_argument("--refine", type=int, default=1)
+    parser.add_argument("--from-result", default=None,
+                        help="result folder under billow_canopy_ab/: run the "
+                             "comparison on its converged (deformed) shape")
     parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
     args = parser.parse_args()
+    positions = None
+    if args.from_result:
+        from check_mirror_asymmetry import final_positions
+        positions = final_positions(
+            project_root() / "results" / args.kite / "aerostructural"
+            / "billow_canopy_ab" / args.from_result
+        )
 
     project = Path(__file__).resolve().parents[2]
     shared = build_once(project, args.kite, args.panels_per_section,
                         {"aerodynamic": {"gamma_loop_type": "base"}})
     shared["config"]["wind_speed_wind_ref"] = float(args.wind)
 
-    print(f"\nunsteered, v_w = {args.wind} m/s, canopy refinement x{args.refine}")
+    shape = f"converged shape of {args.from_result}" if args.from_result else "built shape"
+    print(f"\nunsteered, v_w = {args.wind} m/s, canopy refinement x{args.refine}, {shape}")
     print("resultants about the origin; the aero side is the reference.\n")
     print(f"{'pattern':9s} {'route':15s} {'canopy':>6} {'loaded':>7} | "
           f"{'|dF| (N)':>10} {'rel':>9} | {'|dM| (N m)':>11} {'rel':>9}")
     print("-" * 90)
 
     for pattern in args.patterns:
-        state = build(shared, pattern, args.refine)
-        for route in ("sections", "nearest_element", "traction"):
-            nodal, points, forces = transfer(route, state)
+        state = build(shared, pattern, args.refine, positions)
+        routes = [("sections", "sections", None),
+                  ("nearest_element", "nearest_element", None),
+                  ("traction", "traction", None),
+                  ("traction_built", "traction", state["material_coordinates"])]
+        for name, route, coordinates in routes:
+            try:
+                nodal, points, forces = transfer(route, state, coordinates)
+            except ValueError as error:
+                print(f"{pattern:9s} {name:16s} refused: {str(error)[:70]}...")
+                continue
+            route = name
             f_ref, m_ref = resultants(points, forces, np.zeros(3))
             f_got, m_got = resultants(state["struc_nodes"], nodal, np.zeros(3))
             canopy = np.unique(state["triangles"])

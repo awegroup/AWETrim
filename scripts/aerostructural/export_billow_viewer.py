@@ -3,8 +3,9 @@
 Each state is one converged coupled run under ``billow_canopy_ab/``. The model is
 rebuilt from the YAML with the run's canopy mesh (deterministic, ~1 s) and the
 node positions are read from its ``sim_output.h5``, so nothing is re-solved. The
-canopy is shaded by wrinkling regime -- slack, wrinkled, taut -- read off each
-state with the same discriminant the energy kernel branches on.
+canopy can be shaded by aerodynamic load per unit area (the default; one colour
+scale for every state) or by wrinkling regime -- slack, wrinkled, taut -- read
+off each state with the same discriminant the energy kernel branches on.
 
 The page is ``billow_viewer_template.html`` with the payload substituted for
 ``__DATA__``: a single self-contained HTML file.
@@ -38,6 +39,37 @@ def rounded(array):
     return np.round(np.asarray(array, dtype=float), DIGITS).tolist()
 
 
+def canopy_load(folder, positions, triangles):
+    """Aerodynamic load per unit area on each canopy element [Pa].
+
+    The nodal loads the coupled loop applied at its last iteration, divided
+    by each node's tributary area (a third of every adjacent element, on the
+    solved shape), averaged over the element's three nodes. With the traction
+    transfer every canopy node carries its share, so this is the load field
+    the structure actually saw, not a sampling of it.
+    """
+    with h5py.File(folder / "sim_output.h5", "r") as handle:
+        residual = np.asarray(handle["tracking/residual_norm"])
+        forces = np.asarray(handle["tracking/f_ext"])
+    nodal = forces[int(np.flatnonzero(residual)[-1])]
+    triangles = np.asarray(triangles, dtype=int)
+    a, b, c = (positions[triangles[:, k]] for k in range(3))
+    area = 0.5 * np.linalg.norm(np.cross(b - a, c - a), axis=1)
+    tributary = np.zeros(len(positions))
+    np.add.at(tributary, triangles.ravel(), np.repeat(area / 3.0, 3))
+    pressure = np.linalg.norm(nodal, axis=1) / np.where(tributary > 0, tributary, np.inf)
+    return pressure[triangles].mean(axis=1)
+
+
+def nice_ceiling(value):
+    """Smallest 1-1.2-1.5-2-2.5-3-4-5-6-8 x 10^n at or above ``value``."""
+    magnitude = 10.0 ** np.floor(np.log10(value))
+    for step in (1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10):
+        if step * magnitude >= value:
+            return float(step * magnitude)
+    return float(10 * magnitude)
+
+
 def convergence(folder):
     """Final coupled residual [N] and the number of coupled iterations."""
     with h5py.File(folder / "sim_output.h5", "r") as handle:
@@ -62,6 +94,7 @@ def state_payload(project, kite, folder, refine, label, note, pattern, panels_pe
         "positions": rounded(positions),
         "referenceRegime": np.asarray(membrane_regimes(built, canopy)["regime"], int).tolist(),
         "regime": np.asarray(membrane_regimes(positions, canopy)["regime"], int).tolist(),
+        "load": np.round(canopy_load(folder, positions, canopy.connectivity), 1).tolist(),
         "residual": residual,
         "iterations": iterations,
         "nodes": int(structure.model.n_nodes),
@@ -83,6 +116,17 @@ def topology(structure):
         "pulleys": np.asarray(structure.model.element_set(sb.PULLEYS).connectivity, int).tolist(),
         "fixed": [int(i) for i in structure.fixed_node_indices],
     }
+
+
+def load_scale(states):
+    """One colour scale for every state: the 98th percentile, rounded up.
+
+    A shared scale, so the same colour is the same load in every state; the
+    percentile, so a handful of concentrated nodal loads -- at a bridle
+    attachment, say -- does not wash out the rest of the canopy.
+    """
+    loads = np.concatenate([np.asarray(s["load"]) for s in states.values() if s.get("load")])
+    return nice_ceiling(float(np.percentile(loads, 98)))
 
 
 def main():
@@ -113,7 +157,8 @@ def main():
               f"mismatch {payload['mismatch']:.1f} mm ({payload['intrinsic']:.1f} shape)")
 
     page = TEMPLATE.read_text(encoding="utf-8").replace(
-        "__DATA__", json.dumps({**shared, "states": states}, separators=(",", ":"))
+        "__DATA__", json.dumps({**shared, "loadScale": load_scale(states), "states": states},
+                               separators=(",", ":"))
     )
     Path(args.output).write_text(page, encoding="utf-8")
     print(f"written {args.output} ({len(page) / 1e6:.2f} MB)")

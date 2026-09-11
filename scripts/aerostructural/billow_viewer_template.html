@@ -22,6 +22,11 @@
   --wrinkled:    #e69f00;
   --taut:        #d55e00;
   --plain:       #7f8ba3;
+  --load-0:      #b7d3f6;
+  --load-1:      #86b6ef;
+  --load-2:      #3987e5;
+  --load-3:      #1c5cab;
+  --load-4:      #0d366b;
   --shadow:      0 1px 2px rgba(23, 27, 37, .08), 0 8px 24px rgba(23, 27, 37, .06);
 }
 @media (prefers-color-scheme: dark) {
@@ -43,6 +48,11 @@
     --wrinkled:    #e69f00;
     --taut:        #d55e00;
     --plain:       #5d6880;
+    --load-0:      #184f95;
+    --load-1:      #256abf;
+    --load-2:      #3987e5;
+    --load-3:      #6da7ec;
+    --load-4:      #b7d3f6;
     --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
   }
 }
@@ -64,6 +74,11 @@
   --wrinkled:    #e69f00;
   --taut:        #d55e00;
   --plain:       #5d6880;
+  --load-0:      #184f95;
+  --load-1:      #256abf;
+  --load-2:      #3987e5;
+  --load-3:      #6da7ec;
+  --load-4:      #b7d3f6;
   --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
 }
 
@@ -178,6 +193,30 @@ main {
   color: var(--ink-soft);
 }
 .legend .sw { width: 12px; height: 12px; border-radius: 2px; }
+.ramp { height: 10px; border-radius: 3px; }
+.ramp-labels {
+  display: flex;
+  justify-content: space-between;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: .7rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-soft);
+}
+.legend-note { margin: 0; font-size: .72rem; color: var(--ink-faint); }
+.tip {
+  position: absolute;
+  pointer-events: none;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  color: var(--ink);
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: .74rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
 .legend .pct {
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-variant-numeric: tabular-nums;
@@ -285,7 +324,7 @@ footer code {
 
 <header>
   <h1>Billow Kite Viewer</h1>
-  <p class="sub">TU&nbsp;Delft V3, trimmed by the coupled VSM&nbsp;+&nbsp;minimum-energy solve. The canopy is a wrinkling membrane, not a spring net, so every triangle carries a biaxial stress state and can be shaded by the regime it is actually in. Turn on <em>mesh edges</em> to see the triangulation.</p>
+  <p class="sub">TU&nbsp;Delft V3, trimmed by the coupled VSM&nbsp;+&nbsp;minimum-energy solve. The canopy is a wrinkling membrane, not a spring net: every triangle is shaded by the aerodynamic load it carries, or by the stress regime it is in. Hover the canopy to read a value; turn on <em>mesh edges</em> to see the triangulation.</p>
 </header>
 
 <main>
@@ -297,7 +336,11 @@ footer code {
 
     <div class="group">
       <h2>Canopy</h2>
-      <label class="check"><input type="checkbox" id="byRegime" checked> Shade by wrinkling state</label>
+      <div role="radiogroup" aria-label="Shade the canopy by">
+        <label class="check"><input type="radio" name="shading" value="load" checked> Aerodynamic load</label>
+        <label class="check"><input type="radio" name="shading" value="regime"> Wrinkling state</label>
+        <label class="check"><input type="radio" name="shading" value="plain"> Plain</label>
+      </div>
       <div class="legend" id="legend"></div>
     </div>
 
@@ -323,6 +366,7 @@ footer code {
       <div><kbd>shift</kbd> + drag to pan</div>
     </div>
     <dl class="readout" id="readout"></dl>
+    <div class="tip" id="tip" hidden></div>
     <aside class="note" id="note"></aside>
   </div>
 </main>
@@ -361,7 +405,7 @@ const HOME = { ...cam };
 const view = {
   state: Object.keys(DATA.states)[0],
   built: false,
-  byRegime: true,
+  shading: "load",
   canopy: true,
   tubes: true,
   bridle: true,
@@ -382,6 +426,18 @@ function positionsFor() {
 function regimeFor() {
   const s = current();
   return view.built ? s.referenceRegime : s.regime;
+}
+function loadFor() {
+  const s = current();
+  return view.built || !s.load ? null : s.load;
+}
+const LOAD_STOPS = ["--load-0", "--load-1", "--load-2", "--load-3", "--load-4"];
+function rampColour(stops, t) {
+  const x = Math.min(1, Math.max(0, t)) * (stops.length - 1);
+  const k = Math.min(stops.length - 2, Math.floor(x)), f = x - k;
+  const rgb = (hex) => { const n = parseInt(hex.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
+  const a = rgb(stops[k]), b = rgb(stops[k + 1]);
+  return "#" + a.map((c, i) => Math.round(c + f * (b[i] - c)).toString(16).padStart(2, "0")).join("");
 }
 function trianglesFor() {
   return current().triangles;
@@ -462,6 +518,8 @@ function draw() {
     line: cssVar("--line"),
   };
   const regimeColour = [colours.slack, colours.wrinkled, colours.taut];
+  const load = view.shading === "load" ? loadFor() : null;
+  const stops = LOAD_STOPS.map(cssVar);
   const light = [0.32, -0.78, 0.54];
 
   const prims = [];
@@ -475,12 +533,18 @@ function draw() {
       const len = Math.hypot(n[0], n[1], n[2]) || 1;
       n = rotate([n[0] / len, n[1] / len, n[2] / len]);
       const lambert = Math.abs(n[0] * light[0] + n[1] * light[1] + n[2] * light[2]);
-      const base = view.byRegime ? regimeColour[regime[i]] : colours.plain;
+      // Colour carries the value in load mode, so the lighting only hints at
+      // the shape there; elsewhere it does the full job.
+      let base, lit = 0.6 + 0.55 * lambert;
+      if (load) { base = rampColour(stops, load[i] / DATA.loadScale); lit = 0.88 + 0.18 * lambert; }
+      else if (view.shading === "regime") base = regimeColour[regime[i]];
+      else base = colours.plain;
       prims.push({
         depth: (screen[tri[0]][2] + screen[tri[1]][2] + screen[tri[2]][2]) / 3,
         kind: "tri",
+        index: i,
         pts: [screen[tri[0]], screen[tri[1]], screen[tri[2]]],
-        fill: shade(base, 0.6 + 0.55 * lambert),
+        fill: shade(base, lit),
       });
     });
   }
@@ -519,6 +583,7 @@ function draw() {
   }
 
   prims.sort((a, b) => b.depth - a.depth);
+  drawnTriangles = prims.filter((p) => p.kind === "tri");   // back to front
 
   for (const prim of prims) {
     if (prim.kind === "tri") {
@@ -559,12 +624,35 @@ function draw() {
 /* ---- interaction --------------------------------------------------- */
 
 let dragging = null;
+let drawnTriangles = [];
+const tip = document.getElementById("tip");
+function insideTriangle(x, y, p) {
+  const side = (a, b) => (x - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (y - b[1]);
+  const d1 = side(p[0], p[1]), d2 = side(p[1], p[2]), d3 = side(p[2], p[0]);
+  return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+}
+function hover(e) {
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  let hit = -1;
+  for (let k = drawnTriangles.length - 1; k >= 0 && hit < 0; k--) {
+    if (insideTriangle(x, y, drawnTriangles[k].pts)) hit = drawnTriangles[k].index;
+  }
+  if (hit < 0) { tip.hidden = true; return; }
+  const load = loadFor(), regime = regimeFor();
+  const value = load ? `${Math.round(load[hit])} Pa` : "no aero load";
+  tip.textContent = `${value} · ${REGIMES[regime[hit]].name}`;
+  tip.hidden = false;
+  tip.style.left = `${Math.min(x + 14, rect.width - tip.offsetWidth - 8)}px`;
+  tip.style.top = `${Math.max(8, y - tip.offsetHeight - 10)}px`;
+}
 canvas.addEventListener("pointerdown", (e) => {
   dragging = { x: e.clientX, y: e.clientY, pan: e.shiftKey };
   canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener("pointermove", (e) => {
-  if (!dragging) return;
+  if (!dragging) { hover(e); return; }
+  tip.hidden = true;
   const dx = e.clientX - dragging.x, dy = e.clientY - dragging.y;
   dragging.x = e.clientX; dragging.y = e.clientY;
   if (dragging.pan) {
@@ -576,7 +664,7 @@ canvas.addEventListener("pointermove", (e) => {
   draw();
 });
 for (const type of ["pointerup", "pointercancel", "pointerleave"]) {
-  canvas.addEventListener(type, () => { dragging = null; });
+  canvas.addEventListener(type, () => { dragging = null; if (type !== "pointerup") tip.hidden = true; });
 }
 canvas.addEventListener("wheel", (e) => {
   e.preventDefault();
@@ -620,7 +708,7 @@ for (const key of stateKeys) {
 }
 
 const bindings = [
-  ["byRegime", "byRegime"], ["showCanopy", "canopy"], ["showTubes", "tubes"],
+  ["showCanopy", "canopy"], ["showTubes", "tubes"],
   ["showBridle", "bridle"], ["showMesh", "mesh"], ["asBuilt", "built"],
 ];
 for (const [id, key] of bindings) {
@@ -629,17 +717,35 @@ for (const [id, key] of bindings) {
   input.addEventListener("change", () => { view[key] = input.checked; refresh(); });
 }
 
+for (const radio of document.querySelectorAll('input[name="shading"]')) {
+  radio.checked = radio.value === view.shading;
+  radio.addEventListener("change", () => { if (radio.checked) { view.shading = radio.value; refresh(); } });
+}
+
 function refresh() {
   const regime = regimeFor();
   const total = regime.length;
   const counts = REGIMES.map((r) => regime.filter((v) => v === r.key).length);
+  const load = loadFor();
 
-  document.getElementById("legend").innerHTML = REGIMES.map((r, i) => `
-    <div class="row">
-      <span class="sw" style="background: var(${r.varName})"></span>
-      <span title="${r.note}">${r.name}</span>
-      <span class="pct">${((100 * counts[i]) / total).toFixed(0)}%</span>
-    </div>`).join("");
+  const legend = document.getElementById("legend");
+  if (view.shading === "load") {
+    const scale = DATA.loadScale;
+    legend.innerHTML = load ? `
+      <div class="ramp" style="background: linear-gradient(to right, ${LOAD_STOPS.map((v) => `var(${v})`).join(", ")})"></div>
+      <div class="ramp-labels"><span>0</span><span>${scale / 2}</span><span>${scale} Pa</span></div>
+      <p class="legend-note">Load per unit area; one scale for every state.</p>`
+      : `<p class="legend-note">The built shape carries no aerodynamic load.</p>`;
+  } else if (view.shading === "regime") {
+    legend.innerHTML = REGIMES.map((r, i) => `
+      <div class="row">
+        <span class="sw" style="background: var(${r.varName})"></span>
+        <span title="${r.note}">${r.name}</span>
+        <span class="pct">${((100 * counts[i]) / total).toFixed(0)}%</span>
+      </div>`).join("");
+  } else {
+    legend.innerHTML = "";
+  }
 
   const s = current();
   const rows = [
@@ -651,6 +757,7 @@ function refresh() {
         : (s.intrinsic == null ? "—" : `${s.intrinsic.toFixed(1)} mm`)],
     ["Wrinkled", `${((100 * counts[1]) / total).toFixed(0)}%`],
   ];
+  if (load) rows.push(["Peak load", `${Math.round(Math.max(...load))} Pa`]);
   document.getElementById("readout").innerHTML = rows
     .map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`)
     .join("");

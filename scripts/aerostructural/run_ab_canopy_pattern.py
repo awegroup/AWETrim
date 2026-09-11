@@ -84,6 +84,14 @@ def main():
                              "and 3.31 N, and a looser state shows more residual "
                              "asymmetry regardless of the mesh.")
     parser.add_argument("--max-iter", type=int, default=60)
+    parser.add_argument("--stagnation-tol", type=float, default=None,
+                        help="coupled stagnation tolerance [N]: the run stops "
+                             "as 'stagnated' when the residual moves less than "
+                             "this over n_max_constant_residual_force "
+                             "iterations. Default: a tenth of --tol. as_config's "
+                             "absolute 2 N is larger than the whole remaining "
+                             "gap to a 0.5 N gate, so it declared a steadily "
+                             "converging x2 run stagnated at 1.12 N."),
     parser.add_argument("--gamma-loop", default=None, choices=("base", "anderson"),
                         help="VSM inner circulation solver. 'base' is exactly "
                              "mirror-symmetric (3e-7 N per panel); 'anderson' is "
@@ -151,6 +159,9 @@ def main():
     shared["config"]["wind_speed_wind_ref"] = float(args.wind)
     shared["config"]["aero_structural_solver"]["tol"] = float(args.tol)
     shared["config"]["aero_structural_solver"]["max_iter"] = int(args.max_iter)
+    stagnation = (args.stagnation_tol if args.stagnation_tol is not None
+                  else 0.1 * float(args.tol))
+    shared["config"]["aero_structural_solver"]["stagnation_tol"] = float(stagnation)
     if args.no_stagnation_stop:
         shared["config"]["aero_structural_solver"]["n_max_constant_residual_force"] = (
             int(args.max_iter) + 1

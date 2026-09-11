@@ -307,6 +307,19 @@ load then reaches the structural NODES is another. `aero2struc.main`'s
   strip/chord-bin boxes. So every canopy node -- quad centres and refined
   interior nodes included -- is loaded by the elements around it, and the total
   force is conserved to roundoff by construction.
+
+  The coordinates are taken from the CURRENT shape, each row then made strictly
+  increasing leading to trailing edge. Both halves are measured necessities.
+  Current, because under load the canopy slides aft of its built chord
+  fractions (x2 cross: 1-3.5% of the chord on average over the aft half), so
+  coordinates frozen on the built shape carry every load aft with it -- 17% of
+  the moment about the KCU. Repaired, because where slack fabric curls near the
+  trailing edge a node projects past its aft neighbour and an element turns
+  inside out in `(s, xi)`: that patch covered twice, its load counted twice
+  (x2: one column in 3 rows, 0.16-0.25% of the load, a pair of trailing-edge
+  nodes unloaded). With every row increasing and each quad centre at the mean
+  of its corners no element of any pattern can invert, so a coverage mismatch
+  can only be a bug and is raised as one.
 - `nearest_element` -- each chordwise point load through its nearest triangle
   (barycentric). Exact force and in-plane moment, but a point reaches three
   nodes: on a x3 canopy 61% of the nodes stay unloaded.
@@ -321,6 +334,19 @@ state. Measured on the coarse `cross` canopy (413 canopy nodes):
 | `sections` | 224 | 1e-15 | 3.9e-3 |
 | `nearest_element` | 368 | 1e-15 | 6.8e-7 |
 | `traction` | **413** | 2e-15 | 6.3e-4 |
+
+And on a converged, DEFORMED x2 canopy (`--refine 2 --from-result ...`, 1581
+canopy nodes), where the coordinates matter:
+
+| route | loaded | force rel. error | moment rel. diff. |
+|---|---|---|---|
+| `sections` | 689 | 4e-16 | 4.0e-2 |
+| `nearest_element` | 914 | 4e-16 | 1.7e-3 |
+| `traction` | **1581** | 5e-16 | 8.6e-3 (4 N m) |
+| `traction`, coordinates frozen on the built shape | 1581 | 7e-16 | 1.7e-1 |
+
+The relative moment is taken about the KCU, where the resultant nearly passes,
+so it is harsh: 4 N m on ~2.2 kN is an effective lever of 2 mm.
 
 The `traction` moment is measured against the loads on the aero CHORD LINE; it
 places them on the cambered SURFACE instead, which is where the pressure acts,

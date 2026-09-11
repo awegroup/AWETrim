@@ -269,6 +269,21 @@ def consistent_chordwise_density(weights, stations):
     return np.linalg.solve(mass, weights.T).T
 
 
+def _strictly_increasing(xi, min_gap):
+    """``xi`` with every order violation removed, ends kept at 0 and 1.
+
+    Backward from the trailing edge, nothing may sit aft of its aft neighbour;
+    then forward from the leading edge, nothing ahead of its fore neighbour.
+    Nodes already in order are left exactly where they project.
+    """
+    out = np.array(xi, dtype=float)
+    for j in range(len(out) - 2, 0, -1):
+        out[j] = min(out[j], out[j + 1] - min_gap)
+    for j in range(1, len(out) - 1):
+        out[j] = max(out[j], out[j - 1] + min_gap)
+    return out
+
+
 def canopy_surface_coordinates(struc_nodes, grid, triangles):
     """Surface coordinates ``(s, xi)`` of every canopy node.
 
@@ -282,9 +297,24 @@ def canopy_surface_coordinates(struc_nodes, grid, triangles):
     places its chordwise stations, so a load meant for ``xi`` lands on the
     surface point directly above the chord-line point it was computed at --
     offset along the section normal, roughly along the load itself, which is
-    why this costs almost no moment. It is recomputed from the CURRENT shape,
-    so a node that slides chordwise as the canopy billows carries the load for
-    where it now is.
+    why this costs almost no moment. Evaluate it on the CURRENT shape: under
+    load the canopy slides aft of its built chord fractions (on the deformed x2
+    cross canopy by 1-3.5% of the chord on average over the aft half, up to
+    9.6%), so coordinates frozen on the built shape put every load aft of where
+    the aerodynamics computed it -- measured, a 17% change in the moment about
+    the KCU, a ~2% chord shift of the centre of pressure, which is a pitching
+    moment the trim never had.
+
+    **Each row is then made strictly increasing** from leading to trailing
+    edge. Where slack fabric curls near the trailing edge a node can project
+    past its aft neighbour, and an element would turn inside out in ``(s, xi)``:
+    that patch covered twice, its load counted twice (measured on x2: one
+    column in 3 rows, 0.16-0.25% of the load, a pair of trailing-edge nodes
+    left unloaded). With every row increasing and each quad centre at the mean
+    of its corners, no element of any pattern can invert, so the elements tile
+    the surface exactly and the transfer stays conservative. The repair moves
+    only nodes that violate the order, each to just ahead of its aft neighbour
+    (or just aft of its fore neighbour); everywhere else the projection stands.
 
     Nodes off the grid -- the ``cross`` pattern's quad centres -- take the mean
     of the grid nodes they share an element with: the material point at the
@@ -294,11 +324,14 @@ def canopy_surface_coordinates(struc_nodes, grid, triangles):
     grid = np.asarray(grid, dtype=int)
     triangles = np.asarray(triangles, dtype=int)
     coordinates = np.full((len(struc_nodes), 2), np.nan)
+    min_gap = 0.05 / (grid.shape[1] - 1)       # 5% of a uniform column spacing
     for row_index, row in enumerate(grid):
         leading, trailing = struc_nodes[row[0]], struc_nodes[row[-1]]
         chord = trailing - leading
         coordinates[row, 0] = row_index
-        coordinates[row, 1] = (struc_nodes[row] - leading) @ chord / float(chord @ chord)
+        coordinates[row, 1] = _strictly_increasing(
+            (struc_nodes[row] - leading) @ chord / float(chord @ chord), min_gap
+        )
 
     missing = np.isnan(coordinates[:, 0])
     if missing[triangles].any():
@@ -340,7 +373,8 @@ def _clip_to_box(polygon, s_low, s_high, xi_low, xi_high):
 
 
 def map_aero_traction_to_membrane(panel_forces, panel_weights, stations,
-                                  struc_nodes, grid, triangles):
+                                  struc_nodes, grid, triangles,
+                                  surface_coordinates=None):
     """Consistent nodal loads from the aerodynamic TRACTION over every canopy element.
 
     The aerodynamic result is a load distributed over the canopy surface, not a
@@ -384,6 +418,9 @@ def map_aero_traction_to_membrane(panel_forces, panel_weights, stations,
         panel_weights: ``(n_panels, n_stations)`` chordwise weights per panel.
         stations: ``(n_stations,)`` chordwise fractions of those weights.
         struc_nodes: ``(n_nodes, 3)`` current node positions.
+        surface_coordinates: ``(n_nodes, 2)`` to use instead of
+            ``canopy_surface_coordinates(struc_nodes, ...)``, the default and
+            the right choice: current-shape, strictly increasing per row.
         grid: ``(rows, columns)`` canopy grid, rows spanning leading to
             trailing edge in the same order as the aerodynamic sections.
         triangles: ``(n_elements, 3)`` canopy elements.
@@ -397,7 +434,9 @@ def map_aero_traction_to_membrane(panel_forces, panel_weights, stations,
     triangles = np.asarray(triangles, dtype=int)
     n_panels = len(panel_forces)
     density = consistent_chordwise_density(panel_weights, stations)
-    coordinates = canopy_surface_coordinates(struc_nodes, grid, triangles)
+    coordinates = (canopy_surface_coordinates(struc_nodes, grid, triangles)
+                   if surface_coordinates is None
+                   else np.asarray(surface_coordinates, dtype=float))
     span_edges = np.linspace(0.0, grid.shape[0] - 1.0, n_panels + 1)
     widths = np.diff(span_edges)
     midpoint_pairs = ((0, 1), (1, 2), (2, 0))
@@ -446,18 +485,22 @@ def map_aero_traction_to_membrane(panel_forces, panel_weights, stations,
             loads += share[:, None] * (panel_forces[k] / widths[k])[None, :]
         np.add.at(nodal, element, loads)
 
-    # The elements must tile the surface once. A pattern that covers it twice
-    # (``union`` superposes two sheets) would double the load; a gap or a fold
-    # in the surface coordinates would lose or double part of it. Say which.
+    # The elements must tile the surface a whole number of times. A pattern
+    # that covers it twice (``union`` superposes two sheets) is divided out; a
+    # gap or a fold would lose or double part of the load. On built-shape
+    # coordinates neither can happen, so this is an error, not a warning: it
+    # means the coordinates came from a deformed shape, or a mesh is broken.
     domain = float(grid.shape[0] - 1)
     multiplicity = covered / domain
     sheets = max(int(round(multiplicity)), 1)
     if abs(multiplicity - sheets) > 1e-9:
-        logging.warning(
-            "canopy elements cover %.9f of the wing surface (expected a whole "
-            "number of sheets): a gap or a fold in the surface coordinates; "
-            "the traction transfer is not conservative by %.3e of the load",
-            multiplicity, abs(multiplicity - sheets) / sheets,
+        raise ValueError(
+            f"canopy elements cover {multiplicity:.9f} of the wing surface, not a "
+            "whole number of sheets: the surface coordinates have a gap or a "
+            "fold, so the traction transfer would be off by "
+            f"{abs(multiplicity - sheets) / sheets:.3e} of the load. The default "
+            "coordinates are strictly increasing per row and cannot do this; "
+            "check any surface_coordinates passed in, and the mesh."
         )
     return nodal / sheets
 
@@ -915,6 +958,7 @@ def main(
     section_ids=None,
     canopy_triangles=None,
     canopy_grid=None,
+    canopy_coordinates=None,
     cp_distribution_path=None,
     is_with_delta_cp_and_weights_plot=False,
     is_with_conservation_check=False,
@@ -1050,7 +1094,7 @@ def main(
                 forces_k, weights_k = forces_k[::-1], weights_k[::-1]
             f_aero_wing = map_aero_traction_to_membrane(
                 forces_k, weights_k, t_vals, struc_nodes, canopy_grid,
-                canopy_triangles,
+                canopy_triangles, surface_coordinates=canopy_coordinates,
             )
         else:
             f_aero_wing = map_aero_forces_to_membrane(
