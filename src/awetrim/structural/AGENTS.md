@@ -289,6 +289,17 @@ Consistency notes established by reading `kite_fem/SpringElement.py`,
   `force_tolerance`), with IPOPT's own verdict preserved as `ipopt_success` and
   `status`. IPOPT routinely reports `Search_Direction_Becomes_Too_Small` on stiff
   structures whose answer is already exact.
+- **`move_limit` turns one `solve` into one trust-region step.** Default `None`
+  keeps the unbounded behaviour. Set it (metres) when a slack-dominated model
+  hands IPOPT a near-zero-curvature search direction: without bounds it answers
+  with a step of order `1e4`, the objective overflows and the line search
+  collapses into `Error_In_Step_Computation` before restoration can help. With
+  it, drive an outer loop until the residual is met — and note that
+  **`ipopt_success` no longer implies equilibrium**, because IPOPT reports
+  success for the *boxed* problem while the iterate sits on the boundary;
+  `converged` therefore keys off the force residual alone whenever a move limit
+  is active. `scripts/structural/run_hanging_validation.py` is the worked
+  example.
 - Tests assert against closed-form solutions and convergence orders, not against
   stored solver output.
 

@@ -13,8 +13,10 @@
 \usepackage{enumitem}
 \usepackage{fancyhdr}
 \usepackage[hidelinks]{hyperref}
+\usepackage{siunitx}
+\sisetup{range-phrase={--},range-units=single}
 
-\graphicspath{{../../results/structural/demo/}{../../results/structural/validation/}}
+\graphicspath{{../../results/structural/demo/}{../../results/structural/validation/}{../../results/structural/hanging/figures/}}
 
 \definecolor{accent}{HTML}{D55E00}
 \definecolor{muted}{HTML}{555555}
@@ -732,6 +734,148 @@ get subtly wrong --- a column-major reshape, a rotational slot off by one ---
 and wrong in a way that still converges to a plausible-looking shape.
 
 %======================================================================
+\section{Validation against a measured kite}
+\label{sec:hanging}
+
+The benchmarks above are exact solutions of idealised problems. This section is
+the only place where Billow meets a real structure with measured deformation:
+the TU~Delft V3 suspended from a bridle bar in a hangar, at two inflation
+pressures and five loadings, with its deformed shape recorded by stereoscopic
+photogrammetry. Data and reference solution come from
+\code{awegroup/kite\_fem} (MIT) and Roeleveld's MSc thesis; the 3D marker clouds
+come from Haanen's repository.\footnote{%
+\url{https://github.com/pimjhaanen/photogrammetry_thesis}. Vendored under
+\code{data/LEI-V3-KITE/hanging\_validation/}.}
+A full account is in \code{docs/hanging\_validation/}; what follows is the part
+that bears on Billow itself.
+
+\subsection{The model, and what had to be fixed in the reference}
+
+Billow is rebuilt from the reference \code{.npz} rather than from YAML, so
+nodes, connectivity, rest lengths, stiffnesses and tube diameters transfer with
+no re-interpretation: 276 nodes, 46 bridle cables, 14 pulleys, 98 inflatable tube
+beams shared element for element, with only the canopy changed (721 tension-only
+springs become 392 wrinkling membrane triangles). The canopy is a structured
+$29\times8$ grid recovered geometrically from a flat spring list and then
+\emph{verified} --- all 721 canopy springs must come out as grid edges.
+
+Two defects in the distributed reference had to be dealt with. Its anchor node
+is flagged fixed but belongs to no element, so the kite is a free body under
+\SI{126}{N} of unbalanced weight and the potential is unbounded below; Billow
+reports this faithfully by translating the structure hundreds of kilometres.
+Roeleveld's Appendix~B supplies the missing suspension --- a \SI{1650}{mm} bar
+across the two main bridle convergence points --- and eight of the thirty-six
+bridle lines disagree with his Table~B.1. Both are documented in
+\code{scripts/structural/hanging\_kite.py}.
+
+\subsection{What the measurement says about the tube law}
+
+Only two of the ten cases actually load the tubes. Wherever an applied load
+dominates, the bridle carries it and the shape is fixed kinematically by bridle
+lengths, which both codes read from the same file: the two answers then agree to
+within \SIrange{1}{300}{mm}. Under gravity alone they differ by more than a
+metre. The photogrammetry confirms this independently --- on the tip-load cases
+the \emph{undeformed} geometry scores as well as any model.
+
+On the two cases that do test the tubes, Billow's wing stays too open. Scaling
+the whole moment--curvature curve by a single factor (\code{scale\_tube\_laws},
+which moves $M_\text{max}$, $EI_0$ and the torsion constant together so
+$\kappa_0$ is unchanged) the measurement implies $\lambda \approx 0.36$, and
+implies the \emph{same} factor at both pressures. Against the 3D markers:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+mean point-to-surface RMS (mm) & as built & $EI\times1.0$ & $EI\times0.36$ \\
+\midrule
+two gravity cases   & 625 & 434 & \textbf{101} \\
+four centre-load    & 583 & 454 & \textbf{155} \\
+four tip-load       & 115 & 117 & 108 \\
+\midrule
+all ten             & 404 & 315 & \textbf{125} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+The factor was identified from two scalar spans and then reproduced the full
+three-dimensional shape, including the four centre-load cases it was not fitted
+on, bringing the tube-loaded cases onto the $\sim$\SI{100}{mm} marker floor. That
+generalisation is why it looks like a property of the tube law rather than a
+number absorbing error.
+
+\paragraph{It is not adopted, and why.} Inverting $EI = Et\pi r^3$ gives an
+implied $Et$ of \SIrange{133}{155}{kN/m}, near-constant across
+$d = \SIrange{0.113}{0.202}{m}$ --- so the fit's radius dependence is sound and
+the implied fabric is plausible. The likelier explanation is a mismatch in how
+the fit is being \emph{re-used}: Breukels calibrated it on rigid segments joined
+by torque springs rather than as a continuum law, his nomenclature distinguishes
+an effective internal pressure from the gauge value, and the softening in his
+cantilever data is structural (a spreading wrinkle zone) rather than pointwise.
+All three would produce a constant factor, and all three should be checked
+before Billow's tube law is changed.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{canopy_1.png}
+\caption{The V3 solved under self-weight, with Haanen's photogrammetry markers
+overlaid. Shading is by facet orientation, so the billow between struts reads
+directly.}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{regime_1.png}
+\caption{The same solution with each canopy triangle coloured by tension-field
+state. Almost the whole canopy is wrinkled under self-weight, taut only where
+the bridle pulls through. A tension-only spring net has no equivalent
+prediction.}
+\end{figure}
+
+\subsection{Collapse, and what it means for coupled use}
+
+Section~\ref{sec:inflatable} notes that collapse is reported rather than
+enforced. This case settles how much that matters: the beams here run at a
+median $\kappa/\kappa_0$ of \num{0.097} and $M/M_\text{max}$ of \num{0.093},
+i.e.\ at 95\% of their initial stiffness, and none of the 98 is flagged
+collapsed. A law that genuinely follows collapse,
+$W = EI_0\kappa_c^2[1-(1+\kappa/\kappa_c)e^{-\kappa/\kappa_c}]$, converges
+without difficulty (56--77 iterations) and changes the answer by \SI{20}{mm}.
+
+A flying kite carries a distributed, bridle-reacted load and keeps its tubes on
+the same initial slope, so saturation is adequate for aero-structural use --- not
+because collapse is handled but because it is not reached. What governs a
+coupled run is $EI_0$, which is exactly the quantity this dataset questions.
+
+\subsection{Cost, and a caveat on the comparison}
+
+Billow reaches force balance to better than \SI{5e-7}{N} on all ten cases in a
+mean of \SI{14}{s}. \code{kite\_fem}'s recorded times average \SI{552}{s}, and
+three of its cases stop above its own \num{0.01} tolerance.
+
+That ratio should be read as an order of magnitude and no more. The two sets of
+times are from different machines, the two codes are not solving to the same
+tolerance, and --- more importantly --- \textbf{\code{kite\_fem} was never
+re-run for this study}: every figure attributed to it comes from its committed
+results. Its converged beams also sit at about $0.23\times$ its own
+constitutive law, with negative bending stiffness in several cases, so it is not
+a clean reference solution. The full list of caveats is in
+\code{docs/hanging\_validation/}, and they should be read before any comparative
+claim here is repeated.
+
+\subsection{What this dataset cannot decide}
+
+The comparison was built to isolate the canopy formulation, the one element type
+that differs between the codes. It cannot do that: deleting the canopy entirely
+moves the span by \SI{0.17}{m}, while a modest change in tube bending moves it by
+\SI{2.5}{m}. It is a tube-bending test, and no canopy conclusion should be read
+off it.
+
+The four centre-load cases are outside what any beam element can represent:
+local leading-edge indentation is a cross-section collapse, and a
+one-dimensional moment--curvature element has no degrees of freedom for it.
+Roeleveld reaches the same conclusion about his own model.
+
 \section{Demonstration cases}
 
 \subsection{Wrinkling: fabric in a frame smaller than itself}

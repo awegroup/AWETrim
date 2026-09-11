@@ -1,0 +1,21 @@
+\begin{tabular}{rccc rrr rr rr}
+\toprule
+ & \multicolumn{3}{c}{load case} & \multicolumn{3}{c}{span (m)} & \multicolumn{2}{c}{mean rel.\ error (\%)} & \multicolumn{2}{c}{Billow} \\
+\cmidrule(lr){2-4}\cmidrule(lr){5-7}\cmidrule(lr){8-9}\cmidrule(lr){10-11}
+LC & $p$ (bar) & tip (kg) & centre (kg) & meas. & Billow & \texttt{kite\_fem} & Billow & \texttt{kite\_fem} & $t$ (s) & $\|r\|$ (N) \\
+\midrule
+1 & 0.15 & 0 & 0 & 4.867 & 7.276 & 5.382 & 25.9 & 13.7 & 7 & 2.2e-07 \\
+2$^{\dagger}$ & 0.15 & 0 & 9.7 & 5.042 & 7.554 & 7.462 & 27.6 & 25.0 & 15 & 9.1e-08 \\
+3$^{\dagger}$ & 0.15 & 0 & 25.2 & 5.113 & 7.841 & 7.576 & 21.8 & 18.9 & 19 & 3.8e-07 \\
+4 & 0.15 & 2 & 0 & 7.843 & 8.597 & 8.467 & 6.5 & 6.7 & 16 & 1.1e-07 \\
+5 & 0.15 & 5 & 0 & 8.271 & 8.916 & 8.962 & 5.9 & 5.4 & 18 & 4.1e-07 \\
+6 & 0.25 & 0 & 0 & 5.453 & 7.468 & 6.363 & 19.5 & 9.3 & 6 & 4.0e-09 \\
+7$^{\dagger}$ & 0.25 & 0 & 9.7 & 5.575 & 7.690 & 7.691 & 19.7 & 18.9 & 15 & 3.7e-09 \\
+8$^{\dagger}$ & 0.25 & 0 & 25.2 & 5.697 & 7.965 & 7.638 & 18.4 & 14.6 & 17 & 6.4e-09 \\
+9 & 0.25 & 2 & 0 & 7.818 & 8.593 & 8.461 & 5.2 & 5.6 & 15 & 1.1e-07 \\
+10 & 0.25 & 5 & 0 & 8.224 & 8.908 & 8.955 & 6.2 & 5.9 & 16 & 4.0e-07 \\
+\midrule
+\multicolumn{7}{r}{mean, all ten} & 15.7 & 12.4 & 14 & \\
+\multicolumn{7}{r}{mean, excluding centre-load cases} & 11.5 & 7.8 & 13 & \\
+\bottomrule
+\end{tabular}

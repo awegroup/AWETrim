@@ -111,6 +111,7 @@ class MinimumEnergySolver:
         force_tolerance: float = 1e-6,
         relative_force_tolerance: float = 1e-6,
         max_iterations: int = 1000,
+        move_limit: float | None = None,
         anchor_stiffness: float = 1e-6,
         max_frame_updates: int = 3,
         frame_update_tolerance: float = 1e-8,
@@ -119,6 +120,7 @@ class MinimumEnergySolver:
         ipopt_options: dict[str, Any] | None = None,
     ) -> None:
         self.model = model
+        self.move_limit = None if move_limit is None else float(move_limit)
         self.force_tolerance = float(force_tolerance)
         self.relative_force_tolerance = float(relative_force_tolerance)
         self.max_frame_updates = max(1, int(max_frame_updates))
@@ -146,6 +148,18 @@ class MinimumEnergySolver:
         layout = self.model.layout
         lower = np.full(layout.n_dof, -np.inf)
         upper = np.full(layout.n_dof, np.inf)
+
+        if self.move_limit is not None:
+            # A trust region, expressed as bounds IPOPT already knows how to
+            # enforce. Without it, a structure with slack membrane or slack
+            # tension-only cable directions can hand IPOPT a near-zero-curvature
+            # search direction, which it answers with a step of order 1e4 -- the
+            # objective overflows and the line search collapses before
+            # restoration can help. Each solve then advances the seed by at most
+            # this much, so ``solve`` becomes one trust-region step.
+            seed = self.energy.pack_unknowns(state.positions)
+            lower = seed - self.move_limit
+            upper = seed + self.move_limit
 
         for node in self.model.fixed_translation_nodes:
             dof = layout.translation_dof(np.array([node]))[0]
@@ -268,7 +282,14 @@ class MinimumEnergySolver:
         accept_at = max(
             self.force_tolerance, self.relative_force_tolerance * load_scale
         )
-        converged = ipopt_success or residual_norm <= accept_at
+        # With a move limit the iterate can sit on the trust-region boundary,
+        # where IPOPT reports success for the *boxed* problem while the
+        # structure is nowhere near equilibrium. Force balance is then the only
+        # admissible verdict.
+        if self.move_limit is not None:
+            converged = residual_norm <= accept_at
+        else:
+            converged = ipopt_success or residual_norm <= accept_at
         if not converged:
             logger.warning(
                 "minimum-energy solve did not converge (status=%s, %d iterations, "

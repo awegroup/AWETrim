@@ -73,11 +73,31 @@ with ``GJ_0 = c1 c2`` and a limiting torque ``c1 pi / 2``.
 
 Collapse
 --------
-``kappa_collapse`` (from the ``C9``-``C12`` fit) is reported, not enforced. A
-genuinely dropping post-collapse moment would make the energy decrease with
-curvature, i.e. an unbounded mechanism, and minimising it would simply run
-away. The honest treatment is to solve the pre-collapse law and *report* which
-elements have left its validity range -- see :func:`inflatable_beam_state`.
+``kappa_collapse`` (from the ``C9``-``C12`` fit) is reported, not enforced, and
+the law saturates rather than dropping.
+
+That is a modelling choice, not a necessity. A dropping post-collapse moment
+does *not* make the energy unbounded: ``M >= 0`` throughout, so ``W = int M dk``
+still increases -- it merely turns concave, i.e. non-convex. A law that follows
+collapse, fixed uniquely by matching both the fitted initial stiffness and the
+fitted collapse curvature,
+
+    W(k) = EI_0 kc^2 [1 - (1 + k/kc) exp(-k/kc)],   M(k) = EI_0 k exp(1 - k/kc)
+
+was tried on the hanging V3 kite and converged without difficulty (56-77
+iterations, residual 1e-9). It is not adopted because it changed the answer by
+20 mm: those beams run at 9% of ``M_max`` and 95% of ``EI_0``, on the linear
+part of the law, and a flying kite carries a distributed bridle-reacted load
+that keeps its tubes there too. Saturation is adequate because collapse is not
+reached, not because collapse is handled -- and ``kappa_collapse`` is reported
+so that assumption stays checkable. See :func:`inflatable_beam_state` and
+``docs/hanging_validation/``.
+
+A further caveat on transferability: the fit comes from a *free* 1 m cantilever,
+able to ovalise and wrinkle over its whole length. A kite leading edge is
+restrained by canopy along its span and stiffened by struts, and local
+indentation is a cross-section collapse that no one-dimensional
+moment-curvature element can represent at all.
 
 Biaxial bending uses the resultant curvature ``sqrt(omega_2^2 + omega_3^2)``,
 which is the right isotropic extension for an axisymmetric tube.
