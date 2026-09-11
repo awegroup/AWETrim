@@ -256,13 +256,39 @@ def initialize_particles(struc_geometry, struc_nodes, m_arr, strut_padding="lega
             )
             for i in range(len(trailing_edge_tube_indics) - 1)
         )
+        def _arc_to(node, chain):
+            """Arc length from the start of ``chain`` to ``node``, along it.
+
+            Summed segment by segment, to match the denominators below, which
+            are also arc lengths. Mixing a straight-line distance with an arc
+            breaks mirror symmetry on a curved edge: the two chords from either
+            bounding strut do not add up to the arc between them, so a section
+            and its mirror get blend weights that do not sum to one. Measured
+            residual on the LEI-V3 before this: 8.1 mm on the interior nodes,
+            with the leading and trailing edges themselves exact.
+            """
+            total = 0.0
+            for first, second in zip(chain[:-1], chain[1:]):
+                if first == node:
+                    return total
+                total += float(
+                    np.linalg.norm(struc_nodes[second] - struc_nodes[first])
+                )
+            return total
+
         ratio_le = (
-            np.linalg.norm(struc_nodes[n1] - struc_nodes[strut_right_le])
-            / leading_edge_tube_length
+            _arc_to(n1, leading_edge_tube_indices) / leading_edge_tube_length
         )
+        # Measured along the TRAILING edge. This used the leading-edge distance
+        # (n1 to strut_right_le) over the trailing-edge length, which is a
+        # fraction only when the two runs happen to be equal. Everywhere else it
+        # breaks mirror symmetry: under y -> -y the LE distance becomes its
+        # complement while the TE length does not, so a section and its mirror
+        # got different blend weights. Worst where the bounding struts differ
+        # most -- at the tip, a 0.35 m chord beside a 1.7 m one -- which is
+        # exactly where the built geometry came out 127-172 mm asymmetric.
         ratio_te = (
-            np.linalg.norm(struc_nodes[n1] - struc_nodes[strut_right_le])
-            / trailing_edge_tube_length
+            _arc_to(n2, trailing_edge_tube_indics) / trailing_edge_tube_length
         )
         ratio_canopy = (ratio_le + ratio_te) / 2
 

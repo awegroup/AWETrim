@@ -1,0 +1,152 @@
+"""A/B the canopy triangulation on the unsteered kite: does it stay symmetric?
+
+The unactuated kite at the centre of the wind window, with gravity off, is
+mirror-symmetric in every input. Its solved shape must therefore be mirror-
+symmetric too, and any left-right mismatch it develops is model error.
+
+A constant-strain triangle mesh built by splitting every quad along the *same*
+diagonal is not mirror-symmetric: under ``y -> -y`` that diagonal maps to the
+other one. On a finely resolved mesh the resulting bias is small; here the quads
+are a sizeable fraction of the wing, so it is not. This script measures it.
+
+Three patterns, same everything else --- see ``structural_billow.canopy_mesh``:
+
+    diagonal   two triangles per quad on one diagonal (historical, biased)
+    union      both diagonals at half stress resultant, no extra nodes
+    cross      a node per quad centre, four triangles, and the only one that
+               lets a quad dome rather than merely fold
+
+Usage (from project root):
+    python scripts/aerostructural/run_ab_canopy_pattern.py
+"""
+
+import argparse
+import copy
+import json
+import time
+from pathlib import Path
+
+import numpy as np
+
+from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
+from awetrim.aerostructural.results import aerostructural_results_root, save_sim_output
+from awetrim.aerostructural.billow import structural_billow as sb
+from common import DEFAULT_KITE_NAME
+
+from run_chain_depower_BILLOW import build_once, run_chain, span_metrics
+
+PATTERNS = ("diagonal", "union", "cross")
+
+
+def mirror_mismatch(positions, grid):
+    """Left-right mismatch of the wing grid [m], mirroring about ``y = 0``.
+
+    Section ``i`` is compared with section ``n-1-i`` reflected in the centre
+    plane, station by station. Zero is the correct answer for this load case.
+    """
+    mirror = np.array([1.0, -1.0, 1.0])
+    rows, columns = grid.shape
+    values = [
+        float(np.linalg.norm(positions[grid[i, k]] - positions[grid[rows - 1 - i, k]] * mirror))
+        for i in range(rows // 2)
+        for k in range(columns)
+    ]
+    return np.asarray(values)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--wind", type=float, default=4.2)
+    parser.add_argument("--panels-per-section", type=int, default=2)
+    parser.add_argument("--tol", type=float, default=0.5,
+                        help="coupled residual gate [N]. The comparison is only "
+                             "fair if every pattern converges to the SAME level: "
+                             "at the shipped 5 N gate they stopped at 0.85, 3.23 "
+                             "and 3.31 N, and a looser state shows more residual "
+                             "asymmetry regardless of the mesh.")
+    parser.add_argument("--max-iter", type=int, default=60)
+    parser.add_argument("--gamma-loop", default=None, choices=("base", "anderson"),
+                        help="VSM inner circulation solver. 'base' is exactly "
+                             "mirror-symmetric (3e-7 N per panel); 'anderson' is "
+                             "not (0.18 N), and tightening its tolerance does not "
+                             "help. Default: leave as_config alone.")
+    parser.add_argument("--patterns", nargs="+", default=list(PATTERNS),
+                        choices=list(PATTERNS))
+    parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
+    args = parser.parse_args()
+
+    project = Path(__file__).resolve().parents[2]
+    overrides = ({"aerodynamic": {"gamma_loop_type": args.gamma_loop}}
+                 if args.gamma_loop else None)
+    shared = build_once(project, args.kite, args.panels_per_section, overrides)
+    shared["config"]["wind_speed_wind_ref"] = float(args.wind)
+    shared["config"]["aero_structural_solver"]["tol"] = float(args.tol)
+    shared["config"]["aero_structural_solver"]["max_iter"] = int(args.max_iter)
+    root = aerostructural_results_root(project, args.kite) / "billow_canopy_ab"
+    root.mkdir(parents=True, exist_ok=True)
+
+    print(f"unsteered, unactuated, v_w = {args.wind} m/s, "
+          f"{args.panels_per_section} panels per section\n")
+    print(f"{'pattern':10s} {'nodes':>6} {'DOF':>6} {'tri':>5} | "
+          f"{'built':>8} {'trimmed':>9} {'generated':>10} | "
+          f"{'res':>6} {'it':>3} | {'span':>6} | {'s':>5}")
+    print("-" * 96)
+
+    summary = {}
+    for pattern in args.patterns:
+        started = time.perf_counter()
+        shared["config"].setdefault("structural_billow", {})
+        settings = dict(shared["config"].get("structural_billow") or {})
+        settings["canopy_pattern"] = pattern
+        config_backup = copy.deepcopy(shared["config"])
+        shared["config"]["structural_billow"] = settings
+
+        folder = root / pattern
+        # reach = 0 -> no actuation, a single converged unsteered state.
+        tracking, meta, geometry, structure = run_chain(
+            shared, args.wind, 0.0, 0.0, folder
+        )
+        shared["config"] = config_backup
+
+        n_iter = int(meta["n_iter"])
+        final = np.asarray(tracking["positions"][n_iter - 1])
+        grid = structure.grid
+        built = mirror_mismatch(structure.model.nodes, grid)
+        trimmed = mirror_mismatch(final, grid)
+        span, arc, rise = span_metrics(final, geometry)
+        residual = float(np.asarray(tracking["residual_norm"])[n_iter - 1])
+        elapsed = time.perf_counter() - started
+
+        summary[pattern] = dict(
+            nodes=int(structure.model.n_nodes),
+            dof=int(structure.model.layout.n_dof),
+            triangles=int(len(structure.model.element_set(sb.CANOPY).connectivity)),
+            built_max_mm=float(built.max() * 1e3),
+            trimmed_max_mm=float(trimmed.max() * 1e3),
+            trimmed_mean_mm=float(trimmed.mean() * 1e3),
+            residual=residual, iterations=n_iter - 1,
+            span=span, le_arc=arc, arch_rise=rise, seconds=elapsed,
+        )
+        s = summary[pattern]
+        print(f"{pattern:10s} {s['nodes']:6d} {s['dof']:6d} {s['triangles']:5d} | "
+              f"{s['built_max_mm']:7.3f}m {s['trimmed_max_mm']:8.3f}m "
+              f"{s['trimmed_max_mm'] - s['built_max_mm']:9.3f}m | "
+              f"{residual:6.2f} {s['iterations']:3d} | {span:6.3f} | {elapsed:5.0f}",
+              flush=True)
+
+    (root / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    print("-" * 96)
+    print("mismatch columns are millimetres, max over the wing grid.\n")
+
+    if "diagonal" not in summary:
+        return
+    base = summary["diagonal"]["trimmed_max_mm"]
+    for pattern in [p for p in args.patterns if p != "diagonal"]:
+        got = summary[pattern]["trimmed_max_mm"]
+        print(f"  {pattern:9s}: {got:7.3f} mm vs {base:7.3f} mm "
+              f"({100 * (got - base) / base:+.1f}%)")
+    print(f"\nwritten to {root / 'summary.json'}")
+
+
+if __name__ == "__main__":
+    main()

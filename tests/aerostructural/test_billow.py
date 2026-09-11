@@ -218,7 +218,9 @@ def test_element_sets_split_the_reader_arrays_exactly(toy_geometry):
     assert len(cables.connectivity) == 3          # KCU leg plus two wing legs
     assert len(pulleys.connectivity) == 1         # two arms -> one rope
     assert len(tubes.connectivity) == 2           # the leading-edge tube
-    assert len(canopy.connectivity) == 8          # 2 quads x 2 triangles x 2 bays
+    quads = (toy_geometry["grid"].shape[0] - 1) * (toy_geometry["grid"].shape[1] - 1)
+    per_quad = 2 if sb.DEFAULTS["canopy_pattern"] == "diagonal" else 4
+    assert len(canopy.connectivity) == per_quad * quads
 
     # Nothing is counted twice and nothing is lost: every reader element is a
     # cable, a pulley arm, a tube, or a canopy spring the membrane replaced.
@@ -355,14 +357,18 @@ def test_junction_frame_must_be_a_known_choice(toy_geometry):
 # --------------------------------------------------------------------------
 
 
-def wing_load(toy_geometry, total=20.0):
+def wing_load(structure, toy_geometry, total=20.0):
     """Lift on the wing, directed away from the KCU -- what tensions a bridle.
 
     The KCU sits below the wing, so a load on the wing in +z pulls the bridle
     taut. Loading the knot instead leaves the wing hanging on slack rope, which
     is a mechanism rather than a structure.
+
+    Sized from ``structure.model``, not from the reader's node list: a canopy
+    pattern may ADD nodes (``cross`` puts one at each quad centre), and every
+    array the solver sees has to agree with the model's node count.
     """
-    forces = np.zeros((len(toy_geometry["nodes"]), 3))
+    forces = np.zeros((structure.model.n_nodes, 3))
     wing = np.unique(toy_geometry["grid"].ravel())
     forces[wing, 2] = total / len(wing)
     return forces
@@ -370,21 +376,24 @@ def wing_load(toy_geometry, total=20.0):
 
 def test_run_billow_returns_the_run_kite_fem_contract(toy_geometry):
     structure = build(toy_geometry)
-    forces = wing_load(toy_geometry)
+    forces = wing_load(structure, toy_geometry)
 
     returned, converged, nodes, f_int = sb.run_billow(
         structure, forces.flatten(), {"relax_bridles": False}
     )
     assert returned is structure
     assert isinstance(converged, bool)
-    assert nodes.shape == (len(toy_geometry["nodes"]), 3)
-    assert f_int.shape == (3 * len(toy_geometry["nodes"]),)
+    # The model's node count, not the reader's: a canopy pattern may add nodes,
+    # and the returned arrays follow the model.
+    assert nodes.shape == (structure.model.n_nodes, 3)
+    assert f_int.shape == (3 * structure.model.n_nodes,)
+    assert structure.model.n_nodes >= len(toy_geometry["nodes"])
 
 
 def test_solved_state_satisfies_force_balance_at_the_free_nodes(toy_geometry):
     """f_res = f_int + f_ext is the convention every driver residual assumes."""
     structure = build(toy_geometry)
-    forces = wing_load(toy_geometry)
+    forces = wing_load(structure, toy_geometry)
 
     _, converged, _, f_int = sb.run_billow(
         structure, forces.flatten(), {"relax_bridles": False, "force_tolerance": 1e-6}
@@ -398,7 +407,7 @@ def test_solved_state_satisfies_force_balance_at_the_free_nodes(toy_geometry):
 
 def test_fixed_node_residual_is_zeroed_like_the_fem_backend(toy_geometry):
     structure = build(toy_geometry)
-    forces = wing_load(toy_geometry)
+    forces = wing_load(structure, toy_geometry)
     _, _, _, f_int = sb.run_billow(structure, forces.flatten(), {"relax_bridles": False})
     kcu = toy_geometry["kcu"]
     np.testing.assert_allclose(f_int.reshape(-1, 3)[kcu], -forces[kcu], atol=1e-12)
@@ -415,7 +424,7 @@ def test_solving_twice_reuses_the_state_rather_than_restarting(toy_geometry):
     """
     reference = build(toy_geometry).model.nodes
     structure = build(toy_geometry)
-    forces = wing_load(toy_geometry)
+    forces = wing_load(structure, toy_geometry)
     settings = {"relax_bridles": False}
 
     _, _, first, _ = sb.run_billow(structure, forces.flatten(), settings)
@@ -455,6 +464,7 @@ def test_rest_lengths_map_back_to_the_reader_ordering(toy_geometry):
 
 def test_actuating_a_rest_length_changes_parameters_not_topology(toy_geometry):
     structure = build(toy_geometry)
+    forces = wing_load(structure, toy_geometry)
     cable = toy_geometry["cable_index"]
     before = structure.model.layout.n_dof
     sb.update_rest_length(structure, cable, 0.2)
@@ -463,8 +473,7 @@ def test_actuating_a_rest_length_changes_parameters_not_topology(toy_geometry):
     )
     assert structure.model.layout.n_dof == before
     # The solver was compiled against the topology, so it must still accept it.
-    forces = np.zeros((len(toy_geometry["nodes"]), 3))
-    sb.run_billow(structure, forces.flatten(), {"relax_bridles": False})
+    sb.run_billow(structure, 0.0 * forces.flatten(), {"relax_bridles": False})
 
 
 def test_actuating_either_pulley_arm_moves_the_same_rope(toy_geometry):
@@ -495,6 +504,29 @@ def test_stiffness_round_trips_through_the_reader_ordering(toy_geometry):
 # --------------------------------------------------------------------------
 # Config
 # --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("pattern", ["diagonal", "union", "cross"])
+def test_every_canopy_pattern_keeps_nodes_and_masses_in_step(toy_geometry, pattern):
+    """A pattern that adds nodes must extend the masses with them.
+
+    Callers size their force and tracking arrays from the model, so a mismatch
+    here misaligns every downstream array silently rather than raising.
+    """
+    structure = build(toy_geometry, canopy_pattern=pattern)
+    assert len(structure.masses) == structure.model.n_nodes
+    assert len(structure.model.nodes) == structure.model.n_nodes
+    # Added nodes are massless: they refine the mesh, they are not extra fabric.
+    original = len(toy_geometry["nodes"])
+    assert np.allclose(structure.masses[:original], toy_geometry["masses"])
+    assert np.allclose(structure.masses[original:], 0.0)
+
+
+def test_cross_adds_one_node_per_quad_and_union_adds_none(toy_geometry):
+    quads = (toy_geometry["grid"].shape[0] - 1) * (toy_geometry["grid"].shape[1] - 1)
+    base = build(toy_geometry, canopy_pattern="diagonal").model.n_nodes
+    assert build(toy_geometry, canopy_pattern="union").model.n_nodes == base
+    assert build(toy_geometry, canopy_pattern="cross").model.n_nodes == base + quads
 
 
 def test_unknown_config_keys_are_rejected_not_ignored():

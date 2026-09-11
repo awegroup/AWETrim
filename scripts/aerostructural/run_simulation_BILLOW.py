@@ -226,7 +226,13 @@ def main():
     # was handed. Everything downstream -- the aero mesh, the load mapping, the
     # coupled loop -- has to start from the relaxed shape or the structure and
     # the aerodynamics disagree from the first iteration.
+    # instantiate() may ADD nodes (the cross canopy pattern puts one at each
+    # quad centre), so the node count downstream is the model's, not the
+    # reader's. Take the masses from the structure for the same reason: every
+    # array the driver sizes -- external forces, tracking, the CG -- has to
+    # agree with model.nodes or they silently misalign.
     struc_nodes = billow_structure.model.nodes.copy()
+    m_arr = billow_structure.masses
     struc_nodes_initial = struc_nodes.copy()
 
     ##################

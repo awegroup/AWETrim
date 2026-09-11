@@ -114,6 +114,9 @@ DEFAULTS: dict[str, Any] = {
     "tube_axial_stiffness": None,  # [N]  None -> derived from the fitted EI_0
     "tube_shear_stiffness": None,  # [N]  None -> derived from the fitted GJ_0
     "junction_frame": "strut",
+    # Canopy triangulation; see canopy_mesh. "diagonal" is the historical,
+    # mirror-ASYMMETRIC two-triangle split and reproduces earlier results.
+    "canopy_pattern": "cross",
     # -- bridle relaxation ----------------------------------------------
     # The kite YAMLs store measured rest lengths against measured node
     # positions and the two do not agree; see relax_bridles.
@@ -174,6 +177,10 @@ class BillowStructure:
     #: Row of the tube set for each reader element, ``-1`` otherwise.
     tube_row: Array
     tube_laws: list = field(default_factory=list)
+    #: Nodal masses, extended to match ``model.nodes`` when the canopy pattern
+    #: adds quad-centre nodes. Callers must use THIS, not the reader's m_arr,
+    #: or the force and position arrays will disagree in length.
+    masses: Array = field(default_factory=lambda: np.empty(0))
     fixed_node_indices: tuple[int, ...] = (0,)
     last_solution: Any = None
 
@@ -228,7 +235,11 @@ def grid_edges(grid: Array) -> set[frozenset[int]]:
 
 
 def canopy_triangles(grid: Array) -> Array:
-    """Split every grid quad into two triangles along a consistent diagonal."""
+    """Split every grid quad into two triangles along a consistent diagonal.
+
+    Kept for the ``diagonal`` pattern and for callers that only want the
+    topology; :func:`canopy_mesh` is the general entry point.
+    """
     rows, columns = grid.shape
     triangles = []
     for i in range(rows - 1):
@@ -238,6 +249,68 @@ def canopy_triangles(grid: Array) -> Array:
             triangles.append([a, b, c])
             triangles.append([a, c, d])
     return np.asarray(triangles, dtype=int)
+
+
+def canopy_mesh(grid: Array, nodes: Array, pattern: str = "cross"):
+    """Triangulate the canopy grid. Returns ``(triangles, extra_nodes, scale)``.
+
+    A constant-strain triangle mesh built by splitting every quad along the
+    *same* diagonal is directionally biased, and on this canopy the quads are a
+    sizeable fraction of the wing rather than a fine discretisation. Worse, the
+    bias is not mirror-symmetric: under ``y -> -y`` the diagonal ``(i,j)-(i+1,j+1)``
+    maps to the other diagonal, so a symmetric kite under symmetric actuation
+    does not come out symmetric. Measured on the LEI-V3, the solve generated up
+    to 21 mm of left-right mismatch from an exactly mirror-symmetric geometry,
+    concentrated on the pure-canopy sections and suppressed on the
+    strut-stiffened ones -- the signature of exactly this effect.
+
+    ``diagonal``
+        One diagonal per quad, two triangles. The historical mesh; biased.
+    ``union``
+        Both diagonals, four overlapping triangles at half thickness. Exactly
+        mirror-symmetric and adds no degrees of freedom, but a quad still
+        cannot dome: every triangle has its three corners on the quad.
+    ``cross`` (default)
+        A node at each quad centre joined to the four corners. Exactly
+        mirror-symmetric, and the centre node gives the patch the one freedom a
+        billowing sail most needs -- a two-triangle quad can only FOLD along its
+        diagonal, it cannot bulge. Costs one node per quad.
+
+    ``scale`` multiplies the fabric thickness, so the ``union`` pattern's
+    doubled element count does not double the canopy stiffness.
+    """
+    rows, columns = grid.shape
+    nodes = np.asarray(nodes, dtype=float)
+    triangles: list[list[int]] = []
+    extra: list[Array] = []
+
+    if pattern == "diagonal":
+        return canopy_triangles(grid), np.empty((0, 3)), 1.0
+
+    if pattern not in ("union", "cross"):
+        raise ValueError(
+            f"canopy_pattern must be 'diagonal', 'union' or 'cross', got {pattern!r}"
+        )
+
+    next_index = len(nodes)
+    for i in range(rows - 1):
+        for j in range(columns - 1):
+            a, b = int(grid[i, j]), int(grid[i, j + 1])
+            c, d = int(grid[i + 1, j + 1]), int(grid[i + 1, j])
+            if pattern == "union":
+                triangles += [[a, b, c], [a, c, d], [a, b, d], [b, c, d]]
+            else:
+                centre = next_index
+                next_index += 1
+                extra.append(0.25 * (nodes[a] + nodes[b] + nodes[c] + nodes[d]))
+                triangles += [[a, b, centre], [b, c, centre],
+                              [c, d, centre], [d, a, centre]]
+
+    return (
+        np.asarray(triangles, dtype=int),
+        np.asarray(extra, dtype=float).reshape(-1, 3),
+        0.5 if pattern == "union" else 1.0,
+    )
 
 
 def leading_edge_chain(struc_geometry: Mapping[str, Any]) -> list[int]:
@@ -548,6 +621,7 @@ def instantiate(
     settings = resolve_config(config.get("structural_billow"))
 
     struc_nodes = np.asarray(struc_nodes, dtype=float)
+    masses = np.asarray(m_arr, dtype=float).copy()
     connectivity = np.asarray(kite_connectivity_arr, dtype=int)
     rest_lengths = np.asarray(l0_arr, dtype=float)
     stiffness = np.asarray(k_arr, dtype=float)
@@ -657,12 +731,30 @@ def instantiate(
     )
 
     # -- canopy ------------------------------------------------------------
+    # The cross pattern adds a node per quad. They are appended here, before the
+    # model is built, so the node count the caller reads back from
+    # ``structure.model.nodes`` already includes them -- every downstream array
+    # (masses, external forces, tracking) is sized from that.
+    triangles, extra_nodes, thickness_scale = canopy_mesh(
+        grid, struc_nodes, str(settings["canopy_pattern"])
+    )
+    if len(extra_nodes):
+        struc_nodes = np.vstack([struc_nodes, extra_nodes])
+        # Massless: they are a mesh refinement, not extra fabric. The canopy's
+        # mass is already carried by the grid nodes the reader weighed.
+        masses = np.concatenate([masses, np.zeros(len(extra_nodes))])
+
+    # ``thickness_scale`` divides the stress resultant E*t between overlapping
+    # triangles, so a pattern that lays two sets over the same quad does not
+    # double the canopy stiffness. It must scale the PRODUCT, not the thickness:
+    # thickness alone cancels out of E*t and would leave the mesh twice as stiff.
     thickness = float(settings["canopy_thickness"])
+    stress_resultant = float(settings["canopy_stiffness"]) * thickness_scale
     canopy = build_membrane_elements(
         struc_nodes,
-        canopy_triangles(grid),
+        triangles,
         thickness=thickness,
-        youngs_modulus=float(settings["canopy_stiffness"]) / thickness,
+        youngs_modulus=stress_resultant / thickness,
         poisson_ratio=float(settings["canopy_poisson_ratio"]),
         name=CANOPY,
         wrinkling=bool(settings["canopy_wrinkling"]),
@@ -714,6 +806,7 @@ def instantiate(
         pulley_row=pulley_row,
         tube_row=tube_row,
         tube_laws=laws,
+        masses=masses,
         fixed_node_indices=fixed_nodes,
     )
 

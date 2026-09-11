@@ -67,8 +67,14 @@ def depower_input(tape_length):
     )
 
 
-def build_once(project_dir, kite_name, panels_per_section):
-    """Everything that does not change across the chains."""
+def build_once(project_dir, kite_name, panels_per_section, overrides=None):
+    """Everything that does not change across the chains.
+
+    ``overrides`` is applied to the config BEFORE the VSM solver is built.
+    It has to be: aerodynamic_vsm.initialize constructs the Solver from the
+    config it is handed, so a key set afterwards is silently ignored and the
+    run quietly keeps the old value -- which looks like a result, not a bug.
+    """
     config_path, aero_geometry_path, _ = resolve_kite_paths(project_dir, kite_name)
     struc_geometry_path = project_dir / "data" / kite_name / STRUC_GEOMETRY_FILENAME
     system_config_path = project_dir / "data" / kite_name / "system.yaml"
@@ -84,6 +90,9 @@ def build_once(project_dir, kite_name, panels_per_section):
     cp_rel = config.get("aero2struc", {}).get("cp_distribution_path")
     if cp_rel:
         config["aero2struc"]["cp_distribution_path"] = str(project_dir / cp_rel)
+
+    for section, values in (overrides or {}).items():
+        config.setdefault(section, {}).update(values)
 
     struc_geometry = load_yaml(struc_geometry_path)
     n_struc_ribs = len(struc_geometry["wing_particles"]["data"]) / 2
@@ -147,7 +156,13 @@ def run_chain(shared, wind_speed, reach, step, results_dir):
         canopy_sections=canopy_sections,
         strut_sections=strut_sections,
     )
+    # instantiate() may ADD nodes (the cross canopy pattern puts one at each
+    # quad centre), so the node count downstream is the model's, not the
+    # reader's. Take the masses from the structure for the same reason: every
+    # array the driver sizes -- external forces, tracking, the CG -- has to
+    # agree with model.nodes or they silently misalign.
     struc_nodes = structure.model.nodes.copy()
+    m_arr = structure.masses
     mapping = (
         BilinearAeroToStructuralLoadMapper()
         .initialize(shared["body_aero"].panels, struc_nodes, le_indices, te_indices)
