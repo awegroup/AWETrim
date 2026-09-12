@@ -73,6 +73,30 @@ def _map_structural_edges_to_aero(
     return update.leading_edge_points, update.trailing_edge_points
 
 
+def _bridle_node_pairs(bridle_line_specs, struc_nodes, body_aero):
+    """Which structural nodes each VSM bridle segment hangs between.
+
+    ``bridle_line_specs`` already IS the answer: it carries the node indices the
+    reader parsed, which is why ``rebuild_bridle_line_system`` can move the
+    segments with the structure in the first place. Recovering them instead by
+    matching the VSM's BUILT coordinates to the nearest node only holds while
+    the structure is still at its built shape. On a converged one it does not:
+    with 0.571 m of node movement on the LEI-V3 PSM geometry, 2 of 45 segments
+    snap BOTH ends onto the same node -- zero length, NaN force, NaN loads --
+    and 8 of 45 pair differently. ``run_simulation_PSM``'s
+    ``starting_from_sim_subdir`` continuation starts exactly there.
+
+    The geometric match stays as the fallback for a caller that passes no specs.
+    """
+    if bridle_line_specs:
+        return np.asarray(
+            [[int(i), int(j)] for i, j, _diameter in bridle_line_specs], dtype=int
+        )
+    return aerodynamic_bridle_line_drag.build_bridle_node_pairs_from_line_system(
+        struc_nodes, getattr(body_aero, "_bridle_line_system", None)
+    )
+
+
 def _map_aero_loads_to_structure(
     f_aero_wing_vsm_format,
     struc_nodes,
@@ -650,11 +674,8 @@ def main(
     bridle_node_pairs = None
 
     if config["is_with_aero_bridle"]:
-        bridle_node_pairs = (
-            aerodynamic_bridle_line_drag.build_bridle_node_pairs_from_line_system(
-                struc_nodes,
-                getattr(body_aero, "_bridle_line_system", None),
-            )
+        bridle_node_pairs = _bridle_node_pairs(
+            bridle_line_specs, struc_nodes, body_aero
         )
 
     # Aitken relaxation state.
@@ -926,16 +947,31 @@ def main(
     )
 
     ### BRIDLE AERO
-    # f_aero_bridle = aerodynamic_bridle_line_drag.main(
-    #     struc_nodes,
-    #     bridle_connectivity_arr,
-    #     bridle_diameter_arr,
-    #     vel_app,
-    #     config["rho"],
-    #     config["aerodynamic_bridle"]["cd_cable"],
-    #     config["aerodynamic_bridle"]["cf_cable"],
-    # )
-    f_aero_bridle = np.zeros((len(struc_nodes), 3))
+    # Not optional, and not zero: the trim has already balanced this drag
+    # (the VSM body is built with the bridle lines, so `calculate_results` puts
+    # their force and their moment about the reference point into the balance
+    # the attitude comes out of). Zeroing it here left the FIRST structural
+    # solve 274.7 N m of pitch out of balance about the bridle point -- which
+    # it is PINNED at, so it can only shed that by swinging 0.886 deg. The
+    # fixed point does not move, but the loop is seeded off it, and this map
+    # has more than one branch to be seeded onto.
+    if config["is_with_aero_bridle"]:
+        f_aero_bridle = aerodynamic_bridle_line_drag.main(
+            struc_nodes,
+            bridle_connectivity_arr,
+            bridle_diameter_arr,
+            vel_app,
+            config["rho"],
+            config["aerodynamic_bridle"]["cd_cable"],
+            config["aerodynamic_bridle"]["cf_cable"],
+            # With the body, the drag is taken at the TRIM's apparent wind
+            # (`body_aero.va`) on the segments it just rebuilt -- `vel_app`,
+            # the freestream, is then only a fallback.
+            body_aero=body_aero,
+            bridle_node_pairs=bridle_node_pairs,
+        )
+    else:
+        f_aero_bridle = np.zeros((len(struc_nodes), 3))
     f_inertial = distribute_total_force_by_particle_mass(
         results_aero.get("inertial_force", np.zeros(3)),
         m_arr,
