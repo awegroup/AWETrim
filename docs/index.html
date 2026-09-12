@@ -57,6 +57,11 @@
               <button class="node" data-id="rom">Reduced-Order Kite<br>Model</button>
             </div>
 
+            <div class="solver-row" aria-label="The two solvers the aero-structural model couples">
+              <button class="node node-solver" data-id="vsm">VSM<br><span>Aerodynamics</span></button>
+              <button class="node node-solver" data-id="billow">Billow<br><span>Structure</span></button>
+            </div>
+
             <div class="support-row">
               <button class="node" data-id="tether-models">Tether Models</button>
               <button class="node" data-id="winch-models">Winch Models</button>
@@ -149,12 +154,8 @@
             <span>Trained machine-learning (Extra-Trees) models predicting LEI airfoil aerodynamics for the VSM</span>
           </li>
           <li>
-            <a href="https://github.com/awegroup/Particle_System_Simulator" target="_blank" rel="noopener">Particle System Simulator (PSS)</a>
-            <span>Particle-spring structural solver for flexible membrane kites</span>
-          </li>
-          <li>
-            <a href="https://github.com/awegroup/kite_fem" target="_blank" rel="noopener">kite_fem</a>
-            <span>Finite-element structural solver, alternative to PSS in the coupling</span>
+            <a href="https://github.com/awegroup/Billow" target="_blank" rel="noopener">Billow</a>
+            <span>Minimum-energy structural solver: cables, pulleys, inflatable beams and wrinkling membranes</span>
           </li>
           <li>
             <a href="https://github.com/ocayon/EKF-AWE" target="_blank" rel="noopener">EKF-AWE</a>

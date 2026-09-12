@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Update system.yml fields derived from PSS structural geometry."""
+"""Update system.yml fields derived from the structural geometry."""
 
 from pathlib import Path
 

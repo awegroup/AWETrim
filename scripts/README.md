@@ -15,7 +15,7 @@ The reference kite throughout is the TU Delft LEI-V3 (`data/LEI-V3-KITE/`).
 | Folder | What it does |
 |--------|--------------|
 | [`aerodynamics/`](aerodynamics/) | VSM quasi-steady trim, stability derivatives & flight-dynamic modes, parametric wing/airfoil studies |
-| [`aerostructural/`](aerostructural/) | Coupled VSM ↔ structure (PSS or kite_fem) deformed-shape simulations |
+| [`aerostructural/`](aerostructural/) | Coupled VSM ↔ Billow deformed-shape simulations, at either structural fidelity |
 | [`reduced-order-model/`](reduced-order-model/) | ROM trajectory simulation/optimisation (reel-out patterns, reel-in, full cycle) and validation against flight data |
 | [`identification/`](identification/) | Identify/calibrate ROM aero parameters and the turn-rate law from flight data |
 | [`experimental/`](experimental/) | EKF flight-data reconstruction (states, wind, in-flight coefficients) and plotting |

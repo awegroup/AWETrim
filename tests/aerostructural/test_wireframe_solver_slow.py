@@ -28,7 +28,7 @@ import numpy as np
 import pytest
 
 pytest.importorskip("VSM", reason="Vortex-Step-Method not installed")
-pytest.importorskip("PSS", reason="Particle System Simulator not installed")
+pytest.importorskip("billow", reason="Billow structural solver not installed")
 
 import yaml as _yaml
 

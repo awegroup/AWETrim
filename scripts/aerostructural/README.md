@@ -12,16 +12,21 @@ come from each kite's `as_config.yaml`; geometry from `aero_geometry.yaml` and
 
 ## Scripts
 
-| Script | Structural solver | What it does |
-|--------|-------------------|--------------|
-| [`run_simulation_PSM.py`](run_simulation_PSM.py) | PSS (particle-spring) | Couples VSM aerodynamics with the Particle System Simulator. Solves one actuation case (steering / depower), with the actuated KCU and bilinear aero→structure load mapping. |
-| [`run_simulation_FEM.py`](run_simulation_FEM.py) | kite_fem (FEM) | Same coupling against the finite-element solver. Reads the FEM full geometry (`struc_geometry_FEM_full.yaml`, with strut and leading-edge tubes); forces `structural_solver: kite_fem`. |
+The structural solver is [Billow](https://github.com/awegroup/Billow) in every
+case; the scripts differ in which of its two fidelities they drive.
+
+| Script | Billow fidelity | What it does |
+|--------|-----------------|--------------|
+| [`run_simulation_PSM.py`](run_simulation_PSM.py) | wireframe (cables, pulleys) | Couples VSM aerodynamics with the line system. Solves one actuation case (steering / depower), with the actuated KCU and bilinear aero→structure load mapping. |
+| [`run_simulation_BILLOW.py`](run_simulation_BILLOW.py) | full (+ tube beams, membrane canopy) | The same coupling against the whole kite. Reads `struc_geometry_FEM_full.yaml` (the only geometry with strut and leading-edge tubes); forces `structural_solver: billow`. |
+| [`run_steering_BILLOW.py`](run_steering_BILLOW.py) | full | Walks the steering tape half-difference to a target, each step from a converged state. |
+| [`run_chain_depower_BILLOW.py`](run_chain_depower_BILLOW.py) | full | Depower continuation chain at fixed apparent wind. |
 
 ## Example output
 
 <img src="../../docs/img/aerostructural-deformed-shape.png" alt="Converged deformed LEI-V3 shape" width="460">
 
-*`run_simulation_PSM.py` — converged VSM ↔ PSS deformed shape: initial vs. loaded geometry, bridle/tape rest-length change (colour) and external aerodynamic loads (red).*
+*`run_simulation_PSM.py` — converged VSM ↔ Billow deformed shape: initial vs. loaded geometry, bridle/tape rest-length change (colour) and external aerodynamic loads (red).*
 
 ## Outputs
 

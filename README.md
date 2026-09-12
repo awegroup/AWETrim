@@ -2,7 +2,7 @@
 
 [![Interactive framework](https://img.shields.io/badge/website-AWETrim%20interactive%20framework-2563eb?style=flat-square&logo=githubpages&logoColor=white)](https://awegroup.github.io/AWETrim/)
 
-AWETrim is a Python library for the modelling, trim analysis, aerostructural simulation, and trajectory optimisation of soft-kite Airborne Wind Energy Systems (AWES). It couples a vortex aerodynamic method (VSM), a flexible structural model (PSS or kite_fem) and a flight-data Kalman filter (EKF-AWE) to a CasADi-based system model: the aerostructural coupling produces loaded wing shapes and force coefficients, these are reduced to a fast quasi-steady reduced-order model (ROM), and the ROM drives power-cycle simulation and path optimisation.
+AWETrim is a Python library for the modelling, trim analysis, aerostructural simulation, and trajectory optimisation of soft-kite Airborne Wind Energy Systems (AWES). It couples a vortex aerodynamic method (VSM), a minimum-energy structural solver ([Billow](https://github.com/awegroup/Billow)) and a flight-data Kalman filter (EKF-AWE) to a CasADi-based system model: the aerostructural coupling produces loaded wing shapes and force coefficients, these are reduced to a fast quasi-steady reduced-order model (ROM), and the ROM drives power-cycle simulation and path optimisation.
 
 > **Explore the [interactive framework diagram](https://awegroup.github.io/AWETrim/)** — click any block (inputs, experimental reconstruction, the multi-fidelity core, outputs & applications) to see what it does, the figures it produces, and the code and papers behind it. The site also lists the related repositories, open flight-data sets and publications.
 
@@ -22,7 +22,15 @@ source venv/bin/activate
 pip install -e .[dev]
 ```
 
-The external solvers (VSM, PSS, EKF-AWE) are installed automatically from GitHub by the `pip install` step — no manual cloning required.
+The external solvers (VSM, Billow, EKF-AWE) are installed automatically from GitHub by the `pip install` step — no manual cloning required.
+
+To develop against a local checkout of the structural solver, install it in
+editable mode afterwards:
+
+```bash
+git clone https://github.com/awegroup/Billow.git ../Billow
+pip install -e ../Billow
+```
 
 ---
 
@@ -34,8 +42,11 @@ All scripts run from the **project root** and use the reference **TU Delft LEI-V
 # One VSM quasi-steady trim state
 python scripts/aerodynamics/solve_single_state.py
 
-# One coupled VSM ↔ structure (PSS) deformed-shape simulation
+# One coupled VSM ↔ structure deformed-shape simulation (wireframe fidelity)
 python scripts/aerostructural/run_simulation_PSM.py
+
+# The same, at full fidelity: inflatable tube beams + wrinkling membrane canopy
+python scripts/aerostructural/run_simulation_BILLOW.py
 
 # Simulate a full pumping cycle with the ROM (add --optimize to maximise cycle power)
 python scripts/reduced-order-model/optimization/cycle/run_cycle_simulation.py --plot
@@ -51,7 +62,8 @@ Runnable examples are organised by domain under `scripts/`, each folder with its
 src/awetrim/
   system/          CasADi system model: SystemModel, Kite, Wind, Winch, Tether variants
   aerodynamics/    VSM quasi-steady trim + parametric wing/airfoil geometry
-  aerostructural/  VSM ↔ structure coupling — pss/ (PSS) and fem/ (kite_fem)
+  aerostructural/  VSM ↔ Billow coupling — coupled/ (the driver, shared),
+                   wireframe/ and billow/ (one adapter per Billow fidelity)
   kinematics/      Course-frame kinematics and parametrised path patterns
   timeseries/      Phase / Reel-in / Cycle simulation
   environment/     Wind models (uniform, logarithmic, tabulated)
@@ -87,8 +99,7 @@ AWETrim delegates physics-heavy computations to purpose-built packages (installe
 | Package | Role |
 |---------|------|
 | [Vortex-Step-Method](https://github.com/awegroup/Vortex-Step-Method) | VSM aerodynamic solver (enhanced lifting line) |
-| [Particle_System_Simulator](https://github.com/awegroup/Particle_System_Simulator) | PSS flexible structural solver |
-| [kite_fem](https://github.com/awegroup/kite_fem) | FEM structural solver (alternative to PSS in the coupling) |
+| [Billow](https://github.com/awegroup/Billow) | Minimum-energy structural solver — cables and pulleys (wireframe fidelity), plus inflatable tube beams and a wrinkling membrane canopy (full fidelity) |
 | [EKF-AWE](https://github.com/ocayon/EKF-AWE) | Extended Kalman Filter for flight-data analysis |
 | [CasADi](https://web.casadi.org) | Symbolic computation and NLP solving (system model, optimisation) |
 | NumPy / SciPy · pandas / h5py | Numerical routines and data I/O |

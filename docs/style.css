@@ -224,6 +224,22 @@ h1 {
   gap: 14px;
 }
 
+/* The two solvers the aero-structural model couples. Sits under the model row
+   and is indented to read as belonging to the left-hand node. */
+.solver-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  width: calc((100% - 168px) / 2);
+  margin-top: -6px;
+}
+
+.node-solver {
+  min-height: 60px;
+  font-size: 14px;
+  background: linear-gradient(180deg, var(--accent-soft), var(--node-2));
+}
+
 .node {
   min-height: 78px;
   border: 1.6px solid var(--line);
@@ -594,6 +610,7 @@ h1 {
   .site-header { padding-top: 20px; flex-direction: column; align-items: flex-start; gap: 16px; }
   .site-header > div { padding: 18px; }
   .header-logo { padding-top: 0; }
+  .solver-row { width: 100%; margin-top: 0; }
   .node-grid-inputs, .node-grid-apps, .support-row, .model-row, .node-grid-reconstruction {
     grid-template-columns: 1fr;
   }
