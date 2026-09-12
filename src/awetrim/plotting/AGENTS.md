@@ -30,6 +30,21 @@ re-exported from `__init__.py` — import it directly:
 - Axes labels use X/Y/Z without units; units should be in titles or legends.
 - Use `set_plot_style()` for consistent fonts and color palettes.
 
+## Units in axis labels (Copernicus style — repo standard)
+
+Figures follow the Copernicus journal style, since the paper figures are
+submitted as drawn:
+
+- Units in **parentheses**, never square brackets: `$v_\mathrm{k}$ (m s$^{-1}$)`.
+- **Negative exponents**, not slashes: `m s$^{-1}$`, `rad s$^{-1}$`, never `m/s`.
+- Unit symbols upright (roman), quantity symbols italic (math mode).
+- **Dimensionless quantities carry no unit marker at all**: `$C_L$`, not
+  `$C_L$ [-]` or `$C_L$ (-)`.
+- Angles in labels use `($^\circ$)`.
+
+Console/CSV headers may keep the compact `[unit]` form; the rule is for
+rendered figures.
+
 ## Reference Frames for Structural and Aerodynamic Plots
 
 Two reference frames should be drawn when visualising the kite structure:
