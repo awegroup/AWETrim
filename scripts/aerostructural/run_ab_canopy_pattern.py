@@ -92,11 +92,25 @@ def main():
                              "absolute 2 N is larger than the whole remaining "
                              "gap to a 0.5 N gate, so it declared a steadily "
                              "converging x2 run stagnated at 1.12 N."),
-    parser.add_argument("--gamma-loop", default=None, choices=("base", "anderson"),
-                        help="VSM inner circulation solver. 'base' is exactly "
-                             "mirror-symmetric (3e-7 N per panel); 'anderson' is "
-                             "not (0.18 N), and tightening its tolerance does not "
-                             "help. Default: leave as_config alone.")
+    parser.add_argument("--gamma-loop", default="base", choices=("base", "anderson"),
+                        help="VSM inner circulation solver. Default 'base', and "
+                             "only for THIS script: the load case is unsteered "
+                             "and mirror-symmetric, which is the measurement, "
+                             "and 'base' is exactly mirror-symmetric (3e-7 N per "
+                             "panel) where 'anderson' is not (0.18 N) and "
+                             "tightening its tolerance does not help. With AV on, "
+                             "'anderson' also converges to a DIFFERENT trim "
+                             "branch than 'base' from the same cold start -- "
+                             "stalled-tip on a wing that is 7 deg clear of its "
+                             "onset -- and that is what an unguarded A/B here "
+                             "fails on: 0.26 N at iteration 31 and 310.8 mm of "
+                             "left-right mismatch, against 0.013 N in 7 and "
+                             "0.025 mm on 'base', at the same cost. This is NOT "
+                             "a recommendation for post-stall work: AV is what "
+                             "regularises a stalled circulation and the "
+                             "accelerator is what makes AV-active solves "
+                             "tractable, so as_config's anderson + 1e-8 stands "
+                             "for the depower and steering drivers.")
     parser.add_argument("--refine", type=int, default=1,
                         help="canopy mesh refinement k: every quad becomes k x k "
                              "before triangulating. The coarse lattice is kept, "

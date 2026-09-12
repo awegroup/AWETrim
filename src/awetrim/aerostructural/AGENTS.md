@@ -63,6 +63,9 @@ src/awetrim/aerostructural/
                                    config["structural_solver"] over pss /
                                    kite_fem / billow. Add a backend by adding
                                    a branch, not by copying the driver.
+                                   Steers only when the caller passes
+                                   steering_tape_indices (see "Steering in
+                                   the shared driver" below).
     aero2struc.py                  Aero-to-structural force mapping and moment
                                    preservation check. chordwise_distribution
                                    (see below) decides whether the panel's
@@ -206,6 +209,105 @@ Four things the adapter has to do that are not obvious:
   role `structural_kite_fem.relaxbridles` plays on the FEM path. **The nodes the
   coupled loop starts from are therefore not the raw YAML nodes** — read them
   back from `structure.model.nodes`.
+- **Relaxation cannot fix a line that is too LONG**, only one that is too short:
+  it moves nodes, and no node motion takes up slack the taut lines have already
+  pinned. What survives the relaxation is the real inconsistency in the
+  geometry, and on the LEI-V3 it sits on the front tip leg. Against the RAW
+  stored nodes, `a5_equiv` is 0.2540 m against a CAD distance of 0.2540 m
+  (exact), `br_5_equiv` +30 mm and `Br_5` +42 mm (+0.35%) — but `AIII` is
+  **+323 mm (+2.91%)** long. All of it is in that one rope.
+  The consequence is visible: the front tip leg carries 0.26 N against 92 N in
+  `a4_b4` one station inboard, so the tip is effectively bridle-free and hangs.
+  **Unresolved, and do not "fix" it by shortening the legs.** That was tried
+  (`a5_equiv` -> 0.0607 m, `br_5_equiv` -> 0.7635 m, the lengths that make the
+  measured ropes exactly taut with the sheave hanging in equilibrium from its
+  attachment). It bends a length that is already exactly consistent in order to
+  absorb an error that lives in `AIII`, and it turns a clean solve into a bad
+  one: the baseline goes from 0.04 N in 5 coupled iterations to still bouncing
+  at 9-18 N after 30. Reverted. If this is attacked, the candidate is `AIII`'s
+  323 mm, and not before the attachment question below is settled, because a
+  different attachment changes what `AIII` has to be.
+  Related: the tip front leg attaches to WING particles 3/53 — the only two
+  bridle connections in the file that do — while bridle particles 84/118,
+  declared on the tip closure tubes as its attachment points, have nothing
+  connected. They cannot simply take the leg: with the sheave in equilibrium,
+  `AIII` would need a leg of -65 mm from node 118, i.e. the sheave above the
+  tube, against +61 mm from node 3.
+- **Strut padding defaults to `bisect_longest`**, not `legacy`. `legacy` puts
+  every padding node in the second-to-last gap AND re-reads the gap ends after
+  each insertion, so they land at 0.20/0.52/0.81/0.96 of the gap instead of
+  0.2/0.4/0.6/0.8 and pile up against its far end: on the 0.348 m tip closure
+  that leaves a 6.7 mm beam beside a 96.8 mm one, a 118x length spread across
+  the wing against 46x for `bisect_longest`. The loop contradicts its own
+  `ratio = (i+1)/(missing+1)`, so this is a bug, but be honest about its size:
+  it is a MESH change, not a physics one. Both paddings give the same 97 tube
+  elements, the same tube diameters and the SAME reference curvature field
+  (max |omega_0| 10.63 /m, mean 1.20) — padding nodes are projected onto the
+  straight line between the strut's end nodes, so a strut is straight whatever
+  the spacing and the sliver carries no reference curvature. 96 of 457 built
+  nodes move (mean 105 mm) and the canopy triangles reshape; that is all.
+  The evidence once cited here for the sliver not hurting conditioning — "the
+  legacy baseline converged to 0.04 N in 5 coupled iterations" — is WITHDRAWN:
+  that run (2026-09-11) simply landed on the attached branch, and re-run
+  unguarded on current code `legacy` is WORSE than `bisect_longest` (101.9 mm
+  left-right mismatch at 3.31 N against 310.8 mm at 0.26 N; both fail, and
+  neither reproduces). Those numbers are samples of a wandering iteration, not
+  mesh properties — see the circulation-loop note below. Compare meshes on a
+  base-loop or guarded solve, where the two agree to 1 mm on span (7.9466
+  against 7.9453). `legacy` is kept bit-exact to reproduce stored FEM results —
+  set `strut_padding: legacy` for that.
+  One more trap: `initialize_particles` appends the YAML's OWN `node_indices`
+  list to `strut_indices` and the padding loop inserts into it. That aliasing
+  is load-bearing — it is how the padding nodes reach
+  `initialize_wing_structure`, which re-reads `strut_tubes` to build the strut
+  beams. Copy the list and each strut loses its padded segments: 97 beam
+  elements become 77 and the unsteered solve stops being mirror-symmetric
+  (22.9 mm instead of 2e-5 mm). The cost is that `main()` mutates the dict it
+  is given, so load the YAML fresh for every call.
+
+- **With AV on, `anderson` and `base` do not pick the same trim branch from the
+  same cold start** — and on the unsteered LEI-V3 the one `anderson` picks is
+  spurious. On the built shape it lands stalled-tip at v_w 3.0, 4.2 and 9.0
+  (1-2 tip panels 2.0-7.8 deg past their onset) and on a higher-speed attached
+  fixed point at 5.5 and 7.0 (v_a 30.27 against 23.37), so its v_a is not even
+  monotone in the wind; `base` gives one smooth family at every wind tested
+  (tip alpha 4.31-4.32, margin +7.13) at 5.1-7.1 s against 6.3-11.4 s per trim.
+  Coupled and unsteered at v_w 4.2: `base` 0.013 N in 7 iterations, 0.025 mm
+  mismatch, 94 s; `anderson` 0.26 N at iteration 31, 310.8 mm, 590 s, 355
+  bailouts. `run_ab_canopy_pattern.py` therefore defaults to `--gamma-loop
+  base` — that script measures mirror symmetry on an unsteered load case, and
+  `base` is exactly mirror-symmetric where `anderson` is not.
+  **Do not generalise that default to post-stall work.** AV is what regularises
+  a stalled circulation, the accelerator is what makes AV-active solves
+  tractable, and Anderson's failure mode is a FALLBACK to base ("deep post-stall
+  limit cycle; caller falls back to base loop"), not a dead end — so this is a
+  branch-selection defect, not a reachability one, and it is no reason to take
+  the accelerator off the depower and steering drivers. as_config keeps
+  `anderson` + `allowed_error: 1e-8`, a matched pair.
+  `base` does NOT suppress a real stall. On the one genuinely stalled Billow
+  state measured (`cross_steer_p0150mm_persegment`, u_s 0.15, converged at
+  v_a 15.65 and 0.015 N), a COLD re-trim of that converged shape on `base`
+  finds the stall and reproduces the run — 1/54 panels 10.8 deg past onset,
+  v_a 15.43 — while cold `anderson` jumps to the high-speed branch at v_a 30.12
+  and fails to reproduce the run it came from, whose own anderson trims were
+  warm-started. So the unreliability is COLD anderson specifically. `base` paid
+  2.4x for it there, 19.6 s against 8.0 s: the accelerator does earn its keep
+  post-stall, which is the reason not to take it off the steered drivers on the
+  strength of an unsteered A/B. One state, one trim — a coupled steered run on
+  `base` has not been measured.
+  The branch is a SOLVER-PATH fact, not a mesh one: the built shape is
+  identical for both strut paddings, because padding nodes are chordwise-
+  interior and the aero mesh is built from LE/TE nodes only — they move
+  0.000 mm, the mapped LE/TE arrays are bit-identical and the built trims agree
+  to 3e-8 deg. The stalled branch is also ill-conditioned, which is why its
+  answer wanders: the two paddings agree to 3e-8 deg on the attached branch and
+  differ by 1 deg on the stalled one. `aerodynamic.attached_polars` fixes the
+  same failure at the same cost (0.018 N, 7 it, 0.026 mm, 97 s) but solves a
+  CONTINUED-polar model that must then be validated on the true polars
+  (`check_tip_stall.py`, which forces `base` for exactly this reason) — on a
+  genuinely stalled wing it would hide the stall, which is why it is not a
+  default.
+
 - **Frames are transported over the beam tree, not seeded per chain.** The
   reference curvature is `omega_0 = psi / L0` with `psi` a Rodrigues vector, so
   it grows like `tan(theta/2)` and is singular at `theta = pi`. Seeding each
@@ -253,6 +355,201 @@ stiffness on the symmetric/antisymmetric subspaces -- IPOPT checks first-order
 optimality only, so a released solve alone would stop on a symmetric saddle),
 `check_mirror_asymmetry.py` (global vs rigid-aligned mismatch per section pair
 and per chordwise station, LE to TE).
+
+### Steering in the shared driver
+
+`fem/aerostructural_coupled_solver.main` actuates the steering tapes ONLY when
+the caller passes `steering_tape_indices` (the reader's two `steering_tape`
+elements). Without them `steering_tape_final_extension` is ignored, as it always
+was on this driver -- as_config ships 0.3 m of it, and every caller written
+before 2026-09-11 would otherwise start steering. With them, the half-difference
+(first tape shortened, second lengthened, the `pss/actuation.py` convention)
+walks toward `steering_tape_final_extension` in `steering_tape_extension_step`
+increments (0 = one step), each taken from a CONVERGED state after the depower
+walk has arrived, each followed by a fresh stagnation window and a settle
+guard. The guard is a STOPPING RULE, not a fixed hold: after a step, an exit
+needs the residual gate AND (a) at least `steering_settle_iterations_after_update`
+iterations (the dead band before the course rate moves) AND (b) the trim's
+course rate settled -- `remaining_drift` of its history since the step within
+max(`steering_settle_course_rate_tol` [rad/s, default 1e-3],
+`steering_settle_course_rate_rtol` x |course rate| [default 0]); the exit
+estimate is recorded as `meta["course_rate_remaining"]`. `remaining_drift`
+extrapolates the geometric tail with the LARGEST of the last three change
+ratios, because a fast transient dying onto a slow tail fools a single ratio
+(measured: 0.0007 rad/s change with 0.02 rad/s still to come); a growing tail
+is never settled. The residual cannot stand in for (b): it is the load change
+between iterations, which a slowly relaxing loop keeps below the gate while the
+steered state is still growing.
+
+**The attitude split was the bridle-line drag (found and fixed 2026-09-12).**
+Until then the structure's equilibrium sat ~0.78 deg rotated about the KCU from
+the trimmed attitude on EVERY iteration (unsteered too, in pitch), the trim
+rotated it back, and that non-decaying rigid part pinned Aitken at its 0.05
+floor: the course rate crawled (0.309 -> 0.322 rad/s over 40 iterations, ratio
+~0.97) and with relaxation off (omega 1) drifted AWAY with growing steps
+(0.355 rad/s at 26 iterations, residual rising); +-10 cm looked geometric for
+~25 iterations then ran away. The cause was not the relaxation and not the
+inertias: **the trim carries the bridle-line drag inside its own balance** (the
+VSM body is built with `bridle_path`, so `calculate_results` adds each
+segment's force and its moment about the reference point), while the driver
+handed the structure the same lines re-evaluated at `vel_app` -- the FREESTREAM
+vector frozen in `aerodynamic_vsm.initialize` from `wind_speed_wind_ref`, 8 m/s
+whatever wind the run asked for. 20.3 N against 76.3 N at v_a 15.9, leaving
+-326 N m of pitch about the pinned bridle point; a pin carries force, not
+moment, so the structure shed it as a 0.763 deg rigid swing. Both call sites
+now go through `_bridle_line_drag`, which takes the trim's own
+`results_aero["va_vel_world"]` (the apparent wind in the VSM frame, despite the
+name) and honours `is_with_aero_bridle` -- the pre-loop call ignored that gate,
+so a bridle-drag-OFF run still got it once, on the state every later iteration
+starts from. Measured budget about the bridle point, LEI-V3 cross canopy,
+54 panels, v_w 4.2: wing load transfer 0.9 N m (`moment_matched`, built shape),
+inertial+gravity 1.1 N m, bridle drag 325.9 -> **15.9 N m**, net swing
+0.763 -> **0.038 deg**. Fixing this MOVES every stored Billow/FEM coupled
+result.
+
+**And the VSM's bridle now deforms with the kite (2026-09-12).**
+`BodyAerodynamics.instantiate(bridle_path=...)` bakes the segments in as
+COORDINATES and `update_from_points` refreshes the wings only, so the trim went
+on charging bridle drag to the BUILT shape while the structure (and the drag
+`_bridle_line_drag` gives it) followed the deformed one -- the 16 N m above,
+and 24 N m on a steered state, where the deformed bridle is asymmetric and the
+built one cannot be. Every aero call now passes `struc_nodes` +
+`bridle_line_specs`, so `run_vsm_package` rebuilds them
+(`rebuild_bridle_line_system`), as the PSS driver always did.
+`_bridle_line_specs_for_vsm` assembles the rows without a new argument on
+`main`: node indices from the reader's `bridle_connectivity_arr` (which owns
+the structural array), diameters from the body's own segments (which
+`aerodynamic_vsm.initialize` has already replaced with the DRAG-equivalent
+ones, a flat tape's projected width). Both lists are the same parse of
+`bridle_connections` in the same order -- verified on LEI-V3 FEM_full, all 87
+segments agreeing to 7.6e-9 m -- and a count mismatch skips the rebuild with a
+warning rather than pairing lines to the wrong nodes. What is left of the
+bridle disagreement is the attitude increment (the trim rotates the wing, not
+the bridle), which vanishes as the loop converges: 0.2 N m on a converged
+steered state.
+
+**And every bridle segment is now charged at its OWN inflow (2026-09-12).**
+The relation is single-sourced in `awetrim.aerodynamics.apparent_wind`:
+
+```text
+va(r) = va_free - omega x (r - r0)
+```
+
+so the rotational term belongs to the station it is evaluated at, and a load
+spread over many stations cannot be charged one vector. Since 450d1c3 the
+FEM/Billow driver was the only one doing that, so it disagreed with the trim
+whose balance it was supposed to be feeding:
+
+| consumer | charged, before | on the LEI-V3 steered case |
+|---|---|---|
+| VSM `compute_results` (the trim's own balance) | `va_ref_vector` = the freestream | 78.9 N, 419 N m |
+| PSS driver, `aerodynamic_bridle_line_drag.main` | `body_aero.va`, the freestream | 78.9 N, 419 N m |
+| FEM/Billow driver, `_shared_bridle_line_drag` | per-segment | 72.8 N, 379 N m |
+
+**`va_ref_vector` is NOT the wing's mean inflow** — an easy misreading, made in
+450d1c3's own message and again when auditing it. It is
+`_compute_reference_velocity_from_distribution(self._va, ...)`, and `self._va`
+is the inflow as handed to the VSM's `va` setter, BEFORE `-omega x (r - r0)` is
+added to build the panel distribution; the rotational term lives on `panel.va`
+only. For the uniform freestream every AWETrim call passes, `va_ref_vector` IS
+that freestream. So the bridle never carried a rotational term at all — it was
+charged the inflow at the reference point wherever a segment sat, not the
+wing's version of it.
+
+All three now evaluate per segment and agree to machine precision (verified on
+the 45-segment LEI-V3 bridle, steered and unsteered). Closing the trim's own
+row needed the VSM: `compute_results` evaluates each segment at its midpoint
+and publishes `bridle_line_forces` / `bridle_line_midpoints` so a driver can
+take the load the trim balanced instead of recomputing it, and the `va` setter
+now STORES `reference_point` (exposed as `body_aero.reference_point`) — it used
+to live on the stack, so `inflow_state_of` and its predecessors could only
+default `r0` to the origin and be accidentally right. It also passes `rho`
+through, which the bridle call had been dropping in favour of the 1.225
+default (latent: every shipped config is 1.225).
+
+**Do not reuse the 8.28 m/s / "roughly doubles" figure** from the first version
+of this fix (450d1c3). That is `|omega| * |r|`, the bound the cross product
+reaches only with `r` PERPENDICULAR to `omega`; the wing sits **2.6 deg off**
+the rotation axis (`omega` is dominantly the radial course rate and the wing is
+almost straight out along that same radial), so `omega x r` is near its MINIMUM
+there. Measured: area-weighted 1.99 m/s at the wing, 1.26 m/s at the bridle
+midpoints, and the spread between inflow choices is -7.6% to +8.3% on the
+force, not 2x. Reaching 8.28 m/s would need `sin` of the arm/axis angle to be
+1.10. The steered-Billow divergence that commit was chasing is therefore NOT
+attributable to it; the mass-split/CG correction bundled into the same commit
+(0.64 m, 39 N m of roll) is the far larger effect. All of this vanishes at
+`omega = 0`, which is why unsteered baselines are blind to the whole question.
+
+**The inertial and gravity split now weighs nodes exactly as the CG does
+(2026-09-12).** `distribute_total_force_by_particle_mass` spreads the trim's
+`inertial_force` / `gravity_force` over the nodes, and the trim applied those
+resultants as point loads at `calculate_cg`; the two are the same load only if
+both weigh every node the same way. This driver kept its own copy of the split
+that CLIPPED negative masses away and normalised by the positive sum, while
+`calculate_cg` weighs them as they are. The masses do go negative: the reader
+hangs `mass_without_bridles - mass_canopy` on the LE/strut nodes, which is
+negative whenever the YAML's `canopy_density` over-fills the wing's mass, and
+on `struc_geometry_FEM_full.yaml` 96 tube nodes carry about -0.037 kg each
+(the reader now warns). The two CGs then sat 0.64 m apart in z (3.24 vs 3.88)
+-- a 20% error on every inertial and gravity moment the structure was handed,
+worth 39 N m of ROLL on a steered state and invisible at zero course rate. The
+duplicate is gone; `..forces` is the one split, shared with the PSS driver,
+and `tests/aerostructural/test_forces.py` locks the property that matters (the
+split's moment equals `cg x F`, negative masses included).
+
+**The PSS/QSM driver had two of its own (2026-09-12), both now fixed.** Its
+in-loop assembly was always consistent -- it is where the three patterns above
+came from, and its budget on the PSM geometry (45 panels, 40 nodes, v_w 4.2,
+gravity off, tether in trim) is net 1.3 N m and a 0.004 deg swing: wing
+transfer 2.0 N m, bridle 5.2 (attitude residue), inertial 0.0, trim residual
+1.9 from the live `max_nfev` cap. Its wing transfer beats the FEM/Billow one
+(2.0 against 7.9 N m) because it applies each panel load at its OWN cp through
+a bilinear corner map -- no chordwise spread, so no placement prior to be wrong
+about. But:
+
+- its PRE-LOOP bridle-drag call was commented out (`f_aero_bridle` zeroed)
+  while the trim balanced 270.8 N m of bridle moment, so the FIRST structural
+  solve was 274.7 N m out about the pinned bridle point and swung 0.886 deg.
+  The fixed point does not move, but the loop is seeded off it -- and this map
+  has branches to be seeded onto.
+- `bridle_node_pairs` came from `build_bridle_node_pairs_from_line_system`,
+  which nearest-node matches the VSM's BUILT segment coordinates against
+  whatever `struc_nodes` the driver is handed. Clean on the built shape (0 of
+  45 collapsed), but a converged shape moves nodes up to 0.571 m and then 2 of
+  45 segments snap BOTH ends onto one node -- zero length, **NaN** forces --
+  with 8 more re-paired. `run_simulation_PSM`'s `starting_from_sim_subdir`
+  continuation starts exactly there. `_bridle_node_pairs` now takes the indices
+  from `bridle_line_specs`, which is what they are; the geometric match stays
+  as the fallback when a caller passes no specs. Verified identical to the old
+  pairing on the built shape, so cold runs keep their behaviour.
+
+Diagnostic: `scripts/aerostructural/check_trim_structure_moment.py` -- one
+trim, then the full moment budget of both sides about the bridle point,
+term by term, plus the rigid swing that nulls the structure's loads.
+`--backend billow|pss` replicates either driver's load assembly (the pss one on
+the PSM photogrammetry geometry, with the tether in the trim when the config
+says so); `--from-result <folder>` runs it on a stored converged, and for a
+steered run asymmetric, shape. It is the only check that sees any of this:
+`check_moment_preservation` compares the mapping against the
+already-distributed loads and `check_load_transfer.py` compares routes against
+each other, so a term the trim balances and the structure never receives -- or
+receives at a different wind speed, or at a different CG -- is invisible to
+both. On the converged steered +-5 cm shape with all three fixed: bridle drag
+0.2 N m, inertial 0.0, **wing transfer 7.9 N m** (chordwise 4.9, spatial 3.7 --
+the one term left, and a modelling limit rather than a bug), net 8.0 N m and a
+**0.020 deg** swing, from 0.761 deg.
+
+Earlier steered snapshots (taken with `steering_settle_course_rate_rtol: 0.1`,
+`run_steering_BILLOW.py --course-rate-rtol 0.1`, reported with
+`meta["course_rate_remaining"]`: +-10 cm 0.580 rad/s extrapolated 0.635,
++-15 cm 0.714 / 0.760) all predate the fix and are not comparable to states
+solved after it. `update_steering_tape_actuation` reads the half-difference back from the live
+rest lengths through `_rest_length` / `_set_rest_length`, the one getter/setter
+pair for all three backends. Tracking gains `steering_half_difference` and
+`trim_state` (the trim's `[kite_speed, roll, pitch, yaw, course_rate]` per
+iteration; the attitude entries are INCREMENTS the geometry is rotated by, so
+read the kite's attitude off the positions, not the last row). Script:
+`scripts/aerostructural/run_steering_BILLOW.py`.
 
 A gravity-only load case is NOT a valid smoke test: the KCU is pinned below the
 wing, so gravity slackens every bridle line and the bridle knots become a
@@ -365,6 +662,8 @@ aerodynamic:
   max_iterations: 1000
   allowed_error: 1.0e-8                # matched pair with gamma_loop_type --
   gamma_loop_type: anderson            #   revert BOTH to base / 2e-6 together
+  anderson_max_iterations: 1000        # headroom INSTEAD of the Picard
+  anderson_fallback_to_base: false     #   fallback (rescue rate 0.1%)
   relaxation_factor: 0.05
   reference_point: [0.0, 0.0, 0.0]
   is_with_artificial_viscosity: true   # Li/Gaunaa spanwise artificial viscosity
@@ -381,8 +680,13 @@ of the QSM trim the coupled solver calls (measured -2.2% v_tau at 2e-6). The
 scripts refuse the unsafe half-pairing:
 `run_state_aerostructural_stability.py --as-gamma-loop anderson` requires
 `--as-gamma-tolerance`. On steered, AV-active flow 1e-8 can be unreachable for
-ANY loop (Anderson's own fallback IS the base loop) — such a point fails and is
-recorded, accepted by design. With artificial viscosity ON the circulation
+ANY loop — such a point fails and is recorded, accepted by design. Anderson's
+base-loop fallback is OFF in as_config since 2026-09-03
+(`anderson_fallback_to_base: false` + `anderson_max_iterations: 1000`, both
+plumbed through `aerodynamic_vsm.initialize`): measured across the 2019+2025
+steering campaigns, the fallback rescued 99 of ~92,400 Anderson failures
+(0.1%) while costing up to two 1500-iteration relaxed-Picard crawls per
+failure — headroom for the accelerated loop is cheaper in every case. With artificial viscosity ON the circulation
 problem is multi-valued near stall and the branch is fixed by the seed, so a
 coupled run's one COLD aero solve chooses it and every warm-seeded iteration
 after that inherits it; AV-on results (stalled-tip branch, CD +6.7% at the
