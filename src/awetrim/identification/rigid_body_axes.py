@@ -381,7 +381,7 @@ def load_psm_nodes_and_masses(
     Returns:
         Tuple ``(struc_nodes, m_arr)`` with shapes (n_nodes, 3) and (n_nodes,).
     """
-    from awetrim.aerostructural.pss.structural_geometry_io import (
+    from awetrim.aerostructural.wireframe.structural_geometry_io import (
         main as pss_initialize,
     )
 
@@ -406,7 +406,7 @@ def load_psm_geometry(
         Tuple ``(struc_nodes, m_arr, le_indices, te_indices)``.
     """
     import yaml
-    from awetrim.aerostructural.pss.structural_geometry_io import (
+    from awetrim.aerostructural.wireframe.structural_geometry_io import (
         main as pss_initialize,
     )
 

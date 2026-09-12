@@ -4,29 +4,47 @@
 
 ## Scope
 
-This module implements the fixed-point PSS/QSM aerostructural coupling: a structural
-particle system (PSS) iterated against a VSM quasi-steady aerodynamic trim (QSM) until
-the nodal forces converge. It also owns geometry I/O, load mapping, actuation, result
-storage, and the sweep orchestration scripts.
+This module is the **coupling**, not the structural solver. It iterates a
+structural model against a VSM quasi-steady aerodynamic trim (QSM) until the
+nodal forces converge, and owns geometry I/O, load mapping, actuation, result
+storage and the sweep orchestration scripts.
 
-This module does **not** own the VSM solver or the point-mass system model — those live
-in `aerodynamics/` and `system/` respectively.
+The structural solver is [Billow](https://github.com/awegroup/Billow), a
+separate package imported as `billow`. AWETrim uses **both** of its fidelities,
+through one adapter each:
 
-Shared plotting utilities live in `src/awetrim/plotting/`.
+| adapter | Billow fidelity | elements |
+|---|---|---|
+| `wireframe/` | `billow.build_line_system` | cables, tension-only lines, pulleys |
+| `billow/` | the full model | the above + inflatable tube beams + wrinkling CST membrane canopy |
+
+They are not two force laws: Billow has one cable kernel and both fidelities
+call it.
+
+**PSS (kinetic damping) and kite_fem were removed on 2026-09-12.** Do not
+reintroduce either; `tests/aerostructural/test_wireframe_package.py` asserts
+that importing this package pulls in neither.
+
+This module does **not** own the VSM solver or the point-mass system model --
+those live in `aerodynamics/` and `system/` respectively. Shared plotting
+utilities live in `src/awetrim/plotting/`.
 
 ## Public Layout
 
 ```
 src/awetrim/aerostructural/
-  # ── Solver-agnostic (common to PSS, FEM, and future solvers) ──────────────
-  __init__.py                      Re-exports PssKineticDampingSolver, PssQsmCoupler, all protocols
-  protocols.py                     All dataclasses and Protocol types
+  # -- Backend-agnostic ------------------------------------------------------
+  __init__.py                      Re-exports WireframeQsmCoupler and all protocols
+  protocols.py                     All dataclasses and Protocol types, including
+                                   WireframeSystem -- the particle-system-shaped
+                                   interface a structural backend presents to the
+                                   drivers (particles, extract_rest_length,
+                                   update_rest_length, springdampers, f_int)
   mapping.py                       LinearStructuralToAeroMapper, BilinearAeroToStructuralLoadMapper
   forces.py                        distribute_total_force_by_particle_mass
-  convergence.py                   check_convergence, compute_adaptive_dt,
-                                   resolve_residual_tolerances, resultant_tether_force,
-                                   relative_residual_norm, element_elongations,
-                                   max_element_elongation
+  convergence.py                   check_convergence, resolve_residual_tolerances,
+                                   resultant_tether_force, relative_residual_norm,
+                                   element_elongations, max_element_elongation
   results.py                       save_sim_output, append_sweep_csv_row, build_sweep_csv_row
   tracking.py                      setup_tracking_arrays, update_tracking_arrays
   utils.py                         rotate_geometry, calculate_cg, calculate_inertia, load_yaml
@@ -39,30 +57,13 @@ src/awetrim/aerostructural/
                                     it enters as the drag-equivalent diameter
                                     written into the line system, see below)
 
-  # ── PSS-based solver ──────────────────────────────────────────────────────
-  pss/
-    __init__.py                    PssKineticDampingSolver, PssQsmCoupler
-    coupling.py                    PssQsmCoupler (fixed-point loop)
-    structural_pss.py              PSS instantiation and kinetic-damping solve
-    structural_nlp.py              Exact minimum-energy inner solve (CasADi/IPOPT):
-                                   NlpStructuralSolver (run_pss call contract) +
-                                   resolve_structural_solver dispatch. Same spring
-                                   physics as PSS (tension-only cutoffs, pulley
-                                   pairs), solved to ~1e-8 instead of kinetic
-                                   damping's ~1 N leftover. Selected by
-                                   structural_pss.solver: nlp (default pss).
-    structural_geometry_io.py      Parse struc_geometry.yaml → StructuralGeometry arrays
-    actuation.py                   update_steering_tape_actuation, update_power_tape_actuation
-    aerostructural_coupled_solver_qsm.py  Legacy high-level driver (used by production scripts)
-
-  # ── FEM-based solver ──────────────────────────────────────────────────────
-  fem/
-    __init__.py                    Re-exports all four FEM modules
-    aerostructural_coupled_solver.py  The coupled QSM driver. Despite living
-                                   here it is NOT FEM-only: it dispatches on
-                                   config["structural_solver"] over pss /
-                                   kite_fem / billow. Add a backend by adding
-                                   a branch, not by copying the driver.
+  # -- The coupled solve -----------------------------------------------------
+  coupled/                         (was fem/ until 2026-09-12)
+    __init__.py                    Re-exports the three modules
+    coupled_solver.py              The coupled QSM driver. Backend-agnostic: it
+                                   dispatches on config["structural_solver"]
+                                   over wireframe / billow. Add a backend by
+                                   adding a branch, not by copying the driver.
                                    Steers only when the caller passes
                                    steering_tape_indices (see "Steering in
                                    the shared driver" below).
@@ -73,37 +74,85 @@ src/awetrim/aerostructural/
                                    decides how the load reaches the nodes
                                    (traction integral for billow, see below).
     read_struc_geometry_yaml.py    Parse struc_geometry YAML (strut tubes, LE tubes)
-    structural_kite_fem.py         FEM structure instantiation and solve
 
-  # ── Billow-based solver ───────────────────────────────────────────────────
+  # -- Wireframe fidelity ----------------------------------------------------
+  wireframe/                       (was pss/ until 2026-09-12)
+    __init__.py                    WireframeQsmCoupler
+    coupling.py                    WireframeQsmCoupler (fixed-point loop)
+    structural_wireframe.py        Adapts billow.LineSystem to the drivers'
+                                   call contract. WireframeStructure owns
+                                   positions, rest lengths and stiffnesses
+                                   across the whole coupled run and implements
+                                   the WireframeSystem protocol, so the
+                                   drivers, the actuation and the Aitken
+                                   relaxation needed no change when the
+                                   particle system was removed. kin_damp_sim
+                                   deliberately raises. Also holds the pure
+                                   stiffness-bound helpers
+                                   (modulus_stiffness_ceiling,
+                                   adapt_stiffnesses), moved across unchanged.
+    structural_geometry_io.py      Parse struc_geometry.yaml -> StructuralGeometry arrays
+    actuation.py                   update_steering_tape_actuation, update_power_tape_actuation
+    coupled_solver_qsm.py          The PSM production driver
+
+  # -- Full fidelity ---------------------------------------------------------
   billow/
     __init__.py                    Re-exports the structural_billow API
-    structural_billow.py           Adapts billow (minimum-energy
-                                   cables, pulleys, inflatable Timoshenko tube
-                                   beams, wrinkling CST membrane canopy) to the
-                                   run_kite_fem call contract. Reads the SAME
-                                   arrays fem/read_struc_geometry_yaml.main
+    structural_billow.py           Adapts the full Billow model (cables,
+                                   pulleys, inflatable Timoshenko tube beams,
+                                   wrinkling CST membrane canopy) to the same
+                                   call contract. Reads the SAME arrays
+                                   coupled/read_struc_geometry_yaml.main
                                    returns, so one geometry reader serves both.
                                    See "Billow backend" below.
 
 scripts/aerostructural/
   common.py                        CONFIG_DEFAULTS, build_system_model, shared helpers
-  run_simulation_PSM.py            Single-case PSS/QSM (PSM) solve with optional steering sweep
-  run_simulation_FEM.py            Single-case FEM (kite_fem) solve
-  run_sweep_wind_steering_PSM.py   2-D sweep: wind × steering (PSM)
-  run_sweep_course_steering_depower_PSM.py  3-D sweep: course × steering × depower (PSM)
+  run_simulation_PSM.py            Single-case wireframe/QSM (PSM) solve with optional steering sweep
+  run_simulation_BILLOW.py         Single-case full-fidelity solve
+  run_steering_BILLOW.py           Steered full-fidelity solve
+  run_chain_depower_BILLOW.py      Depower continuation chain
 ```
+
+## The pulley rest-length convention
+
+The one place two otherwise-agreeing codes disagree, so it is handled
+explicitly in both adapters rather than inferred:
+
+* `structural_geometry_io` (wireframe) stores the WHOLE rope's `l0` on both arm
+  rows and the proportional per-arm SPLIT at index `[3]` of the pulley entry.
+  `extract_rest_length` reports the split, exactly as the particle system did,
+  because that is what the actuation is written against; the adapter sums the
+  two arms on the way into Billow's `PulleyKernel`, which takes the whole rope.
+* `read_struc_geometry_yaml` (full fidelity) stores the TOTAL on each arm, so
+  `structural_billow` reads it off the first arm.
+
+The physics is the same either way -- the rope shares one stretch -- but the
+bookkeeping is not: reading the total as an arm length puts every rope into
+artificial tension.
+
+**A rope cannot push.** Both adapters use Billow's tension-only pulley, which
+cuts compression on the TOTAL rope length. The NLP inner solver that preceded
+the wireframe adapter omitted that cut, so a slack rope PUSHED: measured 9.27 N
+on the LEI-V3 PSM geometry at a representative load (lift + drag + weight),
+moving nodes up to 72 mm and the span by 14 mm. PSS itself cut compression on
+pulleys (`SpringDamper.force_value`, `PULLEY` branch, and its Jacobian returns
+zeros below `l0`), so the NLP disagreed with the solver it was written to
+reproduce. Both solutions are equilibria of their own model to 6.3e-3 N --
+which is why this was invisible to every residual check. Results stored from
+that path carry the defect.
 
 ## Core Data Flow
 
 ```
 struc_geometry.yaml
-  └─ pss/structural_geometry_io.main() → StructuralGeometry (nodes, connectivity, rest_lengths, …)
+  └─ wireframe/structural_geometry_io.main() → StructuralGeometry (nodes, connectivity, rest_lengths, …)
 
 aero_geometry.yaml
-  └─ pss/aerodynamic_vsm.initialize() → (body_aero, vsm_solver, initial_polar_data)
+  └─ aerodynamic_vsm.initialize() → (body_aero, vsm_solver, initial_polar_data)
 
-Fixed-point loop (pss/coupling.PssQsmCoupler.solve  or  pss/aerostructural_coupled_solver_qsm.main):
+Fixed-point loop (wireframe/coupling.WireframeQsmCoupler.solve,
+                  wireframe/coupled_solver_qsm.main, or coupled/coupled_solver.main):
   1. mapping.LinearStructuralToAeroMapper.map(nodes) → LE/TE points          [common]
   2. body_aero.update_from_points(LE, TE, polar_data)
      + aerodynamic_vsm.rebuild_bridle_line_system(body, struc_nodes, specs):
@@ -129,11 +178,10 @@ Fixed-point loop (pss/coupling.PssQsmCoupler.solve  or  pss/aerostructural_coupl
   5. forces.distribute_total_force_by_particle_mass(inertial+gravity) → nodal inertial forces [common]
   6. aerodynamic_bridle_line_drag.main() → nodal bridle drag forces           [common]
   7. structural solve → new node positions
-       pss/structural_pss.run_pss                    [pss]
-       fem/structural_kite_fem.run_kite_fem          [kite_fem]
+       wireframe/structural_wireframe.run_wireframe  [wireframe]
        billow/structural_billow.run_billow           [billow]
   8. Aitken relaxation on node displacement
-  9. pss/actuation.update_*_tape_actuation() (every N iterations)            [pss]
+  9. wireframe/actuation.update_*_tape_actuation() (every N iterations) [wireframe]
   10. convergence.check_convergence() → break or continue                    [common]
 ```
 
@@ -154,19 +202,24 @@ All cross-function data uses frozen dataclasses — no raw dicts between module-
 ## Critical Implementation Notes
 
 ### Pulley rest lengths
-`structural_pss.instantiate` must set each pulley arm's rest length to its **individual arm length**, not the total rope length stored in the YAML. The individual arm length is at index `[3]` of each entry in `pulley_line_to_other_node_pair_dict`. Using the total length puts both arms in artificial compression and causes catastrophic PSS divergence.
 
-```python
-# Correct: PSS expects [idx_p3, idx_p4, rest_length_of_other_arm]
-pss_pulley_dict = {key: val[:3] for key, val in pulley_dict.items()}
-# Then override each arm's own rest length from val[3]
-```
+See "The pulley rest-length convention" above -- it is the same trap, written
+down once.
 
 ### Frame convention
 Panel forces from VSM are in the VSM frame (x and y negated relative to the course frame). The transformation `T_C_from_VSM = [[-1,0,0],[0,-1,0],[0,0,1]]` is applied inside `aerodynamics/vsm_quasi_steady.py` **before** forces reach this module. Structural geometry coordinates are in the course frame throughout.
 
-### PSS convergence
-The PSS kinetic-damping convergence check requires `step * dt > 10.0` before it fires. With `n_internal_time_steps = 100` and `dt = 0.005` (total = 0.5 s), the check **never triggers** — the PSS always runs the full step count. Starting from the unloaded YAML geometry (far from loaded equilibrium) with large aero forces will produce large non-physical deformations in the first iteration. Pre-loaded starting geometry (warm-start from a previous result) avoids this.
+### Warm starting
+
+`WireframeStructure` and `BillowStructure` both own their positions across the
+whole coupled run, so every solve after the first warm starts from the last
+answer. That is the only good initial guess the loop has; resetting to the built
+geometry each iteration throws it away.
+
+There is no time step any more. `dt` was the kinetic-damping solver's
+continuation parameter, and energy minimisation has no such parameter --
+stiffness is just a coefficient of the objective. The adaptive-dt schedule and
+the `dt` / `dt_max` config keys went with it.
 
 ### Aitken relaxation
 Node positions are updated as `nodes += factor * (solved_nodes - nodes)` where `factor` is recalculated by the Aitken method each iteration. The initial factor comes from `QsmCouplingSettings.relaxation_factor`.
@@ -174,12 +227,12 @@ Node positions are updated as `nodes += factor * (solved_nodes - nodes)` where `
 ## Boundary
 
 - No CasADi symbolics enter this module. All quantities are numeric numpy
-  arrays. (`pss/structural_nlp.py` uses CasADi INTERNALLY to build its solver —
+  arrays. (Billow uses CasADi INTERNALLY to build its solver —
   nothing symbolic crosses its function boundaries.)
 - VSM solver internals (`VSM.core`) are accessed only through `aerodynamic_vsm.py`; the rest of the module is VSM-agnostic.
-- `aerodynamic_vsm.py` and `aerodynamic_bridle_line_drag.py` live at the root level and are shared by all solvers. `aerodynamic_vsm.run_vsm_package` also builds the KCU bluff-body drag model (`awetrim.aerodynamics.kcu_drag`, gated by the `is_with_kcu_drag` config key, default true) and hands it to whichever trim it dispatches to. It is deliberately NOT distributed onto structural nodes: the KCU is node 0, a FIXED node, so a force there is absorbed by the constraint and cannot deform anything — the KCU drag reaches the structure only through the trim state the wing is loaded at. `pss/structural_pss.py` holds the PSS dependency. All other common files (`mapping.py`, `convergence.py`, etc.) depend only on numpy and the module's own protocols.
-- `pss/aerostructural_coupled_solver_qsm.py` is a legacy high-level driver retained for production scripts. New protocol-level code should go through `pss/coupling.PssQsmCoupler`.
-- When adding a new structural solver, create a new subfolder (e.g., `fem/`, `billow/`) for the BACKEND, mirroring the `pss/` layout. Common files at the root level are shared by all solvers. The coupled driver in `fem/` is already backend-agnostic — add a branch to its `config["structural_solver"]` dispatch rather than copying its ~1000 lines.
+- `aerodynamic_vsm.py` and `aerodynamic_bridle_line_drag.py` live at the root level and are shared by all solvers. `aerodynamic_vsm.run_vsm_package` also builds the KCU bluff-body drag model (`awetrim.aerodynamics.kcu_drag`, gated by the `is_with_kcu_drag` config key, default true) and hands it to whichever trim it dispatches to. It is deliberately NOT distributed onto structural nodes: the KCU is node 0, a FIXED node, so a force there is absorbed by the constraint and cannot deform anything — the KCU drag reaches the structure only through the trim state the wing is loaded at. All common files (`mapping.py`, `convergence.py`, etc.) depend only on numpy and the module's own protocols.
+- `wireframe/coupled_solver_qsm.py` is the PSM production driver. New protocol-level code should go through `wireframe/coupling.WireframeQsmCoupler`.
+- When adding a new structural backend, create a new subfolder mirroring `wireframe/` or `billow/`, holding ONLY the adapter. Common files at the root level and everything in `coupled/` are shared. `coupled/coupled_solver.py` is backend-agnostic — add a branch to its `config["structural_solver"]` dispatch rather than copying its ~1500 lines.
 
 ## Billow backend (`billow/`)
 
@@ -206,7 +259,7 @@ Four things the adapter has to do that are not obvious:
   LEI-V3 `Br_main_1` is 11.5% long, which at the real `EA/l0` is 88 kN in one
   line. `relax_bridles` settles it with the wing held (so the canopy and tube
   reference configurations are untouched), then re-centres. This is the same
-  role `structural_kite_fem.relaxbridles` plays on the FEM path. **The nodes the
+  role `relax_bridles` plays for the wireframe geometry. **The nodes the
   coupled loop starts from are therefore not the raw YAML nodes** — read them
   back from `structure.model.nodes`.
 - **Relaxation cannot fix a line that is too LONG**, only one that is too short:
@@ -358,12 +411,12 @@ and per chordwise station, LE to TE).
 
 ### Steering in the shared driver
 
-`fem/aerostructural_coupled_solver.main` actuates the steering tapes ONLY when
+`fem/coupled_solver.main` actuates the steering tapes ONLY when
 the caller passes `steering_tape_indices` (the reader's two `steering_tape`
 elements). Without them `steering_tape_final_extension` is ignored, as it always
 was on this driver -- as_config ships 0.3 m of it, and every caller written
 before 2026-09-11 would otherwise start steering. With them, the half-difference
-(first tape shortened, second lengthened, the `pss/actuation.py` convention)
+(first tape shortened, second lengthened, the `wireframe/actuation.py` convention)
 walks toward `steering_tape_final_extension` in `steering_tape_extension_step`
 increments (0 = one step), each taken from a CONVERGED state after the depower
 walk has arrived, each followed by a fresh stagnation window and a settle
@@ -415,7 +468,7 @@ on charging bridle drag to the BUILT shape while the structure (and the drag
 and 24 N m on a steered state, where the deformed bridle is asymmetric and the
 built one cannot be. Every aero call now passes `struc_nodes` +
 `bridle_line_specs`, so `run_vsm_package` rebuilds them
-(`rebuild_bridle_line_system`), as the PSS driver always did.
+(`rebuild_bridle_line_system`), as the wireframe driver always did.
 `_bridle_line_specs_for_vsm` assembles the rows without a new argument on
 `main`: node indices from the reader's `bridle_connectivity_arr` (which owns
 the structural array), diameters from the body's own segments (which
@@ -443,8 +496,8 @@ whose balance it was supposed to be feeding:
 | consumer | charged, before | on the LEI-V3 steered case |
 |---|---|---|
 | VSM `compute_results` (the trim's own balance) | `va_ref_vector` = the freestream | 78.9 N, 419 N m |
-| PSS driver, `aerodynamic_bridle_line_drag.main` | `body_aero.va`, the freestream | 78.9 N, 419 N m |
-| FEM/Billow driver, `_shared_bridle_line_drag` | per-segment | 72.8 N, 379 N m |
+| wireframe driver, `aerodynamic_bridle_line_drag.main` | `body_aero.va`, the freestream | 78.9 N, 419 N m |
+| full-fidelity driver, `_shared_bridle_line_drag` | per-segment | 72.8 N, 379 N m |
 
 **`va_ref_vector` is NOT the wing's mean inflow** — an easy misreading, made in
 450d1c3's own message and again when auditing it. It is
@@ -493,11 +546,11 @@ on `struc_geometry_FEM_full.yaml` 96 tube nodes carry about -0.037 kg each
 (the reader now warns). The two CGs then sat 0.64 m apart in z (3.24 vs 3.88)
 -- a 20% error on every inertial and gravity moment the structure was handed,
 worth 39 N m of ROLL on a steered state and invisible at zero course rate. The
-duplicate is gone; `..forces` is the one split, shared with the PSS driver,
+duplicate is gone; `..forces` is the one split, shared with the wireframe driver,
 and `tests/aerostructural/test_forces.py` locks the property that matters (the
 split's moment equals `cg x F`, negative masses included).
 
-**The PSS/QSM driver had two of its own (2026-09-12), both now fixed.** Its
+**The wireframe/QSM driver had two of its own (2026-09-12), both now fixed.** Its
 in-loop assembly was always consistent -- it is where the three patterns above
 came from, and its budget on the PSM geometry (45 panels, 40 nodes, v_w 4.2,
 gravity off, tether in trim) is net 1.3 N m and a 0.004 deg swing: wing
@@ -554,7 +607,8 @@ read the kite's attitude off the positions, not the last row). Script:
 A gravity-only load case is NOT a valid smoke test: the KCU is pinned below the
 wing, so gravity slackens every bridle line and the bridle knots become a
 mechanism. Billow reports that faithfully (residual = the free knots' weight);
-`kite_fem` hides it because `I_stiffness=25` acts as a ground spring on every
+A solver that regularises with an absolute identity stiffness hides it,
+because that acts as a ground spring on every
 node. Load the wing away from the KCU, as the aero does.
 
 ## Chordwise load distribution and the pitching moment
@@ -621,7 +675,7 @@ load then reaches the structural NODES is another. `aero2struc.main`'s
   (barycentric). Exact force and in-plane moment, but a point reaches three
   nodes: on a x3 canopy 61% of the nodes stay unloaded.
 - `sections` -- the historical lattice mapping onto the YAML's chordwise node
-  chains; the only route for pss / kite_fem.
+  chains; the only route for the wireframe backend.
 
 `scripts/aerostructural/check_load_transfer.py` compares the three on one aero
 state. Measured on the coarse `cross` canopy (413 canopy nodes):
@@ -695,29 +749,21 @@ trim scripts inherit `is_with_artificial_viscosity` from the kite's as_config
 when `--artificial-viscosity` is not given, so the re-solve lens stays on the
 same model as the deformation.
 
+The `structural_pss:` block keeps its name so stored configs still load, but
+there is no longer anything to choose: the inner solve is Billow's line system,
+minimising the total potential energy.
+
 ```yaml
 structural_pss:
-  solver: pss                  # 'pss' (kinetic damping, default) | 'nlp'
-                               # (exact CasADi/IPOPT minimum-energy solve).
-                               # Same spring physics; measured 2026-09-09 on the
-                               # actuated reference case: nlp is 100-300x faster
-                               # per inner solve (2-3 s -> ~10 ms) and removes
-                               # the ~1 N kinetic-damping leftover that floors
-                               # the coupled relative residual at ~4e-4 -- the
-                               # only way this case converged a 1e-4 gate.
-                               # PSS state (psystem) stays the owner of rest
-                               # lengths/stiffness, so actuation, the stiffness
-                               # ramp and handover are solver-agnostic.
-  nlp_tolerance: 1.0e-8        # IPOPT tol (nlp only)
-  nlp_max_iterations: 1000     # IPOPT iteration cap (nlp only)
-  nlp_anchor_stiffness: 1.0e-3 # [N/m] pins force-free fully-slack nodes (nlp only)
-  dt: 0.005
-  n_internal_time_steps: 100   # must be >> 2000 for convergence check to fire
-  abs_tol: 1.0e-50
-  rel_tol: 1.0e-5
-  max_iter: 500
-  kinetic_energy_tolerance: 1.0e-3
-  fixed_point_indices: [0]
+  # Billow solver settings. Key names carried over from the NLP inner solver
+  # this replaced, so an existing as_config works unchanged.
+  nlp_tolerance: 1.0e-8        # IPOPT tol
+  nlp_max_iterations: 1000     # IPOPT iteration cap
+  nlp_anchor_stiffness: 1.0e-3 # [N/m] pins force-free fully-slack nodes
+  fixed_point_indices: [0]     # the KCU / bridle point
+  # REMOVED with the kinetic damping (2026-09-12): solver, dt, dt_max,
+  # n_internal_time_steps, abs_tol, rel_tol, max_iter,
+  # kinetic_energy_tolerance. They are ignored if present.
 
 aero_structural_solver:
   max_iter: 100
@@ -739,9 +785,10 @@ aero_structural_solver:
   # fixed point. Default relaxation_min_far == relaxation_min = off.
   # relaxation_min_far: 0.3
   # relaxation_release_factor: 30.0
-  # Anderson-accelerated outer fixed point (opt-in; use with
-  # structural_pss.solver: nlp -- PSS's ~1 N inner noise corrupts the
-  # residual differences). Replaces the scalar Aitken update with a vector
+  # Anderson-accelerated outer fixed point (opt-in). The inner solve must be
+  # converged to machine equilibrium for this to work at all -- kinetic
+  # damping's ~1 N leftover corrupted the residual differences, which is one
+  # reason it is gone. Replaces the scalar Aitken update with a vector
   # extrapolation over the last anderson_outer_depth iterates -- the tool
   # for the oscillatory period-4 coupling mode no scalar omega can damp.
   # History resets on any map change (tape actuation, stiffness event);
@@ -893,5 +940,5 @@ Output goes to `results/aerostructural/<kite_name>/<case_folder>/sim_output.h5` 
 ## Required Developer Checks
 
 - Read `structural_geometry_io.main()` before changing how struc_geometry.yaml is parsed; the node index ordering (odd = LE, even = TE) and pulley dict format `[cj, ck, l0_cj_ck, l0_ci_cj, ci]` are load-bearing.
-- Any change to `PssQsmCoupler` must keep `QsmCouplingRequest` / `QsmCouplingResult` stable; the protocol tests check these fields.
+- Any change to `WireframeQsmCoupler` must keep `QsmCouplingRequest` / `QsmCouplingResult` stable; the protocol tests check these fields.
 - Scripts in `scripts/aerostructural/` import shared helpers from `common.py` — add new shared defaults to `CONFIG_DEFAULTS` there, not as literals in individual scripts.

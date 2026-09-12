@@ -33,24 +33,31 @@ src/awetrim/
                          with per-node wind, and the lumped closed form is an
                          integral, not a point evaluation
                          — see src/awetrim/aerodynamics/AGENTS.md
-  aerostructural/    ✅  Shared interfaces: protocols, mapping, convergence, forces, results, utils
-    pss/             ✅  PSS/QSM coupled solver — see src/awetrim/aerostructural/AGENTS.md
-    fem/             🟡  FEM coupling implemented; structural solver still needs
-                         improvement. Its aerostructural_coupled_solver.py is the
-                         SHARED coupled driver — it dispatches over pss /
-                         kite_fem / billow, so a new backend is a branch there,
-                         not a copy. aero2struc.chordwise_distribution now
-                         offers "moment_matched", which places each panel's
-                         load at its own centre of pressure so the LOCAL
-                         pitching moment is conserved (default stays
-                         "cp_file", one fixed 0.291 c station for every panel,
-                         which reproduces stored results)
-    billow/          ✅  Billow/QSM coupling: the standalone minimum-energy
-                         structural model driven against the VSM trim. Reads
+  aerostructural/    ✅  The coupling: shared interfaces (protocols, mapping,
+                         convergence, forces, results, utils) plus one adapter
+                         per Billow fidelity. The structural solver itself is
+                         Billow, a separate package.
+    coupled/         ✅  The coupled solve itself, backend-agnostic.
+                         coupled_solver.py dispatches over wireframe / billow,
+                         so a new backend is a branch there, not a copy;
+                         read_struc_geometry_yaml.py is the ONE geometry reader
+                         both consume and aero2struc.py the ONE load transfer.
+                         aero2struc.chordwise_distribution offers
+                         "moment_matched", which places each panel's load at
+                         its own centre of pressure so the LOCAL pitching
+                         moment is conserved (default stays "cp_file", one
+                         fixed 0.291 c station for every panel, which
+                         reproduces stored results)
+    wireframe/       ✅  Adapter for Billow's WIREFRAME fidelity (cables,
+                         tension-only lines, pulleys) + the PSM production
+                         driver coupled_solver_qsm.py and the geometry reader
+                         structural_geometry_io.py. Was pss/ until 2026-09-12
+    billow/          ✅  Adapter for Billow's FULL fidelity: inflatable
+                         Timoshenko tube beams and wrinkling CST membrane
+                         canopy on top of the same cables and pulleys. Reads
                          struc_geometry_FEM_full.yaml (the only geometry with
-                         tubes and pressure) and replaces the FEM canopy spring
-                         net with wrinkling membrane triangles. Converged on
-                         the LEI-V3 unactuated baseline
+                         tubes and pressure). Converged on the LEI-V3
+                         unactuated baseline
   kinematics/        ✅  course-frame kinematics, B-spline path patterns
   timeseries/        ✅  PhaseParameterized, ReeloutSimple, ReelinSimple, Cycle
   environment/       ✅  Wind (uniform / logarithmic / power_law / explog /
@@ -234,7 +241,7 @@ External dependencies referenced by `pyproject.toml` (VCS installs):
 | Package | Role | Install note |
 |---------|------|-------------|
 | `Vortex-Step-Method` | VSM aerodynamic solver | Installed from GitHub `@main` via `pyproject.toml` (https://github.com/awegroup/Vortex-Step-Method) |
-| `PSS` | Particle System Simulator (structural solver) | Installed from GitHub via `pyproject.toml` (https://github.com/awegroup/Particle_System_Simulator, pinned v1.0.2) |
+| `billow` | Minimum-energy structural solver, both fidelities | Installed from GitHub `@main` via `pyproject.toml` (https://github.com/awegroup/Billow). For local development: `pip install -e ../Billow` |
 | `awes-ekf` | Extended Kalman Filter for flight data | Installed from GitHub; repository used here: https://github.com/ocayon/EKF-AWE |
 | `awesIO` | IO helpers used by scripts | Installed from GitHub (https://github.com/awegroup/awesIO) |
 | `CasADi` | Symbolic computation in `system/` | Required; used heavily in `src/awetrim/system/` |
@@ -242,6 +249,7 @@ External dependencies referenced by `pyproject.toml` (VCS installs):
 Notes
 
  - The `aerodynamics/` module uses the VSM solver via an adapter; see `src/awetrim/aerodynamics/AGENTS.md` for module-specific guidance.
+ - `PSS` (Particle System Simulator) and `kite_fem` were removed on 2026-09-12. Billow replaced both; do not reintroduce either. `tests/aerostructural/test_wireframe_package.py` asserts that importing the package pulls in neither.
  - `scripts/aerostructural/common.py` defines `CONFIG_DEFAULTS` used by multiple scripts; prefer importing it for consistent defaults.
 
 ## Per-kite data layout

@@ -13,7 +13,7 @@ toy wing ``test_billow`` builds.
 import numpy as np
 import pytest
 
-from awetrim.aerostructural.fem import aerostructural_coupled_solver as driver
+from awetrim.aerostructural.coupled import coupled_solver as driver
 from test_billow import build, toy_geometry  # noqa: F401  (fixture)
 
 
@@ -29,9 +29,8 @@ class _RestLengths:
 
 def _step(psystem, target, step, indices=(1, 2), initial=(1.6, 1.6)):
     return driver.update_steering_tape_actuation(
-        config={"structural_solver": "pss"},
+        config={"structural_solver": "wireframe"},
         psystem=psystem,
-        kite_fem_structure=None,
         billow_structure=None,
         kite_connectivity_arr=None,
         steering_tape_indices=list(indices),
@@ -110,13 +109,12 @@ def test_billow_backend_takes_the_steering_through_its_parameters(toy_geometry):
     pulley = toy_geometry["pulley_first"]
     config = {"structural_solver": "billow"}
     initial = [
-        driver._rest_length(config, index, None, None, structure, None)
+        driver._rest_length(config, index, None, structure, None)
         for index in (cable, pulley)
     ]
     half, finalized, updated = driver.update_steering_tape_actuation(
         config=config,
         psystem=None,
-        kite_fem_structure=None,
         billow_structure=structure,
         kite_connectivity_arr=None,
         steering_tape_indices=[cable, pulley],
@@ -125,10 +123,10 @@ def test_billow_backend_takes_the_steering_through_its_parameters(toy_geometry):
         steering_tape_extension_step=0.0,
     )
     assert updated and finalized and half == pytest.approx(0.1)
-    assert driver._rest_length(config, cable, None, None, structure, None) == (
+    assert driver._rest_length(config, cable, None, structure, None) == (
         pytest.approx(initial[0] - 0.1)
     )
-    assert driver._rest_length(config, pulley, None, None, structure, None) == (
+    assert driver._rest_length(config, pulley, None, structure, None) == (
         pytest.approx(initial[1] + 0.1)
     )
 

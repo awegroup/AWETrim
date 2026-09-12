@@ -14,7 +14,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Protocol-oriented PSS/QSM aero-structural coupling."""
+"""Protocol-oriented wireframe/QSM aero-structural coupling."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ from ..mapping import (
 )
 from ..protocols import (
     AeroToStructuralLoadMapper,
-    PssStructuralSolver,
+    WireframeStructuralSolver,
     QsmCouplingRequest,
     QsmCouplingResult,
     QsmIterationRecord,
@@ -39,21 +39,13 @@ from ..protocols import (
 )
 
 
-class PssKineticDampingSolver:
-    """Placeholder adapter name for the package API.
-
-    The production scripts still call the legacy PSS functions directly. This
-    class reserves the public adapter name used by the protocol-level tests.
-    """
-
-
-class PssQsmCoupler:
-    """Fixed-point coupler between a PSS structural solver and QSM trim solver."""
+class WireframeQsmCoupler:
+    """Fixed-point coupler between a wireframe structural solver and a QSM trim."""
 
     def __init__(
         self,
         *,
-        structural_solver: PssStructuralSolver,
+        structural_solver: WireframeStructuralSolver,
         trim_solver: Callable[..., tuple[dict[str, Any], Any]],
         structural_to_aero_mapper: StructuralToAeroMapper | None = None,
         aero_to_structural_load_mapper: AeroToStructuralLoadMapper | None = None,
@@ -266,4 +258,4 @@ def _bounded_increment(final_extension: float, step: float, iteration: int, inte
     return float(np.sign(final_extension) * magnitude)
 
 
-__all__ = ["PssKineticDampingSolver", "PssQsmCoupler"]
+__all__ = ["WireframeQsmCoupler"]

@@ -1,6 +1,6 @@
 import numpy as np
 
-from awetrim.aerostructural.pss.actuation import (
+from awetrim.aerostructural.wireframe.actuation import (
     compute_power_tape_increment,
     update_power_tape_actuation,
     update_steering_tape_actuation,

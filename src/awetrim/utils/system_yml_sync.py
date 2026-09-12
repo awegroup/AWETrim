@@ -21,7 +21,7 @@ from pathlib import Path
 import yaml
 from ruamel.yaml import YAML
 
-from awetrim.aerostructural.pss.structural_geometry_io import (
+from awetrim.aerostructural.wireframe.structural_geometry_io import (
     compute_bridle_stats_from_pss,
     compute_wing_stats_from_pss,
 )

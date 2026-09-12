@@ -14,18 +14,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""FEM-based aerostructural solver — kite_fem structural solver + VSM coupling."""
+"""Wireframe aerostructural backend — Billow's line system coupled to the VSM trim.
 
-from awetrim.aerostructural.fem import (
-    aero2struc,
-    aerostructural_coupled_solver,
-    read_struc_geometry_yaml,
-    structural_kite_fem,
-)
+The bridle-and-lines fidelity: tension-only cables and frictionless pulleys, no
+bending, solved for static equilibrium by energy minimisation. This was the
+Particle System Simulator until 2026-09-12.
+"""
 
-__all__ = [
-    "aero2struc",
-    "aerostructural_coupled_solver",
-    "read_struc_geometry_yaml",
-    "structural_kite_fem",
-]
+from awetrim.aerostructural.wireframe.coupling import WireframeQsmCoupler
+
+__all__ = ["WireframeQsmCoupler"]

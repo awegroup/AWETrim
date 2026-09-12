@@ -8,6 +8,7 @@ from pathlib import Path
 import numpy as np
 
 from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
+from awetrim.plotting.kite_structure import plot_3d_kite_structure
 from awetrim.aerostructural.mapping import BilinearAeroToStructuralLoadMapper
 from awetrim.aerostructural.results import (
     aerostructural_results_root,
@@ -24,10 +25,10 @@ from awetrim.aerostructural.utils import (
     rotate_geometry,
 )
 from awetrim.aerostructural import aerodynamic_vsm
-from awetrim.aerostructural.pss import (
-    aerostructural_coupled_solver_qsm,
+from awetrim.aerostructural.wireframe import (
+    coupled_solver_qsm,
     structural_geometry_io,
-    structural_pss,
+    structural_wireframe,
 )
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.utils.system_config import get_tether
@@ -566,7 +567,7 @@ def solve_deformation(
         )
 
     psystem, pss_initial_conditions, pss_params, struc_nodes_initial = (
-        structural_pss.instantiate(
+        structural_wireframe.instantiate(
             config,
             struc_nodes,
             m_arr,
@@ -579,7 +580,7 @@ def solve_deformation(
         )
     )
     if config["is_with_initial_structure_plot"]:
-        structural_pss.plot_3d_kite_structure(
+        plot_3d_kite_structure(
             struc_nodes,
             kite_connectivity_arr,
             power_tape_index,
@@ -687,7 +688,7 @@ def solve_deformation(
     ########################################
     ### AEROSTUCTURAL COUPLED SIMULATION ###
     ########################################
-    tracking_data, meta = aerostructural_coupled_solver_qsm.main(
+    tracking_data, meta = coupled_solver_qsm.main(
         m_arr=m_arr,
         struc_nodes=struc_nodes,
         struc_nodes_initial=struc_nodes_initial,

@@ -14,8 +14,22 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""PSS-based aerostructural solver — Particle System Simulator + VSM coupling."""
+"""The coupled solve itself: geometry, load transfer, and the fixed-point driver.
 
-from awetrim.aerostructural.pss.coupling import PssKineticDampingSolver, PssQsmCoupler
+Backend-agnostic. ``coupled_solver`` dispatches over the structural backends in
+``..wireframe`` and ``..billow``; ``read_struc_geometry_yaml`` is the one
+geometry reader both of them consume, and ``aero2struc`` is the one load
+transfer. A new backend is a branch in the driver, not a copy of it.
+"""
 
-__all__ = ["PssKineticDampingSolver", "PssQsmCoupler"]
+from awetrim.aerostructural.coupled import (
+    aero2struc,
+    coupled_solver,
+    read_struc_geometry_yaml,
+)
+
+__all__ = [
+    "aero2struc",
+    "coupled_solver",
+    "read_struc_geometry_yaml",
+]

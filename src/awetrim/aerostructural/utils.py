@@ -409,7 +409,7 @@ def compute_kite_aggregate(struc_geometry, system_config) -> dict:
     """
     # Imported lazily so this lightweight, widely-imported module does not pull in
     # the PSS structural solver at import time.
-    from awetrim.aerostructural.pss.structural_geometry_io import main as pss_initialize
+    from awetrim.aerostructural.wireframe.structural_geometry_io import main as pss_initialize
 
     result = pss_initialize(struc_geometry, system_config=system_config)
     struc_nodes, m_arr = result[0], result[1]

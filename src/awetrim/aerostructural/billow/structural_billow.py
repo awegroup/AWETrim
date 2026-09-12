@@ -605,7 +605,7 @@ def _pulley_triplets(
 
     The reader appends the two arms of one rope back to back (``ci-cj`` then
     ``cj-ck``), so consecutive entries pair up -- the same grouping
-    ``pss/structural_nlp.py`` relies on. It is checked here rather than assumed.
+    ``pss/structural_wireframe.py`` relies on. It is checked here rather than assumed.
     """
     indices = [int(i) for i in (pulley_line_indices or [])]
     if len(indices) % 2:
@@ -1186,7 +1186,7 @@ def get_stiffnesses(structure: BillowStructure, n_elements: int) -> Array:
 def set_stiffnesses(structure: BillowStructure, values) -> BillowStructure:
     """Set the cable and pulley stiffnesses [N/m], in the reader's ordering.
 
-    The counterpart of ``pss.structural_pss.set_stiffnesses``: what a stiffness
+    The counterpart of ``pss.structural_wireframe.set_stiffnesses``: what a stiffness
     continuation ramp writes into. Like the rest lengths it is a parameter
     update, not a rebuild. Entries with no cable or pulley counterpart are
     ignored.

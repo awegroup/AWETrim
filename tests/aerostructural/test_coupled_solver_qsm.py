@@ -15,7 +15,7 @@ import numpy as np
 import pytest
 
 driver = pytest.importorskip(
-    "awetrim.aerostructural.pss.aerostructural_coupled_solver_qsm",
+    "awetrim.aerostructural.wireframe.coupled_solver_qsm",
     reason="needs the PSS and VSM solvers",
 )
 

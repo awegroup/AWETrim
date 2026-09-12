@@ -11,7 +11,7 @@ keywords = [
   "aerostructural-simulation",
   "trajectory-optimisation",
   "vortex-step-method",
-  "particle-system-simulator",
+  "minimum-energy-structural-model",
   "reduced-order-modelling",
   "wind-energy",
 ]
@@ -51,9 +51,7 @@ dependencies = [
   "vplot3d @ git+https://github.com/rschmehl/vplot3d.git@main",
   "billow @ git+https://github.com/awegroup/Billow.git@main",
   "VSM @ git+https://github.com/awegroup/Vortex-Step-Method.git@main",
-  "PSS @ git+https://github.com/awegroup/Particle_System_Simulator.git@v1.0.2",
   "awes-ekf @ git+https://github.com/ocayon/EKF-AWE.git@main",
-  "kite_fem @ git+https://github.com/awegroup/kite_fem.git@mass_proportional_regularisation",
   "awesIO @ git+https://github.com/awegroup/awesIO.git@d454992301e1790e069ff850eabf65526545d33c",
 ]
 

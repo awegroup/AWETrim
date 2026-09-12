@@ -27,7 +27,7 @@ from mpl_toolkits.mplot3d.art3d import Line3DCollection, Poly3DCollection
 
 from awetrim import plotting
 from awetrim.aerostructural.billow import structural_billow as sb
-from awetrim.aerostructural.fem import read_struc_geometry_yaml
+from awetrim.aerostructural.coupled import read_struc_geometry_yaml
 from awetrim.aerostructural.utils import load_yaml, rotate_geometry
 from billow.elements.membrane import SLACK, TAUT, WRINKLED, membrane_regimes
 from common import DEFAULT_KITE_NAME, resolve_initial_geometry_rotation_kwargs, resolve_kite_paths

@@ -33,7 +33,7 @@ import yaml as _yaml
 
 from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
 from awetrim.aerostructural import aerodynamic_vsm
-from awetrim.aerostructural.fem import read_struc_geometry_yaml
+from awetrim.aerostructural.coupled import read_struc_geometry_yaml
 from awetrim.aerostructural.mapping import LinearStructuralToAeroMapper
 from awetrim.aerostructural.utils import calculate_cg, load_yaml, rotate_geometry
 from awetrim.system.tether import RigidLumpedTether

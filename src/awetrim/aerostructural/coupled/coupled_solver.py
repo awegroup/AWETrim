@@ -26,9 +26,9 @@ import logging
 from pathlib import Path
 import copy
 import dataclasses
-from . import aero2struc, structural_kite_fem
+from . import aero2struc
 from ..billow import structural_billow
-from ..pss import structural_pss
+from ..wireframe import structural_wireframe
 from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking
 from awetrim import plotting
 from awetrim.aerodynamics.apparent_wind import apparent_wind_at, inflow_state_of
@@ -148,29 +148,6 @@ def _compute_power_tape_increment(
         np.abs(power_tape_extension_step), np.abs(remaining)
     )
     return increment, True
-
-
-def _find_kite_fem_spring_id_from_connectivity(
-    kite_fem_structure,
-    kite_connectivity_arr,
-    connectivity_idx,
-):
-    """
-    Map ASKITE connectivity index to the matching kite_fem spring element index.
-    """
-    ci, cj = [int(v) for v in kite_connectivity_arr[connectivity_idx]]
-    target_key = (min(ci, cj), max(ci, cj))
-
-    for spring_id, spring_element in enumerate(kite_fem_structure.spring_elements):
-        n1 = int(spring_element.spring.n1)
-        n2 = int(spring_element.spring.n2)
-        if (min(n1, n2), max(n1, n2)) == target_key:
-            return spring_id
-
-    raise ValueError(
-        f"Could not map power_tape connectivity index {connectivity_idx} "
-        f"with nodes ({ci}, {cj}) to a kite_fem spring element."
-    )
 
 
 def _canopy_triangles(config, billow_structure):
@@ -423,54 +400,36 @@ def _billow_solved(config, billow_structure):
 
 
 def _rest_length(
-    config, element_index, psystem, kite_fem_structure, billow_structure,
-    kite_connectivity_arr,
+    config, element_index, psystem, billow_structure, kite_connectivity_arr,
 ):
     """Live rest length [m] of one element, in the reader's ordering."""
     solver = config.get("structural_solver")
-    if solver == "pss":
+    if solver == "wireframe":
         return float(psystem.extract_rest_length[element_index])
     if solver == "billow":
         return structural_billow.get_rest_length(billow_structure, element_index)
-    if solver == "kite_fem":
-        spring_id = _find_kite_fem_spring_id_from_connectivity(
-            kite_fem_structure=kite_fem_structure,
-            kite_connectivity_arr=kite_connectivity_arr,
-            connectivity_idx=element_index,
-        )
-        return float(kite_fem_structure.spring_elements[spring_id].l0)
     raise ValueError(f"unknown structural_solver {solver!r}")
 
 
 def _set_rest_length(
-    config, element_index, rest_length, psystem, kite_fem_structure,
-    billow_structure, kite_connectivity_arr,
+    config, element_index, rest_length, psystem, billow_structure,
+    kite_connectivity_arr,
 ):
     """Set one element's rest length [m], in the reader's ordering."""
     solver = config.get("structural_solver")
-    if solver == "pss":
+    if solver == "wireframe":
         psystem.update_rest_length(
             element_index,
             float(rest_length) - float(psystem.extract_rest_length[element_index]),
         )
     elif solver == "billow":
         structural_billow.set_rest_length(billow_structure, element_index, rest_length)
-    elif solver == "kite_fem":
-        spring_id = _find_kite_fem_spring_id_from_connectivity(
-            kite_fem_structure=kite_fem_structure,
-            kite_connectivity_arr=kite_connectivity_arr,
-            connectivity_idx=element_index,
-        )
-        kite_fem_structure.modify_get_spring_rest_length(
-            spring_ids=[spring_id], new_l0s=[float(rest_length)]
-        )
     else:
         raise ValueError(f"unknown structural_solver {solver!r}")
 
 
 def _current_power_tape_length(
-    config, power_tape_index, psystem, kite_fem_structure, billow_structure,
-    kite_connectivity_arr,
+    config, power_tape_index, psystem, billow_structure, kite_connectivity_arr,
 ):
     """Live rest length of the depower tape [m], whichever backend owns it.
 
@@ -482,8 +441,8 @@ def _current_power_tape_length(
         return float("nan")
     try:
         return _rest_length(
-            config, power_tape_index, psystem, kite_fem_structure,
-            billow_structure, kite_connectivity_arr,
+            config, power_tape_index, psystem, billow_structure,
+            kite_connectivity_arr,
         )
     except Exception:  # a diagnostic must never take the run down
         return float("nan")
@@ -518,7 +477,6 @@ def remaining_drift(values, n_ratios=3):
 def update_steering_tape_actuation(
     config,
     psystem,
-    kite_fem_structure,
     billow_structure,
     kite_connectivity_arr,
     steering_tape_indices,
@@ -543,8 +501,8 @@ def update_steering_tape_actuation(
 
     def current():
         lengths = [
-            _rest_length(config, index, psystem, kite_fem_structure,
-                         billow_structure, kite_connectivity_arr)
+            _rest_length(config, index, psystem, billow_structure,
+                         kite_connectivity_arr)
             for index in (left, right)
         ]
         return 0.5 * ((left_0 - lengths[0]) + (lengths[1] - right_0))
@@ -561,8 +519,8 @@ def update_steering_tape_actuation(
     half_difference += increment
     for index, length in ((left, left_0 - half_difference),
                           (right, right_0 + half_difference)):
-        _set_rest_length(config, index, length, psystem, kite_fem_structure,
-                         billow_structure, kite_connectivity_arr)
+        _set_rest_length(config, index, length, psystem, billow_structure,
+                         kite_connectivity_arr)
     logging.info(
         "||--- steering half-difference %.4f m (target %.4f m) | left %.4f m, "
         "right %.4f m",
@@ -575,7 +533,6 @@ def update_steering_tape_actuation(
 def update_power_tape_actuation(
     config,
     psystem,
-    kite_fem_structure,
     kite_connectivity_arr,
     billow_structure,
     power_tape_index,
@@ -586,111 +543,63 @@ def update_power_tape_actuation(
     n_power_tape_steps,
     rest_lengths=None,
 ):
-    """
-    Calculate current power tape extension and update if needed for actuation.
+    """Step the depower tape one increment toward its target extension.
+
+    Backend-agnostic: the tape is addressed by the reader's own element index
+    through ``_rest_length`` / ``_set_rest_length``, so both backends walk the
+    same schedule by construction. It used to be three near-identical branches,
+    which is how they were able to drift apart.
+
+    On the Billow backend a rest length is an NLP parameter, so setting one
+    rebuilds the parameter table and never the compiled graph.
 
     Args:
         config: Configuration dictionary
-        psystem: Particle system (for PSS solver)
-        kite_fem_structure: FEM structure (for kite_fem solver)
-        billow_structure: BillowStructure (for the billow solver)
+        psystem: Wireframe structure (for the wireframe solver)
         kite_connectivity_arr: ASKITE connectivity array
+        billow_structure: BillowStructure (for the billow solver)
         power_tape_index: Index of power tape in connectivity array
         power_tape_extension_step: Increment for power tape extension
         initial_length_power_tape: Initial length of power tape
         power_tape_final_extension: Final desired power tape extension
         is_residual_below_tol: Flag indicating if residual is below tolerance
         n_power_tape_steps: Number of power tape extension steps
-        rest_lengths: Current rest lengths array (for kite_fem solver)
+        rest_lengths: Unused; kept for call-site compatibility
 
     Returns:
         tuple: (delta_power_tape, is_actuation_finalized)
             - delta_power_tape: Current change in power tape length
-            - is_actuation_finalized: True if actuation is complete, False otherwise
+            - is_actuation_finalized: True if actuation is complete
     """
-    is_actuation_finalized = True
+    current_length = _rest_length(
+        config, power_tape_index, psystem, billow_structure, kite_connectivity_arr
+    )
+    delta_power_tape = current_length - initial_length_power_tape
 
-    ## Calculate delta tape lengths based on structural solver
-    if config["structural_solver"] == "pss":
-        current_length = float(psystem.extract_rest_length[power_tape_index])
-        delta_power_tape = current_length - initial_length_power_tape
+    if not is_residual_below_tol:
+        return delta_power_tape, True
 
-        if is_residual_below_tol:
-            increment, should_update = _compute_power_tape_increment(
-                delta_power_tape=delta_power_tape,
-                power_tape_final_extension=power_tape_final_extension,
-                power_tape_extension_step=power_tape_extension_step,
-            )
-            if should_update:
-                psystem.update_rest_length(power_tape_index, increment)
-                current_length = float(psystem.extract_rest_length[power_tape_index])
-                delta_power_tape = current_length - initial_length_power_tape
-                logging.info(
-                    f"||--- delta l_d: {delta_power_tape:.3f}m | new l_d: {current_length:.3f}m | Steps required: {n_power_tape_steps}"
-                )
-                is_actuation_finalized = False
+    increment, should_update = _compute_power_tape_increment(
+        delta_power_tape=delta_power_tape,
+        power_tape_final_extension=power_tape_final_extension,
+        power_tape_extension_step=power_tape_extension_step,
+    )
+    if not should_update:
+        return delta_power_tape, True
 
-    elif config["structural_solver"] == "kite_fem":
-        if kite_connectivity_arr is None:
-            raise ValueError(
-                "kite_connectivity_arr is required for kite_fem power tape actuation."
-            )
-
-        spring_id = _find_kite_fem_spring_id_from_connectivity(
-            kite_fem_structure=kite_fem_structure,
-            kite_connectivity_arr=kite_connectivity_arr,
-            connectivity_idx=power_tape_index,
-        )
-        current_length = float(kite_fem_structure.spring_elements[spring_id].l0)
-        delta_power_tape = current_length - initial_length_power_tape
-
-        if is_residual_below_tol:
-            increment, should_update = _compute_power_tape_increment(
-                delta_power_tape=delta_power_tape,
-                power_tape_final_extension=power_tape_final_extension,
-                power_tape_extension_step=power_tape_extension_step,
-            )
-            if should_update:
-                new_length = current_length + increment
-                kite_fem_structure.modify_get_spring_rest_length(
-                    spring_ids=[spring_id],
-                    new_l0s=[new_length],
-                )
-                delta_power_tape = new_length - initial_length_power_tape
-                logging.info(
-                    f"||--- delta l_d: {delta_power_tape:.3f}m | new l_d: {new_length:.3f}m | Steps required: {n_power_tape_steps}"
-                )
-                is_actuation_finalized = False
-
-    elif config["structural_solver"] == "billow":
-        # Rest lengths are NLP parameters, so this rebuilds the parameter table
-        # and never the compiled graph; the element index is the reader's own,
-        # so power_tape_index needs no translation.
-        current_length = structural_billow.get_rest_length(
-            billow_structure, power_tape_index
-        )
-        delta_power_tape = current_length - initial_length_power_tape
-
-        if is_residual_below_tol:
-            increment, should_update = _compute_power_tape_increment(
-                delta_power_tape=delta_power_tape,
-                power_tape_final_extension=power_tape_final_extension,
-                power_tape_extension_step=power_tape_extension_step,
-            )
-            if should_update:
-                structural_billow.update_rest_length(
-                    billow_structure, power_tape_index, increment
-                )
-                current_length = structural_billow.get_rest_length(
-                    billow_structure, power_tape_index
-                )
-                delta_power_tape = current_length - initial_length_power_tape
-                logging.info(
-                    f"||--- delta l_d: {delta_power_tape:.3f}m | new l_d: {current_length:.3f}m | Steps required: {n_power_tape_steps}"
-                )
-                is_actuation_finalized = False
-
-    return delta_power_tape, is_actuation_finalized
+    _set_rest_length(
+        config, power_tape_index, current_length + increment, psystem,
+        billow_structure, kite_connectivity_arr,
+    )
+    current_length = _rest_length(
+        config, power_tape_index, psystem, billow_structure, kite_connectivity_arr
+    )
+    delta_power_tape = current_length - initial_length_power_tape
+    logging.info(
+        f"||--- delta l_d: {delta_power_tape:.3f}m | new l_d: {current_length:.3f}m "
+        f"| Steps required: {n_power_tape_steps}"
+    )
+    return delta_power_tape, False
 
 
 def log_top_external_force_nodes(
@@ -839,7 +748,6 @@ def main(
     steering_tape_indices=None,
     ### STRUC
     psystem=None,
-    kite_fem_structure=None,
     billow_structure=None,
     canopy_sections=None,
     strut_sections=None,
@@ -877,9 +785,7 @@ def main(
     else:
         f_ext_gravity_default = np.zeros(struc_nodes.shape)
 
-    if config["structural_solver"] == "kite_fem":
-        rest_lengths = kite_fem_structure.modify_get_spring_rest_length()
-    elif config["structural_solver"] == "billow":
+    if config["structural_solver"] == "billow":
         rest_lengths = structural_billow.get_rest_lengths(
             billow_structure, kite_connectivity_arr
         )
@@ -909,9 +815,7 @@ def main(
     start_time = time.time()
     plotting.set_plot_style()
 
-    # Two-phase regularization: phase 1 = with pseudo_dt, phase 2 = without
-    reg_phase = 1  # 1 = regularized, 2 = unregularized (polish)
-    stagnation_check_start = 0  # iteration at which current phase started
+    stagnation_check_start = 0  # iteration the current stagnation window began
 
     # Aitken relaxation state
     omega_relaxation = config["aero_structural_solver"].get("relaxation_factor", 0.3)
@@ -935,8 +839,8 @@ def main(
     initial_lengths_steering = None
     if is_steering_active:
         initial_lengths_steering = [
-            _rest_length(config, int(index), psystem, kite_fem_structure,
-                         billow_structure, kite_connectivity_arr)
+            _rest_length(config, int(index), psystem, billow_structure,
+                         kite_connectivity_arr)
             for index in steering_tape_indices[:2]
         ]
     # A tape half-difference first moves the geometry by millimetres; the
@@ -1152,18 +1056,12 @@ def main(
             ############## INTERNAL FORCE CALCULATION ##############
             ########################################################
             begin_time_f_int = time.time()
-            if config["structural_solver"] == "pss":
+            if config["structural_solver"] == "wireframe":
                 psystem, is_structural_converged, struc_nodes, f_int = (
-                    structural_pss.run_pss(
+                    structural_wireframe.run_wireframe(
                         psystem,
                         f_ext_flat,
                         config["structural_pss"],
-                    )
-                )
-            elif config["structural_solver"] == "kite_fem":
-                kite_fem_structure, is_structural_converged, struc_nodes, f_int = (
-                    structural_kite_fem.run_kite_fem(
-                        kite_fem_structure, f_ext_flat, config["structural_kite_fem"]
                     )
                 )
             elif config["structural_solver"] == "billow":
@@ -1198,25 +1096,10 @@ def main(
                 logging.debug(f"Aitken relaxation omega: {omega_relaxation:.4f}")
 
                 # Sync relaxed positions back to structural solver state
-                if config["structural_solver"] == "pss":
+                if config["structural_solver"] == "wireframe":
                     for idx, particle in enumerate(psystem.particles):
                         particle.update_pos(struc_nodes[idx])
                         particle.update_vel(np.zeros(3))
-                elif config["structural_solver"] == "kite_fem":
-                    # Update kite_fem so the next solve() starts from the
-                    # Aitken-relaxed geometry instead of the original construction
-                    # geometry.  coords_rotations_init is the reference that
-                    # solve() adds displacements to, so moving it here makes the
-                    # Newton-Raphson start near the current state.
-                    flat_xyz = struc_nodes.flatten()
-                    kite_fem_structure.coords_current = flat_xyz.copy()
-                    # Build the 6-DOF vector [x,y,z, 0,0,0] per node
-                    n_nodes = len(struc_nodes)
-                    coords_rot = np.zeros(n_nodes * 6)
-                    for ni in range(n_nodes):
-                        coords_rot[6 * ni : 6 * ni + 3] = struc_nodes[ni]
-                    kite_fem_structure.coords_rotations_init = coords_rot.copy()
-                    kite_fem_structure.coords_rotations_current = coords_rot.copy()
                 elif config["structural_solver"] == "billow":
                     # Seed the next minimum-energy solve from the relaxed
                     # geometry. The reference FRAMES are kept: they carry the
@@ -1229,13 +1112,8 @@ def main(
 
             ### PLOT per iteration
             if config["is_with_struc_plot_per_iteration"]:
-                if config["structural_solver"] == "pss":
+                if config["structural_solver"] == "wireframe":
                     rest_lengths = psystem.extract_rest_length
-                elif config["structural_solver"] == "kite_fem":
-                    rest_lengths = structural_kite_fem.get_rest_lengths(
-                        kite_fem_structure, kite_connectivity_arr
-                    )
-                    # kite_fem_structure.plot_convergence()  # not available in kite_fem
                 elif config["structural_solver"] == "billow":
                     rest_lengths = structural_billow.get_rest_lengths(
                         billow_structure, kite_connectivity_arr
@@ -1391,12 +1269,12 @@ def main(
             # is carried by the constraint reaction force, not by f_int.
             # Without this, the residual includes e.g. the weight of node 0
             # (~92 N) which can never converge to zero.
-            if config["structural_solver"] == "pss":
+            if config["structural_solver"] == "wireframe":
                 for fix_idx in config["structural_pss"]["fixed_point_indices"]:
                     f_residual[3 * fix_idx : 3 * fix_idx + 3] = 0.0
 
             f_residual_list.append(np.linalg.norm(np.abs(f_residual)))
-            if config["structural_solver"] == "pss":
+            if config["structural_solver"] == "wireframe":
                 logging.debug(
                     f"residual force in y-direction: {np.sum([f_residual[1::3]]):.3f}N"
                 )
@@ -1410,8 +1288,8 @@ def main(
             # per-iteration plot block, so it is stale on a normal run and would
             # silently label every actuation step with the built length.
             _tape = _current_power_tape_length(
-                config, power_tape_index, psystem, kite_fem_structure,
-                billow_structure, kite_connectivity_arr,
+                config, power_tape_index, psystem, billow_structure,
+                kite_connectivity_arr,
             )
             tracking.update_tracking_arrays(
                 tracking_data,
@@ -1463,23 +1341,11 @@ def main(
                 stagnation_check_start=stagnation_check_start,
             )
 
-            # Two-phase regularization: on stagnation in phase 1, disable
-            # pseudo_dt and continue to let the solver polish to true equilibrium.
             if is_stagnated:
-                if reg_phase == 1 and config["structural_solver"] == "kite_fem":
-                    reg_phase = 2
-                    stagnation_check_start = i  # reset stagnation window
-                    config["structural_kite_fem"]["pseudo_dt"] = None
-                    logging.info(
-                        f"Phase 1 stagnated at iter {i} "
-                        f"(res={np.linalg.norm(f_residual):.1f}N). "
-                        f"Switching to phase 2: pseudo_dt=None (no regularization)."
-                    )
-                else:
-                    logging.info(
-                        "Classic PS non-converging - residual no longer changes"
-                    )
-                    should_break = True
+                logging.info(
+                    "coupled loop stagnated - the residual no longer changes"
+                )
+                should_break = True
 
             ### STEERING SETTLE (see steering_settle_course_rate_tol)
             if course_rate_since_step is not None:
@@ -1517,7 +1383,6 @@ def main(
                 delta_power_tape, is_actuation_finalized = update_power_tape_actuation(
                     config=config,
                     psystem=psystem,
-                    kite_fem_structure=kite_fem_structure,
                     billow_structure=billow_structure,
                     kite_connectivity_arr=kite_connectivity_arr,
                     power_tape_index=power_tape_index,
@@ -1528,7 +1393,7 @@ def main(
                     n_power_tape_steps=n_power_tape_steps,
                     rest_lengths=(
                         rest_lengths
-                        if config["structural_solver"] in ("kite_fem", "billow")
+                        if config["structural_solver"] == "billow"
                         else None
                     ),
                 )
@@ -1548,7 +1413,6 @@ def main(
                     ) = update_steering_tape_actuation(
                         config=config,
                         psystem=psystem,
-                        kite_fem_structure=kite_fem_structure,
                         billow_structure=billow_structure,
                         kite_connectivity_arr=kite_connectivity_arr,
                         steering_tape_indices=steering_tape_indices,
@@ -1612,12 +1476,8 @@ def main(
         f'alpha = {float(np.rad2deg(results_aero["alpha_at_ac"][mid_idx])):.2f}° (incl. induced velocity, from results_aero["alpha_at_ac"])'
     )
 
-    if config["structural_solver"] == "pss":
+    if config["structural_solver"] == "wireframe":
         rest_lengths = psystem.extract_rest_length
-    elif config["structural_solver"] == "kite_fem":
-        rest_lengths = structural_kite_fem.get_rest_lengths(
-            kite_fem_structure, kite_connectivity_arr
-        )
     elif config["structural_solver"] == "billow":
         rest_lengths = structural_billow.get_rest_lengths(
             billow_structure, kite_connectivity_arr

@@ -21,7 +21,7 @@ import yaml as _yaml
 
 from awetrim import plotting
 from awetrim.aerostructural.billow import structural_billow as sb
-from awetrim.aerostructural.fem import read_struc_geometry_yaml as rd
+from awetrim.aerostructural.coupled import read_struc_geometry_yaml as rd
 from awetrim.aerostructural.utils import load_yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))

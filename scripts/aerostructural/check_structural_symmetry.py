@@ -36,7 +36,7 @@ import numpy as np
 
 from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
 from awetrim.aerostructural.billow import structural_billow as sb
-from awetrim.aerostructural.fem import aero2struc
+from awetrim.aerostructural.coupled import aero2struc
 from common import DEFAULT_KITE_NAME
 
 from check_load_transfer import build, transfer

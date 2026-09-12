@@ -34,12 +34,12 @@ import yaml as _yaml
 
 from awetrim.aerostructural import aerodynamic_vsm
 from awetrim.aerostructural.mapping import BilinearAeroToStructuralLoadMapper
-from awetrim.aerostructural.pss import (
-    aerostructural_coupled_solver_qsm,
+from awetrim.aerostructural.wireframe import (
+    coupled_solver_qsm,
     structural_geometry_io,
-    structural_pss,
+    structural_wireframe,
 )
-from awetrim.aerostructural.pss.actuation import update_steering_tape_actuation
+from awetrim.aerostructural.wireframe.actuation import update_steering_tape_actuation
 from awetrim.aerostructural.utils import load_yaml, rotate_geometry
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.utils.system_config import get_tether
@@ -82,7 +82,7 @@ def _run_one(steering_m, setup):
     cfg["is_save_geometry_snapshots"] = False
 
     struc_nodes = setup["struc_nodes_base"].copy()
-    psystem, _, _, struc_nodes_initial = structural_pss.instantiate(
+    psystem, _, _, struc_nodes_initial = structural_wireframe.instantiate(
         cfg,
         struc_nodes,
         setup["m_arr"],
@@ -126,7 +126,7 @@ def _run_one(steering_m, setup):
         .panel_corner_map
     )
 
-    _, meta = aerostructural_coupled_solver_qsm.main(
+    _, meta = coupled_solver_qsm.main(
         m_arr=setup["m_arr"],
         struc_nodes=struc_nodes,
         struc_nodes_initial=struc_nodes_initial,

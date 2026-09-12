@@ -49,7 +49,7 @@ import numpy as np
 from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
 from awetrim.aerostructural import aerodynamic_vsm
 from awetrim.aerostructural.billow import structural_billow
-from awetrim.aerostructural.fem import aero2struc, read_struc_geometry_yaml
+from awetrim.aerostructural.coupled import aero2struc, read_struc_geometry_yaml
 from awetrim.aerostructural.mapping import (
     BilinearAeroToStructuralLoadMapper,
     LinearStructuralToAeroMapper,
@@ -156,7 +156,7 @@ def build(shared, pattern, refine, positions=None):
         is_with_plot=False,
     )
     # The trim returns loads in ITS frame; the driver rotates the structure
-    # into that frame before mapping (aerostructural_coupled_solver, right after
+    # into that frame before mapping (coupled_solver, right after
     # the aero solve). Skip this and every load is mapped onto a mesh rotated
     # by the trim attitude -- which shows up as a large moment error shared
     # identically by every route, because it is not the mapping's.

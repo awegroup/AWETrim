@@ -16,14 +16,14 @@
 
 """Aerostructural interfaces and adapters."""
 
-from awetrim.aerostructural.pss.coupling import PssKineticDampingSolver, PssQsmCoupler
+from awetrim.aerostructural.wireframe.coupling import WireframeQsmCoupler
 from awetrim.aerostructural.protocols import (
     AeroToStructuralLoadMapper,
     AeroToStructureMap,
     AerodynamicGeometryUpdate,
     DeformableAeroBody,
-    PssStructuralSolver,
-    PssSystem,
+    WireframeStructuralSolver,
+    WireframeSystem,
     QsmAerostructuralCoupler,
     QsmCouplingRequest,
     QsmCouplingResult,
@@ -39,10 +39,9 @@ __all__ = [
     "AeroToStructureMap",
     "AerodynamicGeometryUpdate",
     "DeformableAeroBody",
-    "PssKineticDampingSolver",
-    "PssQsmCoupler",
-    "PssStructuralSolver",
-    "PssSystem",
+    "WireframeQsmCoupler",
+    "WireframeStructuralSolver",
+    "WireframeSystem",
     "QsmAerostructuralCoupler",
     "QsmCouplingRequest",
     "QsmCouplingResult",

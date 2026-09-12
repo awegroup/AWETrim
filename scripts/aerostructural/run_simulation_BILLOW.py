@@ -46,8 +46,8 @@ from awetrim.aerostructural.results import (
 from awetrim.aerostructural.utils import load_yaml, rotate_geometry
 from awetrim.aerostructural import aerodynamic_vsm
 from awetrim.aerostructural.billow import structural_billow
-from awetrim.aerostructural.fem import (
-    aerostructural_coupled_solver,
+from awetrim.aerostructural.coupled import (
+    coupled_solver,
     read_struc_geometry_yaml,
 )
 from awetrim.system.tether import RigidLumpedTether
@@ -282,7 +282,7 @@ def main():
     ########################################
     ### AEROSTRUCTURAL COUPLED SIMULATION ##
     ########################################
-    tracking_data, meta = aerostructural_coupled_solver.main(
+    tracking_data, meta = coupled_solver.main(
         m_arr=m_arr,
         struc_nodes=struc_nodes,
         struc_nodes_initial=struc_nodes_initial,

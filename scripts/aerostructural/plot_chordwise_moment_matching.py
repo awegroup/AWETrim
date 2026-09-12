@@ -27,7 +27,7 @@ import yaml as _yaml
 from awetrim import plotting
 from awetrim.aerostructural import aerodynamic_vsm
 from awetrim.aerostructural.billow import structural_billow
-from awetrim.aerostructural.fem import aero2struc, read_struc_geometry_yaml
+from awetrim.aerostructural.coupled import aero2struc, read_struc_geometry_yaml
 from awetrim.aerostructural.mapping import LinearStructuralToAeroMapper
 from awetrim.aerostructural.utils import calculate_cg, load_yaml, rotate_geometry
 from awetrim.system.tether import RigidLumpedTether

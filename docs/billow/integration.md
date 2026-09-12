@@ -19,7 +19,7 @@ The coupling adds one module and reuses everything else.
 
 ```
 aerostructural/
-  fem/aerostructural_coupled_solver.py   the coupled loop, SHARED
+  fem/coupled_solver.py   the coupled loop, SHARED
   fem/read_struc_geometry_yaml.py        the geometry reader, SHARED
   fem/aero2struc.py                      the load mapping, SHARED
   aerodynamic_vsm.py                     the trim, SHARED

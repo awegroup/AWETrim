@@ -31,7 +31,7 @@ import numpy as np
 from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
 from awetrim.aerostructural.results import aerostructural_results_root, save_sim_output
 from awetrim.aerostructural.billow import structural_billow as sb
-from awetrim.aerostructural.fem import read_struc_geometry_yaml
+from awetrim.aerostructural.coupled import read_struc_geometry_yaml
 from common import DEFAULT_KITE_NAME
 
 from run_chain_depower_BILLOW import DEPOWER_QUADRATIC, build_once, run_chain, span_metrics

@@ -20,8 +20,8 @@ import numpy as np
 import logging
 import math
 import matplotlib.pyplot as plt
-from . import structural_pss
-from . import structural_nlp
+from . import structural_wireframe
+from . import structural_wireframe
 from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking
 from awetrim import plotting
 from .actuation import (
@@ -31,7 +31,6 @@ from .actuation import (
 )
 from ..convergence import (
     check_convergence,
-    compute_adaptive_dt,
     relative_residual_norm,
     resolve_fallback_tolerance,
     resolve_residual_tolerances,
@@ -202,19 +201,12 @@ def main(
         tracking_data (dict): Dictionary containing time histories of positions, forces, etc.
         meta (dict): Dictionary with meta information about the simulation (timing, convergence, etc).
     """
-    # Inner structural solver: PSS kinetic damping (default) or the exact
-    # minimum-energy NLP (structural_pss.solver: nlp). Both share the same
-    # call contract and operate on the same particle-system state, so
-    # actuation, the stiffness ramp and handover work identically.
-    structural_solver_name, structural_solve = (
-        structural_nlp.resolve_structural_solver(
-            config["structural_pss"],
-            psystem,
-            kite_connectivity_arr,
-            pulley_line_indices,
-        )
-    )
-    print(f"--> Running structural solver: {structural_solver_name}")
+    # The inner structural solve is Billow's line system, minimising the total
+    # potential energy. It used to be a choice between PSS kinetic damping and
+    # an equivalent NLP; the relaxation is gone and the NLP is now Billow's, so
+    # there is nothing left to dispatch over.
+    structural_solve = structural_wireframe.run_wireframe
+    print("--> Running structural solver: billow wireframe (minimum energy)")
 
     # DIRECT steering preset (opt-in, ``steering_tape_preset_extension``):
     # set the asymmetric tape rest lengths (left = initial - delta, right =
@@ -348,8 +340,8 @@ def main(
     # modulus ceiling is measured against. Seed the ceiling off a stiffened
     # state instead and it ratchets -- 9x of an already-9x run is 81x, and the
     # bound silently stops bounding anything.
-    k_base = structural_pss.get_stiffnesses(psystem)
-    k_ceiling = structural_pss.modulus_stiffness_ceiling(k_base, max_modulus_factor)
+    k_base = structural_wireframe.get_stiffnesses(psystem)
+    k_ceiling = structural_wireframe.modulus_stiffness_ceiling(k_base, max_modulus_factor)
 
     # The stiffnesses the elongation bound EARNED, if a neighbour is handing
     # them over. They are per-element and cannot be written back into
@@ -395,7 +387,7 @@ def main(
                 )
                 handover_k = None
             k_target = np.clip(factors * k_base, k_base, k_ceiling)
-            structural_pss.set_stiffnesses(psystem, k_target)
+            structural_wireframe.set_stiffnesses(psystem, k_target)
             logging.info(
                 "Stiffness modulus pinned: %s/%s element(s) above the "
                 "geometry's own (max %.2fx, ceiling %.2fx).",
@@ -417,7 +409,7 @@ def main(
             logging.warning("Ignoring handover stiffnesses: non-finite or <= 0.")
         else:
             k_target = np.clip(handover_k, k_base, k_ceiling)
-            structural_pss.set_stiffnesses(psystem, k_target)
+            structural_wireframe.set_stiffnesses(psystem, k_target)
             n_raised = int(np.sum(k_target > k_base * 1.000001))
             logging.info(
                 "Stiffnesses handed over: %s/%s element(s) above the "
@@ -567,26 +559,6 @@ def main(
 
     stagnation_check_start = 0  # iteration at which current phase started
 
-    # Adaptive dt for PSS solver
-    # NOT handed over from a continuation, deliberately. dt is the PSS inner
-    # solve's continuation parameter and dt_initial is the FLOOR of the
-    # adaptive range (compute_adaptive_dt interpolates dt_initial -> dt_max on
-    # the residual). Seeding it with the dt a converged neighbour earned raises
-    # that floor -- measured 0.00895 against a 0.005 config -- so the moment
-    # the new point's residual goes large, the solve cannot take the small step
-    # it needs. That is exactly a coupled wind step: handing 4 m/s to 5 m/s
-    # raises the load 56%, and the structural solve then failed to converge in
-    # 1500 inner iterations, 55 times in one point. The adaptive rule recovers
-    # the right dt from the residual within one iteration anyway, so there was
-    # nothing to gain and a floor to lose.
-    dt_initial = config["structural_pss"]["dt"]
-    #: Last value compute_adaptive_dt returned, so the solve can hand the dt it
-    #: EARNED to the next one instead of making it re-derive it from scratch.
-    adaptive_dt = dt_initial
-    dt_max = config["structural_pss"].get(
-        "dt_max", dt_initial * 10.0
-    )  # Default to 10x initial dt
-
     # Quasi-steady stagnation stop: if rounded opt_x stops changing for N iterations.
     qs_stag_decimals = int(
         config["aero_structural_solver"].get("qs_state_stagnation_decimals", 3)
@@ -684,12 +656,11 @@ def main(
     # silently throws away. A cold solve walks omega down from 0.3 towards the
     # 0.05 floor as the coupling stiffens; a restart from a converged shape
     # starts again at 0.3 and takes a step several times larger than the one
-    # its own base had settled on. Together with an empty residual history
-    # (which resets the adaptive dt to dt_initial) and a missing previous
-    # increment (which leaves Aitken unable to adapt for two more iterations),
-    # that is enough to knock a converged shape off its fixed point on the
-    # first iteration -- the handover then looks like an aero problem when it
-    # is really the loop restarting undamped.
+    # its own base had settled on. Together with a missing previous increment
+    # (which leaves Aitken unable to adapt for two more iterations), that is
+    # enough to knock a converged shape off its fixed point on the first
+    # iteration -- the handover then looks like an aero problem when it is
+    # really the loop restarting undamped.
     #
     # ``solver_state_handover`` carries all three. It is optional and additive:
     # absent, every value below is exactly what a cold solve would use, so a
@@ -728,7 +699,7 @@ def main(
     # ``anderson_outer_depth`` iterates that can damp the oscillatory
     # (period-4) coupling mode no scalar omega can -- the same acceleration
     # idea the VSM gamma loop uses. Only sensible with an EXACT inner solve
-    # (structural_pss.solver: nlp): PSS's ~1 N inner noise corrupts the
+    # (structural_wireframe.solver: nlp): PSS's ~1 N inner noise corrupts the
     # residual differences the extrapolation is built from. The history is
     # reset whenever the fixed-point MAP changes (tape actuation or a
     # stiffness event), and a step whose largest node move exceeds
@@ -1009,27 +980,11 @@ def main(
             ############## INTERNAL FORCE CALCULATION ##############
             ########################################################
             begin_time_f_int = time.time()
-            # Apply adaptive dt based on convergence progress.
-            #
-            # PSS ONLY: dt is the kinetic-damping solver's continuation
-            # parameter. The energy-minimisation solver has no time step --
-            # stiffness is just a coefficient of its objective -- so with
-            # `solver: nlp` this computed a value nothing reads and printed a
-            # per-iteration "Adaptive dt" line that suggested a time step was
-            # in play when none was (2026-09-10).
-            if structural_solver_name == "pss" and len(f_residual_list) > 0:
-                adaptive_dt = compute_adaptive_dt(
-                    f_residual_list,
-                    dt_initial,
-                    dt_max,
-                    residual_tol_active,
-                )
-                config["structural_pss"]["dt"] = adaptive_dt
-                logging.debug(
-                    f"Adaptive dt updated: {adaptive_dt:.6f} "
-                    f"(residual: {f_residual_list[-1]:.3e}{residual_unit})"
-                )
-                print(f"Adaptive dt: {adaptive_dt:.6f} s at iteration {i}")
+            # There is no adaptive time step any more. `dt` was the
+            # kinetic-damping solver's continuation parameter; energy
+            # minimisation has no time step -- stiffness is just a coefficient
+            # of its objective -- so the schedule that used to live here
+            # computed a value nothing read.
             psystem, is_structural_converged, struc_nodes, f_int = (
                 structural_solve(
                     psystem,
@@ -1050,7 +1005,7 @@ def main(
                 # the change would mix two maps.
                 signature = (
                     np.asarray(psystem.extract_rest_length, dtype=float).tobytes()
-                    + structural_pss.get_stiffnesses(psystem).tobytes()
+                    + structural_wireframe.get_stiffnesses(psystem).tobytes()
                 )
                 if signature != anderson_map_signature:
                     anderson_xs.clear()
@@ -1527,7 +1482,7 @@ def main(
                 # ceiling, but the ramp itself defines a floor that rises with
                 # it -- keep the ceiling at least at the ramp's own level.
                 k_ceiling = np.maximum(k_ceiling, k_base * modulus_factor)
-                structural_pss.set_stiffnesses(psystem, k_target)
+                structural_wireframe.set_stiffnesses(psystem, k_target)
                 stiffness_updated_now = True
                 is_convergence = False
                 is_stagnated = False
@@ -1578,7 +1533,7 @@ def main(
                 )
             ):
                 # Restore the whole state, not just the stiffnesses.
-                structural_pss.set_stiffnesses(psystem, k_last_converged)
+                structural_wireframe.set_stiffnesses(psystem, k_last_converged)
                 k_target = k_last_converged.copy()
                 struc_nodes = np.array(struc_nodes_last_converged, copy=True)
                 for particle_index, particle in enumerate(psystem.particles):
@@ -1652,7 +1607,7 @@ def main(
                 )
                 if is_settled and not stiffness_updated_now:
                     k_target, n_stiffened, max_elongation_seen, n_pinned = (
-                        structural_pss.adapt_stiffnesses(
+                        structural_wireframe.adapt_stiffnesses(
                             k_target,
                             elongations,
                             element_indices=stiffness_update_indices,
@@ -1662,7 +1617,7 @@ def main(
                         )
                     )
                     if n_stiffened > 0:
-                        structural_pss.set_stiffnesses(psystem, k_target)
+                        structural_wireframe.set_stiffnesses(psystem, k_target)
                         stiffness_updated_now = True
                         n_stiffness_updates += n_stiffened
                         is_convergence = False
@@ -2144,7 +2099,6 @@ def main(
         #: True when the solve ended clipped. Read it before trusting a shape:
         #: a pinned run did not converge, it ran out of allowed damping.
         "relaxation_pinned": bool(omega_relaxation <= relaxation_min * 1.000001),
-        "dt_final": float(adaptive_dt),
         # Last accepted node increment, flat. Aitken needs a previous residual
         # to adapt at all -- without it a restart runs two iterations blind.
         "node_increment_final": (

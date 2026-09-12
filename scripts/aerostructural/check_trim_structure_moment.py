@@ -17,10 +17,10 @@ and the rigid rotation that would null what the structure is given.
 
 ``--backend`` picks which coupled driver's load assembly to replicate:
 
-``billow``  `fem/aerostructural_coupled_solver.py` on `struc_geometry_FEM_full`
+``billow``  `fem/coupled_solver.py` on `struc_geometry_FEM_full`
             -- the Billow (and kite_fem) path, whose aero loads are spread over
             10 chordwise nodes before being mapped.
-``pss``     `pss/aerostructural_coupled_solver_qsm.py` on the PSM
+``wireframe`` `wireframe/coupled_solver_qsm.py` on the PSM
             photogrammetry geometry -- each panel load applied at its OWN
             centre of pressure through the bilinear corner map, no chordwise
             spread, and the trim carrying the tether when the config says so.
@@ -32,7 +32,7 @@ pitch and a 0.76 deg swing per iteration (fixed 2026-09-12; see
 
 Usage (from the project root):
     python scripts/aerostructural/check_trim_structure_moment.py
-    python scripts/aerostructural/check_trim_structure_moment.py --backend pss
+    python scripts/aerostructural/check_trim_structure_moment.py --backend wireframe
     python scripts/aerostructural/check_trim_structure_moment.py --no-bridle
     python scripts/aerostructural/check_trim_structure_moment.py \
         --from-result billow_steering/cross_steer_p0050mm_bridlefix
@@ -49,8 +49,8 @@ from scipy.optimize import least_squares
 from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
 from awetrim.aerostructural import aerodynamic_vsm, aerodynamic_bridle_line_drag
 from awetrim.aerostructural.billow import structural_billow
-from awetrim.aerostructural.fem import read_struc_geometry_yaml
-from awetrim.aerostructural.fem.aerostructural_coupled_solver import (
+from awetrim.aerostructural.coupled import read_struc_geometry_yaml
+from awetrim.aerostructural.coupled.coupled_solver import (
     _bridle_line_drag,
     _bridle_line_specs_for_vsm,
     _map_aero_to_structure,
@@ -60,8 +60,8 @@ from awetrim.aerostructural.mapping import (
     BilinearAeroToStructuralLoadMapper,
     LinearStructuralToAeroMapper,
 )
-from awetrim.aerostructural.pss import structural_geometry_io
-from awetrim.aerostructural.pss.aerostructural_coupled_solver_qsm import (
+from awetrim.aerostructural.wireframe import structural_geometry_io
+from awetrim.aerostructural.wireframe.coupled_solver_qsm import (
     _bridle_node_pairs,
     _map_aero_loads_to_structure,
 )
@@ -203,7 +203,7 @@ def build_billow(args):
                      debug, f_wing, f_bridle, m_arr, "chordwise placement")
 
 
-def build_pss(args):
+def build_wireframe(args):
     """The same, for the PSS/QSM driver on the PSM photogrammetry geometry."""
     config_path, aero_geometry_path, struc_geometry_path = resolve_kite_paths(
         project_root(), args.kite
@@ -212,7 +212,7 @@ def build_pss(args):
     system_config = _yaml.safe_load(system_config_path.read_text(encoding="utf-8"))
 
     config = load_yaml(config_path)
-    config["structural_solver"] = "pss"
+    config["structural_solver"] = "wireframe"
     config["wind_speed_wind_ref"] = float(args.wind)
     config["aerodynamic"]["gamma_loop_type"] = args.gamma_loop
     if args.no_bridle:
@@ -391,11 +391,11 @@ def budget(state):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--backend", default="billow", choices=("billow", "pss"),
+    parser.add_argument("--backend", default="billow", choices=("billow", "wireframe"),
                         help="which coupled driver's load assembly to replicate")
     parser.add_argument("--wind", type=float, default=4.2)
     parser.add_argument("--panels-per-section", type=int, default=2,
-                        help="billow only; the pss path takes the config's value")
+                        help="billow only; the wireframe path takes the config's value")
     parser.add_argument("--pattern", default="cross", help="billow only")
     parser.add_argument("--refine", type=int, default=1, help="billow only")
     parser.add_argument("--gamma-loop", default="base", choices=("base", "anderson"))
@@ -408,7 +408,7 @@ def main():
     parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
     args = parser.parse_args()
 
-    state = build_billow(args) if args.backend == "billow" else build_pss(args)
+    state = build_billow(args) if args.backend == "billow" else build_wireframe(args)
     m = budget(state)
     results, roll, pitch, yaw = state["results"], *state["attitude"]
     mesh = (f"{args.pattern} x{args.refine}" if args.backend == "billow"

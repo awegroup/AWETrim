@@ -40,7 +40,7 @@ from awetrim.aerostructural.results import aerostructural_results_root, save_sim
 from awetrim.aerostructural.utils import load_yaml, rotate_geometry
 from awetrim.aerostructural import aerodynamic_vsm
 from awetrim.aerostructural.billow import structural_billow
-from awetrim.aerostructural.fem import aerostructural_coupled_solver, read_struc_geometry_yaml
+from awetrim.aerostructural.coupled import coupled_solver, read_struc_geometry_yaml
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.utils.system_config import get_tether
 from common import (
@@ -183,7 +183,7 @@ def run_chain(shared, wind_speed, reach, step, results_dir, steer=0.0, steer_ste
         .panel_corner_map
     )
 
-    tracking, meta = aerostructural_coupled_solver.main(
+    tracking, meta = coupled_solver.main(
         m_arr=m_arr,
         struc_nodes=struc_nodes,
         struc_nodes_initial=struc_nodes.copy(),

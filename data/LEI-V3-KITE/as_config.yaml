@@ -127,23 +127,19 @@ aerodynamic_bridle:
   tape_roll_model: averaged
 
 ## structural pss
+## structural wireframe  (Billow's line system: cables, tension-only lines,
+## pulleys -- see src/awetrim/aerostructural/wireframe/)
+##
+## The block keeps the name `structural_pss` so stored configs still load. The
+## Particle System Simulator and its kinetic damping were removed 2026-09-12;
+## the inner solve is now Billow, minimising the total potential energy. The
+## keys that only ever configured the relaxation (solver, dt, dt_max,
+## n_internal_time_steps, abs_tol, rel_tol, max_iter) are gone and are ignored
+## if a stored config still carries them.
 structural_pss:
-  # Inner structural solver. 'nlp' = exact minimum-energy solve (CasADi/
-  # IPOPT, aerostructural/pss/structural_nlp.py): same springs, pulleys and
-  # tension-only physics as PSS, but converged to machine equilibrium each
-  # call instead of PSS's ~1 N kinetic-damping leftover -- which is what let
-  # the coupled loop close the 1e-4 relative gate and hold one aero branch
-  # through deep depower (2026-09-09 A/B: depower chain 558 -> 311 s with the
-  # trim cap below, steered chain 1.75x + converges u_s 0.20 where PSS
-  # grinds). 'pss' = the historical kinetic-damping solver, byte-identical
-  # legacy path; dt/dt_max/n_internal_time_steps below only apply to it.
-  solver: !!str 'nlp'
-  dt: !!float 0.005 #crucial that this remains low
-  dt_max: !!float 0.01
-  n_internal_time_steps: !!int 100 #was 20, then 200
-  abs_tol: !!float 1.0e-50
-  rel_tol: !!float 1.0e-5
-  max_iter: !!int 500
+  nlp_tolerance: !!float 1.0e-8        # IPOPT tol
+  nlp_max_iterations: !!int 1000       # IPOPT iteration cap
+  nlp_anchor_stiffness: !!float 1.0e-3 # [N/m] pins force-free fully-slack nodes
   fixed_point_indices: [0] #this is the bridle point / KCU
   is_with_diagnostics: !!bool false
   num_node_diagnostics: !!int 34
@@ -257,41 +253,14 @@ tether:
   wind_model: !!str 'uniform'  # 'logarithmic' or 'uniform' (Williams only)
 
 
-## structural kite_fem
-structural_kite_fem:
-  max_iterations: !!int 200 #used to be 2000
-  tolerance: !!float 0.01
-  step_limit: !!float 0.2       # kite_fem default
-  relax_init: !!float 0.5       # kite_fem default
-  relax_update: !!float 0.95    # kite_fem default
-  k_update: !!int 1
-  I_stiffness: !!int 25         # kite_fem default
-  is_with_diagnostics: !!bool false
-  num_node_diagnostics: !!int 34
-  # Regularizes K for Newton-Raphson stability. Does NOT affect
-  # the equilibrium (fe=fi is independent of I_stiffness).
-  # if pseudo_dt != 0 it overrides I_stiffness when set.
-  pseudo_dt: !!float 0.1 #0.05 # pseudo-transient timestep [s] for mass-proportional regularization.
-  k_reg_min: !!float 2000.0 # minimum regularization stiffness [N/m] floor for light bridle/steering nodes
-  print_info: !!bool false
-  update_stiffness: !!bool true #Stiffen each spring with elongations higher than 1% on each iteration
-  max_stiffness: !!int 500000 #Maximum value of spring stiffness, when updated using update_stiffness
-  # relaxbridles: pre-simulation bridle relaxation applied once at initialisation.
-  # pull_down_force_z pulls the KCU node (node 0) downward to tension the bridles
-  # from the unloaded YAML geometry to a realistic hanging position.
-  # A too-small force leaves bridles slack; too large may cause FEM divergence.
-  relaxbridles_pull_down_force_z: !!float -1000.0
-  relaxbridles_settle_force_z: !!float -200.0
-
-
 ## structural billow  (minimum-energy: cables, pulleys, inflatable tube beams,
 ## wrinkling membrane canopy -- see src/awetrim/aerostructural/billow/)
 structural_billow:
   # -- canopy fabric --
-  # The REAL cloth, not a value matched to the kite_fem spring net. Polyester
+  # The REAL cloth, not a value matched to a spring net. Polyester
   # ripstop at the 170 g/m2 struc_geometry records: solid-equivalent thickness
   # 0.170/1380 = 123 um, in-plane modulus ~4 GPa (crimp-derated), so
-  # E*t ~ 4.9e5 N/m. The net's 5000 N/m is E = 20 MPa -- rubber -- and a canopy
+  # E*t ~ 4.9e5 N/m. A spring net's 5000 N/m is E = 20 MPa -- rubber -- and a canopy
   # that soft billows instead of carrying load and bends the struts with it.
   # The modulus is a material ESTIMATE; a tensile test on the cloth replaces it.
   canopy_stiffness: !!float 4.93e5
@@ -307,8 +276,7 @@ structural_billow:
   # -- bridle relaxation --
   # The YAML stores measured rest lengths against measured node positions and
   # the two disagree (Br_main_1 is 11.5% long, i.e. 88 kN at the real EA/l0).
-  # This settles the bridle onto the built wing before the coupled run starts,
-  # the same role structural_kite_fem.relaxbridles plays on the FEM path.
+  # This settles the bridle onto the built wing before the coupled run starts.
   relax_bridles: !!bool true
   relax_pull_force: !!float -100.0
   relax_settle_force: !!float -1.0

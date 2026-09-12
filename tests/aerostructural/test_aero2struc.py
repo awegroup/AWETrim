@@ -9,7 +9,7 @@ construction, so they are checked to roundoff on small synthetic wings.
 import numpy as np
 import pytest
 
-from awetrim.aerostructural.fem.aero2struc import (
+from awetrim.aerostructural.coupled.aero2struc import (
     canopy_surface_coordinates,
     consistent_chordwise_density,
     map_aero_traction_to_membrane,

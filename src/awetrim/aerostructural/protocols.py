@@ -143,7 +143,7 @@ class QsmCouplingResult:
     metadata: Mapping[str, Any]
 
 
-class PssSystem(Protocol):
+class WireframeSystem(Protocol):
     """Minimal Particle System interface required by AWETrim."""
 
     @property
@@ -169,17 +169,17 @@ class PssSystem(Protocol):
         """Advance the PSS kinetic damping solve with flattened external forces."""
 
 
-class PssStructuralSolver(Protocol):
+class WireframeStructuralSolver(Protocol):
     """Adapter that owns PSS instantiation and one structural relaxation call."""
 
     def instantiate(
         self, geometry: StructuralGeometry, settings: Mapping[str, Any]
-    ) -> PssSystem:
+    ) -> WireframeSystem:
         """Create a PSS system from AWETrim structural geometry."""
 
     def solve(
-        self, system: PssSystem, external_force: Array
-    ) -> tuple[PssSystem, bool, Array, Array]:
+        self, system: WireframeSystem, external_force: Array
+    ) -> tuple[WireframeSystem, bool, Array, Array]:
         """Return updated system, convergence flag, nodes, and flattened internal force."""
 
 
@@ -247,8 +247,8 @@ __all__ = [
     "AerodynamicGeometryUpdate",
     "Array",
     "DeformableAeroBody",
-    "PssStructuralSolver",
-    "PssSystem",
+    "WireframeStructuralSolver",
+    "WireframeSystem",
     "QsmAerostructuralCoupler",
     "QsmCouplingRequest",
     "QsmCouplingResult",
