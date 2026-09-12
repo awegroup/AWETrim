@@ -219,11 +219,27 @@ def solver_results():
         )
     )
 
+    # Tether CLASS from the config, as run_simulation_PSM does. The tether-aware
+    # trim type-checks this, so hard-coding the rigid-lumped one here made the
+    # whole fixture error out the moment as_config asked for `williams` --
+    # exactly the drift from the real setup path this test exists to avoid.
     tether_struct = get_tether(system_config)["structure"]
-    tether = RigidLumpedTether(
-        diameter=tether_struct["diameter"],
-        density=tether_struct.get("density", 970.0),
-    )
+    tether_cfg = base_config.get("tether", {}) or {}
+    if str(tether_cfg.get("model", "rigid_lumped")).lower() == "williams":
+        from awetrim.system.williams_tether import WilliamsTether
+
+        tether = WilliamsTether(
+            diameter=tether_struct["diameter"],
+            density=tether_struct.get("density", 970.0),
+            n_elements=int(tether_cfg.get("n_elements", 10)),
+            elastic=bool(tether_cfg.get("is_elastic", False)),
+            cf=float(tether_cfg.get("cf", 0.01)),
+        )
+    else:
+        tether = RigidLumpedTether(
+            diameter=tether_struct["diameter"],
+            density=tether_struct.get("density", 970.0),
+        )
 
     setup = {
         "common": common,
