@@ -114,11 +114,17 @@ def initialize_particles(
         strut_node_le_indices.append(ci)
         strut_node_te_indices.append(cj)
         nodes_per_strut = max(len(node_indices), nodes_per_strut)
-        # COPY: the padding below inserts into these lists, and the YAML's own
-        # node_indices list is what was handed to us -- appending it directly
-        # would write the padding node ids back into the caller's dict, so a
-        # second read of the same loaded geometry would see a pre-padded wing.
-        strut_indices.append(list(node_indices))
+        # NOT a copy, deliberately. The padding loop below inserts into these
+        # lists, and because this IS the YAML's own node_indices list, that is
+        # how the padding nodes reach initialize_wing_structure, which re-reads
+        # struc_geometry["strut_tubes"] to build the strut beam elements. Copy
+        # it and each strut tube loses its padded segments: 97 beam elements
+        # become 77, the struts are no longer continuous, and the unsteered
+        # solve stops being mirror-symmetric (22.9 mm instead of 2e-5 mm).
+        # The cost is that main() mutates the geometry dict it is given, so a
+        # caller that reads one loaded dict twice sees a pre-padded wing the
+        # second time -- load the YAML fresh per call.
+        strut_indices.append(node_indices)
 
     canopy_section_le_indices = [
         idx for idx in struc_node_le_indices if idx not in strut_node_le_indices

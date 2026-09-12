@@ -142,6 +142,12 @@ def main():
                              "rerun under a changed model (a new load transfer, "
                              "say) sits beside the earlier results instead of "
                              "overwriting them")
+    parser.add_argument("--strut-padding", default=None,
+                        choices=("legacy", "bisect_longest"),
+                        help="where the strut padding nodes go (read_struc_geometry_yaml). "
+                             "Default: leave it to the config. Both give the same 97 "
+                             "tube elements and the same reference curvature; they "
+                             "differ in spacing, so this is the knob for a mesh A/B.")
     parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
     args = parser.parse_args()
     suffix = f"_{args.tag}" if args.tag else ""
@@ -156,6 +162,10 @@ def main():
         aerodynamic["is_with_artificial_viscosity"] = False
     overrides = {"aerodynamic": aerodynamic} if aerodynamic else None
     shared = build_once(project, args.kite, args.panels_per_section, overrides)
+    if args.strut_padding:
+        # Safe to set after build_once: the structural reader runs inside
+        # run_chain, which deep-copies shared["config"] at call time.
+        shared["config"]["strut_padding"] = args.strut_padding
     shared["config"]["wind_speed_wind_ref"] = float(args.wind)
     shared["config"]["aero_structural_solver"]["tol"] = float(args.tol)
     shared["config"]["aero_structural_solver"]["max_iter"] = int(args.max_iter)
