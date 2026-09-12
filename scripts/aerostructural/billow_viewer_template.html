@@ -27,6 +27,12 @@
   --load-2:      #3987e5;
   --load-3:      #1c5cab;
   --load-4:      #0d366b;
+  --line-0:      #eeb35f;
+  --line-1:      #e08a35;
+  --line-2:      #c8621c;
+  --line-3:      #9a430f;
+  --line-4:      #642508;
+  --line-slack:  #8a93a6;
   --shadow:      0 1px 2px rgba(23, 27, 37, .08), 0 8px 24px rgba(23, 27, 37, .06);
 }
 @media (prefers-color-scheme: dark) {
@@ -53,6 +59,12 @@
     --load-2:      #3987e5;
     --load-3:      #6da7ec;
     --load-4:      #b7d3f6;
+    --line-0:      #8d5020;
+    --line-1:      #bb6a26;
+    --line-2:      #e3873a;
+    --line-3:      #f4ad62;
+    --line-4:      #ffd69c;
+    --line-slack:  #6f7889;
     --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
   }
 }
@@ -79,6 +91,12 @@
   --load-2:      #3987e5;
   --load-3:      #6da7ec;
   --load-4:      #b7d3f6;
+  --line-0:      #8d5020;
+  --line-1:      #bb6a26;
+  --line-2:      #e3873a;
+  --line-3:      #f4ad62;
+  --line-4:      #ffd69c;
+  --line-slack:  #6f7889;
   --shadow:      0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
 }
 
@@ -122,7 +140,7 @@ h1 {
 main {
   flex: 1;
   display: grid;
-  grid-template-columns: 232px 1fr;
+  grid-template-columns: 264px 1fr;
   min-height: 0;
 }
 @media (max-width: 760px) {
@@ -203,6 +221,16 @@ main {
   color: var(--ink-soft);
 }
 .legend-note { margin: 0; font-size: .72rem; color: var(--ink-faint); }
+.legend-title {
+  margin: 4px 0 0;
+  font-size: .74rem;
+  font-weight: 500;
+  color: var(--ink-soft);
+}
+.legend-title:first-child { margin-top: 0; }
+.ramp-labels.log { position: relative; display: block; height: 1.2em; }
+.ramp-labels.log span { position: absolute; top: 0; white-space: nowrap; }
+.legend .sw-line { width: 12px; height: 0; border-top: 2px dashed var(--line-slack); }
 .tip {
   position: absolute;
   pointer-events: none;
@@ -230,7 +258,7 @@ canvas:active { cursor: grabbing; }
 .note {
   position: absolute;
   left: 1rem;
-  bottom: 1rem;
+  top: 1rem;
   max-width: 30rem;
   padding: 0.7rem 0.85rem;
   border: 1px solid var(--rule);
@@ -324,7 +352,7 @@ footer code {
 
 <header>
   <h1>Billow Kite Viewer</h1>
-  <p class="sub">TU&nbsp;Delft V3, trimmed by the coupled VSM&nbsp;+&nbsp;minimum-energy solve. The canopy is a wrinkling membrane, not a spring net: every triangle is shaded by the aerodynamic load it carries, or by the stress regime it is in. Hover the canopy to read a value; turn on <em>mesh edges</em> to see the triangulation.</p>
+  <p class="sub">TU&nbsp;Delft V3, trimmed by the coupled VSM&nbsp;+&nbsp;minimum-energy solve. The canopy is a wrinkling membrane, not a spring net: every triangle is shaded by the aerodynamic load it carries, or by the stress regime it is in, and every bridle line by its tension &mdash; dashed where it has gone slack. Hover the canopy or a line to read a value; turn on <em>mesh edges</em> to see the triangulation.</p>
 </header>
 
 <main>
@@ -335,8 +363,8 @@ footer code {
     </div>
 
     <div class="group">
-      <h2>Canopy</h2>
-      <div role="radiogroup" aria-label="Shade the canopy by">
+      <h2>Shade by</h2>
+      <div role="radiogroup" aria-label="Shade the canopy and bridle by">
         <label class="check"><input type="radio" name="shading" value="load" checked> Aerodynamic load</label>
         <label class="check"><input type="radio" name="shading" value="regime"> Wrinkling state</label>
         <label class="check"><input type="radio" name="shading" value="plain"> Plain</label>
@@ -383,6 +411,9 @@ footer code {
   and 4&times;10<sup>&minus;5</sup>&nbsp;mm powered, and the symmetric equilibrium is stable. The states
   marked <em>pre&#8209;fix</em> show the artefact: largest at the tips and toward the trailing edge;
   <em>of which shape</em> excludes the small rigid rotation of the whole kite about its single support.
+  A <strong>steered</strong> state is the exception: one steering tape shortened and the other
+  lengthened by the same amount, so its asymmetry is the response, not an error &mdash; the rolled,
+  yawed, turning trim is the rigid part, the steered tip&rsquo;s deflection the shape.
   <code>struc_geometry_FEM_full.yaml</code>, solved by <code>awetrim.structural</code> through
   <code>aerostructural/billow</code>.
 </footer>
@@ -441,6 +472,33 @@ function rampColour(stops, t) {
 }
 function trianglesFor() {
   return current().triangles;
+}
+const LINE_STOPS = ["--line-0", "--line-1", "--line-2", "--line-3", "--line-4"];
+// A line under this tension is drawn as slack. The solver's tension-only cut
+// makes a slack line read exactly zero, so the threshold only has to clear
+// round-off and the 0.1 N rounding of the payload.
+const SLACK_N = 1;
+function tensionsFor() {
+  const s = current();
+  return view.built || !s.cableTension ? null : { cable: s.cableTension, pulley: s.pulleyTension };
+}
+function tensionFraction(t) {
+  return Math.min(1, Math.max(0, Math.log10(Math.max(t, 1)) / Math.log10(DATA.tensionScale)));
+}
+function slackCount(tension) {
+  return [...tension.cable, ...tension.pulley].filter((t) => t < SLACK_N).length;
+}
+function decadeLabels(scale) {
+  // Each decade placed where the log ramp actually reaches it; the ends are
+  // pulled inside the ramp rather than centred off it.
+  const top = Math.log10(scale);
+  const labels = [];
+  for (let k = 0; 10 ** k <= scale; k++) {
+    const f = k / top;
+    const shift = f < 0.05 ? 0 : f > 0.9 ? -100 : -50;
+    labels.push(`<span style="left: ${(100 * f).toFixed(1)}%; transform: translateX(${shift}%)">${10 ** k}</span>`);
+  }
+  return labels.join("");
 }
 
 /* ---- camera -------------------------------------------------------- */
@@ -515,7 +573,7 @@ function draw() {
     slack: cssVar("--slack"), wrinkled: cssVar("--wrinkled"), taut: cssVar("--taut"),
     plain: cssVar("--plain"), tube: cssVar("--tube"),
     cable: cssVar("--cable"), rope: cssVar("--rope"), kcu: cssVar("--kcu"),
-    line: cssVar("--line"),
+    line: cssVar("--line"), lineSlack: cssVar("--line-slack"),
   };
   const regimeColour = [colours.slack, colours.wrinkled, colours.taut];
   const load = view.shading === "load" ? loadFor() : null;
@@ -564,26 +622,33 @@ function draw() {
   }
 
   if (view.bridle) {
-    for (const e of DATA.cables) {
-      prims.push({
-        depth: (screen[e[0]][2] + screen[e[1]][2]) / 2,
-        kind: "line", pts: [screen[e[0]], screen[e[1]]],
-        colour: colours.cable, width: 1.15, cap: "butt",
-      });
-    }
-    for (const p of DATA.pulleys) {
-      for (const e of [[p[0], p[1]], [p[1], p[2]]]) {
-        prims.push({
-          depth: (screen[e[0]][2] + screen[e[1]][2]) / 2,
-          kind: "line", pts: [screen[e[0]], screen[e[1]]],
-          colour: colours.rope, width: 1.15, cap: "butt",
-        });
-      }
-    }
+    // Slack lines are dashed in every mode; in load mode the taut ones take
+    // the tension ramp (log, one scale for every state) and a width to match.
+    const tension = tensionsFor();
+    const lineStops = LINE_STOPS.map(cssVar);
+    const lineStyle = (t, fallback) => {
+      if (tension && t < SLACK_N) return { colour: colours.lineSlack, width: 1.25, dash: [4, 3] };
+      if (!tension || view.shading !== "load") return { colour: fallback, width: 1.15, dash: null };
+      const x = tensionFraction(t);
+      return { colour: rampColour(lineStops, x), width: 1.1 + 1.9 * x, dash: null };
+    };
+    const pushLine = (e, style, line) => prims.push({
+      depth: (screen[e[0]][2] + screen[e[1]][2]) / 2,
+      kind: "line", pts: [screen[e[0]], screen[e[1]]],
+      colour: style.colour, width: style.width, dash: style.dash, cap: "butt", line,
+    });
+    DATA.cables.forEach((e, i) => {
+      pushLine(e, lineStyle(tension ? tension.cable[i] : 0, colours.cable), { set: "cable", index: i });
+    });
+    DATA.pulleys.forEach((p, i) => {
+      const style = lineStyle(tension ? tension.pulley[i] : 0, colours.rope);
+      for (const e of [[p[0], p[1]], [p[1], p[2]]]) pushLine(e, style, { set: "pulley", index: i });
+    });
   }
 
   prims.sort((a, b) => b.depth - a.depth);
   drawnTriangles = prims.filter((p) => p.kind === "tri");   // back to front
+  drawnLines = prims.filter((p) => p.line);
 
   for (const prim of prims) {
     if (prim.kind === "tri") {
@@ -606,7 +671,9 @@ function draw() {
       ctx.strokeStyle = prim.colour;
       ctx.lineWidth = prim.width;
       ctx.lineCap = prim.cap;
+      ctx.setLineDash(prim.dash || []);
       ctx.stroke();
+      ctx.setLineDash([]);
     }
   }
 
@@ -625,7 +692,22 @@ function draw() {
 
 let dragging = null;
 let drawnTriangles = [];
+let drawnLines = [];
 const tip = document.getElementById("tip");
+function segmentDistance(x, y, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / (dx * dx + dy * dy || 1)));
+  return Math.hypot(x - a[0] - t * dx, y - a[1] - t * dy);
+}
+function lineReadout(line) {
+  const tension = tensionsFor();
+  const names = line.set === "cable" ? DATA.cableNames : DATA.pulleyNames;
+  const name = (names && names[line.index]) || (line.set === "cable" ? "line" : "pulley rope");
+  const kind = line.set === "pulley" ? " (pulley rope)" : "";
+  if (!tension) return `${name}${kind}`;
+  const t = tension[line.set][line.index];
+  return `${name}${kind} · ${t < SLACK_N ? "slack" : `${Math.round(t)} N`}`;
+}
 function insideTriangle(x, y, p) {
   const side = (a, b) => (x - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (y - b[1]);
   const d1 = side(p[0], p[1]), d2 = side(p[1], p[2]), d3 = side(p[2], p[0]);
@@ -634,14 +716,25 @@ function insideTriangle(x, y, p) {
 function hover(e) {
   const rect = canvas.getBoundingClientRect();
   const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  // A line within a few pixels wins over the canopy under it: lines are thin
+  // and would otherwise be impossible to point at.
+  let nearest = null, best = 5;
+  for (const prim of drawnLines) {
+    const d = segmentDistance(x, y, prim.pts[0], prim.pts[1]);
+    if (d <= best) { best = d; nearest = prim; }
+  }
   let hit = -1;
-  for (let k = drawnTriangles.length - 1; k >= 0 && hit < 0; k--) {
+  for (let k = drawnTriangles.length - 1; k >= 0 && hit < 0 && !nearest; k--) {
     if (insideTriangle(x, y, drawnTriangles[k].pts)) hit = drawnTriangles[k].index;
   }
-  if (hit < 0) { tip.hidden = true; return; }
-  const load = loadFor(), regime = regimeFor();
-  const value = load ? `${Math.round(load[hit])} Pa` : "no aero load";
-  tip.textContent = `${value} · ${REGIMES[regime[hit]].name}`;
+  if (!nearest && hit < 0) { tip.hidden = true; return; }
+  if (nearest) {
+    tip.textContent = lineReadout(nearest.line);
+  } else {
+    const load = loadFor(), regime = regimeFor();
+    const value = load ? `${Math.round(load[hit])} Pa` : "no aero load";
+    tip.textContent = `${value} · ${REGIMES[regime[hit]].name}`;
+  }
   tip.hidden = false;
   tip.style.left = `${Math.min(x + 14, rect.width - tip.offsetWidth - 8)}px`;
   tip.style.top = `${Math.max(8, y - tip.offsetHeight - 10)}px`;
@@ -684,8 +777,8 @@ const stateLabel = (key) => {
   const s = DATA.states[key];
   return {
     title: s.label,
-    meta: `${s.triangles.length} triangles · ${s.nodes} nodes · `
-        + `${s.symmetric ? "symmetric" : "NOT symmetric"}`,
+    meta: `${s.nodes} nodes · `
+        + (s.tag || `${s.symmetric ? "symmetric" : "NOT symmetric"}`),
   };
 };
 
@@ -729,33 +822,53 @@ function refresh() {
   const load = loadFor();
 
   const legend = document.getElementById("legend");
+  const tension = tensionsFor();
+  const slackRow = tension ? `
+      <div class="row">
+        <span class="sw-line"></span>
+        <span>slack line, under ${SLACK_N} N</span>
+        <span class="pct">${slackCount(tension)}</span>
+      </div>` : "";
+  let canopyLegend = "", lineLegend = "";
   if (view.shading === "load") {
     const scale = DATA.loadScale;
-    legend.innerHTML = load ? `
+    canopyLegend = load ? `
+      <p class="legend-title">Canopy, Pa</p>
       <div class="ramp" style="background: linear-gradient(to right, ${LOAD_STOPS.map((v) => `var(${v})`).join(", ")})"></div>
-      <div class="ramp-labels"><span>0</span><span>${scale / 2}</span><span>${scale} Pa</span></div>
+      <div class="ramp-labels"><span>0</span><span>${scale / 2}</span><span>${scale}</span></div>
       <p class="legend-note">Load per unit area; one scale for every state.</p>`
       : `<p class="legend-note">The built shape carries no aerodynamic load.</p>`;
+    if (tension) {
+      lineLegend = `
+      <p class="legend-title">Bridle lines, N</p>
+      <div class="ramp" style="background: linear-gradient(to right, ${LINE_STOPS.map((v) => `var(${v})`).join(", ")})"></div>
+      <div class="ramp-labels log">${decadeLabels(DATA.tensionScale)}</div>
+      <p class="legend-note">Tension, logarithmic from 1 to ${DATA.tensionScale} N; one scale for every state.</p>${slackRow}`;
+    }
   } else if (view.shading === "regime") {
-    legend.innerHTML = REGIMES.map((r, i) => `
+    canopyLegend = `<p class="legend-title">Canopy</p>` + REGIMES.map((r, i) => `
       <div class="row">
         <span class="sw" style="background: var(${r.varName})"></span>
         <span title="${r.note}">${r.name}</span>
         <span class="pct">${((100 * counts[i]) / total).toFixed(0)}%</span>
       </div>`).join("");
+    lineLegend = slackRow && `<p class="legend-title">Bridle lines</p>${slackRow}`;
   } else {
-    legend.innerHTML = "";
+    lineLegend = slackRow;
   }
+  legend.innerHTML = canopyLegend + lineLegend;
 
   const s = current();
   const rows = [
     ["Triangles", s.triangles.length],
     ["DOF", s.dof],
     ["Residual", view.built ? "—" : `${s.residual.toFixed(2)} N`],
-    ["Left–right mismatch", view.built ? "0.000 mm" : `${s.mismatch.toFixed(1)} mm`],
+    ["Left–right asymmetry", view.built ? "0.000 mm" : `${s.mismatch.toFixed(1)} mm`],
     ["of which shape", view.built ? "0.000 mm"
         : (s.intrinsic == null ? "—" : `${s.intrinsic.toFixed(1)} mm`)],
     ["Wrinkled", `${((100 * counts[1]) / total).toFixed(0)}%`],
+    ["Slack lines", tension
+      ? `${slackCount(tension)} of ${tension.cable.length + tension.pulley.length}` : "—"],
   ];
   if (load) rows.push(["Peak load", `${Math.round(Math.max(...load))} Pa`]);
   document.getElementById("readout").innerHTML = rows

@@ -120,12 +120,19 @@ def build_once(project_dir, kite_name, panels_per_section, overrides=None):
     )
 
 
-def run_chain(shared, wind_speed, reach, step, results_dir):
-    """Walk the tape from its built length to ``reach``, converging at each step."""
+def run_chain(shared, wind_speed, reach, step, results_dir, steer=0.0, steer_step=0.0):
+    """Walk the tape from its built length to ``reach``, converging at each step.
+
+    ``steer`` [m] is a steering tape half-difference (first tape shortened,
+    second lengthened), walked in ``steer_step`` increments -- 0 for one step
+    -- once the depower walk has arrived. 0 leaves the kite unsteered.
+    """
     config = copy.deepcopy(shared["config"])
     config["wind_speed_wind_ref"] = float(wind_speed)
     config["power_tape_final_extension"] = float(reach)
     config["power_tape_extension_step"] = float(step)
+    config["steering_tape_final_extension"] = float(steer)
+    config["steering_tape_extension_step"] = float(steer_step)
 
     # The reader MUTATES the geometry it is handed (initialize_particles inserts
     # the strut padding into strut_tubes' node_indices), so every chain gets its
@@ -134,10 +141,10 @@ def run_chain(shared, wind_speed, reach, step, results_dir):
     reader = read_struc_geometry_yaml.main(
         geometry, config=config, system_config=shared["system_config"]
     )
-    (struc_nodes, m_arr, le_indices, te_indices, power_tape_index, _st, _pn,
-     canopy_sections, strut_sections, _sbp, connectivity, bridle_connectivity,
-     bridle_diameter, l0_arr, k_arr, c_arr, link_types, pulley_line_indices,
-     pulley_dict) = reader
+    (struc_nodes, m_arr, le_indices, te_indices, power_tape_index,
+     steering_tape_indices, _pn, canopy_sections, strut_sections, _sbp,
+     connectivity, bridle_connectivity, bridle_diameter, l0_arr, k_arr, c_arr,
+     link_types, pulley_line_indices, pulley_dict) = reader
 
     struc_nodes = rotate_geometry(
         struc_nodes, **resolve_initial_geometry_rotation_kwargs(config)
@@ -201,6 +208,9 @@ def run_chain(shared, wind_speed, reach, step, results_dir):
         bridle_diameter_arr=bridle_diameter,
         aero2struc_mapping=mapping,
         power_tape_index=power_tape_index,
+        # Only a steered chain hands the driver its tapes: without them the
+        # driver never actuates steering, whatever the config says.
+        steering_tape_indices=steering_tape_indices if steer else None,
         billow_structure=structure,
         canopy_sections=canopy_sections,
         strut_sections=strut_sections,
