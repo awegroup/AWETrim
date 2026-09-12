@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import inspect
 import logging
@@ -84,6 +85,7 @@ def _default_vsm_solver(
     gamma_loop_type: str = "base",
     is_with_artificial_viscosity: bool = False,
     artificial_viscosity_factor: float = 0.035,
+    anderson_max_iterations: int | None = None,
 ) -> VsmSolver:
     try:
         from VSM.core.Solver import Solver
@@ -117,6 +119,17 @@ def _default_vsm_solver(
     # stabilise the loop around stall: a trim within ~1 deg of the stall margin
     # can make the relaxed-Picard iteration oscillate indefinitely, and the
     # unconverged gamma then corrupts the outer trim residuals.
+    # ``anderson_max_iterations`` bounds the accelerated attempt before VSM
+    # falls back to the base loop. The shipped default (100) misclassifies
+    # SLOWLY CONVERGING post-stall states as limit cycles (measured 2026-09-03
+    # on the S5 deformed body at v_a 13, aoa 12/25 deg: fails at 100, converges
+    # by 1000 in 0.3-0.4 s -- ~4x faster than the base loop, same fixed
+    # point), and the 1e-8 Picard fallback then costs ~20x the base-1e-6
+    # solve. Raise it (~1000) for post-stall anderson work; None keeps the
+    # VSM default.
+    kwargs = {}
+    if anderson_max_iterations is not None:
+        kwargs["anderson_max_iterations"] = int(anderson_max_iterations)
     return Solver(
         reference_point=reference_point,
         gamma_initial_distribution_type="zero",
@@ -124,6 +137,7 @@ def _default_vsm_solver(
         gamma_loop_type=gamma_loop_type,
         is_with_artificial_viscosity=is_with_artificial_viscosity,
         artificial_viscosity_factor=artificial_viscosity_factor,
+        **kwargs,
     )
 
 
@@ -273,6 +287,30 @@ def _force_gravity(system_model: AWETrimSystemModel) -> np.ndarray:
         "system_model must expose force_gravity, expression('force_gravity'), "
         "or kite.force_gravity_for(system_model)."
     )
+
+
+class _ZeroGravityEnv:
+    """View of a system model with ``g = 0`` for weightless tether builds.
+
+    ``include_gravity=False`` gates the KITE's weight in the trim residuals,
+    but the tether models read gravity off the system model themselves
+    (``WilliamsTether.tether_shape_symbolic`` via ``env.g``,
+    ``RigidLumpedTether.force_gravity_tether_at_kite_for`` via ``model.g``).
+    A weightless trim must hand those a zero-g environment, or the tether's
+    own weight survives the switch — measured 2026-08-29 as a spurious
+    chi_dot up to 0.29 rad/s at ZERO steering on gravity-free sweeps.
+    Everything except ``g`` delegates to the wrapped model.
+    """
+
+    def __init__(self, env):
+        self._env = env
+
+    def __getattr__(self, name):
+        if name == "_env":  # guard: never recurse before __init__ ran
+            raise AttributeError(name)
+        if name == "g":
+            return 0.0
+        return getattr(self._env, name)
 
 
 def _rotation_matrix(axis: np.ndarray, angle_deg: float) -> np.ndarray:
@@ -459,6 +497,7 @@ def solve_vsm_quasi_steady_trim(
     gamma_loop: str = "base",
     is_with_artificial_viscosity: bool = False,
     artificial_viscosity_factor: float = 0.035,
+    anderson_max_iterations: int | None = None,
     kcu_drag: "KcuDragModel | None" = None,
     gamma_seed: np.ndarray | None = None,
 ) -> tuple[dict[str, Any], VsmBodyAerodynamics]:
@@ -534,6 +573,7 @@ def solve_vsm_quasi_steady_trim(
             gamma_loop,
             is_with_artificial_viscosity=is_with_artificial_viscosity,
             artificial_viscosity_factor=artificial_viscosity_factor,
+            anderson_max_iterations=anderson_max_iterations,
         )
 
     def evaluate_kinematics(x: np.ndarray) -> dict[str, np.ndarray]:
@@ -613,8 +653,10 @@ def solve_vsm_quasi_steady_trim(
     # Per-panel stall onsets, once per trim: the attached-first solve tests
     # every VSM evaluation against them.
     _stall_onsets = _panel_stall_onsets_rad(working_body)
+    reset_attached_first_latch(solver)
 
     def moment_residual(x: np.ndarray) -> np.ndarray:
+        nonlocal _gamma_seed
         x = np.asarray(x, dtype=float)
         cached_x = cached_eval["x"]
         if cached_x is not None and np.array_equal(x, cached_x):
@@ -691,6 +733,8 @@ def solve_vsm_quasi_steady_trim(
             stall_onsets=_stall_onsets,
         )
         timing_counters["solver_s"] += perf_counter() - t0
+        if _solve_accepts_gamma_seed:
+            _gamma_seed = _carry_gamma(res, _gamma_seed)
 
         cmx = float(res.get("cmx", np.nan))
         cmy = float(res.get("cmy", np.nan))
@@ -1325,6 +1369,34 @@ def turn_radius_vs_steering_delta(
     return out
 
 
+def reel_velocity_correction(
+    speed_radial: float,
+    tether_direction: np.ndarray,
+    radial_axis: np.ndarray,
+) -> np.ndarray:
+    """Kite-velocity increment from reeling ALONG THE TETHER, not the radial.
+
+    The winch feeds line at the drum; quasi-statically (shape frozen while the
+    line slides) the kite end moves along the LOCAL tether tangent at that
+    rate. The point-mass state applies the reel speed along the straight
+    radial instead, so the correction to the kite velocity is
+
+        ``delta_v = v_r * (t_hat - e_r)``
+
+    with ``t_hat`` the unit tether tangent at the kite pointing AWAY from the
+    ground (for a sagged/dragged tether it is tilted off ``e_r``) and ``e_r``
+    the straight radial unit vector. Apply it NEGATED to the apparent wind
+    (``va = v_wind - v_kite``). Returns zeros for a zero reel speed or a
+    degenerate direction. Single source of this formula — the trim solvers
+    call it rather than restating it.
+    """
+    t_hat = _as_3vector(tether_direction)
+    norm = float(np.linalg.norm(t_hat))
+    if norm <= 1e-12 or abs(float(speed_radial)) <= 1e-12:
+        return np.zeros(3, dtype=float)
+    return float(speed_radial) * (t_hat / norm - _as_3vector(radial_axis))
+
+
 def solve_vsm_qs_trim_with_williams_tether(
     body_aero: VsmBodyAerodynamics,
     center_of_gravity: np.ndarray,
@@ -1348,10 +1420,12 @@ def solve_vsm_qs_trim_with_williams_tether(
     gamma_loop: str = "base",
     is_with_artificial_viscosity: bool = False,
     artificial_viscosity_factor: float = 0.035,
+    anderson_max_iterations: int | None = None,
     tether_model: str = "williams",
     prescribed_roll_deg: float | None = None,
     gamma_seed: np.ndarray | None = None,
     kcu_drag: "KcuDragModel | None" = None,
+    reel_speed_along_tether: bool = False,
 ) -> tuple[dict[str, Any], VsmBodyAerodynamics]:
     """Coupled VSM trim with a consistent (off-radial) tether force.
 
@@ -1390,6 +1464,13 @@ def solve_vsm_qs_trim_with_williams_tether(
     KCU masses); ``r_kite`` is ``distance_radial * axes.radial`` in the trim
     (VSM) frame. See ``src/awetrim/system/`` for the tether models.
 
+    ``include_gravity=False`` makes the WHOLE problem weightless: it gates the
+    kite's weight in the residuals AND builds the tether without its own
+    weight (Williams shape on a zero-g env, rigid-lumped without the
+    half-weight term). The tether's drag — and, through its mass, the
+    rotational inertial terms — stay on. Before 2026-09-02 the tether's
+    weight survived the switch and contaminated gravity-free comparisons.
+
     ``inertia_cg`` optionally adds the gyroscopic couple of the steady
     co-rotation to the moment balance, as in
     :func:`solve_vsm_quasi_steady_trim`.
@@ -1401,6 +1482,32 @@ def solve_vsm_qs_trim_with_williams_tether(
     roll-moment residual are dropped (5 unknowns / 5 residuals); ``cmx``
     becomes the reaction the steering lines carry, reported as
     ``reaction_roll_moment_nm``.
+
+    ``reel_speed_along_tether`` (default ``False``, preserving every historical
+    result) applies the system model's ``speed_radial`` — semantically the
+    WINCH line rate ``l_dot``, e.g. the logged ``tether_reelout_speed`` — along
+    the LOCAL tether tangent at the kite instead of the straight radial
+    (:func:`reel_velocity_correction`). The tangent is the direction of the
+    tether force at the kite, which is ``net/|net|`` for BOTH tether models:
+    the collapsed Williams shape bakes the kite-end tension in as the trim
+    resultant, and the rigid-lumped force balance drives the tether force to
+    ``-net``. Because the resultant needs the aero solve, each residual
+    evaluation runs TWO VSM passes: the first (radial-reel) pass fixes the
+    direction, the second solves on the corrected apparent wind — the
+    correction's feedback onto the direction itself is second order in the
+    tether tilt, and the two-pass evaluation stays deterministic and smooth in
+    the trim unknowns (unlike history-dependent lagging, which would corrupt
+    the FD Jacobian). ``v_tau`` remains a free unknown and absorbs the course
+    component of the reel velocity; the physical change is the effective
+    radial rate ``v_r * (t_hat . e_r)`` and a normal (sideslip-generating)
+    component ``v_r * (t_hat . e_n)``. Second-order terms knowingly left on
+    the uncorrected state: the transport/centripetal inertial force, the
+    rigid-lumped tether drag's own apparent wind, and the elastic stretch
+    rate. The result carries ``tether_tilt_deg`` (always),
+    ``reel_direction_kite_vsm``, ``speed_radial_input``,
+    ``speed_radial_effective``, ``speed_reel_course`` / ``speed_reel_normal``
+    and ``va_reel_correction_vsm``. The stability linearisation does NOT yet
+    know this flag — linearise only flag-off trims.
     """
     from awetrim.system.williams_tether import WilliamsTether
     from awetrim.utils.reference_frames import transformation_C_from_W
@@ -1447,6 +1554,13 @@ def solve_vsm_qs_trim_with_williams_tether(
     angle_az = float(_numeric_value_for_symbol(system_model, "angle_azimuth"))
     angle_elev = float(_numeric_value_for_symbol(system_model, "angle_elevation"))
     angle_course = float(_numeric_value_for_symbol(system_model, "angle_course"))
+    # Winch line rate l_dot the state carries as speed_radial; only read (and
+    # only physically reinterpreted) under reel_speed_along_tether.
+    speed_radial_value = (
+        float(_numeric_value_for_symbol(system_model, "speed_radial"))
+        if hasattr(system_model, "speed_radial")
+        else 0.0
+    )
 
     _valid_models = ("williams", "rigid_lumped")
     if tether_model not in _valid_models:
@@ -1488,6 +1602,7 @@ def solve_vsm_qs_trim_with_williams_tether(
             gamma_loop,
             is_with_artificial_viscosity=is_with_artificial_viscosity,
             artificial_viscosity_factor=artificial_viscosity_factor,
+            anderson_max_iterations=anderson_max_iterations,
         )
 
     _gamma_seed = None if gamma_seed is None else np.asarray(gamma_seed, dtype=float)
@@ -1579,7 +1694,12 @@ def solve_vsm_qs_trim_with_williams_tether(
         _ktv = ca.MX.sym("kite_tension_vector", 3)
         _omega_sym = ca.MX.sym("omega_wind_shape", 3)
         _sh = tether.tether_shape_symbolic(
-            env=system_model,
+            # A weightless trim (include_gravity=False) must build a
+            # weightless tether too: the shape reads env.g for the per-node
+            # weight, which the kite-side gravity gate does not reach.
+            env=(
+                system_model if include_gravity else _ZeroGravityEnv(system_model)
+            ),
             r_kite=tether.r_kite_sym,
             kite_tension_vector=_ktv,
             tether_length=tether.tether_length,
@@ -1683,11 +1803,6 @@ def solve_vsm_qs_trim_with_williams_tether(
             system_model,
             transformation_c_from_vsm @ system_model.velocity_apparent_wind,
         )
-        umag = float(np.linalg.norm(va))
-        if umag <= 0.0:
-            raise ValueError("Apparent wind magnitude must be positive.")
-        aoa_deg = float(np.rad2deg(np.arctan2(va[2], va[0])))
-        beta_deg = float(np.rad2deg(np.arctan2(va[1], np.hypot(va[0], va[2]))))
 
         # Full transport rate of the steady co-rotation (computed above): the
         # body rotates at Omega_C, so the aero sees the full rotation
@@ -1700,31 +1815,95 @@ def solve_vsm_qs_trim_with_williams_tether(
             else -_as_3vector(axes.radial)
         )
 
-        # rates_in_body_frame=True: use the axis as-is (world components); see
-        # the note in solve_vsm_quasi_steady_trim.
-        working_body.va_initialize(
-            Umag=umag,
-            angle_of_attack=aoa_deg,
-            side_slip=beta_deg,
-            body_rates=omega_c_mag,
-            body_axis=omega_c_axis,
-            reference_point=reference_point,
-            rates_in_body_frame=True,
-        )
-        # Attached family whenever it exists; AV solve seeded from the AV-off
-        # iterate otherwise (solve_vsm_attached_first).
-        res = solve_vsm_attached_first(
-            solver,
-            working_body,
-            _gamma_seed,
-            accepts_seed=_solve_accepts_gamma_seed,
-            stall_onsets=_stall_onsets,
-        )
+        def _aero_at(va_local: np.ndarray) -> dict[str, Any]:
+            nonlocal _gamma_seed
+            umag = float(np.linalg.norm(va_local))
+            if umag <= 0.0:
+                raise ValueError("Apparent wind magnitude must be positive.")
+            aoa_deg = float(np.rad2deg(np.arctan2(va_local[2], va_local[0])))
+            beta_deg = float(
+                np.rad2deg(
+                    np.arctan2(va_local[1], np.hypot(va_local[0], va_local[2]))
+                )
+            )
+            # rates_in_body_frame=True: use the axis as-is (world components);
+            # see the note in solve_vsm_quasi_steady_trim.
+            working_body.va_initialize(
+                Umag=umag,
+                angle_of_attack=aoa_deg,
+                side_slip=beta_deg,
+                body_rates=omega_c_mag,
+                body_axis=omega_c_axis,
+                reference_point=reference_point,
+                rates_in_body_frame=True,
+            )
+            # Attached family whenever it exists; AV solve seeded from the
+            # AV-off iterate otherwise (solve_vsm_attached_first).
+            res = solve_vsm_attached_first(
+                solver,
+                working_body,
+                _gamma_seed,
+                accepts_seed=_solve_accepts_gamma_seed,
+                stall_onsets=_stall_onsets,
+            )
+            if _solve_accepts_gamma_seed:
+                _gamma_seed = _carry_gamma(res, _gamma_seed)
+            return {
+                "res": res,
+                "umag": umag,
+                "aoa_deg": aoa_deg,
+                "beta_deg": beta_deg,
+                "total_aero_force": np.array(
+                    [float(res.get(k, np.nan)) for k in ("Fx", "Fy", "Fz")],
+                    dtype=float,
+                ),
+            }
 
-        total_aero_force = np.array(
-            [float(res.get(k, np.nan)) for k in ("Fx", "Fy", "Fz")],
-            dtype=float,
-        )
+        aero = _aero_at(va)
+
+        # Reeling ALONG THE TETHER, not the straight radial (see the
+        # reel_speed_along_tether docstring paragraph). The tangent at the
+        # kite is the tether-force direction = net/|net| for both tether
+        # models; the stage-1 (radial-reel) net fixes it, and the second VSM
+        # pass solves on the corrected apparent wind. Deterministic in x, so
+        # the outer FD Jacobian stays clean.
+        reel_direction_vsm = _as_3vector(axes.radial)
+        va_reel_correction = np.zeros(3, dtype=float)
+        if reel_speed_along_tether and abs(speed_radial_value) > 1e-9:
+            net_stage1 = (
+                aero["total_aero_force"]
+                + inertial_force_wing
+                + inertial_force_kcu
+                + inertial_force_offset
+                + (gravity_force_total if include_gravity else 0.0)
+                + (
+                    np.zeros(3)
+                    if kcu_drag is None
+                    else kcu_drag.force(
+                        apparent_wind_at(
+                            va, omega_c_vsm, DEFAULT_STATION_KCU, reference_point
+                        ),
+                        axes.radial,
+                        float(solver.rho),
+                    )
+                )
+            )
+            net_mag = float(np.linalg.norm(net_stage1))
+            if net_mag > 1e-9:
+                reel_direction_vsm = net_stage1 / net_mag
+                # va = v_wind - v_kite, so the kite-velocity increment
+                # v_r * (t_hat - e_r) enters the apparent wind negated.
+                va_reel_correction = -reel_velocity_correction(
+                    speed_radial_value, reel_direction_vsm, axes.radial
+                )
+                va = va + va_reel_correction
+                aero = _aero_at(va)
+
+        res = aero["res"]
+        umag = aero["umag"]
+        aoa_deg = aero["aoa_deg"]
+        beta_deg = aero["beta_deg"]
+        total_aero_force = aero["total_aero_force"]
         cmx = float(res.get("cmx", np.nan))
         cmy = float(res.get("cmy", np.nan))
         cmz = float(res.get("cmz", np.nan))
@@ -1808,9 +1987,17 @@ def solve_vsm_qs_trim_with_williams_tether(
             drag_c = _as_numeric_3vector(
                 system_model, rl_tether.drag_tether_at_kite_for(system_model)
             )
-            grav_c = _as_numeric_3vector(
-                system_model,
-                rl_tether.force_gravity_tether_at_kite_for(system_model),
+            # Same gravity gate as the kite terms: a weightless trim carries
+            # the tether's drag but not its half-weight (model.g is read
+            # inside force_gravity_tether_at_kite_for, out of the kite gate's
+            # reach).
+            grav_c = (
+                _as_numeric_3vector(
+                    system_model,
+                    rl_tether.force_gravity_tether_at_kite_for(system_model),
+                )
+                if include_gravity
+                else np.zeros(3, dtype=float)
             )
             f_tether_offrad_vsm = _as_3vector(
                 transformation_c_from_vsm @ (drag_c + grav_c)
@@ -1842,6 +2029,8 @@ def solve_vsm_qs_trim_with_williams_tether(
             "beta_deg": beta_deg,
             "denom_f": denom_f,
             "f_tether_offrad_vsm": f_tether_offrad_vsm,
+            "reel_direction_vsm": reel_direction_vsm,
+            "va_reel_correction": va_reel_correction,
         }
 
     def _trim_payload(x: np.ndarray) -> dict[str, Any]:
@@ -2104,6 +2293,44 @@ def solve_vsm_qs_trim_with_williams_tether(
         "gamma_distribution": payload["res"].get("gamma_distribution"),
         "av_stage": payload["res"].get("av_stage"),
         **stall_fraction_fields(working_body, payload["res"].get("alpha_at_ac")),
+        # Reel-along-tether diagnostics (see the reel_speed_along_tether
+        # docstring paragraph). tether_tilt_deg — the kite-end tether tangent's
+        # angle off the straight radial, from the converged resultant — is
+        # reported ALWAYS, so a flag-off solve still says how big the
+        # conflation it retains is.
+        "reel_speed_along_tether": bool(reel_speed_along_tether),
+        "reel_direction_kite_vsm": _as_3vector(payload["reel_direction_vsm"]),
+        "va_reel_correction_vsm": _as_3vector(payload["va_reel_correction"]),
+        "speed_radial_input": float(speed_radial_value),
+        "speed_radial_effective": float(
+            speed_radial_value
+            * np.dot(_as_3vector(payload["reel_direction_vsm"]), axes.radial)
+        ),
+        "speed_reel_course": float(
+            speed_radial_value
+            * np.dot(_as_3vector(payload["reel_direction_vsm"]), axes.course)
+        ),
+        "speed_reel_normal": float(
+            speed_radial_value
+            * np.dot(_as_3vector(payload["reel_direction_vsm"]), axes.normal)
+        ),
+        "tether_tilt_deg": float(
+            np.rad2deg(
+                np.arccos(
+                    np.clip(
+                        float(
+                            np.dot(
+                                F_kite_vsm
+                                / (float(np.linalg.norm(F_kite_vsm)) + 1e-12),
+                                _as_3vector(axes.radial),
+                            )
+                        ),
+                        -1.0,
+                        1.0,
+                    )
+                )
+            )
+        ),
         "optimizer": opt,
     }
     if prescribed_roll_deg is not None:
@@ -2695,18 +2922,191 @@ def extend_polar_past_onset(polar: Any) -> np.ndarray:
     return arr
 
 
-#: Iteration cap of the AV-off stage of :func:`solve_vsm_attached_first`.
-#: An attached solution converges long before this; a genuinely stalled wing
-#: only oscillates without the regularisation, and the cap bounds what is
-#: paid to find that out before the AV solve takes over.
+#: Iteration budget of the attached stage of :func:`solve_vsm_attached_first`.
+#: Must be generous enough for the predictor to actually LAND on an attached
+#: state -- it is the latch below, not this cap, that bounds the cost of a
+#: stalled one. Measured 2026-09-12 on the unsteered LEI-V3 (bisect mesh):
+#: at 300 the predictor converged on every VSM evaluation, zero bailouts,
+#: 0.02 N in 7 coupled iterations, 94 s. At 40 it missed 69 times, the latch
+#: switched it off, and the run degraded to the unguarded answer -- 0.39 N in
+#: 22 iterations with 89 mm of left-right mismatch, WORSE than never betting
+#: at all (47 mm). Do not shrink this to save time; shrink it and you lose the
+#: solution.
 ATTACHED_FIRST_MAX_ITERATIONS = 300
-#: Opt-in switch of the AV-off stage. OFF by default (2026-09-01): on the
-#: flipped row of a depower continuation (u_dp 0.355, v_a 21) the AV-off
-#: Anderson/Picard iteration did not converge within the cap, so the AV solve
-#: took over from a non-converged iterate and landed stalled-tip anyway --
-#: 3.6x the cost for the same answer. The attached family is held at the
-#: sweep level instead (run_center_window_sweep.py attached guard).
-AV_ATTACHED_FIRST = False
+
+#: Progress test for the attached predictor: iterations with no improvement
+#: better than :data:`ATTACHED_FIRST_STAGNATION_RTOL` after which the
+#: circulation solve is abandoned (VSM ``Solver.stagnation_patience``).
+#:
+#: This is what bounds the cost of betting on a stalled state, and it is NOT
+#: the same lever as the cap above. A cap cannot tell a slow-but-converging
+#: solve from a hopeless one, so lowering it to save time kills the attached
+#: case too -- measured at cap 40: 69 misses and a WORSE answer than never
+#: betting. Progress can tell them apart: the attached predictor keeps
+#: improving all the way to the tolerance, a stalled one flattens out early.
+#: Generous enough not to clip a genuinely slow descent.
+ATTACHED_FIRST_STAGNATION_PATIENCE = 40
+#: Relative improvement over the patience window that counts as progress.
+ATTACHED_FIRST_STAGNATION_RTOL = 0.02
+
+#: Consecutive misses (predictor not converged, or converged past a panel's
+#: onset) after which the attached stage is skipped for the REST of the trim.
+#: A trim that has found itself stalled stays stalled over the root-finder's
+#: neighbouring evaluations, so re-betting on every one of them is pure waste.
+#: Reset once per trim by :func:`reset_attached_first_latch`.
+ATTACHED_FIRST_GIVE_UP_AFTER = 3
+#: Predictor used by the attached stage of :func:`solve_vsm_attached_first`.
+#:
+#: ``"polars"``  every panel polar continued linearly past its stall onset
+#:               (:func:`extend_polar_past_onset`). The post-stall Cl drop is
+#:               what CREATES the stalled-tip fixed point, so removing it
+#:               leaves the circulation iteration single-branched and the
+#:               predictor converges unconditionally. As a bonus the polars
+#:               then have no interior Cl peak, so the solver's own AV gate
+#:               (``Solver._panel_stall_angles``) returns inf and the
+#:               artificial viscosity switches itself off -- no flag to touch.
+#: ``"av_off"``  the original stage: drop the AV term but KEEP the Cl drop.
+#:               This is why the switch was off between 2026-09-01 and
+#:               2026-09-12: on the flipped row of a depower continuation
+#:               (u_dp 0.355, v_a 21) the predictor did not converge within
+#:               the cap, the AV solve took over from a non-converged iterate
+#:               and landed stalled-tip anyway -- 3.6x the cost for the same
+#:               answer. Kept for reproducing that.
+ATTACHED_FIRST_PREDICTOR = "polars"
+
+#: Run the attached stage on every VSM evaluation. OFF by default: it is a
+#: large win on attached states and a large loss on stalled ones, and nothing
+#: found so far makes the loss cheap enough to pay blind.
+#:
+#: The win (unsteered LEI-V3, bisect mesh, 2026-09-12). WITHOUT it the coupled
+#: solve fails outright -- 7.69 N at the 60-iteration ceiling, 539 Anderson
+#: bailouts and 47 mm of left-right mismatch on a mirror-symmetric load case,
+#: i.e. the AV stalled-tip branch locking one side. WITH it, 0.02 N in 7
+#: iterations, 0.026 mm, and no slower (73-94 s against 97 s for the run-level
+#: ``aerodynamic.attached_polars``). Turn it on for work like that.
+#:
+#: The loss (steered LEI-V3, u_s 0.15, legacy mesh, 2026-09-12). The state is
+#: genuinely stalled, so the predictor can never be accepted; it just runs and
+#: loses. 72 cap exhaustions even WITH the latch, 307-366 stage-2 budget
+#: exhaustions, and the coupled residual sitting at 30.8 N by iteration 10
+#: against a stored reference of 0.46 N in 14. Neither seeding rule changed
+#: that, and shrinking the cap to 40 made it worse everywhere (see
+#: ATTACHED_FIRST_MAX_ITERATIONS).
+#:
+#: **On by default since 2026-09-12** (user: "even if it takes longer I would
+#: try first with attached; only if not progressing go to AV"). The physics
+#: argument is that the AV is a no-op below the onset, so wherever an attached
+#: solution exists it solves the REAL model, while the stalled-tip family is a
+#: fixed point only the regularised problem admits -- and it is not a small
+#: difference: on the unactuated LEI-V3 Billow baseline the unguarded default
+#: drove two tip panels 10.4 deg past onset and trimmed at 5665 N against
+#: 1854 N for the attached branch, a factor of three on tether force, with an
+#: attached solution available at +4.7 deg of margin on every panel.
+#:
+#: What made this payable is the PROGRESS bail
+#: (:data:`ATTACHED_FIRST_STAGNATION_PATIENCE`), not a smaller cap. The loss
+#: measured above is a predictor that grinds its full budget on a state where
+#: it can never be accepted; stopping it when it stops improving cuts that
+#: without touching the attached case, which needs its 300.
+#:
+#: Genuinely stalled states still resolve correctly -- the stage is rejected,
+#: the latch turns it off for the rest of the trim, and stage 2 solves the
+#: true post-stall problem (steered LEI-V3 at u_s 0.20: `av_stage="latched"`).
+#: Set False to reproduce a pre-2026-09-12 result.
+AV_ATTACHED_FIRST = True
+
+
+def _attached_polar_tables(body: Any) -> list:
+    """Each panel's polar continued past its stall onset, cached on the panel.
+
+    Keyed on the ORIGINAL table object, so a body whose polars are rebuilt
+    (a re-meshed wing, a reused solver) recomputes instead of silently serving
+    the previous wing's tables.
+    """
+    tables = []
+    for panel in getattr(body, "panels", None) or ():
+        original = getattr(panel, "_panel_polar_data", None)
+        if original is None:
+            tables.append(None)
+            continue
+        cached = getattr(panel, "_awetrim_attached_polar", None)
+        if cached is None or cached[0] is not original:
+            cached = (original, extend_polar_past_onset(original))
+            panel._awetrim_attached_polar = cached
+        tables.append(cached[1])
+    return tables
+
+
+@contextlib.contextmanager
+def _attached_polars_installed(body: Any):
+    """Swap the extended polars onto the panels for the duration of the block.
+
+    The solver re-reads ``body_aero.panels`` and rebuilds its viscosity context
+    on every ``solve()``, and ``Panel.compute_cl`` interpolates the attribute
+    live, so this needs no body rebuild. Restored in a finally, including on a
+    solver exception -- leaving extended polars installed would silently turn
+    every later solve into an attached one.
+    """
+    panels = list(getattr(body, "panels", None) or ())
+    extended = _attached_polar_tables(body)
+    originals = [getattr(p, "_panel_polar_data", None) for p in panels]
+    try:
+        for panel, table in zip(panels, extended):
+            if table is not None:
+                panel._panel_polar_data = table
+        yield
+    finally:
+        for panel, table in zip(panels, originals):
+            if table is not None:
+                panel._panel_polar_data = table
+
+
+#: Seed each VSM evaluation of a trim with the previous evaluation's converged
+#: circulation. OFF: measured 2026-09-12 on the unsteered LEI-V3 baseline as
+#: 175 s against 94 s for a bit-identical answer (0.02 N, 7 coupled iterations,
+#: span 7.947 m). The coupled loop moves the structure between trims, so a
+#: carried circulation is stale against the new geometry and the iteration
+#: spends longer unwinding it than starting clean.
+CARRY_GAMMA_BETWEEN_EVALUATIONS = False
+
+
+def _carry_gamma(res: dict, previous):
+    """The circulation to seed the NEXT VSM evaluation of a trim with.
+
+    VSM's ``gamma_initial_distribution_type="previous"`` is a dead option -- it
+    returns ``np.zeros`` and the solver keeps no history -- so the carry has to
+    be done by the caller. Successive evaluations inside one trim differ by a
+    small change in alpha/roll (a finite-difference step, most of the time), so
+    their circulations are nearly identical and a cold start throws that away.
+    Carrying it also keeps an FD pair on the SAME branch near stall, which is
+    what makes the Jacobian trustworthy.
+
+    Only a converged, finite distribution is carried: seeding the next
+    evaluation from a failed one propagates the failure.
+    """
+    if not CARRY_GAMMA_BETWEEN_EVALUATIONS:
+        return previous
+    if not bool(res.get("gamma_converged", True)):
+        return previous
+    gamma = res.get("gamma_distribution")
+    if gamma is None:
+        return previous
+    gamma = np.asarray(gamma, dtype=float).ravel()
+    return gamma if gamma.size and np.all(np.isfinite(gamma)) else previous
+
+
+def reset_attached_first_latch(solver: Any) -> None:
+    """Re-arm the attached stage for a new trim.
+
+    The latch counts consecutive misses so a trim that has gone stalled stops
+    re-betting on every root-finder evaluation. It is per-trim state, not per
+    kite, so it has to be cleared when the trim starts -- otherwise one stalled
+    trim disables the predictor for every later trim sharing the solver.
+    """
+    try:
+        solver._awetrim_attached_misses = 0
+    except AttributeError:  # a mock or a slotted solver
+        pass
 
 
 def solve_vsm_attached_first(
@@ -2751,29 +3151,65 @@ def solve_vsm_attached_first(
         return solver.solve(body)
 
     av_on = bool(getattr(solver, "is_with_artificial_viscosity", False))
-    if not av_on or not AV_ATTACHED_FIRST:
+    misses = int(getattr(solver, "_awetrim_attached_misses", 0) or 0)
+    # Per-SOLVER override of the module default, so a run can opt in or out
+    # through its config (``aerodynamic.attached_first``) instead of editing a
+    # module constant -- which is not settable per run and so left drivers that
+    # should have opted in unable to. Set by aerodynamic_vsm.initialize.
+    av_first = bool(getattr(solver, "_awetrim_attached_first", AV_ATTACHED_FIRST))
+    if not av_on or not av_first or misses >= ATTACHED_FIRST_GIVE_UP_AFTER:
         res = plain(gamma_seed)
-        res["av_stage"] = None
+        res["av_stage"] = "latched" if av_on and av_first else None
         return res
 
-    cap = getattr(solver, "max_iterations", None)
-    solver.is_with_artificial_viscosity = False
-    if isinstance(cap, (int, float)) and cap > ATTACHED_FIRST_MAX_ITERATIONS:
-        solver.max_iterations = ATTACHED_FIRST_MAX_ITERATIONS
-    try:
-        res0 = plain(gamma_seed)
-    finally:
-        solver.is_with_artificial_viscosity = True
-        if cap is not None:
-            solver.max_iterations = cap
-
+    # ORIGINAL onsets, read before anything is swapped: the acceptance test is
+    # "below the onset of the polar the real model uses", not of the predictor's.
     onsets = (
         np.asarray(stall_onsets, dtype=float)
         if stall_onsets is not None
         else _panel_stall_onsets_rad(body)
     )
+
+    # -- stage 1: the attached predictor -----------------------------------
+    cap = getattr(solver, "max_iterations", None)
+    capped = isinstance(cap, (int, float)) and cap > ATTACHED_FIRST_MAX_ITERATIONS
+    use_polars = ATTACHED_FIRST_PREDICTOR == "polars"
+    if capped:
+        solver.max_iterations = ATTACHED_FIRST_MAX_ITERATIONS
+    if not use_polars:
+        solver.is_with_artificial_viscosity = False
+    # Stop the predictor as soon as it stops improving. Only this stage gets
+    # it: stage 2 is the answer the caller keeps, and must have its full budget.
+    stagnation_prev = getattr(solver, "stagnation_patience", 0)
+    rtol_prev = getattr(solver, "stagnation_rtol", 0.05)
+    try:
+        solver.stagnation_patience = ATTACHED_FIRST_STAGNATION_PATIENCE
+        solver.stagnation_rtol = ATTACHED_FIRST_STAGNATION_RTOL
+    except AttributeError:  # a mock or a slotted solver
+        pass
+    try:
+        if use_polars:
+            # The extended polars have no interior Cl peak, so the solver's own
+            # AV gate returns inf and the viscosity is a no-op: no flag to set.
+            with _attached_polars_installed(body):
+                res0 = plain(gamma_seed)
+        else:
+            res0 = plain(gamma_seed)
+    finally:
+        if not use_polars:
+            solver.is_with_artificial_viscosity = True
+        if capped:
+            solver.max_iterations = cap
+        try:
+            solver.stagnation_patience = stagnation_prev
+            solver.stagnation_rtol = rtol_prev
+        except AttributeError:
+            pass
+
+    # -- accept if it is already a solution of the TRUE model ---------------
+    converged = bool(res0.get("gamma_converged", True))
     alpha = res0.get("alpha_at_ac")
-    attached = bool(res0.get("gamma_converged", True))
+    attached = converged
     if attached and alpha is not None and onsets.size:
         alpha = np.asarray(alpha, dtype=float).ravel()
         if alpha.shape == onsets.shape:
@@ -2784,17 +3220,37 @@ def solve_vsm_attached_first(
         else:
             attached = False
     if attached:
+        # A hit re-arms the latch: the wing can come back below the onset as the
+        # root-finder moves, and a state that is attached again deserves the bet.
+        try:
+            solver._awetrim_attached_misses = 0
+        except AttributeError:
+            pass
         res0["av_stage"] = "attached"
         return res0
 
-    seed = res0.get("gamma_distribution")
-    seed = (
-        np.asarray(seed, dtype=float).ravel()
-        if seed is not None and np.all(np.isfinite(np.asarray(seed, dtype=float)))
-        else gamma_seed
-    )
-    res1 = plain(seed)
+    try:
+        solver._awetrim_attached_misses = misses + 1
+    except AttributeError:
+        pass
+
+    # -- stage 2: the true model, on the caller's seed ----------------------
+    # NOT seeded from the predictor, though the evidence for that is weaker
+    # than it looks. Seeding from a NON-converged predictor is clearly wrong
+    # (2026-09-01: the av_off stage cost 3.6x for the same answer). Seeding
+    # from a converged-but-rejected one is a good solution on the WRONG
+    # BRANCH, which ought to be worse still -- but measured on a steered
+    # LEI-V3 (u_s 0.15, 2026-09-12) it makes no difference: predictor-seeded
+    # gave 366 stage-2 budget exhaustions and 30.8 N at coupled iteration 10,
+    # caller-seeded 307 and 30.775 N. The seed is not what hurts there; the
+    # predictor running at all is (see AV_ATTACHED_FIRST). Keeping the
+    # caller's seed because it is the defensible one, not because it is faster.
+    res1 = plain(gamma_seed)
     res1["av_stage"] = "stalled"
+    res1["attached_predictor_converged"] = converged
+    res1["attached_predictor_stagnated"] = bool(
+        getattr(solver, "last_stagnated", False)
+    )
     return res1
 
 
@@ -3353,7 +3809,14 @@ def compute_vsm_trim_stability_derivatives(
         try:
             tether.elastic = _elastic_build
             shape = tether.tether_shape_symbolic(
-                env=system_model,
+                # Weightless tether for a weightless linearisation, matching
+                # the trim's own gate (see solve_vsm_qs_trim_with_williams_
+                # tether): the shape reads env.g for the per-node weight.
+                env=(
+                    system_model
+                    if include_gravity
+                    else _ZeroGravityEnv(system_model)
+                ),
                 r_kite=r_kite_sym,
                 tension_kite=tension_sym,
                 omega=ca.DM(omega_wind),
@@ -4123,6 +4586,7 @@ def compute_vsm_trim_stability_derivatives(
     stall_margin_min_deg = float("nan")
     n_stalled_panels: int | None = None
     _stall_onsets = _panel_stall_onsets_rad(working_body)
+    reset_attached_first_latch(solver)
     _alpha_eff = _res_baseline.get("alpha_at_ac")
     if _alpha_eff is not None and _stall_onsets.size:
         _alpha_eff = np.ravel(np.asarray(_alpha_eff, dtype=float))

@@ -121,6 +121,43 @@ def test_solve_trim_accepts_applied_moment_nm():
     assert sig.parameters["applied_moment_nm"].default is None
 
 
+def test_williams_trim_accepts_reel_speed_along_tether():
+    """The reel-along-tether switch is optional and off by default."""
+    from awetrim.aerodynamics.vsm_quasi_steady import (
+        solve_vsm_qs_trim_with_williams_tether,
+    )
+
+    sig = inspect.signature(solve_vsm_qs_trim_with_williams_tether)
+    assert "reel_speed_along_tether" in sig.parameters
+    assert sig.parameters["reel_speed_along_tether"].default is False
+    # The tetherless trim has no tether to take a tangent from.
+    assert "reel_speed_along_tether" not in inspect.signature(
+        solve_vsm_quasi_steady_trim
+    ).parameters
+
+
+def test_reel_velocity_correction_geometry():
+    """delta_v = v_r (t_hat - e_r): zero when degenerate, exact otherwise."""
+    from awetrim.aerodynamics.vsm_quasi_steady import reel_velocity_correction
+
+    radial = np.array([0.0, 0.0, 1.0])
+    # Zero reel speed and zero direction both collapse to no correction.
+    assert np.allclose(
+        reel_velocity_correction(0.0, np.array([0.1, 0.0, 1.0]), radial), 0.0
+    )
+    assert np.allclose(reel_velocity_correction(-4.0, np.zeros(3), radial), 0.0)
+    # A radially aligned tether gives no correction regardless of |t_hat|.
+    assert np.allclose(reel_velocity_correction(-4.0, 5.0 * radial, radial), 0.0)
+    # Tilted tangent: the input is normalised, and the correction is
+    # v_r * (t_hat - e_r) exactly.
+    tilt = np.deg2rad(5.0)
+    t_hat = np.array([np.sin(tilt), 0.0, np.cos(tilt)])
+    delta = reel_velocity_correction(-4.0, 3.0 * t_hat, radial)
+    assert np.allclose(delta, -4.0 * (t_hat - radial))
+    # Radial component is the sag-projection deficit v_r (cos(tilt) - 1).
+    assert np.isclose(delta @ radial, -4.0 * (np.cos(tilt) - 1.0))
+
+
 def test_turn_radius_vs_steer_moment_signature():
     sig = inspect.signature(turn_radius_vs_steer_moment)
     params = list(sig.parameters)

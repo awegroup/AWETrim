@@ -39,6 +39,7 @@ from awetrim.aerodynamics.vsm_quasi_steady import (
     extend_polar_past_onset,
     solve_quasi_steady_state,
     solve_vsm_qs_trim_with_williams_tether,
+    AV_ATTACHED_FIRST as _AV_ATTACHED_FIRST_DEFAULT,
     DEFAULT_TRANSFORMATION_C_FROM_VSM,
 )
 
@@ -278,6 +279,15 @@ def initialize(
         # trim this solver calls unless `allowed_error` is ~1e-8. Set the two
         # together or not at all.
         gamma_loop_type=aero_cfg.get("gamma_loop_type", "base"),
+        # Anderson headroom instead of the Picard fallback (2026-09-03):
+        # across the 2019+2025 steering campaigns the base-loop fallback
+        # rescued 99 of ~92,400 Anderson failures (0.1%) while costing up to
+        # two 1500-iteration base loops per failure. 1000 / False are the
+        # VSM defaults too; the keys exist so a kite config can dial back.
+        anderson_max_iterations=int(aero_cfg.get("anderson_max_iterations", 1000)),
+        anderson_fallback_to_base=bool(
+            aero_cfg.get("anderson_fallback_to_base", False)
+        ),
     )
 
     # For QSM, wind speed comes from system model configuration (wind_speed_wind_ref).
@@ -298,6 +308,17 @@ def initialize(
     # trim on the true polars and discards the rest. The stall mask this
     # adapter logs is built from the extended polars and reports nothing --
     # the validation is the caller's, not this log line.
+    # ATTACHED-FIRST branch finder, per run. Defaults to the module's own
+    # AV_ATTACHED_FIRST (True since 2026-09-12): try the attached branch first
+    # on every VSM evaluation and keep it when the whole wing comes out below
+    # its stall onset, falling through to the true post-stall problem when it
+    # does not. Set `aerodynamic.attached_first: false` to reproduce an older
+    # result. Stored on the solver rather than mutating the module global, so
+    # two runs in one process cannot fight over it.
+    vsm_solver._awetrim_attached_first = bool(
+        aero_cfg.get("attached_first", _AV_ATTACHED_FIRST_DEFAULT)
+    )
+
     if bool(aero_cfg.get("attached_polars", False)):
         initial_polar_data = [
             extend_polar_past_onset(polar) for polar in initial_polar_data
