@@ -64,6 +64,14 @@ def setup_tracking_arrays(n_pts, t_vector, n_panels=0, n_frames=0):
     # apparent speed it flew at -- the whole chain collapses to its last point.
     arrays["tape_length"] = np.full(nt, np.nan)
     arrays["speed_apparent"] = np.full(nt, np.nan)
+    # Steering tape half-difference [m] (left shortened, right lengthened by
+    # it), and the trim unknowns [kite_speed, roll, pitch, yaw, course_rate]
+    # each aero solve returned. The attitude entries are INCREMENTS: the
+    # driver rotates the geometry by them and restarts the next trim at zero,
+    # so the kite's attitude is their composition over the run, not the last
+    # row.
+    arrays["steering_half_difference"] = np.full(nt, np.nan)
+    arrays["trim_state"] = np.full((nt, 5), np.nan)
     return arrays
 
 
@@ -96,6 +104,8 @@ def update_tracking_arrays(
     solved_positions=None,
     tape_length=None,
     speed_apparent=None,
+    steering_half_difference=None,
+    trim_state=None,
 ):
     """
     Update tracking arrays with simulation results for a single time step.
@@ -136,9 +146,13 @@ def update_tracking_arrays(
 
     # 4) Flight and actuation state, so a chain can be sliced apart later
     for name, value in (("tape_length", tape_length),
-                        ("speed_apparent", speed_apparent)):
+                        ("speed_apparent", speed_apparent),
+                        ("steering_half_difference", steering_half_difference)):
         if value is not None and name in tracking_data:
             tracking_data[name][idx] = float(value)
+    if trim_state is not None and "trim_state" in tracking_data:
+        state = np.ravel(np.asarray(trim_state, dtype=float))
+        tracking_data["trim_state"][idx, : min(state.size, 5)] = state[:5]
 
     # 5) Rotational state, where the backend has any
     if frames is not None and "frames" in tracking_data:
