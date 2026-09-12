@@ -52,13 +52,13 @@ va(r) = va_free - omega x (r - r0)
 `va_free` is the apparent wind at the reference point `r0`, `omega` the body
 rate. The sign is the VSM's own (`BodyAerodynamics`'s `va` setter builds its
 panel distribution as `va_distribution += -cross(body_rates, control_points -
-r0)`), and anything charged alongside the wing -- bridle segments, the KCU --
+r0)`), and anything charged alongside the wing — bridle segments, the KCU —
 must use this with the **same `(omega, r0)` the trim was solved with**. Public
 API: `apparent_wind_at(velocity_apparent_free, velocity_rotation, position,
 reference_point=None)` and `inflow_state_of(body_aero) -> RigidInflowState`,
 the one place that reads the `(va_free, omega, r0)` triple off a VSM body.
 `velocity_apparent_free` comes back as `None` when the body carries a per-panel
-distribution -- there is then no single freestream, and callers must decide what
+distribution — there is then no single freestream, and callers must decide what
 to charge rather than be handed an invented one. numpy only, like `kcu_drag`.
 
 The point of the function is not the arithmetic, it is that `r0` and `omega`
@@ -67,23 +67,24 @@ misplaced `r - r0`, and both were invisible on unsteered baselines because
 `omega = 0` makes them vanish:
 
 * bridle segments were charged `va_ref_vector`. That is NOT the wing's mean
-  inflow, an easy misreading: it is built from `self._va`, the inflow as handed
-  to the VSM's `va` setter, BEFORE `-omega x (r - r0)` is added, so for a
-  uniform freestream it IS `va_free`. Every segment got the inflow at the
-  reference point wherever it actually sat.
+  inflow, an easy misreading — made in 450d1c3's own message and again when
+  auditing it: it is built from `self._va`, the inflow as handed to the VSM's
+  `va` setter, BEFORE `-omega x (r - r0)` is added, so for a uniform freestream
+  it IS `va_free`. Every segment got the inflow at the reference point wherever
+  it actually sat;
 * the KCU's drag took `va_free` while the moment arm beside it was written
   `-r0`, so the two halves of one force disagreed about where the KCU is. They
   agreed only because `r0` is the geometry origin in every shipped config.
 
 **The tether does NOT call this.** `system/williams_tether.py` rotates about the
-GROUND ANCHOR and evaluates the wind at each node's own height -- a different
+GROUND ANCHOR and evaluates the wind at each node's own height — a different
 pivot and a different wind, already explicit there. The lumped/rigid closed form
 in `system/tether.py` is an INTEGRAL along the tether reduced to one equivalent
 force at the kite, so it cannot call a point kernel at all. Both are CasADi.
 
 `vsm_quasi_steady.py` exposes `DEFAULT_STATION_KCU` (the bridle point, the
-geometry origin): **both** halves of the KCU force -- its inflow and its moment
-arm `station - r0` -- are driven from that one symbol, so they cannot drift.
+geometry origin): **both** halves of the KCU force — its inflow and its moment
+arm `station - r0` — are driven from that one symbol, so they cannot drift.
 `tests/aerodynamics/test_apparent_wind_kernel.py` locks that every shipped
 `struc_geometry*.yaml` really does put `bridle_point_node` there.
 
@@ -105,6 +106,17 @@ two floats per kite and this module needs neither the `xp` namespace pattern nor
 `ca.interpolant`. Read its module docstring before touching the coefficient
 pairing: the reference EKF implementation crosses the axial and crossflow pairs,
 so this model runs ~1.5x its published `kcu_drag_coefficient` by construction.
+It also owns the ONBOARD-TURBINE drag (2026-09-04): `CT_TURBINE_OPERATING` and
+`cd_area_thrust_turbine(diameter_rotor, thrust_coefficient)` (actuator-disc
+momentum-theory thrust on the SWEPT area — an operating rotor's drag is its
+thrust, not blade profile drag). The turbine sits ON TOP of the KCU facing the
+apparent wind (axis ⊥ the KCU/tether axis), so `from_dimensions`/
+`from_system_model` add the thrust area to the BROADSIDE (crossflow) slot only
+— the along-tether flow is shadowed by the KCU body, so the axial slot is
+untouched. Parameters ride on the kite as
+`diameter_turbine`/`thrust_coefficient_turbine`, read by `system/factory.py`
+from the optional `control_system.turbine` yaml block (absent = zeros = no
+turbine term; turbine MASS stays inside the KCU mass).
 
 `line_drag.py` owns the **section** drag of bridle lines: the round-cable
 coefficient the crossflow law has always used, and the flat-tape model added
@@ -590,7 +602,12 @@ Public functions should use these names:
   `solve_vsm_qs_trim_with_williams_tether` is the **consistent (off-radial)
   tether trim**: the tether's own drag + weight enter the kite force balance
   (a large effect for long tethers — tether drag is a dominant AWES loss, so a
-  radial-tether assumption is optimistic on crosswind speed/load). Its
+  radial-tether assumption is optimistic on crosswind speed/load).
+  `include_gravity=False` makes the WHOLE problem weightless — kite weight
+  gated in the residuals AND the tether built without its own weight
+  (Williams shape on a zero-g env view, rigid-lumped without the half-weight
+  term); tether drag and rotational inertial terms stay on. Before
+  2026-09-02 the tether's weight survived the switch. Its
   `tether_model` selects `"williams"` (default: full distributed shape, kite-end
   vector baked in as the resultant so only tether length + ground closure are
   solved) or `"rigid_lumped"` (the ROM's `RigidLumpedTether` — lumped off-radial
@@ -626,6 +643,23 @@ Public functions should use these names:
   intended branch while staying deterministic and smooth in the trim
   unknowns — unlike history-dependent warm chaining, which would corrupt the
   FD outer Jacobian the same way Anderson does at loose tolerance.
+  `solve_vsm_qs_trim_with_williams_tether` additionally takes
+  `reel_speed_along_tether` (default `False`, historical behaviour): the
+  state's `speed_radial` — semantically the WINCH line rate `l_dot`, not the
+  radial-distance rate — is applied along the LOCAL tether tangent at the
+  kite instead of the straight radial (`reel_velocity_correction`, the single
+  source of the formula). The tangent is the tether-force direction
+  `net/|net|` for both tether models (collapsed Williams bakes the kite-end
+  tension in as the trim resultant; the rigid-lumped balance drives the
+  tether force to `-net`), so each residual evaluation runs TWO VSM passes —
+  stage 1 (radial reel) fixes the direction, stage 2 solves on the corrected
+  apparent wind; deterministic and smooth in the trim unknowns. `v_tau` stays
+  free and absorbs the course component. Result fields: `tether_tilt_deg`
+  (always reported, flag on or off), `reel_speed_along_tether`,
+  `reel_direction_kite_vsm`, `va_reel_correction_vsm`, `speed_radial_input`,
+  `speed_radial_effective`, `speed_reel_course`, `speed_reel_normal`. The
+  stability linearisation does NOT know the flag — linearise flag-off trims
+  only.
 - `turn_radius_vs_steer_moment` (roll-steering turn map: prescribed KCU roll
   moment → bank, `phi_a`, turn radius, effective `k_steering`)
 - `compute_vsm_trim_stability_derivatives`

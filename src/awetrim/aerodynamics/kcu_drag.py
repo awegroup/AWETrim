@@ -97,6 +97,14 @@ FINENESS_BROADSIDE = np.array([1.0, 1.98, 2.96, 5.0, 10.0, 20.0, 40.0, 1.0e6])
 #: ``d L`` (Applied Fluid Dynamics Handbook).
 CD_BROADSIDE = np.array([0.64, 0.68, 0.74, 0.74, 0.82, 0.91, 0.98, 1.20])
 
+#: Thrust coefficient of the ONBOARD WIND TURBINE while producing power,
+#: referenced to the rotor SWEPT area (actuator-disc momentum theory:
+#: ``C_T = 4a(1-a)``, Betz-optimal a=1/3 gives 8/9 = 0.89; loaded small
+#: turbines run 0.7-0.9; a freewheeling rotor approaches a solid disc at
+#: 1.1-1.3; parked, only solidity x blade drag ~0.1-0.2 remains). The
+#: turbine powers the KCU in flight, so the operating value is the default.
+CT_TURBINE_OPERATING = 0.85
+
 #: Label recorded in trim results for the KCU-axis assumption in use.
 AXIS_MODEL_RADIAL = "radial"
 #: Label recorded when no KCU drag was applied.
@@ -137,6 +145,23 @@ def cd_area_broadside_kcu(length_kcu: float, diameter_kcu: float) -> float:
         return 0.0
     area_broadside = float(diameter_kcu) * float(length_kcu)
     return float(np.interp(fineness, FINENESS_BROADSIDE, CD_BROADSIDE) * area_broadside)
+
+
+def cd_area_thrust_turbine(
+    diameter_rotor: float,
+    thrust_coefficient: float = CT_TURBINE_OPERATING,
+) -> float:
+    """Drag area ``C_T * pi (D/2)^2`` [m^2] of the operating onboard turbine.
+
+    Momentum-theory thrust on the rotor SWEPT area (see
+    :data:`CT_TURBINE_OPERATING`) -- an energy-extracting rotor's drag is its
+    thrust, not the blades' profile drag. Zero when the rotor diameter is
+    missing, the usual 'component absent' sentinel of this module.
+    """
+    diameter = float(diameter_rotor or 0.0)
+    if diameter <= 0.0 or float(thrust_coefficient or 0.0) <= 0.0:
+        return 0.0
+    return float(thrust_coefficient) * np.pi * (diameter / 2.0) ** 2
 
 
 def force_drag_kcu(
@@ -194,13 +219,30 @@ class KcuDragModel:
     # ------------------------------------------------------------ constructors
     @classmethod
     def from_dimensions(
-        cls, length_kcu: float, diameter_kcu: float
+        cls,
+        length_kcu: float,
+        diameter_kcu: float,
+        diameter_turbine: float = 0.0,
+        thrust_coefficient_turbine: float = CT_TURBINE_OPERATING,
     ) -> "KcuDragModel | None":
-        """Model from KCU length and diameter [m]; ``None`` if either is unset."""
+        """Model from KCU length and diameter [m]; ``None`` if either is unset.
+
+        The optional ONBOARD TURBINE (rotor ``diameter_turbine``) is mounted
+        ON TOP of the KCU facing the apparent wind -- its axis is
+        perpendicular to the KCU/tether axis, so its momentum-theory thrust
+        (:func:`cd_area_thrust_turbine`) joins the BROADSIDE (crossflow) drag
+        area. It adds NOTHING to the axial slot: sitting on top, it is
+        shadowed by the KCU body from the along-tether flow. A zero turbine
+        diameter (the default, and every system file without a
+        ``control_system.turbine`` block) leaves the model exactly as before.
+        """
         cd_area_axial = cd_area_axial_kcu(length_kcu, diameter_kcu)
         cd_area_broadside = cd_area_broadside_kcu(length_kcu, diameter_kcu)
         if cd_area_axial <= 0.0 or cd_area_broadside <= 0.0:
             return None
+        cd_area_broadside += cd_area_thrust_turbine(
+            diameter_turbine, thrust_coefficient_turbine
+        )
         return cls(
             length=float(length_kcu),
             diameter=float(diameter_kcu),
@@ -215,10 +257,19 @@ class KcuDragModel:
         Same attribute lookup the trims use for ``mass_kcu``, so a system model
         built from a ``system.yaml`` without a ``control_system.structure``
         block (or a bare test double) yields ``None`` -- no KCU drag, no crash.
+        The onboard turbine rides along through the kite's
+        ``{diameter_turbine, thrust_coefficient_turbine}`` attributes
+        (``system.yaml`` ``control_system.turbine`` block; absent = zeros =
+        no turbine term).
         """
         kite = getattr(system_model, "kite", system_model)
         return cls.from_dimensions(
-            getattr(kite, "length_kcu", 0.0), getattr(kite, "diameter_kcu", 0.0)
+            getattr(kite, "length_kcu", 0.0),
+            getattr(kite, "diameter_kcu", 0.0),
+            diameter_turbine=getattr(kite, "diameter_turbine", 0.0),
+            thrust_coefficient_turbine=getattr(
+                kite, "thrust_coefficient_turbine", CT_TURBINE_OPERATING
+            ),
         )
 
     @classmethod

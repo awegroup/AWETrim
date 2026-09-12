@@ -253,6 +253,44 @@ def test_from_system_model_reads_the_kite_envelope():
     assert model.cd_area_broadside == pytest.approx(0.3294, rel=3e-3)
 
 
+def test_turbine_thrust_joins_only_the_broadside_slot():
+    """Turbine thrust loads the crossflow slot; the axial slot is untouched.
+
+    The rotor sits ON TOP of the KCU facing the apparent wind: its
+    momentum-theory thrust area ``C_T pi (D/2)^2`` loads the crossflow
+    component, while the along-tether flow is shadowed by the KCU body, so
+    the axial drag area must not change.
+    """
+    base = KcuDragModel.from_dimensions(1.0, 0.5642)
+    with_turbine = KcuDragModel.from_dimensions(1.0, 0.5642, diameter_turbine=0.50)
+    thrust = 0.85 * np.pi * 0.25**2
+    assert with_turbine.cd_area_broadside == pytest.approx(
+        base.cd_area_broadside + thrust, rel=1e-6
+    )
+    assert with_turbine.cd_area_axial == pytest.approx(base.cd_area_axial, rel=1e-12)
+
+
+def test_turbine_absent_changes_nothing():
+    """Zero turbine diameter (every pre-turbine system file) is a no-op."""
+    assert KcuDragModel.from_dimensions(1.0, 0.5642) == KcuDragModel.from_dimensions(
+        1.0, 0.5642, diameter_turbine=0.0
+    )
+
+
+def test_from_system_model_reads_the_turbine():
+    system_model = SimpleNamespace(
+        kite=SimpleNamespace(
+            length_kcu=1.0,
+            diameter_kcu=0.5642,
+            diameter_turbine=0.50,
+            thrust_coefficient_turbine=0.85,
+        )
+    )
+    model = KcuDragModel.from_system_model(system_model)
+    assert model.cd_area_broadside == pytest.approx(0.5458, rel=2e-3)
+    assert model.cd_area_axial == pytest.approx(0.2098, rel=2e-3)
+
+
 def test_from_system_model_without_envelope_is_none():
     """A system model carrying only the KCU mass yields no drag term."""
     system_model = SimpleNamespace(kite=SimpleNamespace(mass_kcu=8.4))
