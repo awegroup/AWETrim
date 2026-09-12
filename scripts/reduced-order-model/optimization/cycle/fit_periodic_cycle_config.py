@@ -179,7 +179,7 @@ ARTIFICIAL = {
     # reel-in-window floor) -- see _resolve_artificial_M. A fixed M
     # under-resolves high loop counts and the underfit RINGS (spline
     # curvature far above the raw curve's).
-    "n_loops": 4,  # INTERNAL count: continuous figure-eights over the WHOLE
+    "n_loops": 6,  # INTERNAL count: continuous figure-eights over the WHOLE
     # period (~reelout_fraction * n_loops visible; the pinned handover phases
     # snap the visible count -- 4 here shows 2.5 figures = 5 half-eights
     # during reel-out, the opposite-side handover parity). The --loops CLI
@@ -194,9 +194,9 @@ ARTIFICIAL = {
     # +-2pi per lobe), so at the kite's natural speed the lever is arc length:
     # BIG figures turn gentler. Scale both amps together, az ~ 2.5*beta;
     # a.36/b.14 is the sweet spot (larger starts spiking at the window edges).
-    "beta_amp0": 0.14,  # figure-eight elevation amplitude (rad)
-    "az_amp0": 0.36,  # figure-eight azimuth amplitude (rad)
-    "beta_reelin_peak": 1.4,  # reel-in peak elevation (rad). What you set is
+    "beta_amp0": 0.1,  # figure-eight elevation amplitude (rad)
+    "az_amp0": 0.3,  # figure-eight azimuth amplitude (rad)
+    "beta_reelin_peak": 1.2,  # reel-in peak elevation (rad). What you set is
     # what the raw curve does -- if the top U-turn is then too sharp for the
     # curvature limit, the SPLINE is locally faired around it (the knob
     # itself is never lowered). Too high starves the kite of apparent wind
@@ -282,9 +282,36 @@ WINCH_LAW = {
     "offset_winch_ro": 0.412,
     "winch_offset_depower_gain": -10.931,
     "winch_depower_ref": 1.7,
+    # Regressed clamp; ``max_tether_force`` is a HARDWARE rating and is
+    # replaced by the drum's own value from system.yaml (see
+    # _winch_law_with_hardware_rating) -- the number here is only the fallback
+    # for a system file without a drum entry.
     "max_tether_force": 8400.4,
     "min_tether_force": 865.4,
 }
+
+
+def _winch_law_with_hardware_rating(winch):
+    """Overlay the drum's force rating from system.yaml onto a fitted law.
+
+    The force-law SHAPE (slope, offset, depower gain) is regressed from
+    flight data, but the clamp ``max_tether_force`` is a rating of the
+    hardware -- it lives in system.yaml
+    (``components.ground_station.drums[0].max_tether_force``) and must not be
+    restated here. Missing drum entry -> the fitted value is kept.
+    """
+    import yaml as _yaml
+
+    from awetrim.utils.config_paths import LEI_V3_SYSTEM_CONFIG
+    from awetrim.utils.system_config import get_drum
+
+    with Path(LEI_V3_SYSTEM_CONFIG).open("r", encoding="utf-8") as f:
+        rating = get_drum(_yaml.safe_load(f)).get("max_tether_force")
+    winch = dict(winch)
+    if rating is not None:
+        winch["max_tether_force"] = float(rating)
+    return winch
+
 
 # Reel-in depower depth: fraction of the powered->depowered span the synthetic
 # bump reaches (1.0 = fully depowered, l_dp = 2.1, at the top). This is the
@@ -310,7 +337,13 @@ CLOSURE_TOL_M = 10
 #                   T(v_r, l_dp) law is regressed from the RESULT afterwards.
 # The forward seed simulation marches with the force law in both modes.
 WINCH_MODE = "free_speed"
-WINCH_ACCELERATION = [-2.0, 2.0]  # winch drive acceleration capability (m/s^2)
+# The winch drive's acceleration capability is HARDWARE: it lives in
+# system.yaml (components.ground_station.drums[0].max_winch_acceleration) and
+# reaches the NLP through SystemModel.hardware_limits, so it is deliberately
+# NOT emitted into the generated config. Same for the reel-speed range
+# (min/max_tether_speed -> the speed_radial bounds). Set
+# sim_parameters["winch_acceleration"] only to make a single run more
+# conservative than the hardware.
 
 # Optimizer bound overrides emitted into the generated config. A full cycle
 # reaches higher reel-in elevation than the default C_beta range, and
@@ -615,7 +648,7 @@ def build_config(
         if arr is None:
             raise ValueError("experimental SHAPE_SOURCE needs the cycle arrays")
         duration = float(arr["time"][-1] - arr["time"][0])
-        winch = _fit_winch_with_depower_offset(arr)
+        winch = _winch_law_with_hardware_rating(_fit_winch_with_depower_offset(arr))
         r0 = float(arr["distance_radial"][0])
     else:
         # Physical loop time is set by the figure geometry and the kite's trim
@@ -625,7 +658,7 @@ def build_config(
         # target wind or the tuned shape, so any flow that forward-simulates
         # replaces it with the measured duration via ``duration_s``.
         duration = float(CYCLE_DURATION_S) * float(art["n_loops"]) / 3.0
-        winch = dict(WINCH_LAW)
+        winch = _winch_law_with_hardware_rating(WINCH_LAW)
         r0 = float(R0)
     if duration_s is not None:
         duration = float(duration_s)
@@ -785,9 +818,10 @@ def build_config(
                 "require_full_trajectory": True,
                 # NLP winch handling (see WINCH_MODE above): free_speed makes
                 # v_r a rate-limited control and drops the tension-curve
-                # equality; the sim always marches with the force law.
+                # equality; the sim always marches with the force law. The
+                # rate limit and the v_r bounds come from the drum entry in
+                # system.yaml, not from here.
                 "winch_mode": WINCH_MODE,
-                "winch_acceleration": WINCH_ACCELERATION,
             },
         }
     }
@@ -1074,7 +1108,9 @@ def _simulate_cycle(config, run_plots=False):
     system_model.wind = build_wind_model(**WIND_CONFIG)
     print(
         "Simulating seed at WIND_CONFIG from run_full_cycle_opti: "
-        f"{WIND_CONFIG['speed_wind_at_100']:g} m/s @ 100 m, z0={WIND_CONFIG['z0']:g}"
+        f"{WIND_CONFIG['model_type']} profile, "
+        f"{WIND_CONFIG['speed_wind_ref']:g} m/s @ {WIND_CONFIG['height_ref']:g} m, "
+        f"z0={WIND_CONFIG['z0']:g}"
     )
 
     start_state = {
@@ -1749,7 +1785,9 @@ def main(
         )
         natural = "opposite" if halves % 2 else "same"
         if reentry and reentry != natural:
-            other = loops + 1 if loops else "an odd" if reentry == "opposite" else "an even"
+            other = (
+                loops + 1 if loops else "an odd" if reentry == "opposite" else "an even"
+            )
             print(
                 f"[reentry] a tangential {reentry}-side exit is impossible "
                 f"with {halves} visible half-lobes (the giant reel-in lobe "
@@ -1770,15 +1808,11 @@ def main(
         # exit azimuth.
         s_exit = 1.0 if np.sin(float(ARTIFICIAL["psi_exit"])) >= 0.0 else -1.0
         s_entry = 1.0 if np.sin(float(ARTIFICIAL["psi_entry"])) >= 0.0 else -1.0
-        ARTIFICIAL["az_reelin_amp"] = s_exit * abs(
-            float(ARTIFICIAL["az_reelin_amp"])
-        )
+        ARTIFICIAL["az_reelin_amp"] = s_exit * abs(float(ARTIFICIAL["az_reelin_amp"]))
         shape = reelin_shape or "smooth"
         s_thr = s_exit if shape == "smooth" else -s_exit
         thr_mag = abs(float(ARTIFICIAL.get("az_reelin_through", 0.0)))
-        ARTIFICIAL["az_reelin_through"] = (
-            0.0 if shape == "smooth" else s_thr * thr_mag
-        )
+        ARTIFICIAL["az_reelin_through"] = 0.0 if shape == "smooth" else s_thr * thr_mag
 
         def _side(sgn):
             return "az>0" if sgn > 0 else "az<0"

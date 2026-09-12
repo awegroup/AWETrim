@@ -17,7 +17,7 @@ pumping cycle is one ``spline_periodic`` ``Phase``:
     whole radius band with it (bounded by ``DEFAULT_OPTI_LIMITS["r0"]`` and
     the per-node ``distance_radial`` band).
 
-The wind is a constant logarithmic profile, tunable here via ``WIND_CONFIG``.
+The wind is a constant analytic profile, tunable here via ``WIND_CONFIG``.
 The objective is cycle-average mechanical power (a single monolithic NLP, no
 alternating / no separate reel-in phase).
 
@@ -68,11 +68,28 @@ RESULTS_DIR = (
     Path("results") / KITE_CONFIG_PATH.parent.name / "optimization" / "full_cycle"
 )
 
-# Tunable constant logarithmic wind.
+# Tunable constant analytic wind profile. ``model_type`` selects the law in
+# awetrim.environment.profile_laws; the amplitude is the speed
+# ``speed_wind_ref`` at ``height_ref`` and every other key is forwarded to
+# ``create_wind_model`` (see build_wind_model).
+#
+# Current setting: the Kitepower reference environment (U. Fechner) --
+# EXPLOG profile, 6 m/s at the 6 m reference height, z0 = 0.2 mm (offshore /
+# smooth terrain), alpha = 0.08163. That is ~8.1 m/s at 200 m operating
+# radius, roughly HALF the 16.3 m/s of the previous 15 m/s @ 100 m log
+# setting -- regenerate the seed (fit_periodic_cycle_config.py --auto) after
+# changing this, an old seed will not be trim-feasible at a different wind.
+#
+# Wind DIRECTION is irrelevant to this model (the whole cycle lives in the
+# course-aligned wind frame); the ENU wind vector [6, 0, 0] m/s (upwind
+# direction -90 deg) is direction_wind = 0, the default.
 WIND_CONFIG = {
-    "speed_wind_at_100": 15.0,  # m/s at 100 m
-    "z0": 0.03,  # roughness length (m)
-    "model_type": "logarithmic",
+    "model_type": "explog",
+    "speed_wind_ref": 6.0,  # m/s at height_ref
+    "height_ref": 6.0,  # m
+    "z0": 0.0002,  # roughness length (m)
+    "alpha": 0.08163,  # power-law exponent blended into EXPLOG
+    "direction_wind": 0.0,  # rad; 0 = wind blowing along +x
 }
 
 # Staged solve, warm-started stage to stage.
@@ -162,20 +179,28 @@ MAX_ITER = 1000
 N_POINTS = None
 
 
-def build_wind_model(speed_wind_at_100, z0, model_type, **profile_kwargs):
-    """Wind model with the reference speed given at 100 m.
+def build_wind_model(speed_wind_ref, height_ref, model_type, **profile_kwargs):
+    """Wind model with the reference speed ``speed_wind_ref`` given at ``height_ref``.
 
     ``model_type`` is any analytic law of ``awetrim.environment.profile_laws``
-    (uniform, logarithmic, power_law, explog, jet); extra keys such as
+    (uniform, logarithmic, power_law, explog, jet); extra keys such as ``z0``,
     ``alpha``, ``jet_amplitude``/``jet_height``/``jet_width`` or
     ``direction_wind`` are forwarded to ``create_wind_model``.
     """
     return create_wind_model(
         model_type,
-        U_ref=speed_wind_at_100,
-        z_ref=100.0,
-        z0=z0,
+        U_ref=speed_wind_ref,
+        z_ref=height_ref,
         **profile_kwargs,
+    )
+
+
+def wind_tag(wind_config=None):
+    """Filename tag identifying the wind the run was solved at."""
+    cfg = WIND_CONFIG if wind_config is None else wind_config
+    return (
+        f"wind_{cfg['speed_wind_ref']:g}at{cfg['height_ref']:g}m"
+        f"_{cfg['model_type']}_z0_{cfg['z0']:g}"
     )
 
 
@@ -500,7 +525,7 @@ def main(run_plots: bool = False, optimize: bool = True) -> int:
 
     if optimize:
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        tag = f"wind_{WIND_CONFIG['speed_wind_at_100']:g}_z0_{WIND_CONFIG['z0']:g}"
+        tag = wind_tag()
         seed_signature = _pattern_signature(reelout_config["path_parameters"])
         print(
             f"Seed pattern signature: {seed_signature} azimuth turns "
