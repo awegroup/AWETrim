@@ -28,6 +28,7 @@ import numpy as np
 from scipy.optimize import least_squares
 
 from awetrim.environment.profile_laws import LOG_BASED_MODELS
+from awetrim.aerodynamics.apparent_wind import apparent_wind_at
 from awetrim.aerodynamics.kcu_drag import (
     AXIS_MODEL_NONE,
     AXIS_MODEL_RADIAL,
@@ -45,6 +46,22 @@ DEFAULT_AXES = AxisDefinition(
     normal=np.array([0.0, 1.0, 0.0], dtype=float),
     radial=np.array([0.0, 0.0, 1.0], dtype=float),
 )
+
+#: Station of the KCU in the VSM geometry frame.
+#:
+#: The KCU hangs at the BRIDLE POINT, which is the origin of the structural
+#: geometry -- ``bridle_point_node: [0, 0, 0]`` in every shipped
+#: ``struc_geometry*.yaml``, LEI-V3 and LEI-V9 alike. It is deliberately NOT
+#: written as ``reference_point``: the two coincide only because every shipped
+#: ``as_config`` also puts the moment reference at the origin, and the KCU does
+#: not move when that bookkeeping choice does.
+#:
+#: Both halves of the KCU force read this one symbol -- the apparent wind
+#: ``va_free - omega x (station - r0)`` and the moment arm ``station - r0``.
+#: They used to encode the station separately (the arm as ``-reference_point``,
+#: the inflow as plain ``va_free``), which agreed only at ``r0 = origin`` and
+#: silently dropped ``omega x r0`` from the drag anywhere else.
+DEFAULT_STATION_KCU = np.zeros(3, dtype=float)
 
 DEFAULT_TRANSFORMATION_C_FROM_VSM = np.array(
     [
@@ -694,20 +711,25 @@ def solve_vsm_quasi_steady_trim(
         q_inf = 0.5 * float(solver.rho) * umag**2
         denom = q_inf * projected_area * max_chord if max_chord > 0.0 else 1.0
 
-        # KCU bluff-body drag (awetrim.aerodynamics.kcu_drag), on the KCU's
-        # own apparent wind -- which is the freestream one, because the KCU
-        # hangs at the bridle point and the VSM rotational inflow
-        # omega x (r - reference_point) vanishes there. The axis it is split
-        # about is the tether direction, approximated by the radial axis.
+        # KCU bluff-body drag (awetrim.aerodynamics.kcu_drag), charged at the
+        # KCU's OWN station and given the arm to match: one symbol,
+        # DEFAULT_STATION_KCU, feeds both halves, so they cannot drift apart.
+        # The rotational inflow and the arm both vanish when the reference
+        # point IS that bridle point (every shipped configuration), and both
+        # stay right if it moves. The axis the drag is split about is the
+        # tether direction, approximated by the radial axis.
+        arm_kcu = DEFAULT_STATION_KCU - _as_3vector(reference_point)
         force_kcu = (
             np.zeros(3)
             if kcu_drag is None
-            else kcu_drag.force(va, axes.radial, float(solver.rho))
+            else kcu_drag.force(
+                apparent_wind_at(
+                    va, omega_c_vsm, DEFAULT_STATION_KCU, reference_point
+                ),
+                axes.radial,
+                float(solver.rho),
+            )
         )
-        # The KCU hangs at the bridle point, i.e. at the geometry origin; the
-        # arm is zero whenever the reference point is that same bridle point
-        # (every shipped configuration), and correct if it ever moves.
-        arm_kcu = -_as_3vector(reference_point)
         moment_vec = np.cross(cg_arm, inertial_force) + np.cross(arm_kcu, force_kcu)
         if include_gravity:
             moment_vec += np.cross(cg_arm, gravity_force)
@@ -1720,18 +1742,24 @@ def solve_vsm_qs_trim_with_williams_tether(
         denom_m = q_inf * projected_area * max_chord
         denom_f = q_inf * projected_area
 
-        # KCU bluff-body drag (awetrim.aerodynamics.kcu_drag): the KCU hangs
-        # at the bridle point, so its apparent wind is the freestream one (the
-        # rotational inflow vanishes at the reference point) and its long axis
-        # is the tether direction, approximated by the radial axis.
+        # KCU bluff-body drag (awetrim.aerodynamics.kcu_drag), charged at the
+        # KCU's OWN station (DEFAULT_STATION_KCU, the bridle point) with the
+        # arm to match -- one symbol behind both, so neither can drift. Both
+        # terms vanish when the reference point IS that bridle point (every
+        # shipped configuration). Its long axis is the tether direction,
+        # approximated by the radial axis.
+        arm_kcu = DEFAULT_STATION_KCU - _as_3vector(reference_point)
         force_kcu = (
             np.zeros(3)
             if kcu_drag is None
-            else kcu_drag.force(va, axes.radial, float(solver.rho))
+            else kcu_drag.force(
+                apparent_wind_at(
+                    va, omega_c_vsm, DEFAULT_STATION_KCU, reference_point
+                ),
+                axes.radial,
+                float(solver.rho),
+            )
         )
-        # Zero arm whenever the reference point IS the bridle point the KCU
-        # hangs from (every shipped configuration); correct if it moves.
-        arm_kcu = -_as_3vector(reference_point)
         moment_vec = np.cross(
             cg_arm,
             inertial_force_wing + inertial_force_kcu + inertial_force_offset,
@@ -4015,16 +4043,24 @@ def compute_vsm_trim_stability_derivatives(
             delta_roll_deg, delta_pitch_deg, delta_yaw_deg
         )
         f_centripetal = -mass * np.cross(omega_total, np.cross(omega_total, cg_world))
-        # KCU drag at the PERTURBED apparent wind: this is what gives the term
-        # its velocity damping in the Jacobian. The axis stays radial under an
-        # attitude perturbation (the KCU hangs on the tether, it does not
-        # rotate with the wing), so it contributes only to the velocity
-        # columns. The frozen tether reaction f_tether_eff already carries the
-        # KCU drag at trim, so force(0) is unchanged.
+        # KCU drag at the PERTURBED apparent wind, taken at the KCU's own
+        # station: this is what gives the term its velocity damping in the
+        # Jacobian. The axis stays radial under an attitude perturbation (the
+        # KCU hangs on the tether, it does not rotate with the wing), so it
+        # contributes only to the velocity columns. The frozen tether reaction
+        # f_tether_eff already carries the KCU drag at trim, so force(0) is
+        # unchanged. No moment arm here: the B form takes moments about the
+        # bridle point, which is where the KCU hangs.
         force_kcu = (
             np.zeros(3)
             if kcu_drag is None
-            else kcu_drag.force(va_pert, axes.radial, float(solver.rho))
+            else kcu_drag.force(
+                apparent_wind_at(
+                    va_pert, omega_total, DEFAULT_STATION_KCU, reference_point
+                ),
+                axes.radial,
+                float(solver.rho),
+            )
         )
         force = (
             f_aero
@@ -4426,7 +4462,13 @@ def compute_vsm_trim_stability_derivatives(
         force_kcu = (
             np.zeros(3)
             if kcu_drag is None
-            else kcu_drag.force(va_pert, axes.radial, float(solver.rho))
+            else kcu_drag.force(
+                apparent_wind_at(
+                    va_pert, omega_total, DEFAULT_STATION_KCU, reference_point
+                ),
+                axes.radial,
+                float(solver.rho),
+            )
         )
         moment_kcu_cg = np.cross(-c_att, force_kcu)
 

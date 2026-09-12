@@ -39,7 +39,53 @@ src/awetrim/aerodynamics/
   parametric_airfoil.py
   kcu_drag.py
   line_drag.py
+  apparent_wind.py
 ```
+
+`apparent_wind.py` owns the relation that puts every other aerodynamic load at
+the right *place* on a rotating kite:
+
+```text
+va(r) = va_free - omega x (r - r0)
+```
+
+`va_free` is the apparent wind at the reference point `r0`, `omega` the body
+rate. The sign is the VSM's own (`BodyAerodynamics`'s `va` setter builds its
+panel distribution as `va_distribution += -cross(body_rates, control_points -
+r0)`), and anything charged alongside the wing -- bridle segments, the KCU --
+must use this with the **same `(omega, r0)` the trim was solved with**. Public
+API: `apparent_wind_at(velocity_apparent_free, velocity_rotation, position,
+reference_point=None)` and `inflow_state_of(body_aero) -> RigidInflowState`,
+the one place that reads the `(va_free, omega, r0)` triple off a VSM body.
+`velocity_apparent_free` comes back as `None` when the body carries a per-panel
+distribution -- there is then no single freestream, and callers must decide what
+to charge rather than be handed an invented one. numpy only, like `kcu_drag`.
+
+The point of the function is not the arithmetic, it is that `r0` and `omega`
+have to be **named** at each call site. Two bugs here were exactly a missing or
+misplaced `r - r0`, and both were invisible on unsteered baselines because
+`omega = 0` makes them vanish:
+
+* bridle segments were charged `va_ref_vector`. That is NOT the wing's mean
+  inflow, an easy misreading: it is built from `self._va`, the inflow as handed
+  to the VSM's `va` setter, BEFORE `-omega x (r - r0)` is added, so for a
+  uniform freestream it IS `va_free`. Every segment got the inflow at the
+  reference point wherever it actually sat.
+* the KCU's drag took `va_free` while the moment arm beside it was written
+  `-r0`, so the two halves of one force disagreed about where the KCU is. They
+  agreed only because `r0` is the geometry origin in every shipped config.
+
+**The tether does NOT call this.** `system/williams_tether.py` rotates about the
+GROUND ANCHOR and evaluates the wind at each node's own height -- a different
+pivot and a different wind, already explicit there. The lumped/rigid closed form
+in `system/tether.py` is an INTEGRAL along the tether reduced to one equivalent
+force at the kite, so it cannot call a point kernel at all. Both are CasADi.
+
+`vsm_quasi_steady.py` exposes `DEFAULT_STATION_KCU` (the bridle point, the
+geometry origin): **both** halves of the KCU force -- its inflow and its moment
+arm `station - r0` -- are driven from that one symbol, so they cannot drift.
+`tests/aerodynamics/test_apparent_wind_kernel.py` locks that every shipped
+`struc_geometry*.yaml` really does put `bridle_point_node` there.
 
 `kcu_drag.py` owns a dependency-light (numpy only, **no VSM/CasADi**) bluff-body
 drag model for the **kite control unit**, treated as a finite cylinder hanging on

@@ -31,6 +31,8 @@ from ..billow import structural_billow
 from ..pss import structural_pss
 from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking
 from awetrim import plotting
+from awetrim.aerodynamics.apparent_wind import apparent_wind_at, inflow_state_of
+
 from ..mapping import LinearStructuralToAeroMapper
 from ..utils import calculate_cg, rotate_geometry
 
@@ -262,43 +264,40 @@ def _shared_bridle_line_drag(
     if len(lines) != len(pairs):
         return None
 
-    # Per-segment inflow, NOT the wing's. The VSM builds its panel inflow as
-    #     va(r) = va_free - omega x (r - r0)        (BodyAerodynamics, "v_rot")
-    # and its ``va_ref_vector`` is the area-weighted mean of that over the
-    # PANELS -- so it carries the rotational term evaluated at the WING. The
-    # bridle is not at the wing. On the LEI-V3 steered case (course rate
-    # 0.714 rad/s) the wing sits 11.59 m from the bridle point and picks up
-    # 8.28 m/s of omega x r, 53% of a 15.68 m/s apparent wind, while the bridle
-    # segment midpoints are 0.73-11.17 m out and average 1.43 m/s. Charging
-    # every segment the wing's inflow overstates the dynamic pressure on a mean
-    # segment by ~96% -- it roughly DOUBLES the bridle drag, and only when the
-    # kite turns, which is why an unsteered baseline never showed it.
-    # va_free is recovered from the VSM's own distribution rather than rebuilt
-    # from the trim, so the freestream, the attitude and the frame are by
-    # construction the ones the trim used.
-    panels = getattr(body_aero, "panels", None) or ()
-    if not panels:
-        return None
-    omega = np.asarray(getattr(body_aero, "_body_rates", np.zeros(3)), dtype=float).ravel()
-    r0 = np.asarray(getattr(body_aero, "_reference_point", np.zeros(3)), dtype=float).ravel()
-    if r0.shape != (3,):
-        r0 = np.zeros(3)
-    va_dist = np.asarray(getattr(body_aero, "_va", None), dtype=float)
-    if va_dist.ndim == 2 and len(va_dist):
-        cp0 = np.asarray(panels[0].control_point, dtype=float)
-        va_free = va_dist[0] + np.cross(omega, cp0 - r0)
-    elif va_dist.shape == (3,):
-        va_free = va_dist
-    else:
-        return None
-    if not np.all(np.isfinite(va_free)) or np.linalg.norm(va_free) <= 0.0:
+    # Per-segment inflow, NOT the wing's -- the single-sourced relation in
+    # awetrim.aerodynamics.apparent_wind. Every station on a rotating body has
+    # its own ``-omega x (r - r0)``, so charging one vector to all of them is
+    # wrong wherever that vector was evaluated.
+    #
+    # Measured on the LEI-V3, 45 bridle segments, va_free 15.68 m/s,
+    # omega = radial 0.714 + great-circle 0.125 rad/s:
+    #
+    #   inflow charged                     |F|        |M| about r0
+    #   va_free (what everything else did) 78.9 N     419 N m     +8.3% / +10.7%
+    #   per-segment (this)                 72.8 N     379 N m       --
+    #
+    # ``va_ref_vector``, which the VSM charged its own bridle at, is NOT the
+    # wing's mean inflow: it is built from ``self._va``, the inflow as handed
+    # to the va setter, before v_rot is added -- for a uniform freestream it IS
+    # va_free, so it sits in the first row, not a third one.
+    #
+    # An earlier note here quoted 8.28 m/s of omega x r at the wing and
+    # "roughly doubles"; that is |omega|*|r|, the bound the cross product
+    # reaches only with r PERPENDICULAR to omega. The wing sits 2.6 deg off the
+    # rotation axis (omega is dominantly the radial course rate and the wing is
+    # almost straight out along that same radial), so omega x r is near its
+    # MINIMUM there: area-weighted 1.99 m/s at the wing, 1.26 m/s at the bridle
+    # midpoints. Both rows coincide when omega is zero, which is why unsteered
+    # baselines are blind to the whole question.
+    va_free, omega, r0 = inflow_state_of(body_aero)
+    if va_free is None or np.linalg.norm(va_free) <= 0.0:
         return None
 
     rotation = _rotation_from_euler_deg(attitude_deg)
     forces = np.zeros((len(struc_nodes), 3), dtype=float)
     for (i, j), line in zip(pairs, lines):
         midpoint = 0.5 * (np.asarray(line[0], dtype=float) + np.asarray(line[1], dtype=float))
-        va_seg = va_free - np.cross(omega, midpoint - r0)
+        va_seg = apparent_wind_at(va_free, omega, midpoint, r0)
         if np.linalg.norm(va_seg) <= 0.0:
             return None
         f = np.asarray(

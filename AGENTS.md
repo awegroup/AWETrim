@@ -25,6 +25,13 @@ src/awetrim/
                          struc_geometry bridle_lines and applied as a
                          drag-equivalent diameter (as_config
                          aerodynamic_bridle.tape_roll_model)
+                         + apparent_wind.py: THE single source of
+                         va(r) = va_free - omega x (r - r0), the relation that
+                         puts a load at the right STATION on a rotating kite
+                         (bridle segments, the KCU). The tether does NOT use
+                         it: williams_tether rotates about the GROUND ANCHOR
+                         with per-node wind, and the lumped closed form is an
+                         integral, not a point evaluation
                          — see src/awetrim/aerodynamics/AGENTS.md
   aerostructural/    ✅  Shared interfaces: protocols, mapping, convergence, forces, results, utils
     pss/             ✅  PSS/QSM coupled solver — see src/awetrim/aerostructural/AGENTS.md

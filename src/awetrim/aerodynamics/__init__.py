@@ -27,6 +27,7 @@ from awetrim.aerodynamics.parametric_geometry import (
     morph_wing,
     morph_wing_to,
 )
+from awetrim.aerodynamics.apparent_wind import apparent_wind_at
 from awetrim.aerodynamics.kcu_drag import (
     KcuDragModel,
     cd_area_axial_kcu,
@@ -49,6 +50,7 @@ from awetrim.aerodynamics.vsm_quasi_steady import (
 
 __all__ = [
     "VSMAeroModelAdapter",
+    "apparent_wind_at",
     "KcuDragModel",
     "cd_area_axial_kcu",
     "cd_area_broadside_kcu",
