@@ -106,6 +106,35 @@ def _positive_part(stretch, tension_only: bool, smoothing: float):
     return 0.5 * (stretch + ca.sqrt(stretch ** 2 + smoothing ** 2))
 
 
+def line_tensions(positions: Array, element_set: ElementSet) -> Array:
+    """Tension [N] in each cable or pulley rope of a solved configuration.
+
+    Taken from the kernel's own energy, not re-derived: the gradient at the
+    element's LAST node -- a cable's far end, a pulley rope's end past the
+    sheave -- is ``T e`` with ``e`` the unit vector into that node along the
+    line, so ``T = dU/dx_last . e``. The slack cut and any ``slack_smoothing``
+    are therefore exactly the solver's: a slack line reads 0, and a
+    compression-capable element in compression reads negative.
+
+    ``positions`` must be the configuration the solver RETURNED. A relaxed or
+    interpolated shape is not in equilibrium, and on a dyneema line a few
+    millimetres of spurious stretch is hundreds of newtons.
+    """
+    kernel = element_set.kernel
+    nodes = kernel.nodes_per_element
+    q = ca.SX.sym("q", 3 * nodes)
+    p = ca.SX.sym("p", len(kernel.param_names))
+    gradient = ca.gradient(kernel.energy(q, ca.SX(0, 1), p), q)
+    last = element_translations(q, nodes - 1)
+    into_last = last - element_translations(q, nodes - 2)
+    tension = ca.dot(gradient[3 * (nodes - 1):], into_last / ca.norm_2(into_last))
+    evaluate = ca.Function("line_tension", [q, p], [tension]).map(element_set.n_elements)
+
+    positions = np.asarray(positions, dtype=float).reshape(-1, 3)
+    element_positions = positions[element_set.connectivity].reshape(element_set.n_elements, -1)
+    return np.asarray(evaluate(element_positions.T, element_set.params.T)).ravel()
+
+
 def build_cable_elements(
     connectivity: Array,
     rest_lengths: Array,

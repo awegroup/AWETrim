@@ -70,7 +70,9 @@ src/awetrim/structural/
                   mirror_frames (R_p = M R diag(-1,1,1)), frame_mirror_mismatch
   elements/
     base.py       ElementKernel protocol, ElementSet, local DOF accessors
-    cable.py      CableKernel, PulleyKernel + build_cable_elements / build_pulley_elements
+    cable.py      CableKernel, PulleyKernel + build_cable_elements / build_pulley_elements,
+                  line_tensions (per-line tension from the kernel's own energy
+                  gradient -- slack cut included; feed it SOLVED positions)
     beam.py       TimoshenkoBeamKernel, BeamSection, beam_strains,
                   build_beam_elements, initial_frames_from_polyline
     inflatable.py InflatableTubeLaw, InflatableBeamKernel,
@@ -81,7 +83,8 @@ src/awetrim/structural/
 
 tests/structural/
   test_rotations.py  Cayley round trips and half-angle identity
-  test_cable.py      Hooke parity with PSS, slack cut, pulley tension equalisation
+  test_cable.py      Hooke parity with PSS, slack cut, pulley tension equalisation,
+                     line_tensions (taut / slack / compression / solved rope)
   test_beam.py       objectivity, O(h^2) convergence to Timoshenko, no shear
                      locking, torsion vs GJ, pre-curved members stress-free
   test_membrane.py   fabric on its own -- analytic SVK, the three wrinkling

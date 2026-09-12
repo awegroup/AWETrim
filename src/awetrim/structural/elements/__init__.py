@@ -35,6 +35,7 @@ from .cable import (
     PulleyKernel,
     build_cable_elements,
     build_pulley_elements,
+    line_tensions,
 )
 from .membrane import (
     SLACK,
@@ -53,6 +54,7 @@ __all__ = [
     "PulleyKernel",
     "build_cable_elements",
     "build_pulley_elements",
+    "line_tensions",
     "TimoshenkoBeamKernel",
     "BeamSection",
     "beam_strains",

@@ -189,3 +189,32 @@ scripts/personal/
 
 #MAC OS
 .DS_Store
+
+# Scratch sweep/probe working directories written by the continuation drivers
+data/__*_work/
+data/_*_work/
+data/_*_work_s[0-9]/
+data/_udp_continuation/
+data/_us_ab_*/
+
+# LaTeX build artefacts (the .tex and .pdf are tracked, the rest is generated)
+docs/**/*.aux
+docs/**/*.fdb_latexmk
+docs/**/*.fls
+docs/**/*.out
+docs/**/*.toc
+docs/billow/integration_new.pdf
+
+# Figure outputs that scripts/personal writes into the repo root
+/coupling_scheme.*
+/course_rates.*
+/course_rates_tex.svg
+/reference_frames.*
+/reference_frames_tex.svg
+/velocity_triangle*.pdf
+/velocity_triangle*.svg
+/velocity_triangles.*
+/ekf_debug.log
+
+# One-off A/B probe variants of the as-flown system files
+data/LEI-V3-KITE/*_probe.yaml

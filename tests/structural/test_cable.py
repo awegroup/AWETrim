@@ -129,6 +129,40 @@ def test_pulley_equalises_tension_either_side():
     )
 
 
+def test_line_tension_is_hookes_law_on_a_taut_cable_and_zero_when_slack():
+    from awetrim.structural.elements.cable import line_tensions
+
+    cables = build_cable_elements([[0, 1], [0, 2]], [1.0, 1.0], [STIFFNESS] * 2)
+    positions = np.array([[0.0, 0.0, 0.0], [1.002, 0.0, 0.0], [0.0, 0.7, 0.0]])
+    np.testing.assert_allclose(
+        line_tensions(positions, cables), [STIFFNESS * 0.002, 0.0], atol=1e-9
+    )
+
+
+def test_line_tension_of_a_two_way_cable_in_compression_is_negative():
+    from awetrim.structural.elements.cable import line_tensions
+
+    cables = build_cable_elements([[0, 1]], [1.0], [STIFFNESS], tension_only=False)
+    positions = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, 0.9]])
+    assert line_tensions(positions, cables)[0] == pytest.approx(-STIFFNESS * 0.1)
+
+
+def test_line_tension_of_a_solved_pulley_rope_matches_its_reactions():
+    """One rope tension, and it is what each anchor feels."""
+    from awetrim.structural.elements.cable import line_tensions
+
+    nodes = np.array([[-1.0, 0.0, 0.0], [0.1, -0.5, 0.0], [1.0, 0.0, 0.0]])
+    pulleys = build_pulley_elements([[0, 1, 2]], [2.4], [STIFFNESS])
+    model = StructuralModel(nodes, [pulleys], fixed_translation_nodes=[0, 2])
+    forces = np.zeros((3, 3))
+    forces[1, 1] = -300.0
+    solution = MinimumEnergySolver(model).solve(forces)
+
+    tension = line_tensions(solution.state.positions, pulleys)[0]
+    assert tension == pytest.approx(np.linalg.norm(solution.internal_forces[0]), rel=1e-6)
+    assert tension == pytest.approx(np.linalg.norm(solution.internal_forces[2]), rel=1e-6)
+
+
 def test_pulley_rest_length_spans_both_arms():
     """The stored rest length is the whole rope, not one arm.
 
