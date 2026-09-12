@@ -1,4 +1,9 @@
-# AWETrim
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/logo/awetrim-lockup-dark.svg">
+    <img src="docs/logo/awetrim-lockup.svg" alt="AWETrim" height="96">
+  </picture>
+</h1>
 
 [![Interactive framework](https://img.shields.io/badge/website-AWETrim%20interactive%20framework-2563eb?style=flat-square&logo=githubpages&logoColor=white)](https://awegroup.github.io/AWETrim/)
 
