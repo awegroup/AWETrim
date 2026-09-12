@@ -1,5 +1,7 @@
-# As-flown configuration of the 2019-10-08 flight: KCU mass 22.75 kg
-# (total ~36.33 kg), 10 mm tether.
+# As-flown configuration of the 2019-10-08 flight, per the hardware datasheet
+# (2026-09-02): wing 14.2 kg (11 kg canopy + 3.2 kg canopy-mounted equipment),
+# KCU 22.0 kg (19.2 kg KCU+cover + 2.8 kg onboard wind turbine), 10 mm tether.
+# Total airborne kite mass ~38.79 kg (wing 14.2 + bridle 2.5875 + KCU 22.0).
 # The 2025-10-09 flight used a different KCU and tether -- see
 # system_flown_2025.yaml. For optimization studies use system.yaml
 # (KCU 8.4 kg) instead.
@@ -33,10 +35,13 @@ components:
       type: LEI_soft_kite
       version: 3.0
       structure:
-        # Populated by populate_system_yml.py
+        # Populated by populate_system_yml.py (mass overridden below)
         projected_surface_area: 19.75 # m²
         span: 8.282                    # m
-        mass: 10.9926                  # kg
+        # 11 kg canopy + 3.2 kg canopy-mounted equipment (datasheet); the
+        # geometry-derived canopy-only mass is 10.9926 kg, and the inertia
+        # tensor below is still that canopy-only estimate.
+        mass: 14.2                     # kg
         center_of_mass:                         # m
         - -0.0413
         - -0.0
@@ -74,9 +79,21 @@ components:
       version: 1.0
       structure:
         length: 1.0      # m
-        diameter: 0.48   # m
-        mass: 22.75        # kg
+        # Area-equivalent diameter of the datasheet's 0.25 m² KCU frontal
+        # area (kcu_drag uses pi*(d/2)^2 as the frontal area): d = 0.5642 m.
+        diameter: 0.5642 # m
+        mass: 22.0       # kg, 19.2 KCU+cover + 2.8 onboard wind turbine
         center_of_mass: [0.0, 0.0, 0.0]  # m, same as bridle_point_node
+      # Onboard 4-bladed ram-air turbine (2019 flight ONLY -- the 2025 KCU
+      # carried none), DRAG only: its mass is inside the KCU mass above.
+      # Mounted ON TOP of the KCU facing the apparent wind: its
+      # momentum-theory thrust C_T on the swept area joins the KCU CROSSFLOW
+      # drag; the along-tether flow is shadowed by the KCU body, so it adds
+      # nothing axially -- awetrim.aerodynamics.kcu_drag (added 2026-09-04;
+      # trim A/B: reel-out v_tau/F_t land ~on the flight).
+      turbine:
+        diameter: 0.50            # m, rotor
+        thrust_coefficient: 0.85  # -, operating (Betz 0.89; freewheel ~1.2)
   tethers:
   - name: LEI-V3 Tether
     type: non_conductive_tether
@@ -89,7 +106,13 @@ components:
     structure:
       length: 350.0        # m  (max operational reference length)
       diameter: 0.010      # m  (10 mm)
-      density: 970.0       # kg/m³  (Dyneema SK78)
+      density: 724.0       # kg/m³  (effective braided-rope density, datasheet;
+                           # kept 2026-09-04 after a trim A/B: a braid is
+                           # ~25-30% air, so the solid-fibre 970 over-weights
+                           # a real 10 mm Dyneema braid (0.076 vs the typical
+                           # 0.05-0.065 kg/m). The turbine drag, not the
+                           # density, explained the fit gap.
+                           #  SK78 fibre itself is ~970)
       max_tether_force: 8400.0  # N
       conductive: false
       material:

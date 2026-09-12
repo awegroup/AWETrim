@@ -180,6 +180,50 @@ def test_extract_hardware_limits_omits_missing_fields():
     assert _extract_hardware_limits({}, {}) == {}
 
 
+def test_extract_hardware_limits_maps_winch_drive_envelope():
+    # ground_station.drums[0] (awesIO drum_object) -> the radial limits the
+    # trajectory optimizer applies to v_r.
+    from awetrim.system.factory import _extract_hardware_limits
+
+    drum = {
+        "type": "electric_winch",
+        "min_tether_speed": -8.0,
+        "max_tether_speed": 3.5,
+        "max_winch_acceleration": 4.0,
+    }
+
+    hw = _extract_hardware_limits({}, {}, drum)
+
+    assert hw["speed_radial"] == (-8.0, 3.5)
+    # the acceleration capability is symmetric about zero
+    assert hw["winch_acceleration"] == (-4.0, 4.0)
+
+
+def test_extract_hardware_limits_ignores_half_specified_winch_speed():
+    # One-sided speed data must not silently half-apply a bound.
+    from awetrim.system.factory import _extract_hardware_limits
+
+    hw = _extract_hardware_limits({}, {}, {"max_tether_speed": 3.5})
+
+    assert "speed_radial" not in hw
+
+
+def test_system_yaml_winch_envelope_reaches_the_optimizer_limits():
+    from awetrim.timeseries.phase_parametrized import PhaseParameterized
+    from awetrim.utils.config_paths import LEI_V3_SYSTEM_CONFIG
+
+    model = create_system_model_from_yaml(LEI_V3_SYSTEM_CONFIG)
+
+    class _Stub:
+        kite_model = model
+        _resolve_opti_limits = PhaseParameterized._resolve_opti_limits
+
+    lim = _Stub()._resolve_opti_limits()
+
+    assert lim["speed_radial"] == model.hardware_limits["speed_radial"]
+    assert lim["winch_acceleration"] == model.hardware_limits["winch_acceleration"]
+
+
 def test_legacy_config_yields_empty_hardware_limits(tmp_path):
     # The legacy format has no actuator-limit block -> the optimizer falls back
     # entirely to DEFAULT_OPTI_LIMITS.

@@ -1,9 +1,12 @@
-# As-flown configuration of the 2025-10-09 flight: KCU mass 23.3 kg
-# (total ~36.88 kg), 13.5 mm tether.
-# Differs from system_flown_2019.yaml ONLY in those two hardware numbers --
-# the wing/bridle structure, the winch limits and the tether material are
-# carried over from the 2019 file and are not independently re-measured for
-# 2025. For optimization studies use system.yaml (KCU 8.4 kg) instead.
+# As-flown configuration of the 2025-10-09 flight, per the hardware datasheet
+# (2026-09-02). The datasheet's "kite total mass 18 kg" is BRIDLE-INCLUSIVE:
+# wing 14.2 kg (11 canopy + 3.2 LE sensors, unchanged from 2019) + bridle
+# 2.5875 + ~1.2 kg airflow probe in the front bridle lines = 18 kg.
+# KCU 23.25 kg (0.46 m diameter x 0.95 m, no onboard turbine), 13.5 mm tether.
+# Total airborne kite mass ~41.24 kg (18 + KCU 23.25).
+# The wing/bridle geometry, winch limits and tether material are carried over
+# from the 2019 file. For optimization studies use system.yaml (KCU 8.4 kg)
+# instead.
 metadata:
   name: LEI-V3-KITE
   description: LEI V3 soft kite pumping ground gen system (TU Delft / Kitepower
@@ -34,10 +37,14 @@ components:
       type: LEI_soft_kite
       version: 3.0
       structure:
-        # Populated by populate_system_yml.py
+        # Populated by populate_system_yml.py (mass overridden below)
         projected_surface_area: 19.75 # m²
         span: 8.282                    # m
-        mass: 10.9926                  # kg
+        # 11 kg canopy + 3.2 kg canopy-mounted equipment, unchanged from 2019
+        # (the datasheet's 18 kg kite total is bridle-inclusive — see header);
+        # the geometry-derived canopy-only mass is 10.9926 kg, and the
+        # inertia tensor below is still that canopy-only estimate.
+        mass: 14.2                     # kg
         center_of_mass:                         # m
         - -0.0413
         - -0.0
@@ -68,15 +75,18 @@ components:
           density: 724.0           # kg/m³
           youngs_modulus: 20.0e+9   # Pa
           damping_per_stiffness: 0.0
-        mass: 2.5875                         # kg, lines + pulleys
+        # 2.5875 kg lines + pulleys, plus ~1.2 kg airflow probe mounted in the
+        # front bridle lines (2025 only; closes the datasheet's 18 kg kite
+        # total). The probe is NOT in the struc-geometry bridle nodes.
+        mass: 3.79                           # kg
     control_system:
       name: LEI-V3 KCU
       type: kite_control_unit
       version: 1.0
       structure:
-        length: 1.2      # m
-        diameter: 0.62   # m
-        mass: 23.3       # kg, as flown 2025-10-09
+        length: 0.95     # m, datasheet 2025
+        diameter: 0.46   # m, datasheet 2025
+        mass: 23.25      # kg, as flown 2025-10-09 (datasheet)
         center_of_mass: [0.0, 0.0, 0.0]  # m, same as bridle_point_node
   tethers:
   - name: LEI-V3 Tether
@@ -90,7 +100,8 @@ components:
     structure:
       length: 350.0        # m  (max operational reference length)
       diameter: 0.0135     # m  (13.5 mm, as flown 2025-10-09)
-      density: 970.0       # kg/m³  (Dyneema SK78)
+      density: 724.0       # kg/m³  (effective braided-rope density, datasheet;
+                           #  SK78 fibre itself is ~970)
       max_tether_force: 8400.0  # N
       conductive: false
       material:

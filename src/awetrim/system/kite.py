@@ -268,6 +268,8 @@ class Kite(Wing):
         mass_kcu=0,
         length_kcu=0.0,
         diameter_kcu=0.0,
+        diameter_turbine=0.0,
+        thrust_coefficient_turbine=0.85,
         g=9.81,
         rho=1.225,
         center_aerodynamic_wing=[0, 0, 10],
@@ -286,6 +288,12 @@ class Kite(Wing):
         # tools) exactly as it was.
         self.length_kcu = float(length_kcu or 0.0)
         self.diameter_kcu = float(diameter_kcu or 0.0)
+        # Onboard wind turbine (mounted ON TOP of the KCU, facing the
+        # apparent wind); only the KCU drag model reads these. 0.0 diameter =
+        # no turbine, and its mass is already inside mass_kcu -- these are
+        # DRAG parameters only.
+        self.diameter_turbine = float(diameter_turbine or 0.0)
+        self.thrust_coefficient_turbine = float(thrust_coefficient_turbine or 0.0)
         self.steering_control = steering_control
         self.g = g  # Gravitational acceleration
         self.rho = rho  # Air density

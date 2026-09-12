@@ -1501,12 +1501,20 @@ class PhaseParameterized(TimeSeries):
         # NLP-only: the forward warm-start simulation still marches with the
         # force law, which simply seeds v_r with a feasible trajectory.
         free_speed = sim_params.get("winch_mode", "force_law") == "free_speed"
+        # Winch acceleration capability, in precedence order: an explicit
+        # per-run ``sim_parameters["winch_acceleration"]``, then the drive's
+        # own envelope from system.yaml (ground_station.drums[0].
+        # max_winch_acceleration, resolved into ``limits`` by
+        # factory._extract_hardware_limits), then the numerical default.
         winch_acc = tuple(
             sim_params.get(
                 "winch_acceleration",
-                (
-                    DEFAULT_WINCH_CONFIG["min_acceleration"],
-                    DEFAULT_WINCH_CONFIG["max_acceleration"],
+                limits.get(
+                    "winch_acceleration",
+                    (
+                        DEFAULT_WINCH_CONFIG["min_acceleration"],
+                        DEFAULT_WINCH_CONFIG["max_acceleration"],
+                    ),
                 ),
             )
         )

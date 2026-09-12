@@ -25,7 +25,7 @@ from awetrim.system.kite import Kite
 from awetrim.system.system_model import SystemModel
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.system.williams_tether import WilliamsTether
-from awetrim.utils.system_config import get_kite, get_tether
+from awetrim.utils.system_config import get_drum, get_kite, get_tether
 
 
 def create_tether_from_config(
@@ -182,7 +182,7 @@ def _extract_params_awesio(cfg: dict) -> tuple:
     tether_density = tether_struct.get("density", 970.0)
     wind_cfg = cfg.get("wind", {})
 
-    hardware_limits = _extract_hardware_limits(cs_struct, tether_struct)
+    hardware_limits = _extract_hardware_limits(cs_struct, tether_struct, get_drum(cfg))
 
     return (
         mass_wing,
@@ -197,14 +197,18 @@ def _extract_params_awesio(cfg: dict) -> tuple:
     )
 
 
-def _extract_hardware_limits(cs_struct: dict, tether_struct: dict) -> dict:
+def _extract_hardware_limits(
+    cs_struct: dict, tether_struct: dict, drum: dict | None = None
+) -> dict:
     """Build the optimizer's hardware-limit overrides from system.yaml.
 
     Maps the KCU actuator limits (control_system.structure.steering /
-    .depower) onto the ``DEFAULT_OPTI_LIMITS`` keys the trajectory optimizer
-    reads, plus the max tether length used to cap the radial distance. Keys are
-    only present when the corresponding field exists in the config; missing
-    ones fall back to ``DEFAULT_OPTI_LIMITS``.
+    .depower) and the winch drive envelope
+    (ground_station.drums[0], awesIO ``drum_object``) onto the
+    ``DEFAULT_OPTI_LIMITS`` keys the trajectory optimizer reads, plus the max
+    tether length used to cap the radial distance. Keys are only present when
+    the corresponding field exists in the config; missing ones fall back to
+    ``DEFAULT_OPTI_LIMITS``.
     """
     hw: dict = {}
     steering = cs_struct.get("steering", {})
@@ -223,6 +227,22 @@ def _extract_hardware_limits(cs_struct: dict, tether_struct: dict) -> dict:
     tether_length = tether_struct.get("length")
     if tether_length is not None:
         hw["_max_tether_length"] = float(tether_length)
+
+    # Winch drive envelope. The reeling speed v_r is the optimizer's
+    # ``speed_radial`` (positive = reel-out), so the drum's speed range maps
+    # straight onto it; the acceleration capability becomes the symmetric
+    # slew-rate limit on v_r used when it is a direct control
+    # (``sim_parameters["winch_mode"] == "free_speed"``). Both bounds are only
+    # emitted when BOTH ends are given, so a partial drum entry cannot silently
+    # half-apply a bound.
+    drum = drum or {}
+    v_min = drum.get("min_tether_speed")
+    v_max = drum.get("max_tether_speed")
+    if v_min is not None and v_max is not None:
+        hw["speed_radial"] = (float(v_min), float(v_max))
+    acc_max = drum.get("max_winch_acceleration")
+    if acc_max is not None:
+        hw["winch_acceleration"] = (-float(acc_max), float(acc_max))
     return hw
 
 
@@ -325,11 +345,29 @@ def create_system_model_from_yaml(
         f"  tether model: {type(tether).__name__} "
         f"(diameter={tether_diameter}, density={tether_density})"
     )
+    # Onboard-turbine DRAG envelope (mass already in the KCU mass): the
+    # optional ``control_system.turbine`` block of an awesIO system.yaml.
+    # Absent -> zeros -> the KCU drag model adds no turbine term.
+    turbine_cfg = (
+        (get_kite(cfg).get("control_system", {}) or {}).get("turbine", {}) or {}
+        if "components" in cfg
+        else {}
+    )
+    if turbine_cfg:
+        print(
+            "  KCU turbine: rotor diameter="
+            f"{turbine_cfg.get('diameter', 0.0)} m, C_T="
+            f"{turbine_cfg.get('thrust_coefficient', 0.85)} (top-mounted)"
+        )
     kite = Kite(
         mass_wing=mass_wing,
         mass_kcu=mass_kcu,
         length_kcu=length_kcu,
         diameter_kcu=diameter_kcu,
+        diameter_turbine=float(turbine_cfg.get("diameter", 0.0) or 0.0),
+        thrust_coefficient_turbine=float(
+            turbine_cfg.get("thrust_coefficient", 0.85) or 0.0
+        ),
         area_wing=area_wing,
         aero_input=aero_cfg,
         steering_control=steering_control,

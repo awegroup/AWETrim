@@ -118,8 +118,22 @@ components:
     drums:
     - name: LEI-V3 Drum
       type: electric_winch
-      max_tether_force: 8400.0  # N
+      max_tether_force: 8400.0  # N — drum rating; matches the tether rating above
+      # Winch drive envelope (Kitepower ground station, as specified by
+      # U. Fechner). Read by awetrim.system.factory._extract_hardware_limits
+      # and mapped onto the trajectory optimizer's radial limits:
+      #   min/max_tether_speed   -> DEFAULT_OPTI_LIMITS["speed_radial"] bounds
+      #   max_winch_acceleration -> the +/- slew-rate limit on v_r used by the
+      #                             free_speed winch mode (winch_acceleration)
+      # Sign convention: positive = reel-out, negative = reel-in.
+      min_tether_speed: -8.0        # m/s (max reel-in speed)
+      max_tether_speed: 3.5         # m/s (max reel-out speed)
+      max_winch_acceleration: 4.0   # m/s²
+      drum_diameter: 0.323          # m (0.1615 m radius)
+      # Not modelled by the quasi-steady winch (a force law T(v_r, l_dp) with no
+      # drum dynamics), so deliberately not stored here: total drive inertia
+      # 0.408 kg m², Coulomb friction 244 N, viscous friction 61.2 N s/m.
     gearboxes:
     - name: LEI-V3 Gearbox
       type: planetary
-      gear_ratio: 1.0
+      gear_ratio: 6.2

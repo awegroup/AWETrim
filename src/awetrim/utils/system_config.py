@@ -52,3 +52,25 @@ def get_tether(system_config: dict) -> dict:
     if isinstance(tethers, list) and tethers:
         return tethers[0]
     return components.get("tether", {})
+
+
+def get_ground_station(system_config: dict) -> dict:
+    """Return the ground-station component dict (empty dict if none)."""
+    components = system_config.get("components", {})
+    station = components.get("ground_station")
+    return station if isinstance(station, dict) else {}
+
+
+def get_drum(system_config: dict) -> dict:
+    """Return the primary winch drum dict of the ground station.
+
+    The drum carries the winch drive envelope (``min_tether_speed`` /
+    ``max_tether_speed`` / ``max_winch_acceleration`` / ``max_tether_force``,
+    awesIO ``drum_object``). Older system files have no ``drums`` entry, in
+    which case an empty dict is returned and callers fall back to their own
+    numerical defaults.
+    """
+    drums = get_ground_station(system_config).get("drums")
+    if isinstance(drums, list) and drums:
+        return drums[0]
+    return {}
