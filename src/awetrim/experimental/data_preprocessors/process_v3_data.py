@@ -21,13 +21,24 @@ from pathlib import Path
 from awes_ekf.utils import llh_to_enu
 
 
-def load_log_file(log_directory: Path, log_date: str) -> pd.DataFrame:
-    all_logs = os.listdir(log_directory)
-    log_path = ""
-    for log in all_logs:
-        if log.startswith(log_date):
-            log_path = f"{log_directory}/{log}"
-            break
+def find_log_path(
+    log_directory: Path, log_date: str, log_filename: str | None = None
+) -> str:
+    """Resolve the raw log to read: the exact selected file when the caller
+    provides one, otherwise the first file carrying the date in its name
+    (which is not always the leading token, e.g. DA_2017-03-30_FL01_*)."""
+    if log_filename and (Path(log_directory) / log_filename).exists():
+        return f"{log_directory}/{log_filename}"
+    for log in os.listdir(log_directory):
+        if log_date in log:
+            return f"{log_directory}/{log}"
+    raise FileNotFoundError(f"No flight log for {log_date} in {log_directory}")
+
+
+def load_log_file(
+    log_directory: Path, log_date: str, log_filename: str | None = None
+) -> pd.DataFrame:
+    log_path = find_log_path(log_directory, log_date, log_filename)
     delimiter = detect_delimiter(log_path)
     log = pd.read_csv(log_path, delimiter=delimiter, low_memory=False)
     log = log[log["kite_height"] > 50]  # Select indexes where kite is flying
@@ -168,7 +179,7 @@ def save_flight_data(
 
 def process_data(config_data: dict, log_directory: Path) -> pd.DataFrame:
     log_date = f'{config_data["year"]}-{config_data["month"]}-{config_data["day"]}'
-    log = load_log_file(log_directory, log_date)
+    log = load_log_file(log_directory, log_date, config_data.get("log_filename"))
     window_size = 20
     dt = log["time"].iloc[1] - log["time"].iloc[0]
     log = log.reset_index()

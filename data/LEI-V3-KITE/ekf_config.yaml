@@ -5,6 +5,40 @@ simulation_parameters:
   max_iterations: 200                 # Maximum number of iterations for the IEKF
   log_profile: false                   # Model wind speed as logarithmic with height
   initial_wind_velocity: [0.001, 8, 0] # Initial wind velocity [vx, vy, vz] for EKF state initialization
+  # Per-FLIGHT override of that guess, keyed by flight date. The filter walks
+  # its wind state in from the guess, and a guess pointing the wrong way costs
+  # FLIGHT time, not spin-up time: the 2025-10-09 record starts AT launch
+  # (the kite is on the ground until 15:35:21, the first EKF sample), so there
+  # is no lead-in to burn and the transient lands on the first pumping cycle.
+  # The shared [0.001, 8, 0] is 8 m/s toward 90 deg -- 103 deg off the 2025
+  # wind -- and the estimate swung 8.3 -> 1.4 -> 6.4 m/s over two minutes,
+  # settling only at t = 123 s. Seeded with the flight's own converged wind it
+  # is on the answer at the FIRST sample, and the settled solution is
+  # unchanged: F_t,kite identical, direction identical, V_w +2.2 %, CL -1.3 %
+  # (measured 2026-08-27; the canonical 2025 h5 is that run).
+  initial_wind_velocity_by_date:
+    "2025-10-09": [6.79, -1.53, 0]   # 6.96 m/s toward 347.3 deg, its own converged wind
+    "2017-03-30": [4.7, 6.5, 0]      # ~8 m/s toward 54 deg ENU, from the logged 216 deg compass ground direction (kills the startup IEKF warnings)
+  # Per-FLIGHT overrides of ANY simulation_parameters key, merged one level
+  # deep (so a measurements: block only touches the keys it names). The 2017
+  # Valkenburg flights carried no pitot: est_app_wind_kite in those logs is a
+  # ground-station model ESTIMATE, near-constant over the pattern (corr 0.02
+  # with kite speed), so used as a va measurement it fights the wind state,
+  # and the pre-run "calibration" (k = 2.16) merely rescales its level onto
+  # the filter's own mean. Kept in the processed data as a diagnostic only.
+  simulation_parameters_by_date:
+    "2017-03-30":
+      calibrate_apparent_windspeed: false
+      measurements:
+        kite_apparent_windspeed: false
+  # Same idea for the aero-coefficient states: seed the filter at the flight's
+  # own converged levels instead of the generic CL 1 / CD 0.15, so the first
+  # cycle is not spent walking them in. Keys go straight to
+  # find_initial_state_vector (CL, CD, CS); CD is the STATE total (the
+  # postprocess splits off tether/KCU/bridle: 2025 first-2-min medians wing
+  # 0.177 + tether 0.049 + KCU 0.011 + bridles 0.011).
+  initial_coefficients_by_date:
+    "2025-10-09": {CL: 0.92, CD: 0.25, CS: 0.0}
   enforce_vertical_wind_to_0: true     # Soft-pin w_z (pseudo-measurement, meas_stdv z_wind): the free w_z was 55 % figure-eight-locked and its 3-h mean flipped sign with the tuning; 2019-10-08 was overcast+rain, no convection to carry a real mean updraft (tuned 2026-08-24)
   model_yaw: false                   # Model the yaw angle in the state vector
   steering_dependent_cs: true        # CS = CL*tan(k_phi_us*us) + residual state; kills the CS walk chasing the loop-locked steering (k_phi_us -0.60 on us=steering/200, 2019-10-08)
@@ -28,7 +62,7 @@ simulation_parameters:
     kcu_position: false                    # KCU position measurement
     kcu_velocity: false                    # KCU velocity measurement
     kcu_acceleration: false                    # KCU acceleration measurement
-    kite_apparent_windspeed: true         # Apparent wind speed measurement
+    kite_apparent_windspeed: true         # Apparent wind speed measurement (2017 flights excluded via simulation_parameters_by_date: no pitot flew)
     bridle_angle_of_attack: false            # Angle of attack measurement
     bridle_angle_of_sideslip: false             # Sideslip angle measurement
     kite_yaw_angle: false                  # Yaw angle measurement

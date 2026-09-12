@@ -1,0 +1,126 @@
+# As-flown configuration of the 2025-10-09 flight, per the hardware datasheet
+# (2026-09-02). The datasheet's "kite total mass 18 kg" is BRIDLE-INCLUSIVE:
+# wing 14.2 kg (11 canopy + 3.2 LE sensors, unchanged from 2019) + bridle
+# 2.5875 + ~1.2 kg airflow probe in the front bridle lines = 18 kg.
+# KCU 23.25 kg (0.46 m diameter x 0.95 m, no onboard turbine), 13.5 mm tether.
+# Total airborne kite mass ~41.24 kg (18 + KCU 23.25).
+# The wing/bridle geometry, winch limits and tether material are carried over
+# from the 2019 file. For optimization studies use system.yaml (KCU 8.4 kg)
+# instead.
+metadata:
+  name: LEI-V3-KITE
+  description: LEI V3 soft kite pumping ground gen system (TU Delft / Kitepower
+    research kite)
+  note: None
+  awesIO_version: 0.1.0
+  schema: system_schema.yml
+
+assembly:
+  # Joint-id topology: kite KCU (K1) -> tether top (T1); tether bottom (T2) -> drum (G1)
+  connectivity_matrix:
+  - [K1, T1]
+  - [T2, G1]
+
+components:
+  kites:
+  - name: LEI-V3 Kite
+    type: soft_kite_kcu
+    version: 1.0
+    joints:
+      kcu_joint:
+        id: K1
+    # Kite aggregate (wing + bridle + KCU) mass/CG/inertia is derived on demand
+    # from the structural geometry via
+    # awetrim.aerostructural.utils.compute_kite_aggregate — it is not stored here.
+    wing:
+      name: LEI-V3
+      type: LEI_soft_kite
+      version: 3.0
+      structure:
+        # Populated by populate_system_yml.py (mass overridden below)
+        projected_surface_area: 19.75 # m²
+        span: 8.282                    # m
+        # 11 kg canopy + 3.2 kg canopy-mounted equipment, unchanged from 2019
+        # (the datasheet's 18 kg kite total is bridle-inclusive — see header);
+        # the geometry-derived canopy-only mass is 10.9926 kg, and the
+        # inertia tensor below is still that canopy-only estimate.
+        mass: 14.2                     # kg
+        center_of_mass:                         # m
+        - -0.0413
+        - -0.0
+        - 10.3
+        inertia_tensor:
+        - - 84.6787
+          - 0.0
+          - 0.8031
+        - - 0.0
+          - 18.6955
+          - 0.0
+        - - 0.8031
+          - 0.0
+          - 88.6081
+        side_projected_area: 0.2923
+        planform_surface_area: 21.0559
+    bridle:
+      name: LEI-V3 Bridle
+      type: LEI_soft_kite_bridle
+      version: 1.0
+      structure:
+        bridle_point_node: [0, 0, 0]
+        # Populated by populate_system_yml.py
+        total_nominal_line_length: 79.522    # m, sum of unique bridle_line l0 values
+        avg_line_diameter: 0.00285           # m, connection-length-weighted average
+        material:
+          type: dyneema
+          density: 724.0           # kg/m³
+          youngs_modulus: 20.0e+9   # Pa
+          damping_per_stiffness: 0.0
+        # 2.5875 kg lines + pulleys, plus ~1.2 kg airflow probe mounted in the
+        # front bridle lines (2025 only; closes the datasheet's 18 kg kite
+        # total). The probe is NOT in the struc-geometry bridle nodes.
+        mass: 3.79                           # kg
+    control_system:
+      name: LEI-V3 KCU
+      type: kite_control_unit
+      version: 1.0
+      structure:
+        length: 0.95     # m, datasheet 2025
+        diameter: 0.46   # m, datasheet 2025
+        mass: 10      # kg, as flown 2017
+        center_of_mass: [0.0, 0.0, 0.0]  # m, same as bridle_point_node
+  tethers:
+  - name: LEI-V3 Tether
+    type: non_conductive_tether
+    version: 1.0
+    joints:
+      upper_tether_joint:
+        id: T1
+      lower_tether_joint:
+        id: T2
+    structure:
+      length: 350.0        # m  (max operational reference length)
+      diameter: 0.004     # m  (13.5 mm, as flown 2025-10-09)
+      density: 724.0       # kg/m³  (effective braided-rope density, datasheet;
+                           #  SK78 fibre itself is ~970)
+      max_tether_force: 8400.0  # N
+      conductive: false
+      material:
+        type: Dyneema-SK78
+        youngs_modulus: 850.0e+6  # Pa (0.85 GPa)
+  ground_station:
+    name: LEI-V3 Ground Station
+    type: pumping_ground_gen_station
+    version: 1.0
+    joints:
+      drum_joint:
+        id: G1
+    structure:
+      mass: 0.0
+    drums:
+    - name: LEI-V3 Drum
+      type: electric_winch
+      max_tether_force: 8400.0  # N
+    gearboxes:
+    - name: LEI-V3 Gearbox
+      type: planetary
+      gear_ratio: 1.0
