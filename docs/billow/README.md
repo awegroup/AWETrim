@@ -1,17 +1,26 @@
-# Billow documentation
+# Billow integration documentation
 
-`billow.tex` is the full technical document: formulation, element library,
-validation against external benchmarks, demonstration cases, the `kite_fem`
-comparison, and the canopy mesh study.
+Billow itself lives in its own repository: <https://github.com/awegroup/Billow>.
+Its formulation, element library, validation against external benchmarks,
+demonstration cases and the measured-kite study are documented there
+(`docs/billow.pdf` and <https://awegroup.github.io/Billow/>).
 
-Rebuild (needs the figures under `results/structural/`, regenerate them with the
-scripts listed in the document's final section):
+What is left here is the **coupling**: how AWETrim drives Billow against the VSM
+quasi-steady trim, and what had to be true before the coupled answer was
+physical.
+
+- `integration.md` / `integration.tex` / `integration.pdf` — the coupling
+  document: architecture, element mapping, chordwise load placement, the load
+  transfer onto the canopy, mirror symmetry, and the open items.
+- `figures/` — its figures, produced by the scripts in
+  `scripts/aerostructural/` (`plot_billow_geometry.py`,
+  `plot_billow_strut_bending.py`, `plot_chordwise_moment_matching.py`,
+  `plot_billow_depower_chains.py`).
+
+Rebuild:
 
 ```sh
-python scripts/structural/run_demo_cases.py
-python scripts/structural/run_validation_benchmarks.py
-python scripts/structural/run_mesh_requirement.py
-cd docs/billow && pdflatex billow.tex && pdflatex billow.tex
+cd docs/billow && pdflatex integration.tex && pdflatex integration.tex
 ```
 
 Figure paths are resolved via `\graphicspath` relative to this directory.

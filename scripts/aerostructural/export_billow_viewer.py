@@ -26,8 +26,8 @@ import numpy as np
 
 from awetrim.aerostructural.billow import structural_billow as sb
 from awetrim.aerostructural.utils import load_yaml
-from awetrim.structural.elements import line_tensions
-from awetrim.structural.elements.membrane import membrane_regimes
+from billow.elements import line_tensions
+from billow.elements.membrane import membrane_regimes
 from common import DEFAULT_KITE_NAME
 
 from check_mirror_asymmetry import decompose, final_positions, mirror_partners

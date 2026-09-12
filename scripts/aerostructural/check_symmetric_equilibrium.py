@@ -50,8 +50,8 @@ import numpy as np
 
 from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
 from awetrim.aerostructural.billow import structural_billow as sb
-from awetrim.structural import StructuralState
-from awetrim.structural.symmetry import REFLECTION_Y, frame_mirror_mismatch
+from billow import StructuralState
+from billow.symmetry import REFLECTION_Y, frame_mirror_mismatch
 from common import DEFAULT_KITE_NAME
 
 from check_mirror_asymmetry import decompose

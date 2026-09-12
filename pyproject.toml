@@ -49,6 +49,7 @@ dependencies = [
   "PyYAML",
   "prompt_toolkit",
   "vplot3d @ git+https://github.com/rschmehl/vplot3d.git@main",
+  "billow @ git+https://github.com/awegroup/Billow.git@main",
   "VSM @ git+https://github.com/awegroup/Vortex-Step-Method.git@main",
   "PSS @ git+https://github.com/awegroup/Particle_System_Simulator.git@v1.0.2",
   "awes-ekf @ git+https://github.com/ocayon/EKF-AWE.git@main",

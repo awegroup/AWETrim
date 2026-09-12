@@ -29,7 +29,7 @@ from awetrim import plotting
 from awetrim.aerostructural.billow import structural_billow as sb
 from awetrim.aerostructural.fem import read_struc_geometry_yaml
 from awetrim.aerostructural.utils import load_yaml, rotate_geometry
-from awetrim.structural.elements.membrane import SLACK, TAUT, WRINKLED, membrane_regimes
+from billow.elements.membrane import SLACK, TAUT, WRINKLED, membrane_regimes
 from common import DEFAULT_KITE_NAME, resolve_initial_geometry_rotation_kwargs, resolve_kite_paths
 
 STRUC_GEOMETRY_FILENAME = "struc_geometry_FEM_full.yaml"

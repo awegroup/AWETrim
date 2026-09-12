@@ -365,8 +365,8 @@ def symmetric_wing_frames_input(strut_at=(1, 2), n_leading_edge=8):
 
 
 def frames_mirror_mismatch_deg(nodes, beams, frames):
-    from awetrim.structural import DofLayout
-    from awetrim.structural.symmetry import frame_mirror_mismatch, mirror_partners
+    from billow import DofLayout
+    from billow.symmetry import frame_mirror_mismatch, mirror_partners
 
     beam_nodes = np.unique(beams)
     layout = DofLayout(n_nodes=len(nodes), rotational_nodes=beam_nodes)

@@ -16,7 +16,7 @@
 
 """Billow structural backend for the aero-structural coupling.
 
-Adapts the standalone minimum-energy library in :mod:`awetrim.structural` to
+Adapts the standalone minimum-energy library in :mod:`billow` to
 the call contract the coupled drivers already use for ``kite_fem``
 (``instantiate`` / ``run_billow`` / ``get_rest_lengths``), so the outer
 fixed-point loop, the VSM trim and the load mapping are untouched.
@@ -43,7 +43,7 @@ same as the FEM model, so a Billow-vs-FEM difference is attributable to the
 canopy and to the solver formulation, and to nothing else.
 
 This module is the only place that knows about both packages:
-:mod:`awetrim.structural` stays free of schema, VSM and PSS knowledge.
+:mod:`billow` stays free of schema, VSM and PSS knowledge.
 """
 
 from __future__ import annotations
@@ -55,10 +55,10 @@ from typing import Any, Mapping, Sequence
 
 import numpy as np
 
-from awetrim.structural import MinimumEnergySolver, StructuralModel, StructuralState
-from awetrim.structural.rotations import minimal_rotation, orthonormalize
-from awetrim.structural.symmetry import mirror_equalities, mirror_frames, mirror_partners
-from awetrim.structural.elements import (
+from billow import MinimumEnergySolver, StructuralModel, StructuralState
+from billow.rotations import minimal_rotation, orthonormalize
+from billow.symmetry import mirror_equalities, mirror_frames, mirror_partners
+from billow.elements import (
     InflatableTubeLaw,
     build_cable_elements,
     build_inflatable_beam_elements,

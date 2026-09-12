@@ -1,6 +1,6 @@
 """Run a single Billow/QSM aerostructural simulation.
 
-The structural side is the minimum-energy model in ``awetrim.structural``:
+The structural side is the minimum-energy model in ``billow``:
 cables, frictionless pulleys, inflatable Timoshenko tube beams and a wrinkling
 CST membrane canopy, all posed as one total potential energy and solved with
 IPOPT. The aerodynamic side, the load mapping and the outer fixed-point loop

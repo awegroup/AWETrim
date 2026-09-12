@@ -63,19 +63,6 @@ src/awetrim/
                          builds fully numeric models; wind_profiles.py maps the
                          co-sim InflowConditions struct (laws 0-6, CUSTOM_* fits)
                          onto create_wind_model kwargs.
-  structural/        ✅  Minimum-energy structural model, coupled via
-                         aerostructural/billow/: cables, frictionless pulleys,
-                         geometrically exact Timoshenko beams and wrinkling
-                         (tension-field) membrane fabric, assembled into one
-                         total potential energy and solved with IPOPT.
-                         Imports ONLY numpy + casadi -- no PSS, no VSM, no
-                         YAML schema -- and nothing in aerostructural/ imports
-                         it. Element kernels are compiled once per element
-                         TYPE and evaluated with casadi Function.map, so the
-                         graph does not grow with the mesh (9k DOF: 3 s build,
-                         6 s solve, 9 IPOPT iterations).
-                         Demos: scripts/structural/run_demo_cases.py
-                         -- see src/awetrim/structural/AGENTS.md
   server/            ✅  REST API for reelout trajectory optimization
                          (FastAPI, optional [server] extra; endpoints
                          /init /status /step /trajectory /reset; one
@@ -121,19 +108,30 @@ src/awetrim/
 ROM is **script-based**, not a `src/` module: see `scripts/reduced-order-model/`
 (`optimization/`, `validation/`), configured via each kite's `rom_config.yaml`.
 
-**Three structural paths now exist** and their force laws must stay
-consistent: `aerostructural/pss/` (springs; kinetic damping or the
-min-energy `structural_nlp.py`), `aerostructural/fem/` (`kite_fem`/`pyfe3d`,
-Newton-Raphson, inflatable Timoshenko beams) and the standalone
-`structural/` above. The spring/pulley force law agrees across all three;
-the pulley rest-length convention does NOT (the PSS reader splits `l0`
-across the two arms, `kite_fem` stores the total on each). `kite_fem`'s
-inflatable-beam `EI`/`GJ` are empirical *secant* stiffnesses that depend on
-the current deflection, twist and inflation pressure -- a force law, not a
-potential. They have been **integrated** into a strain energy in
-`structural/elements/inflatable.py` (`InflatableTubeLaw`), which is the correct
-way to reuse them; never substitute a state-dependent `EI` into `1/2 EI k^2`.
-See `src/awetrim/structural/AGENTS.md`.
+**The structural solver is [Billow](https://github.com/awegroup/Billow)**, a
+separate package (`pip install billow`), imported as `billow`. It was
+`src/awetrim/structural/` until 2026-09-12 and is now its own repository with
+its own documentation, demonstration cases and validation suite -- including
+the measured hanging-V3 case, which moved with it.
+
+AWETrim uses BOTH its fidelities, through one adapter each under
+`aerostructural/`:
+
+- **wireframe** (`billow.build_line_system`) -- cables, tension-only lines and
+  pulleys. The bridle and line system on its own; what the PSS particle system
+  used to do.
+- **full** -- the above plus inflatable Timoshenko tube beams and wrinkling CST
+  membrane canopy.
+
+They are not two force laws. Billow has one cable kernel and both fidelities
+call it, so the consistency that used to have to be maintained by hand across
+three codes is now structural.
+
+**The pulley rest-length convention is the one thing an adapter must state
+explicitly**, because file formats disagree: the PSS reader split `l0` across
+the two arms, `kite_fem` stored the total on each, and Billow's `PulleyKernel`
+takes the whole rope. `build_line_system` therefore takes `pulley_rest_lengths`
+rather than inferring it.
 
 **Chordwise force distribution.** The aero→struc coupling spreads each spanwise
 VSM force over 10 chordwise nodes. Where it puts the resultant IS the panel's
@@ -152,8 +150,8 @@ has deformed (0.09% on the built shape). `check_moment_preservation` measures
 that step alone, not the chordwise placement. The FEM structural solver itself
 also needs further work.
 
-**Read the module's `AGENTS.md` before modifying `aerodynamics/`, `aerostructural/`,
-`structural/`, or `plotting/`.
+**Read the module's `AGENTS.md` before modifying `aerodynamics/`, `aerostructural/`
+or `plotting/`; read Billow's own `AGENTS.md` before changing element physics.
 When you add, remove, or rename public functions, dataclasses, config keys, or file layout in any module that has an `AGENTS.md`, update that file in the same commit.**
 
 ## Physics references

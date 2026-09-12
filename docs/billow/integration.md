@@ -34,7 +34,7 @@ already dispatched on `config["structural_solver"]` between `pss` and
 copy of its thousand lines. **Any future backend should do the same.**
 
 `structural_billow.py` is the only module that imports both
-`awetrim.structural` and the AWETrim schema. That boundary is deliberate and
+`billow` and the AWETrim schema. That boundary is deliberate and
 load-bearing: the structural package stays free of PSS, VSM and YAML knowledge,
 so its element physics can go on being validated against closed-form solutions
 independently of anything the coupling does.
@@ -658,7 +658,7 @@ tube kernels are even in every strain component, so the energy is exactly
 mirror-symmetric. The near half, and so its reference curvatures, are untouched;
 an asymmetric geometry is left as built; a beam member lying *in* the plane (a
 centre strut) cannot share the leading edge's signs and raises. The generic
-pieces live in `awetrim.structural.symmetry`.
+pieces live in `billow.symmetry`.
 
 **After the fix the symmetric equilibrium is stable, and the free solve finds
 it.** At the symmetric equilibrium the lowest antisymmetric stiffnesses are four

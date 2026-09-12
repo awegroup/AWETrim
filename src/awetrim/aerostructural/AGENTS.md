@@ -78,7 +78,7 @@ src/awetrim/aerostructural/
   # ── Billow-based solver ───────────────────────────────────────────────────
   billow/
     __init__.py                    Re-exports the structural_billow API
-    structural_billow.py           Adapts awetrim.structural (minimum-energy
+    structural_billow.py           Adapts billow (minimum-energy
                                    cables, pulleys, inflatable Timoshenko tube
                                    beams, wrinkling CST membrane canopy) to the
                                    run_kite_fem call contract. Reads the SAME
@@ -185,7 +185,7 @@ Node positions are updated as `nodes += factor * (solved_nodes - nodes)` where `
 
 `structural_billow.instantiate` consumes the arrays
 `fem/read_struc_geometry_yaml.main` already returns and turns them into a
-`awetrim.structural` minimum-energy model. The element mapping:
+`billow` minimum-energy model. The element mapping:
 
 | reader element | Billow element |
 |----------------|----------------|

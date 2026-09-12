@@ -4,7 +4,7 @@
 
 """Billow-based aero-structural coupling.
 
-``structural_billow`` adapts :mod:`awetrim.structural` to the structural-backend
+``structural_billow`` adapts :mod:`billow` to the structural-backend
 contract the coupled drivers use; ``aerostructural_coupled_solver`` is the
 Billow/QSM driver. The geometry reader, the load mapping and the VSM trim are
 shared with the FEM path.
