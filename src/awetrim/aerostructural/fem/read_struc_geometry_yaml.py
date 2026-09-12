@@ -56,7 +56,9 @@ def _resolve_kcu_mass(struc_geometry, config=None, system_config=None):
     return 0.0
 
 
-def initialize_particles(struc_geometry, struc_nodes, m_arr, strut_padding="legacy"):
+def initialize_particles(
+    struc_geometry, struc_nodes, m_arr, strut_padding="bisect_longest"
+):
     """
     Initialize particles for the kite structure.
 
@@ -112,7 +114,11 @@ def initialize_particles(struc_geometry, struc_nodes, m_arr, strut_padding="lega
         strut_node_le_indices.append(ci)
         strut_node_te_indices.append(cj)
         nodes_per_strut = max(len(node_indices), nodes_per_strut)
-        strut_indices.append(node_indices)
+        # COPY: the padding below inserts into these lists, and the YAML's own
+        # node_indices list is what was handed to us -- appending it directly
+        # would write the padding node ids back into the caller's dict, so a
+        # second read of the same loaded geometry would see a pre-padded wing.
+        strut_indices.append(list(node_indices))
 
     canopy_section_le_indices = [
         idx for idx in struc_node_le_indices if idx not in strut_node_le_indices
@@ -128,19 +134,29 @@ def initialize_particles(struc_geometry, struc_nodes, m_arr, strut_padding="lega
     # Pad every strut up to a common node count so the wing is a structured
     # grid. Where the padding nodes go is a real mesh-quality decision:
     #
-    #   "legacy"          all of them into the second-to-last gap, wherever
-    #                     that happens to be. On the LEI-V3 that crams four
-    #                     nodes into the 33 mm between two tip bridle
-    #                     attachments and leaves a 780 mm element next door --
-    #                     a 118x spread in element length, and the canopy
-    #                     sections inherit the same spacing ratios.
+    #   "legacy"          all of them into the second-to-last gap, and NOT
+    #                     evenly across it: the loop below re-reads the gap
+    #                     ends after every insertion, so each node lands
+    #                     partway into what is left of the gap and they pile
+    #                     up geometrically against its far end. On the LEI-V3
+    #                     tip closure -- a 348 mm chord -- four padding nodes
+    #                     land at 0.20, 0.52, 0.81 and 0.96 of the 173 mm gap
+    #                     instead of 0.2/0.4/0.6/0.8, giving segments of
+    #                     96.8, 34.7, 55.5, 49.9, 26.6, 6.7 and 78.5 mm. That
+    #                     6.7 mm beam is the reason the spread across the wing
+    #                     is 118x and not the 22x that filling the same gap
+    #                     evenly would give, and the canopy sections inherit
+    #                     the same spacing ratios.
     #   "bisect_longest"  each padding node bisects the longest segment the
     #                     strut currently has, which is the standard greedy
     #                     refinement and grades the mesh evenly around the
-    #                     bridle attachments that have to stay put.
+    #                     bridle attachments that have to stay put. The same
+    #                     tip closure comes out 48.4, 48.4, 43.3, 43.3, 43.3,
+    #                     43.3, 78.5 mm -- no sliver, and 46x across the wing.
     #
-    # "legacy" is the default because it is what every stored FEM result was
-    # produced with; "bisect_longest" is what a fresh model should use.
+    # "bisect_longest" is the default. "legacy" is kept, unchanged and with
+    # its cascade intact, because it is what every stored FEM result was
+    # produced with: set strut_padding: legacy to reproduce one.
     if strut_padding not in ("legacy", "bisect_longest"):
         raise ValueError(
             f"strut_padding must be 'legacy' or 'bisect_longest', got {strut_padding!r}"
@@ -526,6 +542,19 @@ def initialize_wing_structure(
 
     # Calculate target mass for inflatable tubes
     target_mass_inflatable = struc_geometry["mass_without_bridles"] - mass_canopy
+    if target_mass_inflatable < 0.0:
+        # The tubes then carry NEGATIVE lumped mass. The model's total stays
+        # right, but its mass sits in the wrong place, and every consumer that
+        # weighs nodes differently (clipping the negatives away, say) lands on
+        # a different CG -- on the LEI-V3 FEM_full geometry, 0.64 m in z.
+        logging.warning(
+            "canopy mass %.3f kg already exceeds mass_without_bridles %.3f kg: "
+            "%.3f kg is hung on the LE/strut nodes as NEGATIVE mass. Check "
+            "canopy_density against mass_without_bridles.",
+            mass_canopy,
+            struc_geometry["mass_without_bridles"],
+            target_mass_inflatable,
+        )
 
     # Distribute mass along leading edge based on segment lengths
     for i in range(len(le_indices) - 1):
@@ -853,7 +882,7 @@ def main(struc_geometry, config=None, system_config=None):
         struc_geometry,
         struc_nodes,
         m_arr,
-        strut_padding=(config or {}).get("strut_padding", "legacy"),
+        strut_padding=(config or {}).get("strut_padding", "bisect_longest"),
     )
 
     ### Analyze Wing Structure
