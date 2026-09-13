@@ -40,9 +40,9 @@ from ..utils import calculate_cg, rotate_geometry
 # to keep its own copy that clipped negative masses away and normalised by the
 # positive sum -- while `calculate_cg`, which places the trim's inertial and
 # gravity resultants, weighs every node as it is. On the LEI-V3 FEM_full
-# geometry 96 tube nodes carry a small NEGATIVE mass (the reader hangs
-# `mass_without_bridles - mass_canopy` on the tubes, and that is negative when
-# the YAML's canopy density over-fills the wing's mass), so the two disagreed
+# geometry 96 tube nodes then carried a NEGATIVE mass (the reader charged the
+# KCU to the canopy and hung `mass_without_bridles - mass_canopy` on the tubes;
+# fixed 2026-09-13), so the two disagreed
 # about where the kite's mass is by 0.64 m in z -- a 20% error on every
 # inertial and gravity moment the structure was given, 39 N m of roll on a
 # steered state. Same weights on both sides or the moments cannot match.
@@ -388,6 +388,37 @@ def _bridle_line_specs_for_vsm(body_aero, bridle_connectivity_arr):
     return [
         (int(i), int(j), float(line[2])) for (i, j), line in zip(pairs, lines)
     ]
+
+
+def _trim_results_summary(results_aero):
+    """The final trim's storable outputs: every scalar, string and 3-vector.
+
+    ``meta`` otherwise keeps only speeds, course rate and tether force, so a
+    stored run could not say what CL, CD, angle of attack or stall margin it
+    converged at without re-trimming its shape. Selected by shape rather than
+    by name, so a key the trim gains later is recorded without an edit here.
+    ``alpha_at_ac`` is kept too, in degrees: the spanwise distribution is what
+    the stall margin is the minimum of.
+    """
+    summary = {}
+    for key, value in (results_aero or {}).items():
+        if value is None or isinstance(value, (str, bool)):
+            summary[key] = value
+            continue
+        try:
+            array = np.asarray(value, dtype=float)
+        except (TypeError, ValueError):
+            continue
+        if array.ndim == 0:
+            summary[key] = float(array)
+        elif array.size == 3:
+            summary[key] = array.ravel().tolist()
+    alpha = results_aero.get("alpha_at_ac") if results_aero else None
+    if alpha is not None:
+        summary["alpha_at_ac_deg"] = np.rad2deg(
+            np.asarray(alpha, dtype=float).ravel()
+        ).tolist()
+    return summary
 
 
 def _billow_solved(config, billow_structure):
@@ -1510,6 +1541,9 @@ def main(
         # rule's own estimate of how far the course rate still had to go.
         "course_rate_remaining": float(course_rate_remaining),
         "tether_force": float(results_aero.get("tether_force", float("nan"))),
+        # CL, CD, angle of attack, stall margin, av_stage ... of the final trim
+        # (_trim_results_summary); stored as a JSON string by save_results.
+        "trim_results": _trim_results_summary(results_aero),
         # va_vel_world is the apparent wind vector on the kite; "va" is a
         # nested payload key, not a result key, and reads back NaN.
         "speed_apparent": float(
