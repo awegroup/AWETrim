@@ -117,10 +117,10 @@ const CONTENT = {
   },
   "aero-structural": {
     title: "Aero-Structural Kite Model",
-    text: "The high-fidelity model couples two external solvers: aerodynamic loads and the deformed wing shape are iterated against each other until consistent, giving the loaded geometry and force coefficients across flight conditions. Aerodynamics use the Vortex Step Method (VSM); the structure is solved by Billow, which minimises the total potential energy. AWETrim owns the coupling — the load transfer, the trim, the fixed-point loop — and neither solver knows about the other. This is the fast aero-structural model of an LEI kite (Cayon, Gaunaa & Schmehl, Energies 2023), built on the computational-aerodynamics approach for soft-wing kite design (WES 2026).",
-    bullets: ["Aerodynamics: Vortex Step Method (VSM)", "Structure: Billow, at either fidelity", "Fixed-point loop on the nodal forces, Aitken-relaxed", "Returns the loaded geometry and force coefficients"],
-    image: "img/aerostructural-deformed-shape.png",
-    caption: "Converged LEI-V3 structure from the coupled solver: initial (blue) versus loaded shape, with bridle/tape rest-length change (colour) and the external aerodynamic loads (red). Default depower trim, ≈14 coupling iterations.",
+    text: "The high-fidelity model couples two external solvers: aerodynamic loads and the deformed wing shape are iterated against each other until consistent, giving the loaded geometry and force coefficients across flight conditions. Aerodynamics use the Vortex Step Method (VSM); the structure is solved by Billow, which minimises the total potential energy. AWETrim owns the coupling — the load transfer, the trim, the fixed-point loop — and neither solver knows about the other. Which structural fidelity is used is not a detail of accuracy: the trimmed angle of attack is where the moment balance lands, so the structure's stiffness sets it, and the same depower setting means a different flight state on each model. This is the fast aero-structural model of an LEI kite (Cayon, Gaunaa & Schmehl, Energies 2023), built on the computational-aerodynamics approach for soft-wing kite design (WES 2026).",
+    bullets: ["Aerodynamics: Vortex Step Method (VSM)", "Structure: Billow, at either fidelity", "Fixed-point loop on the nodal forces, Aitken-relaxed", "Returns the loaded geometry and force coefficients", "Actuation sweeps: depower and steering, matched against flight"],
+    image: "img/matched-sweep-curves.png",
+    caption: "The coupled model against the 2019 flight. Left: tether force versus apparent speed, each model drawn at the depower where it matches the flown force — the full model at u_dp 0.315, the wireframe at 0.242 — with the near-straight flight medians they are matched to. Right: the turn law under steering, against the flown cloud. Solved at the centre of the wind window, one chain per target apparent speed.",
     links: [PAPER_AERO, PAPER_VSM, REPO_VSM, REPO_BILLOW, REPO_ML]
   },
   "vsm": {
@@ -145,8 +145,8 @@ const CONTENT = {
       "One mapped kernel per element type — 9k DOF solves in ~6 s, mesh-independent iteration count",
       "Validated against the Euler elastica, roll-up, Bathe & Bolourchi, and a measured hanging kite"
     ],
-    image: "img/shape_comparison.png",
-    caption: "Deformed LEI-V3 shape from the coupled solve. Billow's own demonstration and validation figures live in its documentation.",
+    image: "img/matched-sweep-shapes.png",
+    caption: "Converged full-fidelity states across the actuation range. Top, across the span: depower rotates every rib's chord, taking the trimmed angle of attack from 11.8° to 4.8°. Bottom, from the front: steering rolls the wing and turns the trim. Canopy triangles carry the membrane's own regime — slack, wrinkled, taut — and about 70% of this canopy is in a tension field at every setting. Billow's own demonstration and validation figures live in its documentation.",
     links: [REPO_BILLOW, DOCS_BILLOW, PAPER_AERO]
   },
   "model-reduction": {
