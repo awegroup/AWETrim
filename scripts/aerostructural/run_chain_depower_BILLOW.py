@@ -67,17 +67,24 @@ def depower_input(tape_length):
     )
 
 
-def build_once(project_dir, kite_name, panels_per_section, overrides=None):
+def build_once(project_dir, kite_name, panels_per_section, overrides=None,
+               system_config_path=None):
     """Everything that does not change across the chains.
 
     ``overrides`` is applied to the config BEFORE the VSM solver is built.
     It has to be: aerodynamic_vsm.initialize constructs the Solver from the
     config it is handed, so a key set afterwards is silently ignored and the
     run quietly keeps the old value -- which looks like a result, not a bug.
+
+    ``system_config_path`` selects a system.yaml variant (e.g. the as-flown
+    ``system_flown_2019.yaml``); default the kite's own ``system.yaml``. The
+    KCU mass is read from it, by the geometry reader and the system model both.
     """
     config_path, aero_geometry_path, _ = resolve_kite_paths(project_dir, kite_name)
     struc_geometry_path = project_dir / "data" / kite_name / STRUC_GEOMETRY_FILENAME
-    system_config_path = project_dir / "data" / kite_name / "system.yaml"
+    system_config_path = Path(
+        system_config_path or project_dir / "data" / kite_name / "system.yaml"
+    )
     with system_config_path.open("r", encoding="utf-8") as handle:
         system_config = _yaml.safe_load(handle)
 
@@ -120,20 +127,14 @@ def build_once(project_dir, kite_name, panels_per_section, overrides=None):
     )
 
 
-def run_chain(shared, wind_speed, reach, step, results_dir, steer=0.0, steer_step=0.0):
-    """Walk the tape from its built length to ``reach``, converging at each step.
+def prepare_structure(shared, config):
+    """Read the geometry and build the Billow model once, ready to be solved.
 
-    ``steer`` [m] is a steering tape half-difference (first tape shortened,
-    second lengthened), walked in ``steer_step`` increments -- 0 for one step
-    -- once the depower walk has arrived. 0 leaves the kite unsteered.
+    Returned as a dict so a caller can hand the SAME structure to several
+    coupled calls (``coupled_call``): Billow owns positions, frames and rest
+    lengths across solves, so the second call warm-starts from the first one's
+    equilibrium with its actuated tapes in place.
     """
-    config = copy.deepcopy(shared["config"])
-    config["wind_speed_wind_ref"] = float(wind_speed)
-    config["power_tape_final_extension"] = float(reach)
-    config["power_tape_extension_step"] = float(step)
-    config["steering_tape_final_extension"] = float(steer)
-    config["steering_tape_extension_step"] = float(steer_step)
-
     # The reader MUTATES the geometry it is handed (initialize_particles inserts
     # the strut padding into strut_tubes' node_indices), so every chain gets its
     # own copy or the second one walks off the end of an already-padded strut.
@@ -182,42 +183,99 @@ def run_chain(shared, wind_speed, reach, step, results_dir, steer=0.0, steer_ste
         .initialize(shared["body_aero"].panels, struc_nodes, le_indices, te_indices)
         .panel_corner_map
     )
+    return dict(
+        geometry=geometry, structure=structure, struc_nodes=struc_nodes,
+        built_nodes=struc_nodes.copy(), m_arr=m_arr, le_indices=le_indices,
+        te_indices=te_indices, power_tape_index=power_tape_index,
+        steering_tape_indices=steering_tape_indices, connectivity=connectivity,
+        bridle_connectivity=bridle_connectivity, bridle_diameter=bridle_diameter,
+        l0_arr=l0_arr, pulley_line_indices=pulley_line_indices,
+        pulley_dict=pulley_dict, canopy_sections=canopy_sections,
+        strut_sections=strut_sections, mapping=mapping,
+        # One aero body per structure, not a fresh copy per call: the body is
+        # mutated onto the deformed shape every iteration, so reusing it across
+        # calls is simply more of the same iteration.
+        body_aero=copy.deepcopy(shared["body_aero"]),
+        vsm_solver=copy.deepcopy(shared["vsm_solver"]),
+        polars=copy.deepcopy(shared["polars"]),
+    )
 
-    tracking, meta = coupled_solver.main(
+
+def coupled_call(shared, prepared, config, reach=0.0, step=0.0, steer=0.0):
+    """One coupled solve on a prepared structure, from wherever it stands now.
+
+    The depower tape walks ``reach`` [m] from its CURRENT rest length in
+    ``step`` increments (0 = one step) and the steering half-difference
+    ``steer`` [m] from its current one, in ``config``'s
+    ``steering_tape_extension_step``. The wind is ``config``'s, so a caller
+    can change it between calls on the same structure.
+    """
+    config["power_tape_final_extension"] = float(reach)
+    config["power_tape_extension_step"] = float(step or reach)
+    config["steering_tape_final_extension"] = float(steer)
+    structure = prepared["structure"]
+    index = prepared["power_tape_index"]
+    current_tape = structure_billow_rest_length(structure, index)
+    # A structure that has been solved starts from its own state; a fresh one
+    # from the reader's nodes. Billow's state IS the positions the next
+    # minimum-energy solve starts from, so they are the consistent guess.
+    struc_nodes = np.asarray(structure.state.positions, dtype=float).copy()
+    n_steps = int(np.ceil(abs(reach) / abs(step) - 1e-9)) if reach and step else int(bool(reach))
+    m_arr = prepared["m_arr"]
+    return coupled_solver.main(
         m_arr=m_arr,
         struc_nodes=struc_nodes,
-        struc_nodes_initial=struc_nodes.copy(),
+        struc_nodes_initial=prepared["built_nodes"],
         system_model=build_system_model(
             shared["system_config_path"], shared["tether"], m_arr, config
         ),
         config=config,
-        initial_length_power_tape=l0_arr[power_tape_index],
-        n_power_tape_steps=int(abs(reach) / abs(step)) if step else 0,
+        initial_length_power_tape=current_tape,
+        n_power_tape_steps=n_steps,
         power_tape_final_extension=config["power_tape_final_extension"],
         power_tape_extension_step=config["power_tape_extension_step"],
-        kite_connectivity_arr=connectivity,
-        bridle_connectivity_arr=bridle_connectivity,
-        pulley_line_indices=pulley_line_indices,
-        pulley_line_to_other_node_pair_dict=pulley_dict,
-        struc_node_le_indices=le_indices,
-        struc_node_te_indices=te_indices,
-        body_aero=copy.deepcopy(shared["body_aero"]),
-        vsm_solver=copy.deepcopy(shared["vsm_solver"]),
+        kite_connectivity_arr=prepared["connectivity"],
+        bridle_connectivity_arr=prepared["bridle_connectivity"],
+        pulley_line_indices=prepared["pulley_line_indices"],
+        pulley_line_to_other_node_pair_dict=prepared["pulley_dict"],
+        struc_node_le_indices=prepared["le_indices"],
+        struc_node_te_indices=prepared["te_indices"],
+        body_aero=prepared["body_aero"],
+        vsm_solver=prepared["vsm_solver"],
         vel_app=shared["vel_app"],
-        initial_polar_data=copy.deepcopy(shared["polars"]),
-        bridle_diameter_arr=bridle_diameter,
-        aero2struc_mapping=mapping,
-        power_tape_index=power_tape_index,
-        # Only a steered chain hands the driver its tapes: without them the
+        initial_polar_data=prepared["polars"],
+        bridle_diameter_arr=prepared["bridle_diameter"],
+        aero2struc_mapping=prepared["mapping"],
+        power_tape_index=index,
+        # Only a steered call hands the driver its tapes: without them the
         # driver never actuates steering, whatever the config says.
-        steering_tape_indices=steering_tape_indices if steer else None,
+        steering_tape_indices=prepared["steering_tape_indices"] if steer else None,
         billow_structure=structure,
-        canopy_sections=canopy_sections,
-        strut_sections=strut_sections,
+        canopy_sections=prepared["canopy_sections"],
+        strut_sections=prepared["strut_sections"],
     )
+
+
+def structure_billow_rest_length(structure, element_index):
+    """Live rest length [m] of one reader element on a Billow structure."""
+    return float(structural_billow.get_rest_length(structure, element_index))
+
+
+def run_chain(shared, wind_speed, reach, step, results_dir, steer=0.0, steer_step=0.0):
+    """Walk the tape from its built length to ``reach``, converging at each step.
+
+    ``steer`` [m] is a steering tape half-difference (first tape shortened,
+    second lengthened), walked in ``steer_step`` increments -- 0 for one step
+    -- once the depower walk has arrived. 0 leaves the kite unsteered.
+    """
+    config = copy.deepcopy(shared["config"])
+    config["wind_speed_wind_ref"] = float(wind_speed)
+    config["steering_tape_extension_step"] = float(steer_step)
+    prepared = prepare_structure(shared, config)
+    tracking, meta = coupled_call(shared, prepared, config, reach, step, steer)
     results_dir.mkdir(parents=True, exist_ok=True)
     save_sim_output(tracking, meta, results_dir)
-    return tracking, meta, geometry, structure
+    return tracking, meta, prepared["geometry"], prepared["structure"]
 
 
 def converged_steps(tracking, n_iter, tolerance):

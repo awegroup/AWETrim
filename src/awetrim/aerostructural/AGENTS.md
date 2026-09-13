@@ -112,6 +112,11 @@ scripts/aerostructural/
   run_simulation_BILLOW.py         Single-case full-fidelity solve
   run_steering_BILLOW.py           Steered full-fidelity solve
   run_chain_depower_BILLOW.py      Depower continuation chain
+  run_matched_sweep_BILLOW.py      Depower and steering chains at the depower
+                                   attributed from flight, one chain per target
+                                   apparent speed; resumable, rows saved as solved
+  export_matched_sweep_data.py     Packs those rows into one JSON payload
+  plot_matched_sweep_BILLOW.py     Solved shapes and curves against flight
 ```
 
 ## The pulley rest-length convention
@@ -539,16 +544,27 @@ attributable to it; the mass-split/CG correction bundled into the same commit
 resultants as point loads at `calculate_cg`; the two are the same load only if
 both weigh every node the same way. This driver kept its own copy of the split
 that CLIPPED negative masses away and normalised by the positive sum, while
-`calculate_cg` weighs them as they are. The masses do go negative: the reader
-hangs `mass_without_bridles - mass_canopy` on the LE/strut nodes, which is
-negative whenever the YAML's `canopy_density` over-fills the wing's mass, and
-on `struc_geometry_FEM_full.yaml` 96 tube nodes carry about -0.037 kg each
-(the reader now warns). The two CGs then sat 0.64 m apart in z (3.24 vs 3.88)
+`calculate_cg` weighs them as they are. The masses did go negative: the reader
+hangs `mass_without_bridles - mass_canopy` on the LE/strut nodes, and on
+`struc_geometry_FEM_full.yaml` 96 tube nodes carried about -0.037 kg each. The
+two CGs then sat 0.64 m apart in z (3.24 vs 3.88)
 -- a 20% error on every inertial and gravity moment the structure was handed,
 worth 39 N m of ROLL on a steered state and invisible at zero course rate. The
 duplicate is gone; `..forces` is the one split, shared with the wireframe driver,
 and `tests/aerostructural/test_forces.py` locks the property that matters (the
 split's moment equals `cg x F`, negative masses included).
+
+**Those negative masses were a reader bug, not the YAML (fixed 2026-09-13).**
+`read_struc_geometry_yaml` weighed the canopy as `np.sum(m_arr)` while
+`m_arr[0]` already held the KCU, so the KCU was charged to the canopy and
+taken off the tubes. With `system.yaml`'s 8.4 kg KCU that was the -3.6 kg
+above; with the flown 22 kg KCU (`system_flown_2019.yaml`) the wing and bridle
+together came out at **-8.6 kg**, a 13.6 kg kite in place of 35.7 kg -- so the
+trim's centripetal load and inertial moments were a third of the real ones on
+every steered state. The canopy mass is now what the quads add; the tubes carry
+`mass_without_bridles - canopy` (positive on LEI-V3) and the wing totals the
+YAML's 11 kg. Unsteered, gravity-off states have no inertial load and are
+unaffected; every steered or gravity-on full-model result before the fix is.
 
 **The wireframe/QSM driver had two of its own (2026-09-12), both now fixed.** Its
 in-loop assembly was always consistent -- it is where the three patterns above
@@ -934,6 +950,13 @@ state; 20 was WORSE than 8 — spend little per iteration. Absent key =
 historical behaviour.
 
 ## Result Storage
+
+`meta["trim_results"]` carries the FINAL trim's storable outputs — CL, CD, angle of
+attack, side slip, aero roll, stall margin and stalled fraction, `av_stage`, the KCU
+drag coefficient and its reference area, plus `alpha_at_ac_deg` per panel. Selected by
+shape (every scalar, string and 3-vector), so a key the trim gains later is recorded
+without an edit; `save_results` stores it as a JSON string. Without it a stored run
+cannot say what coefficients it converged at without re-trimming its shape.
 
 Output goes to `results/aerostructural/<kite_name>/<case_folder>/sim_output.h5` (absolute path from project root, never CWD-relative). Use `results.save_sim_output()` and `results.aerostructural_results_root()`.
 
