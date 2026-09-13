@@ -510,6 +510,12 @@ def initialize_wing_structure(
         area2 = triangle_area(A, C, D)
         return area1 + area2
 
+    # m_arr already holds the KCU at index 0 when the canopy is weighed, so the
+    # canopy's mass is what the quads ADD, not the array's sum. Summing the
+    # array charged the KCU to the canopy and took it off the tubes: -3.6 kg on
+    # the LEI-V3 FEM_full tubes with system.yaml's 8.4 kg KCU, and a NEGATIVE
+    # wing (-8.6 kg with the bridle) under the flown 22 kg one.
+    mass_before_canopy = float(np.sum(m_arr))
     for i in range(len(canopy_sections) - 1):
         section_a = canopy_sections[i]
         section_b = canopy_sections[i + 1]
@@ -526,7 +532,7 @@ def initialize_wing_structure(
             for node in quad:
                 m_arr[node] += quad_mass / 4
 
-    mass_canopy = np.sum(m_arr)
+    mass_canopy = float(np.sum(m_arr)) - mass_before_canopy
 
     le_indices = np.array(all_sections)[:, 0]
 
