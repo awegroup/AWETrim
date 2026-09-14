@@ -621,6 +621,26 @@ Public functions should use these names:
   convergence makes its tolerance-terminated `gamma` non-smooth in `x`, which
   corrupts that Jacobian at loose tolerance and yields wrong trims. `"base"` is
   the safe default and the only correct choice at the sweeps' loose `1e-4`.
+  `"casadi_newton"` (VSM, 2026-09-15) solves the circulation residual with an
+  exact CasADi Jacobian (per-panel section physics in CasADi, the dense
+  induction algebra in NumPy) and pseudo-transient continuation as the
+  globaliser: same fixed point as `base`, 3-10 inner iterations in attached
+  flow, and on the LEI-V3 (27 and 45 panels, AV on, 64-state alpha/sideslip/
+  yaw-rate grid) 64/64 converged cold where `anderson` manages 46-49, at
+  4-10x the wall-clock speed of production `base`. The trim solves ~5x
+  faster (1.9 s vs 9.6 s unsteered, identical `opt_x` to 3e-3 in v_tau, which
+  is base's own 1e-6 residual). Use it with `gamma_tolerance` 1e-8 like
+  Anderson (same superlinear-termination caveat for the FD outer Jacobian).
+  Two things to know: (1) past ~16 deg the circulation problem has a FAMILY
+  of roots (stall-cell patterns), and every loop lands on the one its seed
+  flows to -- Newton from a cold seed sometimes picks a lower-CL cell where
+  base's slow drift picks the attached one, so seed deliberately near the
+  knee (`gamma_seed`); (2) the residual is kinked at the piecewise-linear
+  polar's Cl-max corner and discontinuous at the AV gate, which is why the
+  loop carries a corner-averaged Jacobian and gate-aware step control -- a
+  few deep-stall states seeded from a different sideslip still take the base
+  fallback (3/64 warm-chained at 26 deg). Not the default anywhere yet;
+  `scripts/aerodynamics/compare_gamma_loops_polar.py` is the bake-off.
   Both trim solvers additionally take `is_with_artificial_viscosity`
   (default `False`) and `artificial_viscosity_factor` (default `0.035`),
   forwarded to `_default_vsm_solver` → VSM `Solver`: the parameter-free

@@ -113,6 +113,12 @@ def _default_vsm_solver(
     #     trim-existence results. Only use "anderson" here with a tight
     #     ``gamma_tolerance`` (~1e-8), where it is correct and ~1.5-2x faster.
     #     See the VSM ``Solver.gamma_loop_anderson`` bake-off.
+    #   * "casadi_newton" -- exact-Jacobian Newton with pseudo-transient
+    #     continuation (VSM ``Solver.gamma_loop_casadi_newton``, needs casadi):
+    #     same fixed point as "base", 3-10 inner iterations, ~5x faster trims,
+    #     converges post-stall where anderson limit-cycles. Same tight-
+    #     tolerance rule as anderson (1e-8) for the FD outer Jacobian. See
+    #     scripts/aerodynamics/compare_gamma_loops_polar.py.
     # ``is_with_artificial_viscosity`` enables the parameter-free Li/Gaunaa
     # spanwise artificial viscosity in the gamma loop (same option the
     # aerostructural side exposes via as_config aerodynamic.*). It exists to

@@ -732,6 +732,9 @@ aerodynamic:
   max_iterations: 1000
   allowed_error: 1.0e-8                # matched pair with gamma_loop_type --
   gamma_loop_type: anderson            #   revert BOTH to base / 2e-6 together
+                                       #   (casadi_newton, VSM 2026-09-15, is the
+                                       #    faster/more robust candidate -- see
+                                       #    aerodynamics/AGENTS.md; not yet defaulted)
   anderson_max_iterations: 1000        # headroom INSTEAD of the Picard
   anderson_fallback_to_base: false     #   fallback (rescue rate 0.1%)
   relaxation_factor: 0.05
@@ -848,7 +851,20 @@ consecutive coupled iterations the loop ends immediately with
 plateau fallback can never accept such a run. A bound-pinned trim is a
 constrained optimum, not an equilibrium; before this a handover-seeded
 deep-depower point burned its whole iteration budget pinned at 40 m/s
-before the sweep's cold retry.
+before the sweep's cold retry. **Pinned iterations count only once the tape
+walk has finished and settled (2026-09-14):** part-way down the depower walk
+the kite is still powered and faster than the target state, so counting
+through the walk stopped a reel-in point at iteration 5 as a fully powered
+25.7 kN kite. Callers that apply their own acceptance on top of the solver
+(e.g. a "plateau" promotion) must honour `stop_reason` and never accept a
+`trim_speed_bound` run.
+
+**Elongation-rule settle gate needs history (2026-09-13):** the 1 % rule
+acts only from iteration `stiffness_settle_iters` on. The actuation
+"finalized" flags start `True` before the walk's first update, so without
+that term a handed-over shape whose iteration-0 residual is under the
+trigger stiffened on the donor/rest-length mismatch (9 wing elements at a
+spurious 9.5 % on chained cycle seconds).
 
 **Direct steering preset (2026-09-10).** Opt-in config key
 `steering_tape_preset_extension`: sets the asymmetric steering tape rest
