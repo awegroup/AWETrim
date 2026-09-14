@@ -32,6 +32,12 @@ src/awetrim/
                          it: williams_tether rotates about the GROUND ANCHOR
                          with per-node wind, and the lumped closed form is an
                          integral, not a point evaluation
+                         + trim_casadi.py: the quasi-steady trim as ONE CasADi
+                         root-finding problem (trim states + circulations +
+                         Williams length, exact Jacobian, numeric AIC frozen
+                         per wake pass); 20-70x faster than the least-squares
+                         trims, same result. panel_kernels.py = the section
+                         force laws as xp kernels (numpy/casadi, one formula)
                          — see src/awetrim/aerodynamics/AGENTS.md
   aerostructural/    ✅  The coupling: shared interfaces (protocols, mapping,
                          convergence, forces, results, utils) plus one adapter

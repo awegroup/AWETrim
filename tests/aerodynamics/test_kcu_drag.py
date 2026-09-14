@@ -327,6 +327,7 @@ def test_public_signatures():
         "density_air",
         "cd_area_axial",
         "cd_area_broadside",
+        "xp",
     ]
     assert list(inspect.signature(cd_area_axial_kcu).parameters) == [
         "length_kcu",
@@ -337,4 +338,5 @@ def test_public_signatures():
         "velocity_apparent",
         "axis_kcu",
         "density_air",
+        "xp",
     ]

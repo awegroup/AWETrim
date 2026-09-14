@@ -170,14 +170,38 @@ def force_drag_kcu(
     density_air: float,
     cd_area_axial: float,
     cd_area_broadside: float,
-) -> np.ndarray:
+    xp: Any = np,
+) -> Any:
     """KCU drag force [N], in whatever frame the inputs are given in.
 
     ``axis_kcu`` need not be a unit vector and its sign is irrelevant (the law
     is even in the axis), so callers never have to fix an orientation
     convention. Returns zeros for a vanishing apparent wind, a degenerate axis
     or zero drag areas.
+
+    ``xp`` is the math namespace: ``numpy`` (default; plain floats and arrays)
+    or ``casadi`` (the CasADi trim builds this force into its graph; the axis
+    is then still numeric, only the apparent wind is symbolic). One formula
+    serves both; the CasADi branch only skips the degenerate-input guards,
+    which need numeric values.
     """
+    if xp is not np:
+        axis = np.asarray(axis_kcu, dtype=float).ravel()
+        unit = axis / float(np.linalg.norm(axis))
+        velocity_axial = xp.dot(velocity_apparent, unit) * unit
+        velocity_crossflow = velocity_apparent - velocity_axial
+        return (
+            0.5
+            * float(density_air)
+            * (
+                float(cd_area_axial)
+                * xp.norm_2(velocity_axial)
+                * velocity_axial
+                + float(cd_area_broadside)
+                * xp.norm_2(velocity_crossflow)
+                * velocity_crossflow
+            )
+        )
     va = np.asarray(velocity_apparent, dtype=float).ravel()
     axis = np.asarray(axis_kcu, dtype=float).ravel()
     if va.size != 3 or axis.size != 3:
@@ -304,8 +328,8 @@ class KcuDragModel:
 
     # ----------------------------------------------------------------- physics
     def force(
-        self, velocity_apparent: Any, axis_kcu: Any, density_air: float
-    ) -> np.ndarray:
+        self, velocity_apparent: Any, axis_kcu: Any, density_air: float, xp: Any = np
+    ) -> Any:
         """KCU drag force [N] (see :func:`force_drag_kcu`)."""
         return force_drag_kcu(
             velocity_apparent,
@@ -313,6 +337,7 @@ class KcuDragModel:
             density_air,
             self.cd_area_axial,
             self.cd_area_broadside,
+            xp=xp,
         )
 
     def drag_coefficient(

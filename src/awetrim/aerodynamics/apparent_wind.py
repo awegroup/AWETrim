@@ -82,7 +82,8 @@ def apparent_wind_at(
     velocity_rotation: Any,
     position: Any,
     reference_point: Any = None,
-) -> np.ndarray:
+    xp: Any = np,
+) -> Any:
     """Apparent wind [m/s] at ``position``, in the frame of the inputs.
 
     Args:
@@ -92,10 +93,24 @@ def apparent_wind_at(
             Zero reduces the result to ``va_free``.
         position: ``r``, the station the inflow is wanted at (3-vector).
         reference_point: ``r0``; ``None`` means the origin.
+        xp: math namespace, ``numpy`` (default) or ``casadi``. With CasADi
+            the two velocities may be symbolic 3-vectors; ``position`` and
+            ``reference_point`` stay numeric.
 
     Returns:
-        ``va_free - omega x (r - r0)`` as a fresh ``(3,)`` array.
+        ``va_free - omega x (r - r0)`` as a fresh ``(3,)`` array (or the
+        CasADi expression of it).
     """
+    if xp is not np:
+        station = np.asarray(position, dtype=float).ravel()
+        origin = np.zeros(3) if reference_point is None else np.asarray(reference_point, dtype=float).ravel()
+        arm = station - origin
+        omega = velocity_rotation
+        return velocity_apparent_free - xp.vertcat(
+            omega[1] * arm[2] - omega[2] * arm[1],
+            omega[2] * arm[0] - omega[0] * arm[2],
+            omega[0] * arm[1] - omega[1] * arm[0],
+        )
     va_free = np.asarray(velocity_apparent_free, dtype=float).ravel()
     omega = np.asarray(velocity_rotation, dtype=float).ravel()
     station = np.asarray(position, dtype=float).ravel()

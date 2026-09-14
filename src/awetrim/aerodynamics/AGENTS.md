@@ -40,7 +40,64 @@ src/awetrim/aerodynamics/
   kcu_drag.py
   line_drag.py
   apparent_wind.py
+  panel_kernels.py
+  trim_casadi.py
 ```
+
+`trim_casadi.py` (2026-09-15) solves the quasi-steady trim as ONE CasADi
+root-finding problem: unknowns = the 5 trim states + the panel circulations
+(+ the Williams tether length), residual = the same force/moment rows the
+NumPy trims solve (+ the Williams ground closure) + the VSM circulation
+residual. Exact Jacobian by AD; Newton + pseudo-transient continuation with the
+corner-averaged polar Jacobian (the `casadi_newton` machinery); the AIC
+matrices stay NUMERIC, frozen per outer wake pass and rebuilt at the converged
+inflow (residual after rebuild falls ~20x per pass; 4-5 passes, 13 Newton
+iterations). `CasadiTrim(body, system_model, cg, ref, options=CasadiTrimOptions
+(tether_model=None|"williams", ...)).solve(x_guess)` returns the NumPy trims'
+result vocabulary plus `casadi_trim` diagnostics and the exact Jacobian
+(`jacobian`, `jacobian_layout`) for the stability work. LEI-V3, 27 panels:
+tetherless 0.08 s vs 5.5 s production (1.1 s with the casadi_newton inner
+loop), Williams 0.12 s vs 2.6 s; build 0.3 s once.
+`scripts/aerodynamics/compare_trim_solvers.py` is the comparison.
+
+Three things it made visible, all now pinned by
+`tests/aerodynamics/test_trim_casadi.py` / `test_panel_kernels.py`:
+
+* **The NumPy trims do not rotate the bridle with the wing.**
+  `_set_body_attitude_from_baseline` rotates the sections; the body's
+  `_bridle_line_system` stays in the world frame. The CasADi trim works in the
+  body frame (inflow rotated instead of the wing), so its bridle rotates
+  rigidly, which is the consistent model. On the LEI-V3 at its 1 deg trim
+  pitch that is 4 N / 22 N m: 0.04 m/s in v_tau, 0.004 deg pitch, 1e-3 CL;
+  in a steered trim the yaw and turn rate move by ~50 % of their (tiny)
+  values because the 765 N bridle drag now yaws with the kite.
+  `CasadiTrimOptions(bridle_rotates_with_body=False)` reproduces the NumPy
+  convention to 1e-6 deg, which is how the equivalence was proven.
+* **VSM's `cl`/`cd` are not the total force projected on the reference
+  inflow.** `compute_results` decomposes each panel's force in ITS OWN inflow
+  frame and projects on the reference directions; on a rotating body (the
+  trim's transport rate is 0.24 rad/s, 2.7 m/s of inflow variation along
+  the span) that differs by 8 % in CD. `panel_kernels.lift_drag_side_vsm`
+  is that bookkeeping; every reported coefficient in the repo uses it.
+* VSM's projected area is recomputed on the ROTATED body, so it depends on
+  the attitude (19.411 vs 19.413 m2 at 1 deg); the CasADi trim uses the
+  baseline area, hence a 1e-4 offset in CL against the NumPy result.
+
+Not covered: `tether_model="rigid_lumped"`, `reel_speed_along_tether`.
+Not yet wired into the stability linearisation (its Jacobian is the input
+for that) nor into the aerostructural coupling.
+
+`panel_kernels.py` owns the SECTION force laws as `xp` kernels (numpy or
+casadi namespace, one formula): `relative_flow` (alpha, |v_rel x z|),
+`circulation_target`, `panel_forces` (VSM's lift/drag/moment construction),
+`total_force_and_moment`, `line_force` (VSM's bridle segment law; endpoints
+height-ordered by `order_line_endpoints`), `lift_drag_side_vsm`. They are
+VSM's `compute_results` / `compute_line_aerodynamic_force` formulas written
+once; `test_panel_kernels.py` pins them to VSM's numbers to 1e-11 in both
+namespaces. The intended end state is that VSM itself calls them. In the same
+spirit `kcu_drag.force_drag_kcu` / `KcuDragModel.force` and
+`apparent_wind.apparent_wind_at` take `xp=casadi` (the numpy behaviour is
+untouched).
 
 `apparent_wind.py` owns the relation that puts every other aerodynamic load at
 the right *place* on a rotating kite:
