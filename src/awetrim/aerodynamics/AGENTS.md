@@ -85,7 +85,35 @@ Three things it made visible, all now pinned by
 
 Not covered: `tether_model="rigid_lumped"`, `reel_speed_along_tether`.
 Not yet wired into the stability linearisation (its Jacobian is the input
-for that) nor into the aerostructural coupling.
+for that).
+
+**Geometry is a parameter of the graph, not a constant** (2026-09-15): panel
+control points, aerodynamic centres, airfoil axes, chords, widths, spanwise
+direction, projected area, bridle segment endpoints and diameters and the
+centre of gravity are packed into one numeric vector (`GEOMETRY_LAYOUT`,
+column-major so `ca.reshape` unpacks it), so one build serves every deformed
+shape with the same polars and the same panel/bridle counts:
+`CasadiTrim.update_geometry(body, cg)` swaps a shape in (it refuses other
+polars, checked against `polar_key`; `CasadiTrim.geometry_signature(body)`
+is what a cache keys on). `solve_with_body(x_guess, gamma_seed)` returns
+`(result, body)` in the aerostructural coupling's vocabulary: the body from
+`body_at_trim` (rotated to the trim attitude, world-frame inflow set through
+the VSM `va` setter so `apparent_wind.inflow_state_of` reads it) and
+`F_distribution` / `panel_cp_locations` / `alpha_at_ac` (VSM's
+aerodynamic-centre alpha, the stall-detection input) from one
+`Solver.solve` at the converged circulation, plus the stalled-fraction and
+KCU fields. `panel_kernels.line_force` and `apparent_wind.apparent_wind_at`
+accept symbolic endpoints/stations for this; their NumPy paths are unchanged.
+
+**In the aerostructural coupling** (`aerostructural/aerodynamic_vsm.py`,
+`quasi_steady_trim.solver: casadi`; sweep flag `--as-trim-solver casadi`):
+one graph per (polars, counts, options, system model) cached on the coupled
+solver's VSM `Solver` object and re-used across the coupled iterations, the
+attached-first rule applied once per trim. Measured on the 2019 centre
+depower chain (19 rows, 45 panels, anderson + AV, max_nfev 8 on the NumPy
+side): identical states to u_dp 0.30, then the two land on different
+attached families (the known two-family band) -- see the aerostructural
+AGENTS.md for the timing table.
 
 `panel_kernels.py` owns the SECTION force laws as `xp` kernels (numpy or
 casadi namespace, one formula): `relative_flow` (alpha, |v_rel x z|),

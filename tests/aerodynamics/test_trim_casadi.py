@@ -150,3 +150,93 @@ def test_rejects_unsupported_tether_model(lei_v3):
     with pytest.raises(ValueError, match="tether_model"):
         CasadiTrim(lei_v3["body"], lei_v3["system_model"], v["center_of_gravity"], v["reference_point"],
                    options=CasadiTrimOptions(tether_model="rigid_lumped"))
+
+
+# ----------------------------------------------------------------------------
+# Geometry as parameters (2026-09-15): one build, many shapes.
+# ----------------------------------------------------------------------------
+
+
+def _coupled_style_bodies(body, dz: float):
+    """Two bodies the way the aerostructural coupling produces them:
+    ``update_from_points`` with the section polars REUSED (so the panel
+    tables are byte-identical and the graph can be shared), the second one
+    lifted by ``dz`` -- a different geometry as far as the parameters are
+    concerned."""
+    import copy
+
+    wing = body.wings[0]
+    sections = wing.refine_aerodynamic_mesh()
+    le = np.array([sec.LE_point for sec in sections], dtype=float)
+    te = np.array([sec.TE_point for sec in sections], dtype=float)
+    polars = [sec.polar_data for sec in sections]
+    base = copy.deepcopy(body)
+    base.update_from_points(le, te, aero_input_type="reuse_initial_polar_data", initial_polar_data=polars)
+    moved = copy.deepcopy(body)
+    moved.update_from_points(le + [0.0, 0.0, dz], te + [0.0, 0.0, dz], aero_input_type="reuse_initial_polar_data", initial_polar_data=polars)
+    return base, moved
+
+
+def test_update_geometry_matches_fresh_build(lei_v3):
+    """A graph built on one shape and handed another through update_geometry
+    gives the fresh build's answer on that shape, and the shape really
+    changed."""
+    v = lei_v3["values"]
+    body_a, body_b = _coupled_style_bodies(lei_v3["body"], 0.3)
+    assert CasadiTrim.geometry_signature(body_a) == CasadiTrim.geometry_signature(body_b)
+    kw = dict(kcu_drag=lei_v3["kcu"], options=CasadiTrimOptions())
+
+    base = CasadiTrim(body_a, lei_v3["system_model"], v["center_of_gravity"], v["reference_point"], **kw)
+    res_base = base.solve(v["x_guess"])
+    fresh = CasadiTrim(body_b, lei_v3["system_model"], v["center_of_gravity"], v["reference_point"], **kw)
+    res_fresh = fresh.solve(v["x_guess"])
+    base.update_geometry(body_b, v["center_of_gravity"])
+    res_reused = base.solve(v["x_guess"])
+
+    assert res_fresh["success"] and res_reused["success"]
+    np.testing.assert_allclose(res_reused["opt_x"], res_fresh["opt_x"], rtol=0, atol=1e-8)
+    np.testing.assert_allclose(res_reused["gamma_distribution"], res_fresh["gamma_distribution"], rtol=1e-9, atol=1e-10)
+    assert abs(res_reused["cl"] - res_fresh["cl"]) < 1e-10
+    # the wing moved 0.3 m along the tether axis: the moment balance shifted
+    assert abs(res_fresh["opt_x"][2] - res_base["opt_x"][2]) > 1e-3
+
+
+def test_update_geometry_refuses_other_polars(lei_v3):
+    from awetrim.aerodynamics.vsm_quasi_steady import _attached_polars_installed
+
+    v = lei_v3["values"]
+    trim = CasadiTrim(lei_v3["body"], lei_v3["system_model"], v["center_of_gravity"], v["reference_point"], kcu_drag=lei_v3["kcu"])
+    with _attached_polars_installed(lei_v3["body"]):
+        with pytest.raises(ValueError, match="polars"):
+            trim.update_geometry(lei_v3["body"], v["center_of_gravity"])
+    # and the signature tells the two apart, which is what a cache keys on
+    with _attached_polars_installed(lei_v3["body"]):
+        attached_key = CasadiTrim.geometry_signature(lei_v3["body"])
+    assert attached_key != CasadiTrim.geometry_signature(lei_v3["body"])
+
+
+def test_solve_with_body_contract(lei_v3):
+    """The aerostructural coupling's vocabulary on a body rotated to the trim
+    attitude with the world-frame inflow set: per-panel loads that sum to the
+    trim's own aerodynamic resultant, VSM's aerodynamic-centre alpha, the
+    stalled fraction and the KCU fields."""
+    from awetrim.aerodynamics.apparent_wind import inflow_state_of
+
+    v = lei_v3["values"]
+    trim = CasadiTrim(lei_v3["body"], lei_v3["system_model"], v["center_of_gravity"], v["reference_point"], kcu_drag=lei_v3["kcu"])
+    res, body = trim.solve_with_body(v["x_guess"])
+    n = trim.n
+    forces = np.asarray(res["F_distribution"], dtype=float)
+    points = np.asarray(res["panel_cp_locations"], dtype=float)
+    alpha = np.asarray(res["alpha_at_ac"], dtype=float).ravel()
+    assert forces.shape == (n, 3) and points.shape == (n, 3) and alpha.shape == (n,)
+    assert np.all(np.isfinite(alpha))
+    bridle = np.asarray(res.get("bridle_line_forces", np.zeros((0, 3))), dtype=float).reshape(-1, 3)
+    total = forces.sum(axis=0) + bridle.sum(axis=0)
+    # wing panels + the (rotated) bridle segments ARE the trim's resultant
+    np.testing.assert_allclose(total, res["total_aero_force_vec"], rtol=1e-6, atol=1e-3)
+    state = inflow_state_of(body)
+    np.testing.assert_allclose(state.velocity_apparent_free, res["va_vel_world"], rtol=1e-12)
+    np.testing.assert_allclose(state.velocity_rotation, res["omega_c_vsm"], rtol=0, atol=1e-12)
+    assert "stalled_fraction" in res and "kcu_drag_coefficient" in res
+    assert body.geometry_rotation.shape == (3, 3)

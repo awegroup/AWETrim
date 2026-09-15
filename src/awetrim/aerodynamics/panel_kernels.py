@@ -195,7 +195,11 @@ def lift_drag_side_vsm(force, va_panels, va_ref, spanwise_direction, xp=np, extr
     """
     n = force.shape[0]
     va_ref = as_xp_vector(np.asarray(va_ref, dtype=float), xp) if isinstance(va_ref, np.ndarray) else va_ref
-    span = as_xp_vector(np.asarray(spanwise_direction, dtype=float), xp)
+    span = (
+        as_xp_vector(np.asarray(spanwise_direction, dtype=float), xp)
+        if isinstance(spanwise_direction, (np.ndarray, list, tuple))
+        else spanwise_direction  # symbolic
+    )
     ref_unit = va_ref / norm3(va_ref, xp)
     lift_ref = cross3(va_ref, span, xp)
     lift_ref = lift_ref / norm3(lift_ref, xp)
@@ -238,10 +242,16 @@ def line_force(va, p1, p2, diameter, rho: float, cd_cable: float = 1.1, cf_cable
     to the inflow. ``p1, p2`` must already be height-ordered
     (:func:`order_line_endpoints`); ``diameter`` is the DRAG diameter.
     """
-    p1 = np.asarray(p1, dtype=float)
-    p2 = np.asarray(p2, dtype=float)
-    length = float(np.linalg.norm(p2 - p1))
-    e_line = as_xp_vector((p2 - p1) / length, xp)
+    # Endpoints numeric (ndarray, the NumPy path and the fixed-geometry
+    # CasADi graph) or symbolic (CasADi parameters of a geometry that changes
+    # per solve); the length then is an expression too.
+    if isinstance(p1, (np.ndarray, list, tuple)):
+        p1 = as_xp_vector(np.asarray(p1, dtype=float), xp)
+    if isinstance(p2, (np.ndarray, list, tuple)):
+        p2 = as_xp_vector(np.asarray(p2, dtype=float), xp)
+    chord_line = p2 - p1
+    length = norm3(chord_line, xp)
+    e_line = chord_line / length
     speed = norm3(va, xp)
     cos_theta = dot3(va, e_line, xp) / speed
     theta = xp.arccos(cos_theta) if xp is np else xp.acos(cos_theta)

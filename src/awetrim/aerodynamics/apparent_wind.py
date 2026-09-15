@@ -102,8 +102,13 @@ def apparent_wind_at(
         CasADi expression of it).
     """
     if xp is not np:
-        station = np.asarray(position, dtype=float).ravel()
+        # ``position`` may itself be symbolic (a geometry parameter of a
+        # CasADi graph); a numeric station is taken as before.
+        is_symbolic_station = not isinstance(position, (np.ndarray, list, tuple))
+        station = position if is_symbolic_station else np.asarray(position, dtype=float).ravel()
         origin = np.zeros(3) if reference_point is None else np.asarray(reference_point, dtype=float).ravel()
+        if is_symbolic_station:
+            origin = xp.DM(origin)
         arm = station - origin
         omega = velocity_rotation
         return velocity_apparent_free - xp.vertcat(

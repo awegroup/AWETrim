@@ -965,6 +965,50 @@ cut total VSM evaluations ~30% at identical outer iteration count and final
 state; 20 was WORSE than 8 — spend little per iteration. Absent key =
 historical behaviour.
 
+### Trim solver (quasi_steady_trim.solver, 2026-09-15)
+
+``least_squares`` (default, every stored result) is the NumPy trim: scipy
+over the five trim states, one inner VSM solve per residual evaluation,
+capped by ``max_nfev``. ``casadi`` is ``aerodynamics/trim_casadi.CasadiTrim``:
+trim states and circulations as ONE Newton problem with the exact Jacobian,
+fully converged every coupled iteration (no cap). ``run_vsm_package``
+dispatches (``_solve_trim_casadi``); the VSM settings (AV, factor, polars,
+rho, core radius) come off the coupled solver's own ``Solver`` so both paths
+solve the same circulation problem; tetherless and ``williams`` tethers only
+(``rigid_lumped`` raises). The attached-first rule (continued-polar predictor,
+accept when every panel is below its original onset) is applied ONCE PER
+TRIM, not per VSM evaluation. One graph per (polars, counts, options, system
+model) is cached on the ``Solver`` object (``_awetrim_casadi_trims``) and the
+deformed shape is swapped in as parameters, so the ~0.5 s build (45 panels)
+is paid once per coupled solve. ``results["trim_solver"]`` /
+``["trim_time_s"]`` per call; ``meta["trim_solver"]`` /
+``["trim_time_total_s"]`` per run; the sweep scripts expose
+``--as-trim-solver`` and record both in ``point.json``.
+
+Measured 2026-09-15, 2019 centre depower chain at target v_a 19 m/s (19 rows
+u_dp 0.18-0.337, tetherless, anderson 1e-8 + AV, 45 panels, one process each,
+run concurrently on a loaded machine):
+
+| trim | points ok | coupled iterations | chain wall | time in the trim |
+|---|---|---|---|---|
+| least_squares (max_nfev 8) | 19/19 | 157 | 294 s | 228 s |
+| casadi, graph rebuilt per iteration | 19/19 | 160 | 230 s | 156 s |
+| casadi, graph cached per coupled solve | 19/19 | 160 | 211 s | 143 s |
+
+Up to u_dp 0.30 the two agree to 1e-3 m/s, 1e-5 in CL and < 6 N in tether
+force; from u_dp 0.31 they land on DIFFERENT attached solutions (CL 0.02,
+tether force 100-150 N apart, both converged, both ``av_stage`` attached) --
+the known two-attached-family band, a branch choice to be examined, not a
+solver error. The NumPy trim's cost is already ~1.4 s per iteration there
+(capped, warm), so the gain is bounded by the trim's share of the coupled
+iteration, not by the 20-70x standalone ratio. With the cached graph the
+CasADi trim still costs ~0.8 s per coupled iteration: not the build (the
+coupled ``update_from_points`` with reused polars keeps the signature, so
+the cache hits from iteration 1), but the numeric AIC rebuild per wake pass
+(0.07 s at 45 panels, 3-5 passes from a seed one shape old) plus the VSM
+results solve and two body deep copies. Fewer wake passes inside the coupled
+loop (the outer loop iterates anyway) is the next lever.
+
 ## Result Storage
 
 `meta["trim_results"]` carries the FINAL trim's storable outputs — CL, CD, angle of

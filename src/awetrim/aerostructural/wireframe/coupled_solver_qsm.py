@@ -896,6 +896,13 @@ def main(
         results_aero.get("alpha_at_ac"),
         results_aero.get("stall_mask"),
     )
+    # Wall time spent inside the trim, summed over the coupled iterations
+    # (quasi_steady_trim.solver A/B: the trim is the coupled loop's cost).
+    trim_time_total_s = float(results_aero.get("trim_time_s", 0.0) or 0.0)
+    print(
+        f"  Trim solver: {results_aero.get('trim_solver', '?')}, "
+        f"{trim_time_total_s:.2f} s"
+    )
     gamma_seed_prev = results_aero.get("gamma_distribution", gamma_seed_prev)
     roll, pitch, yaw = results_aero["opt_x"][1:4]
     struc_nodes = rotate_geometry(struc_nodes, angle_deg=[roll, pitch, yaw])
@@ -1179,6 +1186,12 @@ def main(
             print(f"  Pitch: {results_aero['opt_x'][2]:.2f} deg")
             print(f"  Yaw: {results_aero['opt_x'][3]:.2f} deg")
             print(f"  Course rate: {results_aero['opt_x'][4]:.2f} rad/s")
+            trim_time_total_s += float(results_aero.get("trim_time_s", 0.0) or 0.0)
+            print(
+                f"  Trim solver: {results_aero.get('trim_solver', '?')}, "
+                f"{float(results_aero.get('trim_time_s', float('nan')) or float('nan')):.2f} s"
+                f" (av_stage {results_aero.get('av_stage')})"
+            )
 
             # Trim-state history across the coupled iterations, and the
             # largest settled course rate. The actuation ramp makes every
@@ -2043,6 +2056,10 @@ def main(
             [float(link.k) for link in psystem.springdampers], dtype=float
         ),
         "qs_success": bool(results_aero.get("success", False)),
+        # Which trim solver the coupled loop ran (quasi_steady_trim.solver)
+        # and the wall time it spent inside it, all iterations summed.
+        "trim_solver": str(results_aero.get("trim_solver", "least_squares")),
+        "trim_time_total_s": float(trim_time_total_s),
         "opt_x": opt_x,
         # Trim state per coupled iteration, (n, 5). With the largest settled
         # |course_rate| below it gives sweep callers a donor-free branch

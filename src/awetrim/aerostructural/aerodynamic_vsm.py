@@ -25,6 +25,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 import copy
+import dataclasses
+import time
 from VSM.core.BodyAerodynamics import BodyAerodynamics
 from VSM.core.WingGeometry import Wing
 from VSM.core.Solver import Solver
@@ -209,6 +211,153 @@ def _run_vsm_direct_fallback(body_aero, solver, system_model, current_guess):
         "alpha_at_ac": res.get("alpha_at_ac"),
         "stall_mask": None,
     }
+
+
+def _solve_trim_casadi(
+    *,
+    body_aero,
+    solver,
+    system_model,
+    center_of_gravity,
+    reference_point,
+    x_guess,
+    bounds_lower,
+    bounds_upper,
+    include_gravity,
+    kcu_drag,
+    tether_model,
+    gamma_seed,
+    tolerance,
+):
+    """The quasi-steady trim as ONE CasADi root-finding problem
+    (``awetrim.aerodynamics.trim_casadi``), in the contract of the NumPy
+    trims: ``(results, body)`` with the per-panel loads and the rotated body
+    the coupled loop consumes.
+
+    The VSM settings come off the coupled solver's own ``Solver`` (artificial
+    viscosity and its factor, polar interpolation, rho, core radius, model
+    type), so the trim solves the same circulation problem as the
+    ``least_squares`` path's inner loop. ``tether_model`` is ``None``
+    (tetherless) or ``"williams"``; ``rigid_lumped`` is not covered by the
+    CasADi trim and is refused upstream.
+
+    Attached-first branch rule, at the TRIM level: with the artificial
+    viscosity on and ``attached_first`` set on the solver (the default,
+    ``solve_vsm_attached_first``), the trim is first solved on every polar
+    continued linearly past its stall onset (no stalled-tip fixed point to
+    lock into) and kept when every panel comes out below its ORIGINAL onset
+    -- that state is an exact solution of the true model, ``av_stage =
+    "attached"``. Otherwise the true polars + AV problem is solved from the
+    caller's seed, ``av_stage = "stalled"``. The NumPy trims apply the same
+    rule per VSM evaluation; the trim is either attached or not, so once per
+    trim is the consistent place, and it costs one extra graph build.
+    """
+    from awetrim.aerodynamics.trim_casadi import CasadiTrim, CasadiTrimOptions
+    from awetrim.aerodynamics.vsm_quasi_steady import (
+        _attached_polars_installed,
+        _panel_stall_onsets_rad,
+    )
+
+    options = CasadiTrimOptions(
+        tether_model=tether_model,
+        polar_interpolation=str(getattr(solver, "polar_interpolation", "linear")),
+        is_with_artificial_viscosity=bool(
+            getattr(solver, "is_with_artificial_viscosity", False)
+        ),
+        artificial_viscosity_factor=float(
+            getattr(solver, "artificial_viscosity_factor", 0.035)
+        ),
+        include_gravity=bool(include_gravity),
+        tolerance=float(tolerance),
+        rho=float(getattr(solver, "rho", 1.225)),
+        core_radius_fraction=float(getattr(solver, "core_radius_fraction", 0.05)),
+        aerodynamic_model_type=str(getattr(solver, "aerodynamic_model_type", "VSM")),
+    )
+
+    # One graph per (polars, counts, options, system model), cached on the
+    # coupled solver's own Solver object and re-used across the coupled
+    # iterations with the deformed shape swapped in as parameters: the build
+    # (~0.5 s at 45 panels) is paid once per coupled solve, not per
+    # iteration. The attached-first stage swaps polars, so it gets its own
+    # entry. Keyed on the system model's identity too (its wind, position and
+    # masses are baked into the graph numerically).
+    cache = getattr(solver, "_awetrim_casadi_trims", None)
+    if cache is None:
+        cache = {}
+        try:
+            solver._awetrim_casadi_trims = cache
+        except AttributeError:  # a slotted or mock solver: no cache
+            pass
+    key = (
+        CasadiTrim.geometry_signature(body_aero),
+        dataclasses.astuple(options),
+        None if kcu_drag is None else dataclasses.astuple(kcu_drag),
+        tuple(np.asarray(bounds_lower, dtype=float).ravel().tolist()),
+        tuple(np.asarray(bounds_upper, dtype=float).ravel().tolist()),
+        tuple(np.asarray(reference_point, dtype=float).ravel().tolist()),
+    )
+
+    def run_once():
+        entry = cache.get(key)
+        if entry is not None and entry[0] is system_model:
+            trim = entry[1]
+            trim.update_geometry(body_aero, center_of_gravity)
+        else:
+            trim = CasadiTrim(
+                body_aero,
+                system_model,
+                center_of_gravity,
+                reference_point,
+                kcu_drag=kcu_drag,
+                bounds_lower=bounds_lower,
+                bounds_upper=bounds_upper,
+                options=options,
+            )
+            if len(cache) >= 8:
+                cache.pop(next(iter(cache)))
+            cache[key] = (system_model, trim)
+        return trim.solve_with_body(x_guess, gamma_seed=gamma_seed)
+
+    av_first = options.is_with_artificial_viscosity and bool(
+        getattr(solver, "_awetrim_attached_first", _AV_ATTACHED_FIRST_DEFAULT)
+    )
+    if not av_first:
+        results, body = run_once()
+        results["av_stage"] = None
+        return results, body
+
+    # Stage 1: the attached predictor. The graph reads the polars at
+    # construction, so building it inside the swap bakes the continued polars
+    # in; the returned body is a deep copy made during the swap and is given
+    # the original tables back, so nothing downstream inherits the extension.
+    onsets = _panel_stall_onsets_rad(body_aero)
+    with _attached_polars_installed(body_aero):
+        results, body = run_once()
+    for panel_out, panel_in in zip(body.panels, body_aero.panels):
+        original = getattr(panel_in, "_panel_polar_data", None)
+        if original is not None:
+            panel_out._panel_polar_data = original
+    alpha = results.get("alpha_at_ac")
+    attached = bool(results.get("converged", False))
+    if attached and alpha is not None and onsets.size:
+        alpha = np.asarray(alpha, dtype=float).ravel()
+        if alpha.shape == onsets.shape:
+            finite = np.isfinite(alpha) & np.isfinite(onsets)
+            attached = bool(np.all(alpha[finite] <= onsets[finite])) and bool(
+                np.all(np.isfinite(alpha))
+            )
+        else:
+            attached = False
+    if attached:
+        results["av_stage"] = "attached"
+        return results, body
+
+    # Stage 2: the true model, from the caller's seed.
+    predictor_converged = bool(results.get("converged", False))
+    results, body = run_once()
+    results["av_stage"] = "stalled"
+    results["attached_predictor_converged"] = predictor_converged
+    return results, body
 
 
 def initialize(
@@ -512,6 +661,24 @@ def run_vsm_package(
     trim_max_nfev = int(trim_max_nfev) if trim_max_nfev else None
     if current_guess is None:
         current_guess = DEFAULT_GUESS_QS
+    # Which trim solver (quasi_steady_trim.solver, 2026-09-15):
+    #   'least_squares' -- the NumPy trims (scipy least_squares over the five
+    #                      trim states, a full inner VSM solve per residual
+    #                      evaluation). The default; every stored result.
+    #   'casadi'        -- awetrim.aerodynamics.trim_casadi: trim states and
+    #                      circulations as ONE Newton problem with the exact
+    #                      Jacobian. Same physics, no max_nfev (a converged
+    #                      trim per coupled iteration costs ~0.5 s at 45
+    #                      panels, most of it the graph build).
+    trim_solver_name = str(qs_cfg.get("solver", "least_squares")).lower()
+    if trim_solver_name not in ("least_squares", "casadi"):
+        raise ValueError(
+            f"quasi_steady_trim.solver must be 'least_squares' or 'casadi', "
+            f"got {trim_solver_name!r}"
+        )
+    # Newton tolerance of the CasADi trim on its stacked (nondimensional)
+    # residual; the NumPy trims' inner loop uses the solver's allowed_error.
+    trim_casadi_tolerance = float(qs_cfg.get("casadi_tolerance", 1e-8))
 
     # Tether in the trim (opt-in). The default trim is TETHERLESS: its residuals
     # are the tangential force balance only, so the tether is implicitly
@@ -539,11 +706,40 @@ def run_vsm_package(
         else None
     )
 
+    if trim_solver_name == "casadi" and include_tether_in_trim and tether_model != "williams":
+        raise ValueError(
+            "quasi_steady_trim.solver 'casadi' covers the tetherless and the "
+            f"'williams' tether trims; tether.model {tether_model!r} needs "
+            "'least_squares'."
+        )
+
     # Primary path: quasi-steady trim solve.
+    t_trim_start = time.perf_counter()
     try:
         # Preserve the pre-trim body state in case we need direct-solve fallback.
         body_fallback = copy.deepcopy(body_aero)
-        if include_tether_in_trim:
+        if trim_solver_name == "casadi":
+            results, body_aero = _solve_trim_casadi(
+                body_aero=body_aero,
+                solver=solver,
+                system_model=system_model,
+                center_of_gravity=center_of_gravity,
+                reference_point=reference_point,
+                x_guess=current_guess,
+                bounds_lower=bounds_lower,
+                bounds_upper=bounds_upper,
+                include_gravity=include_gravity,
+                kcu_drag=kcu_drag,
+                tether_model="williams" if include_tether_in_trim else None,
+                gamma_seed=gamma_seed,
+                tolerance=trim_casadi_tolerance,
+            )
+            # A trim on a search bound is reported through ``trim_on_bounds``
+            # below (the coupled loop's runaway stop counts it), as with
+            # least_squares, which also returns success there; only a Newton
+            # failure takes the direct-solve fallback.
+            results["success"] = bool(results.get("converged", False))
+        elif include_tether_in_trim:
             results, body_aero = solve_vsm_qs_trim_with_williams_tether(
                 kcu_drag=kcu_drag,
                 body_aero=body_aero,
@@ -610,6 +806,7 @@ def run_vsm_package(
             # Names of the trim unknowns sitting on a bound (empty when none):
             # the coupled loop's runaway stop reads ``"kite_speed"`` here.
             results["trim_on_bounds"] = [name for name, _value, _which in pinned]
+        results["trim_solver"] = trim_solver_name
     except ValueError as exc:
         # Typical case: non-finite residual in initial optimizer point.
         print(
@@ -622,6 +819,7 @@ def run_vsm_package(
             system_model=system_model,
             current_guess=current_guess,
         )
+    results["trim_time_s"] = time.perf_counter() - t_trim_start
     if is_with_plot:
         plot_vsm_geometry(body_aero)
 
