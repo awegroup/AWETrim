@@ -1214,9 +1214,25 @@ def main(
                     course_rate_max_settled, abs(float(opt_x_history[-1][4]))
                 )
 
-            # Runaway stop (see qs_speed_bound_patience above).
+            # Runaway stop (see qs_speed_bound_patience above). Counted only
+            # once the tape walk has finished and settled: mid-walk the kite
+            # is not the one being solved for (part-way down the depower walk
+            # it is still powered, and faster), so a pinned trim then says
+            # nothing about the target state. Counting through the walk ended
+            # a reel-in grid point (u_dp 0.277) at iteration 5 as a fully
+            # powered 25.7 kN kite whose neighbours converge at 6.5 kN
+            # (2026-09-13). The flags are the previous iteration's walk
+            # update, which is what this iteration's shape was solved with.
             if qs_speed_bound_patience > 0:
-                if "kite_speed" in (results_aero.get("trim_on_bounds") or []):
+                is_walk_settled = (
+                    is_actuation_finalized
+                    and is_steering_finalized
+                    and depower_settle_counter == 0
+                    and steering_settle_counter == 0
+                )
+                if is_walk_settled and "kite_speed" in (
+                    results_aero.get("trim_on_bounds") or []
+                ):
                     speed_bound_counter += 1
                 else:
                     speed_bound_counter = 0
@@ -1458,11 +1474,21 @@ def main(
             # power tape is still being walked out runs two continuations at
             # once and neither result means anything.
             residual_now = f_residual_list[-1] if f_residual_list else float("inf")
+            # A settled residual needs history: the rule may not act before
+            # the settle window has elapsed in THIS solve. Without the
+            # ``i >= stiffness_settle_iters`` term a handed-over shape can
+            # pass the residual test at iteration 0 while the actuation walk
+            # has not yet run (the finalized flags are only meaningful after
+            # their first update below), and the "elongation" measured is
+            # the tape change against the donor's geometry -- 2019 c63
+            # chained seconds stiffened 9 wing elements at iteration 0 on a
+            # 9.5 % tape mismatch (2026-09-13).
             is_settled = (
                 is_actuation_finalized
                 and is_steering_finalized
                 and depower_settle_counter == 0
-                    and steering_settle_counter == 0
+                and steering_settle_counter == 0
+                and i >= stiffness_settle_iters
                 and i - last_stiffening_iteration >= stiffness_settle_iters
                 and np.isfinite(residual_now)
                 and residual_now <= stiffness_trigger_residual
