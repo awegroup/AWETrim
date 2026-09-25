@@ -213,6 +213,8 @@ def test_pattern_limits_struct_validates_and_is_optional():
     assert StepRequest().pattern_limits is None
     lim = PatternLimits(azimuth_max=35.0, elevation_max=45.0, azimuth_amplitude_min=5.0)
     assert lim.elevation_min is None
+    assert lim.symmetric is None
+    assert PatternLimits(symmetric=True).symmetric is True
     req = InitRequest(**_init_kwargs(pattern_limits=lim.model_dump()))
     assert req.pattern_limits.azimuth_max == pytest.approx(35.0)
     # {} on /step is a valid "clear" request and survives as an (empty) struct

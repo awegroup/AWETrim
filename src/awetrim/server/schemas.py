@@ -428,6 +428,14 @@ class PatternLimits(BaseModel):
         "half-span B satisfies with B <= value). Caps how TALL the pattern is "
         "where ``elevation_max`` only caps where it may sit. 0/omitted = off.",
     )
+    symmetric: Optional[bool] = Field(
+        default=None,
+        description="True = the figure-eight is mirror-symmetric about "
+        "azimuth 0: half a period later the kite is at the mirrored point "
+        "(M/2 linear equality rows on the spline coefficients, so M must be "
+        "even). Removes the lopsided optima of the multi-modal solve. "
+        "false/omitted = off.",
+    )
 
     @model_validator(mode="after")
     def _check_elevation_band(self):

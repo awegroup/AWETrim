@@ -811,6 +811,10 @@ def test_apply_pattern_limits_maps_degrees_onto_coefficient_bounds():
     assert override["C_beta"][0] == pytest.approx(0.01)  # default lower side
     assert override["C_beta"][1] == pytest.approx(np.radians(45.0))
     assert sim["min_azimuth_amplitude"] == pytest.approx(np.radians(5.0))
+    assert "symmetric_pattern" not in sim
+    ReeloutSession._apply_pattern_limits(sim, {"symmetric": True})
+    assert sim["symmetric_pattern"] is True
+    assert "min_azimuth_amplitude" not in sim  # replaced as a whole
     # {} clears the pattern limits but not the winch entry
     ReeloutSession._apply_pattern_limits(sim, {})
     assert sim == {"opti_limits_override": {"speed_radial": [-10.0, 5.0]}}
@@ -843,9 +847,16 @@ def test_pattern_limits_round_trip_init_step_and_replies(patched_session):
 
     phase.results.append(_fake_result())
     phase.release.set()
+    reply = sess.step_blocking(pattern_limits={"symmetric": True})
+    assert reply["pattern_limits"] == {"symmetric": True}
+    assert sess.phase.pattern_config["sim_parameters"]["symmetric_pattern"] is True
+
+    phase.results.append(_fake_result())
+    phase.release.set()
     reply = sess.step_blocking(pattern_limits={})  # cleared
     assert reply["pattern_limits"] is None
     assert "min_azimuth_amplitude" not in sess.phase.pattern_config["sim_parameters"]
+    assert "symmetric_pattern" not in sess.phase.pattern_config["sim_parameters"]
 
 
 def test_winch_mode_defaults_to_unset_and_is_threaded_through(patched_session):

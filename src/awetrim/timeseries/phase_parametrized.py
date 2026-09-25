@@ -20,6 +20,7 @@ from awetrim import SystemModel
 from awetrim.kinematics.parametrized_patterns import (
     PeriodicBSpline,
     create_pattern_from_dict,
+    symmetrize_periodic_coefficients,
 )
 from awetrim.kinematics.Kinematics import ParametrizedKinematics
 import casadi as ca
@@ -2428,6 +2429,42 @@ class PhaseParameterized(TimeSeries):
                 opti.subject_to(mx <= ub)
             else:
                 continue
+
+        # --- Mirror symmetry of the figure-eight
+        # Nothing in the physics prefers one side (symmetric kite, wind and
+        # gravity), but the power objective barely reads the lobe balance, so
+        # the multi-modal solve settles on lopsided figures. Under
+        # ``symmetric_pattern`` the path is pinned to its mirror image half a
+        # period later: C_phi[k + M/2] = -C_phi[k], C_beta[k + M/2] = C_beta[k]
+        # (exact for a uniform periodic spline with even M; see
+        # ``symmetrize_periodic_coefficients``). Linear rows, and the warm
+        # start is projected onto them so IPOPT starts feasible. Off by
+        # default: the NLP is unchanged when the key is absent or False.
+        if bool(sim_params.get("symmetric_pattern", False)):
+            if not isinstance(pattern, PeriodicBSpline):
+                raise ValueError("symmetric_pattern needs a periodic spline pattern")
+            path_params = self.pattern_config["path_parameters"]
+            C_phi0, C_beta0 = symmetrize_periodic_coefficients(
+                path_params["C_phi"], path_params["C_beta"]
+            )
+            h = C_phi0.size // 2
+            for var, sign, projected in (
+                ("C_phi", -1.0, C_phi0),
+                ("C_beta", 1.0, C_beta0),
+            ):
+                mx = opti_params.get(var)
+                if mx is not None:
+                    opti.subject_to(mx[h:] - sign * mx[:h] == 0)
+                    opti.set_initial(mx, projected)
+                else:
+                    # Fixed coordinate: the given shape must already comply.
+                    given = np.asarray(path_params[var], dtype=float).ravel()
+                    if np.max(np.abs(given - projected)) > 1e-9:
+                        raise ValueError(
+                            f"symmetric_pattern is violated by the fixed "
+                            f"pattern and {var} is not optimized"
+                        )
+            print(f"Symmetric pattern: {2 * h} mirror rows on C_phi/C_beta (M = {2 * h})")
 
         # Hard per-solve trust region on the optimized parameters:
         # ``sim_parameters["param_step_bound"]`` maps parameter name -> max

@@ -306,6 +306,34 @@ def periodic_bspline_basis_matrices(u_grid, M):
     return tuple(mats)
 
 
+def symmetrize_periodic_coefficients(C_phi, C_beta):
+    """Project periodic-spline coefficients onto the symmetric figure-eight.
+
+    A figure-eight is mirror-symmetric about ``azimuth = 0`` when half a
+    period later the kite is at the mirrored point:
+    ``az(u + 1/2) = -az(u)`` and ``el(u + 1/2) = el(u)``. On a uniform
+    periodic spline with an EVEN number ``M`` of coefficients, a shift of
+    ``u`` by 1/2 is a shift of the coefficient index by ``M/2``, so the
+    symmetry is exactly ``C_phi[k + M/2] = -C_phi[k]`` and
+    ``C_beta[k + M/2] = C_beta[k]``. This returns the nearest (least-squares)
+    coefficients that satisfy it, as numpy arrays of the input size; it is the
+    warm start ``PhaseParameterized.opti_phase`` uses under
+    ``sim_parameters["symmetric_pattern"]``. Raises ``ValueError`` for odd M.
+    """
+    C_phi = np.asarray(C_phi, dtype=float).ravel()
+    C_beta = np.asarray(C_beta, dtype=float).ravel()
+    M = C_phi.size
+    if M % 2 != 0 or C_beta.size != M:
+        raise ValueError(
+            f"a symmetric pattern needs an even number of spline coefficients, "
+            f"got M = {M} (C_beta: {C_beta.size})"
+        )
+    h = M // 2
+    phi_half = 0.5 * (C_phi[:h] - C_phi[h:])
+    beta_half = 0.5 * (C_beta[:h] + C_beta[h:])
+    return np.concatenate([phi_half, -phi_half]), np.concatenate([beta_half, beta_half])
+
+
 def build_periodic_cubic_bspline_function(
     M, dim=1, name="per_bspline", support_interval=None
 ):

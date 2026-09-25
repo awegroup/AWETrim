@@ -2,6 +2,8 @@ import numpy as np
 import pytest
 
 from awetrim.kinematics.parametrized_patterns import (
+    periodic_bspline_basis_matrix,
+    symmetrize_periodic_coefficients,
     LOBE_HANDOVER_PHASE,
     create_pattern_from_dict,
     full_cycle_angles,
@@ -829,3 +831,22 @@ def test_design_reelin_spline_hits_peak_within_curvature_and_keeps_handover():
     )
     assert not rep2["engaged"] and not rep2["changed"]
     assert same["C_phi"] == designed["C_phi"]
+
+
+def test_symmetrize_periodic_coefficients_mirrors_the_figure_half_a_period_later():
+    rng = np.random.default_rng(1)
+    M = 10
+    C_phi = rng.normal(0.0, 0.3, M)
+    C_beta = 0.4 + rng.normal(0.0, 0.1, M)
+    phi, beta = symmetrize_periodic_coefficients(C_phi, C_beta)
+    u = np.linspace(0.0, 1.0, 97, endpoint=False)
+    B, B_half = periodic_bspline_basis_matrix(u, M), periodic_bspline_basis_matrix(u + 0.5, M)
+    np.testing.assert_allclose(B_half @ phi, -(B @ phi), atol=1e-12)
+    np.testing.assert_allclose(B_half @ beta, B @ beta, atol=1e-12)
+    # a projection: idempotent, and the symmetric part of the input is kept
+    phi2, beta2 = symmetrize_periodic_coefficients(phi, beta)
+    np.testing.assert_allclose(phi2, phi)
+    np.testing.assert_allclose(beta2, beta)
+    assert np.mean(beta) == pytest.approx(np.mean(C_beta))
+    with pytest.raises(ValueError, match="even"):
+        symmetrize_periodic_coefficients(C_phi[:9], C_beta[:9])

@@ -518,8 +518,10 @@ class ReeloutSession:
         these bound the whole path; a missing side falls back to
         ``DEFAULT_OPTI_LIMITS``. ``azimuth_amplitude_min`` becomes
         ``sim_parameters["min_azimuth_amplitude"]`` [rad], the one-row
-        amplitude floor in ``PhaseParameterized.opti_phase``. Other override
-        entries (e.g. ``speed_radial`` from the winch params) are untouched.
+        amplitude floor in ``PhaseParameterized.opti_phase``; ``symmetric``
+        becomes ``sim_parameters["symmetric_pattern"]``, its mirror-symmetry
+        rows. Other override entries (e.g. ``speed_radial`` from the winch
+        params) are untouched.
         """
         if limits is None:
             return
@@ -567,14 +569,19 @@ class ReeloutSession:
         else:
             sim_parameters.pop("max_elevation_amplitude", None)
 
-    def pattern_limits(self) -> Optional[Dict[str, float]]:
+        if limits.get("symmetric"):
+            sim_parameters["symmetric_pattern"] = True
+        else:
+            sim_parameters.pop("symmetric_pattern", None)
+
+    def pattern_limits(self) -> Optional[Dict[str, Any]]:
         """The pattern limits in force, as the degree-valued struct
         (None when none of them is set -- optimizer defaults apply)."""
         if self.phase is None:
             return None
         sim_parameters = self.phase.pattern_config.get("sim_parameters", {})
         override = sim_parameters.get("opti_limits_override") or {}
-        out: Dict[str, float] = {}
+        out: Dict[str, Any] = {}
         if "C_phi" in override:
             out["azimuth_max"] = float(np.degrees(abs(override["C_phi"][1])))
         if "C_beta" in override:
@@ -587,6 +594,8 @@ class ReeloutSession:
         el_amplitude = sim_parameters.get("max_elevation_amplitude")
         if el_amplitude:
             out["elevation_amplitude_max"] = float(np.degrees(el_amplitude))
+        if sim_parameters.get("symmetric_pattern"):
+            out["symmetric"] = True
         return out or None
 
     @staticmethod
