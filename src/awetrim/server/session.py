@@ -665,6 +665,14 @@ class ReeloutSession:
         # reel-in law is flat at zero (dT/dv_r = 0, so the per-node tension equality
         # loses rank there) and MEASURED WORSE: it left the wall at use_awe_trim
         # 0.875 and turned 0.75, which converged cold, into an IPOPT failure.
+        # Soft reel-speed clamp at v_max, see Winch._undo_v_sat_clamp.
+        v_sat_beta = winch.get("v_sat_beta")
+        if v_max is not None and v_sat_beta is not None:
+            radial_parameters["v_sat"] = float(v_max)
+            radial_parameters["v_sat_beta"] = float(v_sat_beta)
+        else:
+            radial_parameters.pop("v_sat", None)
+            radial_parameters.pop("v_sat_beta", None)
         if v_max is not None:
             override["speed_radial"] = [
                 DEFAULT_OPTI_LIMITS["speed_radial"][0],

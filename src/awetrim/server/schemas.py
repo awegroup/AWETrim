@@ -273,6 +273,17 @@ class WinchParams(BaseModel):
         "law's quadratic term has zero, not infinite, slope at its own "
         "zero, so soft_max stays well-behaved for any positive value.",
     )
+    # Mirrors WinchControllers.jl's soft v_sat clamp (_clamp_v_sat in
+    # calc_vro_soft): the commanded speed is soft_min(v_raw, v_max, beta), so
+    # the controller's curve rises vertically to f_max AT v_max. Without it the
+    # tension curve simply ends at the v_max speed bound, well below f_max.
+    v_sat_beta: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Corner sharpness of the soft reel-speed clamp at v_max "
+        "[s/m]; larger is sharper. Requires v_max or p_max. Unset keeps the "
+        "plain law, cut off by the v_max speed bound (a hard clamp).",
+    )
 
     @model_validator(mode="after")
     def _check_forces(self):
@@ -280,6 +291,8 @@ class WinchParams(BaseModel):
             raise ValueError("f_max must be greater than f_min")
         if self.v_max is not None and self.p_max is not None:
             raise ValueError("give either v_max or p_max, not both")
+        if self.v_sat_beta is not None and self.reel_speed_limit() is None:
+            raise ValueError("v_sat_beta requires v_max or p_max")
         if self.k_v_bounds is not None:
             lo, hi = self.k_v_bounds
             if lo <= 0 or hi <= 0:

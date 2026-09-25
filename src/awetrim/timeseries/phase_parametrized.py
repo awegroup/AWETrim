@@ -2253,14 +2253,23 @@ class PhaseParameterized(TimeSeries):
                 opti.subject_to(T_i / S["T"] <= _free_tf_hi / S["T"])
                 _rep_tension.append(T_i)
             else:
-                # The winch force law ties the tension to the reel speed.
-                T_model = winch_model.tension_curve(
-                    opti_vars["speed_radial"][i], input_depower=node_depower
+                # The winch force law ties the tension to the reel speed:
+                # T_i - T(v_r), or its blend with the speed form near v_sat
+                # (Winch.radial_equation), same zero set, in newtons.
+                law_residual = winch_model.radial_equation(
+                    speed_radial=opti_vars["speed_radial"][i],
+                    tension_tether_ground=T_i,
+                    input_depower=node_depower,
                 )
 
                 # Scale the tether law residual
-                opti.subject_to((T_i - T_model) / S["T"] == 0)
-                _rep_tension.append((T_i - T_model) / S["T"])
+                opti.subject_to(law_residual / S["T"] == 0)
+                _rep_tension.append(law_residual / S["T"])
+                if winch_model.uses_speed_law():
+                    # The speed form is flat at v_sat, so it no longer caps
+                    # the force by itself the way T(v) <= max_tether_force did.
+                    _tf_hi = float(radial_params["max_tether_force"])
+                    opti.subject_to(T_i / S["T"] <= _tf_hi / S["T"])
 
             # Residual equations (scaled)
             res_i = residual_i_fn(

@@ -399,6 +399,152 @@ class TestTensionCurveAweTrim:
 
 
 # ============================================================================
+# TENSION CURVE — SOFT v_sat CLAMP
+# ============================================================================
+
+
+class TestTensionCurveVSat:
+    """The inverse of WinchControllers.jl's soft v_sat clamp (_clamp_v_sat)."""
+
+    K_V, F_MAX, V_SAT, V_SAT_BETA, BETA = 0.0408, 7900.0, 3.5, 10.0, 1e-3
+
+    def _cfg(self, **overrides):
+        cfg = _quadratic_config(
+            slope_winch_ro=1.0 / self.K_V**2,
+            max_tether_force=self.F_MAX,
+            softplus=True,
+            softplus_beta=self.BETA,
+            v_sat=self.V_SAT,
+            v_sat_beta=self.V_SAT_BETA,
+        )
+        cfg.pop("slope_winch_force")
+        cfg.update(overrides)
+        return cfg
+
+    def _controller_speed(self, force):
+        # calc_vro_soft above f_low: undo the softplus cap, take k_v*sqrt,
+        # then soft_min with v_sat.
+        b = self.BETA
+        t = self.F_MAX - (
+            b * (self.F_MAX - force) + math.log(-math.expm1(-b * (self.F_MAX - force)))
+        ) / b
+        v = self.K_V * math.sqrt(t)
+        bv = self.V_SAT_BETA
+        return min(v, self.V_SAT) - math.log1p(math.exp(-bv * abs(v - self.V_SAT))) / bv
+
+    @pytest.mark.parametrize("force", [3000.0, 6000.0, 7000.0, 7500.0, 7800.0])
+    def test_matches_the_controller_curve(self, force):
+        winch = Winch(pattern_config=self._cfg())
+        v = self._controller_speed(force)
+        assert float(winch.tension_curve(v)) == pytest.approx(force, rel=1e-6)
+
+    def test_reaches_f_max_at_v_sat(self):
+        winch = Winch(pattern_config=self._cfg())
+        t = float(winch.tension_curve(self.V_SAT))
+        assert math.isfinite(t)
+        assert t == pytest.approx(self.F_MAX, abs=10.0)
+
+    def test_negligible_far_below_v_sat(self):
+        plain = Winch(pattern_config=self._cfg(v_sat=None, v_sat_beta=None))
+        clamped = Winch(pattern_config=self._cfg())
+        assert float(clamped.tension_curve(1.5)) == pytest.approx(
+            float(plain.tension_curve(1.5)), rel=1e-6
+        )
+
+    def test_raises_force_near_v_sat(self):
+        plain = Winch(pattern_config=self._cfg(v_sat=None, v_sat_beta=None))
+        clamped = Winch(pattern_config=self._cfg())
+        assert float(clamped.tension_curve(3.45)) > float(plain.tension_curve(3.45)) + 200.0
+
+    def test_symbolic_gradient_finite_at_v_sat(self):
+        v = ca.SX.sym("v")
+        t = Winch(pattern_config=self._cfg()).tension_curve(v)
+        grad = ca.Function("g", [v], [ca.gradient(t, v)])
+        for speed in (3.4, 3.499, self.V_SAT):
+            assert math.isfinite(float(grad(speed)))
+
+
+class TestSpeedLaw:
+    """Winch.speed_law and the blended Winch.radial_equation it enables."""
+
+    def _cfg(self, **overrides):
+        cfg = TestTensionCurveVSat()._cfg(
+            reeling_strategy="force",
+            min_tether_force=700.0,
+            softminus=True,
+            softminus_beta=1e-3,
+            use_awe_trim=1.0,
+        )
+        cfg.update(overrides)
+        return cfg
+
+    def test_gated_on_the_invertible_case(self):
+        assert Winch(pattern_config=self._cfg()).uses_speed_law()
+        for off in (
+            dict(use_awe_trim=0.5),
+            dict(v_sat=None),
+            dict(v_sat_beta=None),
+            dict(min_tether_force=0.0),
+            dict(force_model="linear"),
+        ):
+            assert not Winch(pattern_config=self._cfg(**off)).uses_speed_law()
+
+    @pytest.mark.parametrize("v", [0.5, 1.5, 2.5, 3.2, 3.45, 3.499])
+    def test_inverts_the_tension_curve(self, v):
+        winch = Winch(pattern_config=self._cfg())
+        t = float(winch.tension_curve(v))
+        assert float(winch.speed_law(t)) == pytest.approx(v, abs=1e-6)
+
+    def test_matches_the_controller_speed(self):
+        # Same law as calc_vro_soft, evaluated independently. High forces
+        # only: the reference has no softminus floor, which still shifts the
+        # speed by ~0.04 m/s at 3 kN (f_min 700 N, beta 1e-3).
+        winch = Winch(pattern_config=self._cfg())
+        ref = TestTensionCurveVSat()
+        for force in (6000.0, 7000.0, 7500.0):
+            assert float(winch.speed_law(force)) == pytest.approx(
+                ref._controller_speed(force), abs=2e-3
+            )
+
+    def test_finite_everywhere(self):
+        f = ca.SX.sym("f")
+        winch = Winch(pattern_config=self._cfg())
+        v = winch.speed_law(f)
+        fn = ca.Function("v", [f], [v, ca.gradient(v, f)])
+        for force in (0.0, 300.0, 1000.0, 7899.0, 7900.0, 9000.0):
+            val, grad = fn(force)
+            assert math.isfinite(float(val)) and math.isfinite(float(grad))
+        assert float(winch.speed_law(9000.0)) == pytest.approx(3.5, abs=0.07)
+
+    @pytest.mark.parametrize("v", [1.0, 2.0, 2.8, 3.3, 3.49])
+    def test_blended_residual_same_zero_set(self, v):
+        winch = Winch(pattern_config=self._cfg())
+        t = float(winch.tension_curve(v))
+        r = lambda f, s: float(winch.radial_equation(speed_radial=s, tension_tether_ground=f))
+        assert r(t, v) == pytest.approx(0.0, abs=1e-3)
+        # same sign as the plain force form off the curve
+        assert r(t + 50.0, v) > 0
+        assert r(t - 50.0, v) < 0
+
+    def test_blended_residual_is_well_conditioned_near_v_sat(self):
+        # The force form's slope in v explodes near v_sat; above the handover
+        # the blend's is dominated by K = max_tether_force / v_sat (2257 N s/m
+        # here). Checked 3 handover widths above its centre, wherever that is.
+        import awetrim.system.winch as W
+
+        v, f = ca.SX.sym("v"), ca.SX.sym("f")
+        plain = Winch(pattern_config=self._cfg(use_awe_trim=0.99))
+        blend = Winch(pattern_config=self._cfg())
+        d = lambda w: ca.Function("d", [v, f], [ca.gradient(
+            w.radial_equation(speed_radial=v, tension_tether_ground=f), v)])
+        span = 7900.0 - 700.0
+        t = 700.0 + (W.SPEED_LAW_BLEND_CENTER + 3 * W.SPEED_LAW_BLEND_WIDTH) * span
+        t = min(t, 7890.0)
+        s = float(blend.speed_law(t))
+        assert abs(float(d(blend)(s, t))) < 0.2 * abs(float(d(plain)(s, t)))
+
+
+# ============================================================================
 # TENSION CURVE — CUSTOM SPLINE
 # ============================================================================
 

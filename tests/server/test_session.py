@@ -393,6 +393,24 @@ def test_winch_use_awe_trim_defaults_to_zero_and_is_threaded_through(patched_ses
         sess.init(config)
 
 
+def test_winch_v_sat_beta_is_threaded_through(patched_session):
+    sess, config = patched_session
+    config["winch_params"] = {
+        "mode": "reelout", "k_v": 0.0408,
+        "f_min": 350.0, "f_max": 7900.0, "v_max": 3.5,
+    }
+    sess.init(config)
+    radial = sess.phase.pattern_config["radial_parameters"]
+    assert "v_sat" not in radial
+    assert "v_sat_beta" not in radial
+
+    config["winch_params"]["v_sat_beta"] = 10.0
+    sess.init(config)
+    radial2 = sess.phase.pattern_config["radial_parameters"]
+    assert radial2["v_sat"] == pytest.approx(3.5)
+    assert radial2["v_sat_beta"] == pytest.approx(10.0)
+
+
 def test_optimize_k_v_off_by_default(patched_session):
     """The winch gain stays a constant unless the client asks for it."""
     sess, config = patched_session

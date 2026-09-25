@@ -129,6 +129,17 @@ def test_winch_params_take_v_max_or_p_max_not_both():
         WinchParams(**base, v_max=8.0, p_max=38000.0)
 
 
+def test_winch_params_v_sat_beta_needs_a_speed_limit():
+    from awetrim.server.schemas import WinchParams
+
+    base = dict(mode="reelout", k_v=0.0408, f_min=350.0, f_max=7900.0)
+    assert WinchParams(**base, v_max=3.5, v_sat_beta=10.0).v_sat_beta == 10.0
+    with pytest.raises(ValidationError):
+        WinchParams(**base, v_sat_beta=10.0)
+    with pytest.raises(ValidationError):
+        WinchParams(**base, v_max=3.5, v_sat_beta=0.0)
+
+
 def test_winch_k_v_optimization_is_opt_in_and_bracket_is_validated():
     from awetrim.server.schemas import WinchParams
 
