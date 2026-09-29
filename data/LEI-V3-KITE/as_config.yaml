@@ -193,7 +193,7 @@ aero2struc:
 
 ## coupled
 aero_structural_solver:
-  max_iter: !!int 100
+  max_iter: !!int 200 # was 100; the realised-steering gate holds steered rows to ~50-90 iterations (2026-09-23)
   it_check: !!int 5
   tol: !!float 5 #N
   # ABSOLUTE gate [N], above. It cannot pin the answer across a sweep: 5 N is
@@ -219,6 +219,9 @@ aero_structural_solver:
   aero_update_interval: !!int 1 # run aero every N structural iterations (1 = every iter, 5 = every 5th)
   steering_actuation_interval_iters: !!int 2 # apply steering actuation every N coupled iterations
   steering_settle_iterations_after_update: !!int 6 # no convergence exit this many iterations after a steering tape update: the rolled/turning equilibrium grows out of a mm-level asymmetry whose residual sits below the gate (u_s 0.025/0.05 rows froze symmetric in 3 iterations on 2026-09-01)
+  steering_realised_tol_m: !!float 5.0e-3 # realised-actuation gate (2026-09-23): no exit while the tape endpoint half-difference is further than this [m] from the commanded rest-length half-difference (0 disables)
+  steering_realised_remaining_tol_m: !!float 1.0e-3 # ... or with more creep than this [m] still to come (geometric tail of the realised value since the last steering step): Billow rows u_s 0.075-0.125 exited 15-25 mm short and creeping 1 mm/it on 2026-09-13
+  steering_realised_rate_floor_m: !!float 2.0e-5 # a realised value moving less than this [m] per iteration counts as arrived whatever the tail estimator says (nanometre noise on a residual limit cycle reads as a non-decaying tail)
   node_displacement_tol: !!float 0.0001 # stop if max nodal displacement < this [m] (0 = disabled, e.g. 1e-4)
   aero_solve_type: !!str 'qsm' # 'qsm' = quasi-steady optimization with system_model; 'level_1' = direct VSM with va_vector
 

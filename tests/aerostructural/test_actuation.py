@@ -2,6 +2,7 @@ import numpy as np
 
 from awetrim.aerostructural.wireframe.actuation import (
     compute_power_tape_increment,
+    steering_half_differences,
     update_power_tape_actuation,
     update_steering_tape_actuation,
 )
@@ -63,3 +64,30 @@ def test_update_steering_tape_actuation_shortens_left_and_lengthens_right():
 
     assert did_update is True
     np.testing.assert_allclose(system.extract_rest_length, [1.0, 1.9, 3.1])
+
+
+def test_steering_half_differences_commanded_vs_realised():
+    # Node 0 is the KCU; tapes 0 (left, shortened) and 1 (right, lengthened)
+    # run from the knots 1 and 2 to it. Rest lengths already walked to a
+    # half-difference of 0.075 m while the knots have only moved to 0.060 m,
+    # the way a slowly relaxing coupled loop leaves them.
+    nodes = np.array([[0.0, 0.0, 0.0], [0.0, -0.5, 1.46], [0.0, 0.5, 1.58]])
+    connectivity = [[1, 0], [2, 0]]
+    rest = np.array([1.6 - 0.075, 1.6 + 0.075])
+    left_len = np.linalg.norm(nodes[1]); right_len = np.linalg.norm(nodes[2])
+    commanded, realised = steering_half_differences(
+        rest, nodes, connectivity, [0, 1], 1.6, 1.6
+    )
+    np.testing.assert_allclose(commanded, 0.075)
+    np.testing.assert_allclose(
+        realised, 0.5 * ((1.6 - left_len) + (right_len - 1.6))
+    )
+    assert realised < commanded - 5e-3  # the walk is not realised yet
+    # Move the knots onto the rest lengths: realised meets the command.
+    nodes[1] *= (1.6 - 0.075) / left_len
+    nodes[2] *= (1.6 + 0.075) / right_len
+    _, realised_on = steering_half_differences(
+        rest, nodes, connectivity, [0, 1], 1.6, 1.6
+    )
+    np.testing.assert_allclose(realised_on, 0.075, atol=1e-12)
+

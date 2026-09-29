@@ -29,6 +29,7 @@ import dataclasses
 from . import aero2struc
 from ..billow import structural_billow
 from ..wireframe import structural_wireframe
+from ..convergence import remaining_drift  # noqa: F401  (re-exported)
 from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking
 from awetrim import plotting
 from awetrim.aerodynamics.apparent_wind import apparent_wind_at, inflow_state_of
@@ -479,30 +480,6 @@ def _current_power_tape_length(
         return float("nan")
 
 
-def remaining_drift(values, n_ratios=3):
-    """Estimated change still to come in a converging sequence [its unit].
-
-    Models the tail as geometric: with successive changes ``d_j`` and ratio
-    ``r = |d_j / d_(j-1)|``, what remains after the last value is
-    ``|d_last| r / (1 - r)``. The ratio is the LARGEST of the last
-    ``n_ratios``, because two modes decaying at different rates fool a single
-    ratio: a fast transient dying away onto a slow tail reads as r ~ 0 for one
-    iteration (measured on the steered Billow kite: a 0.0007 rad/s course-rate
-    change with 0.02 rad/s still to come). A growing or non-decaying tail
-    (r >= 1), or too short a history, is infinitely far from settled.
-    """
-    values = np.asarray(values, dtype=float)
-    if values.size < n_ratios + 2 or not np.all(np.isfinite(values)):
-        return float("inf")
-    changes = np.abs(np.diff(values[-(n_ratios + 2):]))
-    if changes[-1] == 0.0:
-        return 0.0
-    with np.errstate(divide="ignore", invalid="ignore"):
-        ratios = np.where(changes[:-1] > 0.0, changes[1:] / changes[:-1], np.inf)
-    ratio = float(ratios.max())
-    if ratio >= 1.0:
-        return float("inf")
-    return float(changes[-1] * ratio / (1.0 - ratio))
 
 
 def update_steering_tape_actuation(

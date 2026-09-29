@@ -439,6 +439,46 @@ is never settled. The residual cannot stand in for (b): it is the load change
 between iterations, which a slowly relaxing loop keeps below the gate while the
 steered state is still growing.
 
+**Realised-actuation gate (2026-09-23, `wireframe/coupled_solver_qsm.py`).**
+The wireframe production driver's settle is a counter only, and a counter
+cannot tell whether the structure has ARRIVED at its rest lengths. With Aitken
+at its 0.05 floor the tape knots creep toward the commanded lengths about 1 mm
+per iteration while the force residual sits under the gate: the 2026-09-13
+Billow steering chains exited rows u_s 0.075-0.125 with the realised
+half-difference 15-25 mm short of the command and still moving 0.8-1.3 mm per
+iteration, a lower steering gain that read as a second equilibrium (the
+turn-rate kink at 0.150, the "detour" of the 09-12 notes). So on a steered
+solve (`steering_tape_final_extension` != 0) every exit -- the convergence
+break, the stiffness settle, the runaway count, the stagnation break and the
+plateau acceptance's physical gates -- also needs the REALISED half-difference
+(`actuation.steering_half_differences`: tape endpoint distances against the
+initial tape lengths, the walk's own combination) within
+`steering_realised_tol_m` [default 5e-3] of the command AND the creep still
+to come -- `convergence.remaining_drift` (the geometric-tail estimator the
+course-rate settle uses, now shared) of its history since the last steering
+step -- within `steering_realised_remaining_tol_m` [default 1e-3], where a
+value moving less than `steering_realised_rate_floor_m` [default 2e-5] per
+iteration counts as arrived outright (on a period-2 residual cycle the tail is
+nanometre noise with ratios >= 1, which the estimator reads as infinite: va21
+and va25 u_s 0.025 were held 200 iterations on a settled value); otherwise
+the loop is held with a "not realised ... held" log line. A per-iteration
+threshold alone was measured to leave 2.6 mm (3.5 %) on the table: with Aitken
+at its floor the tail ratio is ~0.95, so 0.14 mm per iteration still means
+2.6 mm to come. Rows that finished their walk sit within 0.4 mm and move
+< 0.1 mm per iteration; a genuinely slack tape
+beyond the tolerance runs to `max_iter` and fails the physical gates, which
+is the loud failure wanted. The gate disables itself with a warning when the
+tape indices do not address the tape nodes (endpoints far from the initial
+lengths on the starting geometry). `meta` carries `steering_commanded_m`,
+`steering_realised_m`, `steering_realised_rate_m`,
+`steering_realised_remaining_m`, `is_steering_realised`. Verified on the va21
+chain (2026-09-23, 09-15 VSM): rows 0.075 / 0.100 went from chi_dot 0.245 /
+0.345 to 0.307 / 0.421 in 54 / 45 iterations, on the line through the
+realised 0.150 row. `aero_structural_solver.max_iter` was raised 100 -> 200
+for the hold.
+`coupled/coupled_solver.py` has the course-rate drift rule but NOT this gate
+yet.
+
 **The attitude split was the bridle-line drag (found and fixed 2026-09-12).**
 Until then the structure's equilibrium sat ~0.78 deg rotated about the KCU from
 the trimmed attitude on EVERY iteration (unsteered too, in pitch), the trim
@@ -841,6 +881,9 @@ aero_structural_solver:
   # anderson_outer_max_step_m: 0.1
   qs_speed_bound_patience: 3      # runaway stop, see below (0 disables)
   steering_settle_iterations_after_update: 6   # steering settle, see below
+  steering_realised_tol_m: 5.0e-3            # realised-actuation gate, see below
+  steering_realised_remaining_tol_m: 1.0e-3  # (steering_realised_tol_m 0 disables)
+  steering_realised_rate_floor_m: 2.0e-5
 ```
 
 **Runaway stop (2026-09-01).** `aerodynamic_vsm.run_vsm_package` returns

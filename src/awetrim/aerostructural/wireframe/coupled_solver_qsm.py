@@ -25,11 +25,13 @@ from . import structural_wireframe
 from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking
 from awetrim import plotting
 from .actuation import (
+    steering_half_differences,
     update_power_tape_actuation,
     update_steering_tape_actuation,
     update_steering_tape_actuation_progressive,
 )
 from ..convergence import (
+    remaining_drift,
     check_convergence,
     relative_residual_norm,
     resolve_fallback_tolerance,
@@ -616,6 +618,70 @@ def main(
     steering_settle_iterations_after_update = max(
         0, steering_settle_iterations_after_update
     )
+    # REALISED-ACTUATION GATE (2026-09-23). The settle counter is a minimum
+    # hold; it cannot tell whether the structure has ARRIVED at its rest
+    # lengths. With Aitken at its floor the tape knots creep toward the
+    # commanded lengths ~1 mm per iteration while the force residual sits
+    # under the gate, so the 2026-09-13 Billow steering chains exited rows
+    # u_s 0.075-0.125 with the realised half-difference 15-25 mm short of the
+    # command and still moving 0.8-1.3 mm per iteration -- a lower steering
+    # gain that read as a second equilibrium (the turn-rate kink at 0.150).
+    # An exit on a steered solve therefore also needs the REALISED
+    # half-difference (tape endpoint distances, `steering_half_differences`)
+    # within steering_realised_tol_m of the command AND the creep still to
+    # come -- the geometric tail of its history since the last steering step
+    # (`remaining_drift`; Aitken at its floor gives a ratio ~0.95, so a
+    # per-iteration threshold alone leaves 2-3 mm on the table) -- within
+    # steering_realised_remaining_tol_m. Rows that finished their walk sit
+    # within 0.4 mm and move < 0.1 mm per iteration.
+    steering_realised_tol_m = float(
+        config["aero_structural_solver"].get("steering_realised_tol_m", 5e-3)
+    )
+    steering_realised_remaining_tol_m = float(
+        config["aero_structural_solver"].get(
+            "steering_realised_remaining_tol_m", 1e-3
+        )
+    )
+    # A value that has STOPPED moving is realised whatever the tail estimator
+    # says: on a period-2 residual cycle the last changes are nanometres of
+    # noise with ratios >= 1, which `remaining_drift` reads as "infinitely far"
+    # (va21/va25 u_s 0.025 held 200 iterations on 0.0249940 m, 2026-09-23).
+    steering_realised_rate_floor_m = float(
+        config["aero_structural_solver"].get("steering_realised_rate_floor_m", 2e-5)
+    )
+    is_steering_gate_active = (
+        steering_tape_indices is not None
+        and len(steering_tape_indices) >= 2
+        and initial_length_steering_left is not None
+        and initial_length_steering_right is not None
+        and abs(float(steering_tape_final_extension or 0.0)) > 1e-12
+        and steering_realised_tol_m > 0.0
+    )
+    if is_steering_gate_active:
+        # Mapping check: the tapes must measure about their initial lengths
+        # on the starting geometry, else the gate would hold every solve.
+        _cmd0, _real0 = steering_half_differences(
+            psystem.extract_rest_length, struc_nodes, kite_connectivity_arr,
+            steering_tape_indices, initial_length_steering_left,
+            initial_length_steering_right,
+        )
+        if not np.isfinite(_real0) or abs(_real0 - _cmd0) > 0.25 * max(
+            float(initial_length_steering_left), 1e-6
+        ):
+            logging.warning(
+                "Realised-steering gate DISABLED: tape endpoints read a "
+                "half-difference of %.3f m against a command of %.3f m on the "
+                "starting geometry (tape indices %s do not address the tape "
+                "nodes?)",
+                _real0, _cmd0, list(steering_tape_indices[:2]),
+            )
+            is_steering_gate_active = False
+    steering_commanded_m = float("nan")
+    steering_realised_m = float("nan")
+    steering_realised_rate_m = float("nan")
+    steering_realised_remaining_m = float("nan")
+    steering_realised_history: list = []  # since the last steering step
+    is_steering_realised = True
     qs_opt_prev_rounded = None
     qs_stag_counter = 0
     qs_state_should_break = False
@@ -1115,6 +1181,32 @@ def main(
                     particle.update_pos(struc_nodes[idx])
                     particle.update_vel(np.zeros(3))
 
+            ### REALISED STEERING (see steering_realised_tol_m above)
+            if is_steering_gate_active:
+                steering_commanded_m, realised_now = steering_half_differences(
+                    psystem.extract_rest_length, struc_nodes,
+                    kite_connectivity_arr, steering_tape_indices,
+                    initial_length_steering_left, initial_length_steering_right,
+                )
+                steering_realised_rate_m = (
+                    abs(realised_now - steering_realised_m)
+                    if np.isfinite(steering_realised_m)
+                    else float("inf")
+                )
+                steering_realised_m = realised_now
+                steering_realised_history.append(realised_now)
+                steering_realised_remaining_m = (
+                    0.0
+                    if steering_realised_rate_m <= steering_realised_rate_floor_m
+                    else remaining_drift(steering_realised_history)
+                )
+                is_steering_realised = bool(
+                    abs(steering_realised_m - steering_commanded_m)
+                    <= steering_realised_tol_m
+                    and steering_realised_remaining_m
+                    <= steering_realised_remaining_tol_m
+                )
+
             ### PLOT per iteration
             if config["is_with_struc_plot_per_iteration"]:
                 rest_lengths = psystem.extract_rest_length
@@ -1229,6 +1321,7 @@ def main(
                     and is_steering_finalized
                     and depower_settle_counter == 0
                     and steering_settle_counter == 0
+                    and is_steering_realised
                 )
                 if is_walk_settled and "kite_speed" in (
                     results_aero.get("trim_on_bounds") or []
@@ -1488,6 +1581,7 @@ def main(
                 and is_steering_finalized
                 and depower_settle_counter == 0
                 and steering_settle_counter == 0
+                and is_steering_realised
                 and i >= stiffness_settle_iters
                 and i - last_stiffening_iteration >= stiffness_settle_iters
                 and np.isfinite(residual_now)
@@ -1715,6 +1809,7 @@ def main(
                     and is_steering_finalized
                     and depower_settle_counter == 0
                     and steering_settle_counter == 0
+                    and is_steering_realised
                     and not stiffness_updated_now
                 ):
                     break
@@ -1746,6 +1841,7 @@ def main(
                 depower_settle_counter -= 1
             if did_update_steering:
                 steering_settle_counter = steering_settle_iterations_after_update
+                steering_realised_history = []
             elif steering_settle_counter > 0:
                 steering_settle_counter -= 1
 
@@ -1756,6 +1852,21 @@ def main(
                 or (depower_settle_counter > 0)
                 or (steering_settle_counter > 0)
             ):
+                continue
+            # Walk applied and settled, but the structure has not arrived at
+            # the commanded tape lengths yet: hold (see the gate above).
+            if not is_steering_realised:
+                if is_convergence:
+                    logging.info(
+                        "residual below the gate but the steering is not "
+                        "realised: half-difference %.4f m of %.4f m commanded, "
+                        "moving %.2e m/iteration with %.2e m still to come "
+                        "(tol %.1e m, %.1e m); held",
+                        steering_realised_m, steering_commanded_m,
+                        steering_realised_rate_m, steering_realised_remaining_m,
+                        steering_realised_tol_m,
+                        steering_realised_remaining_tol_m,
+                    )
                 continue
 
             ### PLATEAU DETECTION
@@ -1812,6 +1923,7 @@ def main(
                 is_convergence
                 and is_actuation_finalized
                 and is_steering_finalized
+                and is_steering_realised
                 and is_modulus_ramp_finalized
                 and is_elongation_satisfied
             ):
@@ -1819,6 +1931,15 @@ def main(
     ######################################################################
     ## END OF SIMULATION FOR LOOP
     ######################################################################
+    if is_steering_gate_active:
+        logging.info(
+            "Steering at exit: half-difference %.4f m realised of %.4f m "
+            "commanded, last change %.2e m/iteration, %.2e m still to come "
+            "(%s)",
+            steering_realised_m, steering_commanded_m, steering_realised_rate_m,
+            steering_realised_remaining_m,
+            "realised" if is_steering_realised else "NOT REALISED",
+        )
 
     ### PLATEAU ACCEPTANCE
     # A solve that ran out of iterations or stagnated has not necessarily
@@ -1841,6 +1962,7 @@ def main(
         physical_gates_met = (
             is_actuation_finalized
             and is_steering_finalized
+            and is_steering_realised
             and is_modulus_ramp_finalized
             and is_elongation_satisfied
         )
@@ -2096,6 +2218,14 @@ def main(
             np.vstack(opt_x_history) if opt_x_history else np.zeros((0, 5))
         ),
         "course_rate_max_settled": float(course_rate_max_settled),
+        # Realised-actuation gate at exit (NaN when the gate was inactive):
+        # the steering half-difference the STRUCTURE shows against the one
+        # the rest lengths command, and how fast it was still moving.
+        "steering_commanded_m": float(steering_commanded_m),
+        "steering_realised_m": float(steering_realised_m),
+        "steering_realised_rate_m": float(steering_realised_rate_m),
+        "steering_realised_remaining_m": float(steering_realised_remaining_m),
+        "is_steering_realised": bool(is_steering_realised),
         # The gravity flag this solve actually ran with: it gates BOTH the
         # structural weight and the internal trim, so callers audit it rather
         # than trust whatever the kite's as_config.yaml said at launch time.

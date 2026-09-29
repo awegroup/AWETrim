@@ -187,3 +187,39 @@ __all__ = [
     "update_steering_tape_actuation",
     "update_steering_tape_actuation_progressive",
 ]
+
+
+def steering_half_differences(
+    rest_lengths,
+    struc_nodes,
+    kite_connectivity_arr,
+    steering_tape_indices,
+    initial_length_steering_left,
+    initial_length_steering_right,
+) -> tuple[float, float]:
+    """(commanded, realised) steering half-difference [m] of the two tapes.
+
+    Both use the walk's own combination, ``0.5 * ((l_left0 - l_left) +
+    (l_right - l_right0))`` with the first tape the shortened one: the
+    COMMANDED value from the live rest lengths, the REALISED one from the
+    tape endpoint distances in ``struc_nodes``. They agree only once the
+    structure has moved onto its rest lengths and neither tape hangs slack;
+    a coupled loop that relaxes slowly can meet the force gate with the
+    realised value still creeping toward the command (2026-09-13 Billow
+    steering chains: 15-25 mm short, 0.8-1.3 mm per iteration at exit).
+    """
+    left, right = (int(index) for index in steering_tape_indices[:2])
+    left_0 = float(initial_length_steering_left)
+    right_0 = float(initial_length_steering_right)
+    rest = np.asarray(rest_lengths, dtype=float)
+    commanded = 0.5 * ((left_0 - rest[left]) + (rest[right] - right_0))
+    nodes = np.asarray(struc_nodes, dtype=float)
+
+    def endpoint_distance(index: int) -> float:
+        ci, cj = (int(n) for n in np.asarray(kite_connectivity_arr[index])[:2])
+        return float(np.linalg.norm(nodes[cj] - nodes[ci]))
+
+    realised = 0.5 * (
+        (left_0 - endpoint_distance(left)) + (endpoint_distance(right) - right_0)
+    )
+    return float(commanded), float(realised)
