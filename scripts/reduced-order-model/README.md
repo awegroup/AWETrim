@@ -35,6 +35,31 @@ Each pattern script builds a `Phase`, simulates the loop, saves the timeseries
 | Script | What it does |
 |--------|--------------|
 | [`run_cycle_simulation.py`](optimization/cycle/run_cycle_simulation.py) | Stitch a reel-out `Phase` + `ReelinSimple` into a full `CycleSimple` pumping cycle. Flags: `--shape {downloop,uploop,helix}`, `--plot`, `--figures N`, and `--optimize` with `--method {alternating,monolithic}` to maximise cycle power over the path and control parameters (CasADi Opti / IPOPT). |
+| [`fit_periodic_cycle_config.py`](optimization/cycle/fit_periodic_cycle_config.py) | Generate a trim-feasible **seed** for the full-cycle optimisation: one periodic B-spline over the whole cycle (figure-eights + reel-in lobe), a synthetic depower profile and a flight-regressed winch law with a depower-dependent offset. `--kite K` picks a kite folder under `data/` (or any path to one); see *Running a full cycle for your own kite* below. `--loops N` sets the visible half-figures, `--auto` tunes the shape until the seed trims and closes at the profile's wind. |
+| [`run_full_cycle_opti.py`](optimization/cycle/run_full_cycle_opti.py) | Optimise the whole cycle as ONE periodic phase (path + per-node depower profile + free reel speed within the drum envelope) for cycle-average power, staged with a proximal trust region; `--kite` as above, `--no-optimize` only forward-simulates the seed (the flown-settings baseline). Writes seed-vs-optimised figures and a metrics table via [`cycle_comparison_plots.py`](optimization/cycle/cycle_comparison_plots.py). |
+
+### Running a full cycle for your own kite
+
+The full-cycle scripts read everything about a kite from one folder
+(`data/<kite>/` or any path given to `--kite`); nothing is kite-specific in
+code, so the folder can stay outside the repository.
+
+| File | What the cycle needs from it |
+|------|------------------------------|
+| `system.yaml` | Mass, tether, the drum envelope (`drums[0]`: reel speeds, acceleration, `max_tether_force`) and the KCU actuator ranges/rates. |
+| `rom_config.yaml` | The ROM coefficients plus `controls.input_depower: {powered, depowered}` (**required**: the depower band in the ROM's own `u_p` unit) and, optionally, `validity.angle_of_attack_deg: [lo, hi]` (the AoA range the ROM was identified on; replaces the default AoA bound). |
+| `cycle_profile.yaml` | **Required** `wind`, `winch_law` (the force law the seed's forward simulation marches with) and `seed` (`r0`, the cycle-duration prior and the pattern size: `reelout_fraction`, `beta0`, `beta_amp0`, `az_amp0`, `beta_reelin_peak`); optional `m_per_second`, `min_turn_radius` and a reference `flight`. [`data/LEI-V3-KITE/cycle_profile.yaml`](../../data/LEI-V3-KITE/cycle_profile.yaml) is the annotated example. |
+
+Missing required entries and unknown keys raise instead of falling back on
+the V3's numbers. Then:
+
+```bash
+python scripts/reduced-order-model/optimization/cycle/fit_periodic_cycle_config.py --kite path/to/MY-KITE --auto
+python scripts/reduced-order-model/optimization/cycle/run_full_cycle_opti.py --kite path/to/MY-KITE
+```
+
+The seed is written to `<kite>/cycle_configs/`, results to
+`results/<kite folder name>/optimization/full_cycle/`.
 
 ## `validation/` — against flight data
 
@@ -56,7 +81,11 @@ mass (`LEI_V3_SYSTEM_FLOWN_CONFIG`).
 
 - ROM aero parameters are calibrated/identified by the
   [`identification/`](../identification/) scripts; the coefficient definitions
-  live in `rom_config.yaml`.
+  live in `rom_config.yaml`. The depower input the ROM was identified on is a
+  per-kite convention (V3: power-tape length in metres; a kite logging a
+  normalised signal uses that) declared in that file's `controls.input_depower` block and read by
+  `awetrim.identification.controls.rom_depower_band`; the cycle scripts express
+  every depower profile in the kite's own unit.
 - Optimisation-variable bounds are centralised in
   `src/awetrim/utils/defaults.py` (`DEFAULT_OPTI_LIMITS`) — add new variables
   there, not inline. Physics traces to Cayon, van Deursen & Schmehl (2026) *WES*

@@ -22,13 +22,14 @@ pumping cycle as ONE periodic ``spline_periodic`` phase:
 
 By default (``SHAPE_SOURCE = "artificial"``) the trajectory is fully synthetic
 — smooth, exactly periodic, tuned for trim feasibility — and NO flight data is
-read; the winch law and start radius are data-derived constants (``WINCH_LAW``,
-``R0``). ``SHAPE_SOURCE = "experimental"`` instead fits spline + winch law to
-one good EKF-reconstructed cycle (kept for reference; the raw fit is usually
-too rough for the QS trim to follow).
+read; the winch law, start radius and pattern size come from the kite's
+``cycle_profile.yaml`` (``--kite``, see ``cycle_kites.py``).
+``SHAPE_SOURCE = "experimental"`` instead fits spline + winch law to one good
+EKF-reconstructed cycle of the profile's reference flight (kept for
+reference; the raw fit is usually too rough for the QS trim to follow).
 
 The result is written to
-``data/LEI-V3-KITE/cycle_configs/full_cycle_periodic_from_exp.yaml`` and
+``data/<kite>/cycle_configs/full_cycle_periodic_from_exp.yaml`` and
 checked with the same validator ``run_full_cycle_opti.py`` applies on load.
 
 The max sampled path curvature must stay under ``CURVATURE_LIMIT_1PM``
@@ -122,9 +123,14 @@ from validate_spline_v3 import (  # noqa: E402
     read_results,
 )
 
+from cycle_kites import (  # noqa: E402
+    DEFAULT_KITE,
+    REQUIRED_SEED,
+    SEED_FILENAME,
+    resolve_kite,
+)
+
 from awetrim.identification.controls import (  # noqa: E402
-    ROM_DEPOWERED_INPUT_DEPOWER,
-    ROM_POWERED_INPUT_DEPOWER,
     flight_dataframe_depower_to_power_tape_length,
 )
 from awetrim.kinematics.parametrized_patterns import (  # noqa: E402
@@ -137,15 +143,19 @@ from awetrim.kinematics.parametrized_patterns import (  # noqa: E402
     full_cycle_visible_half_figures,
     make_full_cycle_bspline_path_parameters,
 )
-from awetrim.utils.config_paths import LEI_V3_CYCLE_CONFIG_DIR  # noqa: E402
 from awetrim.utils.defaults import DEFAULT_OPTI_LIMITS  # noqa: E402
+from awetrim.utils.system_config import get_kite  # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Configuration -- edit for a different flight / cycle / resolution
+# Configuration -- edit for a different resolution; everything that belongs to
+# a KITE (system config, depower band, wind, data-derived winch law / r0 /
+# duration, synthetic-shape knobs, reference flight) is a profile in
+# ``cycle_kites.py`` and is loaded by ``configure_kite`` (``--kite``).
 # ---------------------------------------------------------------------------
-FLIGHT = {"year": "2019", "month": "10", "day": "08", "kite_model": "LEI-V3-Kite"}
-PATH_TO_MAIN = "./data/LEI-V3-KITE"
-CYCLE_ID = 62  # a representative good cycle in the 2019-10-08 flight
+# Reference flight of the selected kite (``cycle_kites`` "flight" entry): the
+# loader name plus its arguments, used by SHAPE_SOURCE == "experimental".
+FLIGHT = {}
+CYCLE_ID = None
 
 # Periodic-spline control points and sim grid. M_PER_SECOND/M_MAX only apply
 # to the experimental fit (the artificial M comes from _resolve_artificial_M).
@@ -160,6 +170,7 @@ CYCLE_ID = 62  # a representative good cycle in the 2019-10-08 flight
 # coarse grid hides violations instead of removing them); 1 node/s breaks the
 # trim (AoA spikes). Capped for NLP tractability (nodes dominate NLP size).
 M_PER_SECOND = 0.2
+_M_PER_SECOND_DEFAULT = M_PER_SECOND  # per-kite override: cycle_kites "m_per_second"
 NPOINTS_PER_SECOND = 3.0
 M_MAX = 90
 N_POINTS_MAX = 2000
@@ -174,6 +185,10 @@ N_POINTS_MAX = 2000
 SHAPE_SOURCE = "artificial"
 
 # Synthetic full-cycle parameters (used when SHAPE_SOURCE == "artificial").
+# The SIZE of the pattern (reelout_fraction, beta0, beta_amp0, az_amp0,
+# beta_reelin_peak) has no default here: it is a property of the kite and is
+# REQUIRED in the ``seed`` block of its cycle_profile.yaml (the values quoted
+# below are the LEI-V3's). The profile may override any other knob too.
 ARTIFICIAL = {
     "M": 40,  # control-point FLOOR; resolved as max(M, per-figure floor,
     # reel-in-window floor) -- see _resolve_artificial_M. A fixed M
@@ -187,20 +202,21 @@ ARTIFICIAL = {
     # this via full_cycle_n_loops_for_half_figures,
     # which may leave a non-integer value here. (2 loops dwell too long at
     # the azimuth extremes -> steering blows up; 4 loops turn too fast)
-    "reelout_fraction": 0.65,  # fraction of the period spent reeling out
-    # (lower closes the cycle better but deepens the reel-in-edge steering)
-    "beta0": 0.35,  # reel-out base elevation (rad ~ 20 deg)
-    # Steering demand of a figure-eight ~ 4*pi / T_loop (course angle sweeps
-    # +-2pi per lobe), so at the kite's natural speed the lever is arc length:
-    # BIG figures turn gentler. Scale both amps together, az ~ 2.5*beta;
-    # a.36/b.14 is the sweet spot (larger starts spiking at the window edges).
-    "beta_amp0": 0.1,  # figure-eight elevation amplitude (rad)
-    "az_amp0": 0.3,  # figure-eight azimuth amplitude (rad)
-    "beta_reelin_peak": 1.2,  # reel-in peak elevation (rad). What you set is
-    # what the raw curve does -- if the top U-turn is then too sharp for the
-    # curvature limit, the SPLINE is locally faired around it (the knob
-    # itself is never lowered). Too high starves the kite of apparent wind
-    # at the top -> AoA blows past its limit
+    # -- kite profile (REQUIRED in cycle_profile.yaml seed:) --
+    # reelout_fraction: fraction of the period spent reeling out (V3 0.65;
+    #   lower closes the cycle better but deepens the reel-in-edge steering)
+    # beta0: reel-out base elevation (rad; V3 0.35 ~ 20 deg)
+    # beta_amp0 / az_amp0: figure-eight elevation / azimuth amplitude (rad;
+    #   V3 0.1 / 0.3). Steering demand of a figure-eight ~ 4*pi / T_loop
+    #   (course angle sweeps +-2pi per lobe), so at the kite's natural speed
+    #   the lever is arc length: BIG figures turn gentler. Scale both amps
+    #   together, az ~ 2.5*beta; on the V3 a.36/b.14 is the sweet spot
+    #   (larger starts spiking at the window edges).
+    # beta_reelin_peak: reel-in peak elevation (rad; V3 1.2). What you set is
+    #   what the raw curve does -- if the top U-turn is then too sharp for the
+    #   curvature limit, the SPLINE is locally faired around it (the knob
+    #   itself is never lowered). Too high starves the kite of apparent wind
+    #   at the top -> AoA blows past its limit
     "az_reelin_amp": -0.36,  # reel-in bow (rad). With bow_shape "lobe" this
     # is the azimuth the descent comes down on -- ALWAYS the psi_exit lobe's
     # side (negative = left), so the reel-in exits tangentially at a side of
@@ -268,27 +284,111 @@ ARTIFICIAL = {
     "lobe_handover_phase": float(LOBE_HANDOVER_PHASE),
 }
 
-# Data-derived constants used when SHAPE_SOURCE == "artificial", so the
-# generator runs without any flight data. Regressed once from the 2019-10-08
-# flight, cycle 62 (SHAPE_SOURCE = "experimental" re-derives them from the
-# flight logs via _fit_winch_with_depower_offset).
-R0 = 236.7  # start radius (m)
-CYCLE_DURATION_S = 128.0  # cycle-duration PRIOR (s, the 3-loop flown
-# reference); only sets n_points until a forward sim measures the actual
-# duration (--check/--auto/--close recalibrate n_points from it -- at 13 m/s
-# with 5 loops the prior said 213 s but the cycle flies in ~97 s)
-WINCH_LAW = {
-    "slope_winch_ro": 5380.8,
-    "offset_winch_ro": 0.412,
-    "winch_offset_depower_gain": -10.931,
-    "winch_depower_ref": 1.7,
-    # Regressed clamp; ``max_tether_force`` is a HARDWARE rating and is
-    # replaced by the drum's own value from system.yaml (see
-    # _winch_law_with_hardware_rating) -- the number here is only the fallback
-    # for a system file without a drum entry.
-    "max_tether_force": 8400.4,
-    "min_tether_force": 865.4,
-}
+# Per-kite constants used when SHAPE_SOURCE == "artificial", so the
+# generator runs without any flight data (SHAPE_SOURCE = "experimental"
+# re-derives the winch law from the flight logs via
+# _fit_winch_with_depower_offset). Set by ``configure_kite`` from the kite's
+# folder (``cycle_kites.resolve_kite``):
+#   R0                start radius (m)
+#   CYCLE_DURATION_S  cycle-duration PRIOR (s) for a 3-lobe cycle; only sets
+#                     n_points until a forward sim measures the actual
+#                     duration (--check/--auto/--close recalibrate n_points
+#                     from it -- at 13 m/s with 5 loops the V3 prior said
+#                     213 s but the cycle flies in ~97 s)
+#   WINCH_LAW         T = slope * (v_r - offset(u_p)); ``max_tether_force``
+#                     is a HARDWARE rating replaced by the drum's own value
+#                     from system.yaml (_winch_law_with_hardware_rating), the
+#                     profile value is only the fallback for a system file
+#                     without a drum entry
+#   DEPOWER_BAND      (powered, depowered) ROM depower inputs from
+#                     rom_config.yaml controls.input_depower, in the ROM's
+#                     own u_p unit (V3: power-tape metres); every synthetic
+#                     depower profile and the winch reference use it
+#   DEPOWER_RATE      |d(u_p)/dt| bound emitted into the config (the KCU's
+#                     actuation speed from system.yaml, else the default)
+#   SYSTEM_CONFIG_PATH, OUTPUT_PATH, SEED_PLOT_PATH  the kite's files
+KITE_NAME = None
+KITE_DIR = None
+SYSTEM_CONFIG_PATH = None
+R0 = None
+CYCLE_DURATION_S = None
+WINCH_LAW = None
+DEPOWER_BAND = None
+DEPOWER_RATE = None
+MIN_TURN_RADIUS = None  # m; emitted as sim_parameters.min_turn_radius when set
+OUTPUT_PATH = None
+SEED_PLOT_PATH = None
+_ARTIFICIAL_BASE = None  # module ARTIFICIAL before any per-kite override
+
+
+def configure_kite(name=None):
+    """Load the kite ``name`` (a folder under data/ or a path to one) into
+    this module's globals, from its system.yaml, rom_config.yaml and
+    cycle_profile.yaml (``cycle_kites.resolve_kite``).
+
+    Also configures ``run_full_cycle_opti`` (same kite, same wind) so the
+    forward simulations here evaluate the seed at the optimizer's wind.
+    Idempotent; the module is configured for ``DEFAULT_KITE`` on import
+    (see the call below ARTIFICIAL).
+    """
+    global KITE_NAME, KITE_DIR, SYSTEM_CONFIG_PATH, R0, CYCLE_DURATION_S, WINCH_LAW
+    global DEPOWER_BAND, DEPOWER_RATE, OUTPUT_PATH, SEED_PLOT_PATH
+    global FLIGHT, CYCLE_ID, _ARTIFICIAL_BASE
+    kite = resolve_kite(name)
+    KITE_NAME = kite["name"]
+    KITE_DIR = Path(kite["dir"])
+    SYSTEM_CONFIG_PATH = Path(kite["system_config"])
+    R0 = float(kite["r0"])
+    CYCLE_DURATION_S = float(kite["cycle_duration_s"])
+    WINCH_LAW = dict(kite["winch_law"])
+    DEPOWER_BAND = tuple(kite["depower_band"])
+    FLIGHT = dict(kite["flight"])
+    CYCLE_ID = FLIGHT.get("cycle_id")
+    OUTPUT_PATH = Path(kite["cycle_config_dir"]) / SEED_FILENAME
+    SEED_PLOT_PATH = Path(kite["results_dir"]) / "seed_path.png"
+    # KCU depower actuation speed: the hardware value from system.yaml when
+    # the control_system block states one, else the numerical default.
+    with SYSTEM_CONFIG_PATH.open("r", encoding="utf-8") as f:
+        system_cfg = yaml.safe_load(f)
+    cs = get_kite(system_cfg).get("control_system", {}).get("structure", {})
+    rate = (cs.get("depower") or {}).get("rate")
+    DEPOWER_RATE = list(rate) if rate else list(DEFAULT_OPTI_LIMITS["depower_rate"])
+    global M_PER_SECOND, MIN_TURN_RADIUS
+    m_per_second = kite.get("m_per_second")
+    M_PER_SECOND = float(_M_PER_SECOND_DEFAULT if m_per_second is None else m_per_second)
+    MIN_TURN_RADIUS = kite.get("min_turn_radius")
+    # Synthetic-shape knobs: the module's method knobs overlaid with the
+    # kite's seed block, which carries the pattern size (required, see
+    # cycle_kites.REQUIRED_SEED) and may override any other knob.
+    if _ARTIFICIAL_BASE is None:
+        _ARTIFICIAL_BASE = dict(ARTIFICIAL)
+    seed_knobs = dict(kite.get("artificial") or {})
+    unknown = sorted(set(seed_knobs) - set(_ARTIFICIAL_BASE) - set(REQUIRED_SEED))
+    if unknown:
+        raise ValueError(
+            f"{KITE_NAME}: unknown seed keys {unknown}; allowed are "
+            f"{sorted(set(_ARTIFICIAL_BASE) | set(REQUIRED_SEED))}"
+        )
+    ARTIFICIAL.clear()
+    ARTIFICIAL.update(_ARTIFICIAL_BASE)
+    ARTIFICIAL.update(seed_knobs)
+    # Optimizer bound overrides emitted into the config: the module defaults
+    # plus the kite's own (the AoA range its ROM was identified on, from
+    # rom_config.yaml validity). The depower-gain bound is in m/s per unit
+    # u_p, so it scales with the kite's depower band: [-8 m/s over the full
+    # band, 0], which is the V3's [-20, 0] on its 0.4 m band.
+    OPTI_LIMITS_OVERRIDE.clear()
+    OPTI_LIMITS_OVERRIDE.update(_OPTI_LIMITS_OVERRIDE_BASE)
+    band_width = abs(DEPOWER_BAND[1] - DEPOWER_BAND[0])
+    OPTI_LIMITS_OVERRIDE["winch_offset_depower_gain"] = [
+        round(-_DEPOWER_GAIN_SPAN_M_S / band_width, 6),
+        0.0,
+    ]
+    OPTI_LIMITS_OVERRIDE.update(kite.get("opti_limits_override") or {})
+    import run_full_cycle_opti as _rfco
+
+    _rfco.configure_kite(KITE_DIR)
+    return kite
 
 
 def _winch_law_with_hardware_rating(winch):
@@ -298,18 +398,21 @@ def _winch_law_with_hardware_rating(winch):
     flight data, but the clamp ``max_tether_force`` is a rating of the
     hardware -- it lives in system.yaml
     (``components.ground_station.drums[0].max_tether_force``) and must not be
-    restated here. Missing drum entry -> the fitted value is kept.
+    restated here. Missing drum rating -> the profile's value is kept, and
+    one of the two must exist.
     """
-    import yaml as _yaml
-
-    from awetrim.utils.config_paths import LEI_V3_SYSTEM_CONFIG
     from awetrim.utils.system_config import get_drum
 
-    with Path(LEI_V3_SYSTEM_CONFIG).open("r", encoding="utf-8") as f:
-        rating = get_drum(_yaml.safe_load(f)).get("max_tether_force")
+    with Path(SYSTEM_CONFIG_PATH).open("r", encoding="utf-8") as f:
+        rating = get_drum(yaml.safe_load(f)).get("max_tether_force")
     winch = dict(winch)
     if rating is not None:
         winch["max_tether_force"] = float(rating)
+    elif "max_tether_force" not in winch:
+        raise ValueError(
+            f"{KITE_NAME}: no tension rating -- set drums[0].max_tether_force "
+            "in system.yaml or winch_law.max_tether_force in cycle_profile.yaml"
+        )
     return winch
 
 
@@ -350,20 +453,22 @@ WINCH_MODE = "free_speed"
 # winch_offset_depower_gain has no global default. run_full_cycle_opti.py reads
 # these from the YAML -- this script is the single source of truth, so tune
 # them here and regenerate instead of hand-editing the output file.
-OPTI_LIMITS_OVERRIDE = {
+_OPTI_LIMITS_OVERRIDE_BASE = {
     "C_phi": [-1.0, 1.0],
     "C_beta": [0.01, 1.4],  # up to ~80 deg elevation for the reel-in arc
-    "winch_offset_depower_gain": [-20.0, 0.0],
 }
+# The winch_offset_depower_gain bound is set per kite by configure_kite:
+# [-_DEPOWER_GAIN_SPAN_M_S / depower band width, 0] (m/s per unit u_p).
+_DEPOWER_GAIN_SPAN_M_S = 8.0
+OPTI_LIMITS_OVERRIDE = dict(_OPTI_LIMITS_OVERRIDE_BASE)
 
-# Output config (loaded verbatim by run_full_cycle_opti.py).
-OUTPUT_PATH = LEI_V3_CYCLE_CONFIG_DIR / "full_cycle_periodic_from_exp.yaml"
-# Seed-path figure (wind-window view + az/el/depower vs s), written on every
-# successful generation next to the optimizer's own outputs (results/ is
-# git-ignored; the YAML above is tracked). See plot_seed_path.
-SEED_PLOT_PATH = (
-    Path("results") / "LEI-V3-KITE" / "optimization" / "full_cycle" / "seed_path.png"
-)
+configure_kite(DEFAULT_KITE)
+
+# Output config (loaded verbatim by run_full_cycle_opti.py) and the seed-path
+# figure (wind-window view + az/el/depower vs s, written on every successful
+# generation next to the optimizer's own outputs; results/ is git-ignored, the
+# YAML is tracked -- see plot_seed_path): OUTPUT_PATH / SEED_PLOT_PATH, set
+# per kite by configure_kite.
 
 # Geometric creation-time guard (1/m): refuse to write a path sharper than
 # this sampled max curvature. Every build enforces it ON THE FITTED SPLINE
@@ -405,8 +510,8 @@ def _synthetic_depower(
         ramp_fraction=ramp_fraction,
         reelin_center=reelin_center,
     )
-    return ROM_POWERED_INPUT_DEPOWER + depth * bump * (
-        ROM_DEPOWERED_INPUT_DEPOWER - ROM_POWERED_INPUT_DEPOWER
+    return DEPOWER_BAND[0] + depth * bump * (
+        DEPOWER_BAND[1] - DEPOWER_BAND[0]
     )
 
 
@@ -519,11 +624,11 @@ def _resolve_artificial_M(art):
     )
 
 
-def _artificial_path_parameters(art, r0=R0):
+def _artificial_path_parameters(art, r0=None):
     """YAML-ready spline path parameters for the synthetic knob set ``art``."""
     return make_full_cycle_bspline_path_parameters(
         M=_resolve_artificial_M(art),
-        r0=float(r0),
+        r0=float(R0 if r0 is None else r0),
         n_loops=art["n_loops"],
         reelout_fraction=art["reelout_fraction"],
         beta0=art["beta0"],
@@ -599,7 +704,7 @@ def _fit_winch_with_depower_offset(arr):
     offset_row = v_r[finite] - T[finite] / slope
     gain, a = np.polyfit(l_dp[finite], offset_row, 1)
     gain = float(gain)
-    l_dp_ref = float(ROM_POWERED_INPUT_DEPOWER)
+    l_dp_ref = float(DEPOWER_BAND[0])
     offset0 = float(a + gain * l_dp_ref)  # offset at the powered reference
 
     max_tf = float(np.nanquantile(T[finite], 0.97))
@@ -764,6 +869,20 @@ def build_config(
             "s_final": 1.0,
             "downloops": True,
         }
+        if curvature_limit:
+            # The least-squares fit overshoots the flown top U-turn; fair the
+            # spline locally to the limit like the artificial branch does.
+            path_parameters, fair = fair_periodic_spline_to_curvature_limit(
+                path_parameters, float(curvature_limit)
+            )
+            if fair["changed"]:
+                print(
+                    f"[fair] fitted spline curvature {fair['max_before']:.4g}"
+                    f" -> {fair['max_after']:.4g} 1/m (sharpest at "
+                    f"s={fair['s_at_max_before']:.3f}); moved "
+                    f"{len(fair['touched'])}/{M} control points, path moved "
+                    f"<= {np.degrees(fair['max_path_move']):.2f} deg"
+                )
         # Resample the measured depower onto the sim s-grid (n_points + 1) as the
         # warm-start for the optimized per-node profile.
         s_meas = np.linspace(0.0, 1.0, len(arr["l_dp"]), endpoint=False)
@@ -799,7 +918,7 @@ def build_config(
                 # Optimize l_dp as one per-node profile over the whole cycle.
                 "optimize_depower_profile": True,
                 "input_depower_profile": u_dep_profile.round(6).tolist(),
-                "depower_rate": list(DEFAULT_OPTI_LIMITS["depower_rate"]),
+                "depower_rate": list(DEPOWER_RATE),
                 # Loosen per-node accept tolerance so the trim advances past
                 # marginal nodes (matches the validation script).
                 "solver_accept_residual_norm": 1.0e-3,
@@ -825,6 +944,13 @@ def build_config(
             },
         }
     }
+    if MIN_TURN_RADIUS:
+        # Dense geometric floor on the flown turn radius (with its
+        # hesitation-point companion): the node-wise NLP can otherwise fold
+        # the spline into a cusp BETWEEN two nodes -- the kite stops on the
+        # sphere for a fraction of a second, the tension collapses and the
+        # trim still closes at every node.
+        config["reelout"]["sim_parameters"]["min_turn_radius"] = float(MIN_TURN_RADIUS)
     return config
 
 
@@ -1088,15 +1214,16 @@ def _simulate_cycle(config, run_plots=False):
     Uses the same constant-log wind the optimizer defaults to, so the simulated
     trajectory is the actual initial guess the NLP will warm-start from.
     """
+    import run_full_cycle_opti as rfco
+
     from awetrim.system.factory import create_system_model_from_yaml
     from awetrim.timeseries.phase import Phase
-    from awetrim.utils.config_paths import LEI_V3_SYSTEM_CONFIG
 
     # Evaluate the seed at the SAME wind the optimizer will use: a shape that
     # trims/closes at one wind speed can be infeasible at another (higher wind
     # rides the max-force clamp, lower wind starves the reel-in top), so the
     # feasibility report and --close are only meaningful at the target wind.
-    from run_full_cycle_opti import WIND_CONFIG, build_wind_model
+    WIND_CONFIG = rfco.WIND_CONFIG
 
     # Work on a copy with strict trimming OFF: this diagnostic run should show
     # how far the trim gets even when a node fails (the optimizer runs strict).
@@ -1104,13 +1231,11 @@ def _simulate_cycle(config, run_plots=False):
     reelout["sim_parameters"]["require_full_trajectory"] = False
     sim = reelout["sim_parameters"]
 
-    system_model = create_system_model_from_yaml(yaml_path=LEI_V3_SYSTEM_CONFIG)
-    system_model.wind = build_wind_model(**WIND_CONFIG)
+    system_model = create_system_model_from_yaml(yaml_path=SYSTEM_CONFIG_PATH)
+    system_model.wind = rfco.build_wind_model(**WIND_CONFIG)
     print(
-        "Simulating seed at WIND_CONFIG from run_full_cycle_opti: "
-        f"{WIND_CONFIG['model_type']} profile, "
-        f"{WIND_CONFIG['speed_wind_ref']:g} m/s @ {WIND_CONFIG['height_ref']:g} m, "
-        f"z0={WIND_CONFIG['z0']:g}"
+        f"Simulating seed ({KITE_NAME}) at WIND_CONFIG from run_full_cycle_opti: "
+        + rfco.describe_wind(WIND_CONFIG)
     )
 
     start_state = {
@@ -1180,7 +1305,11 @@ def _feasibility_metrics(phase, system_model, config, artificial=None):
     """
     art = artificial if artificial is not None else ARTIFICIAL
     sim = config["reelout"]["sim_parameters"]
-    hw = getattr(system_model, "hardware_limits", None) or {}
+    # The bounds the NLP will impose, in its precedence: the config's
+    # opti_limits_override on top of the hardware limits on top of the
+    # numerical defaults (PhaseParameterized._resolve_opti_limits + override).
+    hw = dict(getattr(system_model, "hardware_limits", None) or {})
+    hw.update(sim.get("opti_limits_override") or {})
 
     n_points = int(sim["n_points"])
     s = np.asarray(phase.return_variable("s"), dtype=float)
@@ -1715,15 +1844,72 @@ def _close_cycle_depth(arr=None, max_iter=6, curvature_limit=CURVATURE_LIMIT_1PM
     return config, phase, system_model
 
 
+def _load_protologger_cycle(h5_path, cycle_id):
+    """One cycle of a ProtoLogger EKF result file (``flight_data`` +
+    ``ekf_output`` groups).
+
+    Same array layout as ``_cycle_arrays``; the ROM depower input is the
+    normalised ``up`` column itself (the kite's rom_config.yaml band must be
+    stated in that unit), not the V3 power-tape map.
+    """
+    import h5py
+
+    with h5py.File(h5_path, "r") as f:
+        fd, ek = f["flight_data"], f["ekf_output"]
+        mask = np.asarray(fd["cycle"][:]) == float(cycle_id)
+        if not mask.any():
+            raise RuntimeError(f"Cycle {cycle_id} not found in {h5_path}")
+
+        def get(g, k):
+            return np.asarray(g[k][:], dtype=float)[mask]
+
+        pos = np.column_stack([get(ek, f"kite_position_{a}") for a in "xyz"])
+        arr = {
+            "azimuth": np.unwrap(get(fd, "kite_azimuth")),
+            "elevation": get(fd, "kite_elevation"),
+            "distance_radial": np.linalg.norm(pos, axis=1),
+            "tether_force": get(fd, "ground_tether_force"),
+            "reelout_speed": get(fd, "tether_reelout_speed"),
+            "time": get(fd, "time"),
+            "l_dp": get(fd, "up"),
+            "wind": get(ek, "wind_speed_horizontal"),
+            "phase": get(fd, "flight_phase_index"),
+        }
+    # The ProtoLogger cycle counter starts at the reel-in (phases 3, 4, 1, 2);
+    # roll so s = 0 is in steady reel-out -- the first phase-1 sample below
+    # 45 deg elevation, i.e. after the descent from the reel-in top -- the
+    # start state the seed simulation and the NLP assume (reeling out,
+    # powered, at r0). Starting AT the top (74 deg, slow, powered) is the
+    # hardest trim of the cycle and fails at node 0.
+    steady = (arr["phase"] == 1.0) & (arr["elevation"] < np.radians(45.0))
+    first_ro = int(np.argmax(steady))
+    if steady[first_ro] and first_ro > 0:
+        for key in list(arr):
+            arr[key] = np.roll(arr[key], -first_ro)
+        t = arr["time"]
+        dt = float(np.median(np.diff(t[: max(2, first_ro)])))
+        arr["time"] = np.arange(t.size) * dt + float(t[0])
+    return arr
+
+
 def _load_experimental_cycle():
     """EKF flight load + cycle isolation (SHAPE_SOURCE == 'experimental' only)."""
+    loader = FLIGHT.get("loader")
+    if not loader:
+        raise ValueError(
+            f"{KITE_NAME}: --shape experimental needs a flight block in cycle_profile.yaml"
+        )
+    if loader == "protologger_h5":
+        return _load_protologger_cycle(FLIGHT["h5"], CYCLE_ID)
+    if loader != "ekf_results":
+        raise ValueError(f"Unknown flight loader {loader!r} for kite {KITE_NAME}")
     ekf_df, flight_df, _ = read_results(
         FLIGHT["year"],
         FLIGHT["month"],
         FLIGHT["day"],
         FLIGHT["kite_model"],
         addition="",
-        path_to_main=PATH_TO_MAIN,
+        path_to_main=FLIGHT["path_to_main"],
     )
     if "flight_phase_index" not in flight_df:
         raise RuntimeError("flight_phase_index column is required to derive cycles")
@@ -1745,7 +1931,14 @@ def main(
     cross_at: float = None,
     curvature_limit: float = CURVATURE_LIMIT_1PM,
     reelin_center: float = None,
+    kite: str = None,
+    shape: str = None,
 ) -> int:
+    global SHAPE_SOURCE
+    if shape:
+        SHAPE_SOURCE = shape
+    configure_kite(kite or KITE_DIR)
+    print(f"Kite: {KITE_NAME} ({SYSTEM_CONFIG_PATH})")
     if cross_at is not None:
         ARTIFICIAL["reelin_cross_pos"] = float(cross_at)
     if loops:
@@ -2003,9 +2196,28 @@ if __name__ == "__main__":
         "reel-out start), 0 puts s=0 at the reel-in top. Moving the seam "
         "off mid-reel-out -> harder trim start.",
     )
+    parser.add_argument(
+        "--kite",
+        default=DEFAULT_KITE,
+        help="Kite folder under data/ (or a path to one) holding system.yaml, "
+        "rom_config.yaml and cycle_profile.yaml (wind, winch law, seed size; "
+        f"see cycle_kites.py); default {DEFAULT_KITE}",
+    )
+    parser.add_argument(
+        "--shape",
+        choices=("artificial", "experimental"),
+        default=None,
+        help="Path-shape source (default: the module's SHAPE_SOURCE, "
+        f"{SHAPE_SOURCE!r}): 'artificial' = the synthetic figure-eights + "
+        "reel-in lobe, 'experimental' = periodic spline fitted to the "
+        "reference flight cycle of the kite profile (its measured depower "
+        "profile is the warm start; --auto/--close do not apply)",
+    )
     args = parser.parse_args()
     raise SystemExit(
         main(
+            kite=args.kite,
+            shape=args.shape,
             run_plots=args.plot,
             check=args.check,
             close=args.close,

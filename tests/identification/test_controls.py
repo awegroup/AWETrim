@@ -55,3 +55,30 @@ def test_flight_dataframe_helpers_prefer_kcu_columns():
 def test_flight_dataframe_depower_rejects_legacy_up_only():
     with pytest.raises(KeyError, match="kcu_actual_depower"):
         flight_dataframe_depower_to_power_tape_length(pd.DataFrame({"up": [0.0, 1.0]}))
+
+
+def test_rom_depower_band_defaults_to_v3_power_tape_metres():
+    from awetrim.identification.controls import (
+        ROM_DEPOWERED_INPUT_DEPOWER,
+        ROM_POWERED_INPUT_DEPOWER,
+        rom_depower_band,
+    )
+
+    assert rom_depower_band(None) == (
+        ROM_POWERED_INPUT_DEPOWER,
+        ROM_DEPOWERED_INPUT_DEPOWER,
+    )
+    # A ROM file without a controls block keeps the V3 convention.
+    assert rom_depower_band({"aerodynamics": {"model": "coeffs"}}) == (1.7, 2.1)
+
+
+def test_rom_depower_band_reads_the_kite_controls_block(tmp_path):
+    import yaml
+
+    from awetrim.identification.controls import rom_depower_band
+
+    cfg = {"controls": {"input_depower": {"powered": 0.1, "depowered": 0.9}}}
+    assert rom_depower_band(cfg) == (0.1, 0.9)
+    path = tmp_path / "rom_config.yaml"
+    path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+    assert rom_depower_band(path) == (0.1, 0.9)

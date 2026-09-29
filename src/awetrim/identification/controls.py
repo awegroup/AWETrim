@@ -59,6 +59,36 @@ ROM_DEPOWERED_INPUT_DEPOWER: float = FLIGHT_DEPOWER_DEPOWERED_LDP_M
 ROM_NEUTRAL_INPUT_STEERING: float = 0.0
 
 
+def rom_depower_band(rom_config=None) -> tuple[float, float]:
+    """The ``(powered, depowered)`` depower inputs a kite's ROM was identified on.
+
+    The ROM's ``u_p`` is whatever the identification fed it, and that differs
+    per kite: the LEI-V3 uses the absolute power-tape length in metres
+    (``ROM_POWERED_INPUT_DEPOWER`` .. ``ROM_DEPOWERED_INPUT_DEPOWER``), a kite
+    identified on a logged normalised depower signal uses that signal's range.
+    A kite states its band in its ``rom_config.yaml``::
+
+        controls:
+          input_depower:
+            powered: 0.1
+            depowered: 0.9
+
+    ``rom_config`` is that file's path or its loaded dict. Without the
+    section (or with ``None``) the V3 power-tape constants are returned, so
+    every existing caller keeps its behaviour.
+    """
+    cfg = rom_config
+    if cfg is not None and not isinstance(cfg, dict):
+        import yaml
+
+        with open(cfg, "r", encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or {}
+    band = ((cfg or {}).get("controls") or {}).get("input_depower") or {}
+    powered = band.get("powered", ROM_POWERED_INPUT_DEPOWER)
+    depowered = band.get("depowered", ROM_DEPOWERED_INPUT_DEPOWER)
+    return float(powered), float(depowered)
+
+
 def flight_steering_to_us(
     kcu_actual_steering, norm: float = FLIGHT_STEERING_KCU_NORM_2019
 ):

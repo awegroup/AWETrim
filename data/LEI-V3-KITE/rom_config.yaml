@@ -6,6 +6,15 @@ metadata:
     (= -kcu_actual_steering/100). Matches awetrim.identification.controls and the
     rom_config_aero/EKF identified configs.
 
+# Depower band the ROM was identified on, in its u_p unit; read by
+# awetrim.identification.controls.rom_depower_band and REQUIRED by the
+# full-cycle scripts. An optional ``validity: {angle_of_attack_deg: [lo, hi]}``
+# block would replace the optimizer's default AoA bound.
+controls:
+  input_depower:
+    powered: 1.7
+    depowered: 2.1
+
 aerodynamics:
   model: "coeffs"
   params:

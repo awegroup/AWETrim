@@ -31,7 +31,8 @@ re-simulation -- and saved as PNGs next to the optimized YAML/CSV in
 shows them interactively.
 
 Usage:
-    python scripts/reduced-order-model/optimization/cycle/run_full_cycle_opti.py [--plot]
+    python scripts/reduced-order-model/optimization/cycle/run_full_cycle_opti.py
+        [--kite KITE_FOLDER] [--plot] [--no-optimize]
 """
 
 import argparse
@@ -42,55 +43,68 @@ import numpy as np
 import yaml
 from scipy.signal import find_peaks
 
+from cycle_kites import DEFAULT_KITE, SEED_FILENAME, resolve_kite
+from cycle_kites import wind_tag as _wind_tag
+
 from awetrim.environment.wind_factory import create_wind_model
-from awetrim.identification.controls import (
-    ROM_DEPOWERED_INPUT_DEPOWER,
-    ROM_POWERED_INPUT_DEPOWER,
-)
 from awetrim.kinematics.parametrized_patterns import (
     PeriodicBSpline,
     reelin_control_point_mask,
 )
 from awetrim.system.factory import create_system_model_from_yaml
 from awetrim.timeseries.phase import Phase
-from awetrim.utils.config_paths import (
-    LEI_V3_CYCLE_CONFIG_DIR,
-    LEI_V3_SYSTEM_CONFIG,
-)
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-KITE_CONFIG_PATH = LEI_V3_SYSTEM_CONFIG
-CYCLE_CONFIG_PATH = LEI_V3_CYCLE_CONFIG_DIR / "full_cycle_periodic_from_exp.yaml"
+# Everything that belongs to a KITE is read from its data folder
+# (system.yaml, rom_config.yaml, cycle_profile.yaml; see ``cycle_kites.py``)
+# into these globals by ``configure_kite`` (``--kite``; the module is
+# configured for DEFAULT_KITE on import):
+#   KITE_CONFIG_PATH   the kite's system.yaml (mass, tether, drum envelope,
+#                      KCU actuator ranges -> the optimizer's hardware limits)
+#   CYCLE_CONFIG_PATH  the seed written by fit_periodic_cycle_config.py
+#   RESULTS_DIR        optimized YAML/CSV/figures
+#   DEPOWER_BAND       (powered, depowered) ROM depower inputs the seed's
+#                      profile must stay inside, in the ROM's u_p unit
+#                      (rom_config.yaml controls.input_depower)
+#   WIND_CONFIG        the constant wind profile the cycle is optimized in --
+#                      ``model_type`` selects the law in
+#                      awetrim.environment.profile_laws (or "tabulated" with
+#                      heights/speeds); an analytic law's amplitude is
+#                      ``speed_wind_ref`` at ``height_ref``; every other key is
+#                      forwarded to ``create_wind_model`` (see
+#                      build_wind_model). Regenerate the seed
+#                      (fit_periodic_cycle_config.py --auto) after changing
+#                      it: an old seed will not be trim-feasible at a
+#                      different wind. Wind DIRECTION is irrelevant (the whole
+#                      cycle lives in the course-aligned wind frame).
+KITE_NAME = None
+KITE_DIR = None
+KITE_CONFIG_PATH = None
+CYCLE_CONFIG_PATH = None
+RESULTS_DIR = None
+DEPOWER_BAND = None
+WIND_CONFIG = None
 
-RESULTS_DIR = (
-    Path("results") / KITE_CONFIG_PATH.parent.name / "optimization" / "full_cycle"
-)
 
-# Tunable constant analytic wind profile. ``model_type`` selects the law in
-# awetrim.environment.profile_laws; the amplitude is the speed
-# ``speed_wind_ref`` at ``height_ref`` and every other key is forwarded to
-# ``create_wind_model`` (see build_wind_model).
-#
-# Current setting: the Kitepower reference environment (U. Fechner) --
-# EXPLOG profile, 6 m/s at the 6 m reference height, z0 = 0.2 mm (offshore /
-# smooth terrain), alpha = 0.08163. That is ~8.1 m/s at 200 m operating
-# radius, roughly HALF the 16.3 m/s of the previous 15 m/s @ 100 m log
-# setting -- regenerate the seed (fit_periodic_cycle_config.py --auto) after
-# changing this, an old seed will not be trim-feasible at a different wind.
-#
-# Wind DIRECTION is irrelevant to this model (the whole cycle lives in the
-# course-aligned wind frame); the ENU wind vector [6, 0, 0] m/s (upwind
-# direction -90 deg) is direction_wind = 0, the default.
-WIND_CONFIG = {
-    "model_type": "explog",
-    "speed_wind_ref": 6.0,  # m/s at height_ref
-    "height_ref": 6.0,  # m
-    "z0": 0.0002,  # roughness length (m)
-    "alpha": 0.08163,  # power-law exponent blended into EXPLOG
-    "direction_wind": 0.0,  # rad; 0 = wind blowing along +x
-}
+def configure_kite(name=None):
+    """Load the kite ``name`` (a folder under data/ or a path to one) into
+    this module's globals (``cycle_kites.resolve_kite``)."""
+    global KITE_NAME, KITE_DIR, KITE_CONFIG_PATH, CYCLE_CONFIG_PATH, RESULTS_DIR
+    global DEPOWER_BAND, WIND_CONFIG
+    kite = resolve_kite(name)
+    KITE_NAME = kite["name"]
+    KITE_DIR = Path(kite["dir"])
+    KITE_CONFIG_PATH = Path(kite["system_config"])
+    CYCLE_CONFIG_PATH = Path(kite["cycle_config_dir"]) / SEED_FILENAME
+    RESULTS_DIR = Path(kite["results_dir"])
+    DEPOWER_BAND = tuple(kite["depower_band"])
+    WIND_CONFIG = dict(kite["wind"])
+    return kite
+
+
+configure_kite(DEFAULT_KITE)
 
 # Staged solve, warm-started stage to stage.
 #
@@ -179,12 +193,15 @@ MAX_ITER = 1000
 N_POINTS = None
 
 
-def build_wind_model(speed_wind_ref, height_ref, model_type, **profile_kwargs):
+def build_wind_model(
+    model_type, speed_wind_ref=None, height_ref=100.0, **profile_kwargs
+):
     """Wind model with the reference speed ``speed_wind_ref`` given at ``height_ref``.
 
     ``model_type`` is any analytic law of ``awetrim.environment.profile_laws``
-    (uniform, logarithmic, power_law, explog, jet); extra keys such as ``z0``,
-    ``alpha``, ``jet_amplitude``/``jet_height``/``jet_width`` or
+    (uniform, logarithmic, power_law, explog, jet) or ``"tabulated"`` (then
+    ``heights``/``speeds`` replace the reference amplitude); extra keys such
+    as ``z0``, ``alpha``, ``jet_amplitude``/``jet_height``/``jet_width`` or
     ``direction_wind`` are forwarded to ``create_wind_model``.
     """
     return create_wind_model(
@@ -195,13 +212,24 @@ def build_wind_model(speed_wind_ref, height_ref, model_type, **profile_kwargs):
     )
 
 
+def describe_wind(wind_config=None):
+    """One-line human description of a WIND_CONFIG."""
+    cfg = WIND_CONFIG if wind_config is None else wind_config
+    if cfg["model_type"] == "tabulated":
+        pairs = ", ".join(f"{v:g}@{h:g}" for h, v in zip(cfg["heights"], cfg["speeds"]))
+        return f"tabulated profile (m/s @ m): {pairs}"
+    text = (
+        f"{cfg['model_type']} profile, {cfg['speed_wind_ref']:g} m/s @ "
+        f"{cfg['height_ref']:g} m"
+    )
+    if "z0" in cfg:
+        text += f", z0={cfg['z0']:g}"
+    return text
+
+
 def wind_tag(wind_config=None):
     """Filename tag identifying the wind the run was solved at."""
-    cfg = WIND_CONFIG if wind_config is None else wind_config
-    return (
-        f"wind_{cfg['speed_wind_ref']:g}at{cfg['height_ref']:g}m"
-        f"_{cfg['model_type']}_z0_{cfg['z0']:g}"
-    )
+    return _wind_tag(WIND_CONFIG if wind_config is None else wind_config)
 
 
 def load_reelout_config(path):
@@ -280,14 +308,14 @@ def validate_full_cycle_config(reelout_config):
             f"expected n_points + 1 = {n_points + 1}"
         )
 
-    lo, hi = ROM_POWERED_INPUT_DEPOWER, ROM_DEPOWERED_INPUT_DEPOWER
-    band_tol = 0.02
+    lo, hi = DEPOWER_BAND
+    band_tol = 0.02 * max(1.0, abs(hi - lo) / 0.4)  # 0.02 m on the V3 band
     if profile.size and (
         profile.min() < lo - band_tol or profile.max() > hi + band_tol
     ):
         problems.append(
-            f"input_depower_profile spans [{profile.min():.3f}, {profile.max():.3f}] m, "
-            f"outside the powered..depowered band [{lo:.2f}, {hi:.2f}] m"
+            f"input_depower_profile spans [{profile.min():.3f}, {profile.max():.3f}], "
+            f"outside the powered..depowered band [{lo:.2f}, {hi:.2f}]"
         )
     scalar_dep = sim.get("input_depower")
     if (
@@ -347,7 +375,11 @@ def build_start_state(reelout_config):
     """Initial state for the cycle, started at the spline radius r0 (reel-out)."""
     sim = reelout_config.get("sim_parameters", {})
     profile = sim.get("input_depower_profile")
-    depower0 = float(profile[0]) if profile else float(sim.get("input_depower", 1.7))
+    depower0 = (
+        float(profile[0])
+        if profile
+        else float(sim.get("input_depower", DEPOWER_BAND[0]))
+    )
     return {
         "t": 0,
         "s": 0,
@@ -483,9 +515,33 @@ def _step_box_active(before, after, step_bounds):
     return False
 
 
-def main(run_plots: bool = False, optimize: bool = True) -> int:
-    reelout_config = load_reelout_config(CYCLE_CONFIG_PATH)
-    validate_full_cycle_config(reelout_config)
+def main(
+    run_plots: bool = False,
+    optimize: bool = True,
+    kite: str = None,
+    config_path=None,
+    run_tag: str = "",
+    skip_validation: bool = False,
+    stage_repeats: int = None,
+) -> int:
+    """``config_path`` overrides the kite's seed YAML (a variant such as the
+    same seed with ``winch_mode: force_law``); ``run_tag`` is appended to the
+    output filenames so variants do not overwrite each other."""
+    configure_kite(kite or KITE_DIR)
+    print(f"Kite: {KITE_NAME} ({KITE_CONFIG_PATH}); wind: {describe_wind()}")
+    if stage_repeats:
+        # Re-centred passes of the main stage (the old sequential scheme):
+        # the remedy when a run ends with the backstop step box active.
+        STAGES[0]["repeat"] = int(stage_repeats)
+    reelout_config = load_reelout_config(config_path or CYCLE_CONFIG_PATH)
+    if skip_validation:
+        # Continuation from an OPTIMIZED config (a previous run's output): its
+        # depower profile legitimately spans the KCU hardware range rather
+        # than the seed's identified band, so the seed validator would refuse
+        # it.
+        print("Seed validation skipped (continuation run)")
+    else:
+        validate_full_cycle_config(reelout_config)
     sim = reelout_config["sim_parameters"]
     if N_POINTS:
         _downsample_n_points(reelout_config, N_POINTS)
@@ -525,7 +581,7 @@ def main(run_plots: bool = False, optimize: bool = True) -> int:
 
     if optimize:
         RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        tag = wind_tag()
+        tag = wind_tag() + (f"_{run_tag}" if run_tag else "")
         seed_signature = _pattern_signature(reelout_config["path_parameters"])
         print(
             f"Seed pattern signature: {seed_signature} azimuth turns "
@@ -655,8 +711,49 @@ if __name__ == "__main__":
         action="store_true",
         help="Only simulate the experimental-fit cycle (skip the NLP)",
     )
+    parser.add_argument(
+        "--kite",
+        default=DEFAULT_KITE,
+        help="Kite folder under data/ (or a path to one) holding system.yaml, "
+        "rom_config.yaml and cycle_profile.yaml (see cycle_kites.py); "
+        f"default {DEFAULT_KITE}",
+    )
+    parser.add_argument(
+        "--config",
+        default=None,
+        help="Seed YAML to optimize instead of the kite's default "
+        "(cycle_configs/full_cycle_periodic_from_exp.yaml)",
+    )
+    parser.add_argument(
+        "--tag",
+        default="",
+        help="Suffix appended to the output filenames (variants of one wind)",
+    )
+    parser.add_argument(
+        "--stage-repeats",
+        type=int,
+        default=None,
+        help="Number of re-centred passes of the main stage (default 1); "
+        "use 2-3 when a run ends with the backstop step box active",
+    )
+    parser.add_argument(
+        "--continue-from",
+        dest="continue_from",
+        default=None,
+        help="Optimized config YAML of a previous run to continue from "
+        "(re-runs the stages from it, seed validation skipped) -- use when "
+        "the previous run ended with the backstop step box active",
+    )
     args = parser.parse_args()
-    exit_code = main(run_plots=args.plot, optimize=not args.no_optimize)
+    exit_code = main(
+        run_plots=args.plot,
+        optimize=not args.no_optimize,
+        kite=args.kite,
+        config_path=args.continue_from or args.config,
+        run_tag=args.tag,
+        skip_validation=args.continue_from is not None,
+        stage_repeats=args.stage_repeats,
+    )
     if args.plot:
         import matplotlib.pyplot as plt
 

@@ -1,0 +1,67 @@
+# Full-cycle optimisation profile of the LEI-V3, read by
+# scripts/reduced-order-model/optimization/cycle/cycle_kites.py (--kite).
+#
+# Hardware (mass, tether, drum envelope, KCU ranges) is in system.yaml; the
+# ROM and its depower band (controls.input_depower) are in rom_config.yaml.
+# This file carries only what the cycle scripts need on top. Depower values
+# are in the ROM's own u_p unit -- here the power-tape length in metres.
+
+# REQUIRED. The constant wind profile the seed is checked at and the cycle
+# optimized in: model_type is any law of awetrim.environment.profile_laws
+# (uniform, logarithmic, power_law, explog, jet; amplitude speed_wind_ref at
+# height_ref, other keys forwarded to create_wind_model) or "tabulated"
+# (heights [m] / speeds [m/s]). Regenerate the seed after changing it.
+wind:
+  model_type: explog
+  speed_wind_ref: 6.0   # m/s
+  height_ref: 6.0       # m
+  z0: 0.0002            # m
+  alpha: 0.08163
+  direction_wind: 0.0   # rad; irrelevant, the cycle lives in the wind frame
+
+# REQUIRED. Winch force law that marches the seed's forward simulation:
+#   T = slope_winch_ro * (v_r - offset(u_p)),
+#   offset(u_p) = offset_winch_ro + winch_offset_depower_gain * (u_p - winch_depower_ref)
+# Regressed from the 2019-10-08 flight (fit_periodic_cycle_config
+# --shape experimental re-derives it). In the default free_speed winch mode
+# the optimizer does not keep it: v_r becomes a control and only the tension
+# band [min_tether_force, max_tether_force] remains.
+winch_law:
+  slope_winch_ro: 5380.8             # N s/m
+  offset_winch_ro: 0.412             # m/s, zero-force reel speed at winch_depower_ref
+  winch_offset_depower_gain: -10.931 # m/s per unit u_p
+  winch_depower_ref: 1.7             # u_p
+  min_tether_force: 865.4            # N
+  max_tether_force: 8400.4           # N; fallback only, the drum rating in system.yaml wins
+
+# REQUIRED. The synthetic seed (fit_periodic_cycle_config.py, --auto tunes it
+# further until it trims and closes). Angles in rad.
+seed:
+  r0: 236.7               # m, radial distance at the start of the reel-out
+  cycle_duration_s: 128.0 # s, duration PRIOR of a 3-lobe cycle (a forward
+                          # simulation measures the real one)
+  reelout_fraction: 0.65  # fraction of the period spent reeling out
+  beta0: 0.35             # figure-eight centre elevation (~20 deg)
+  beta_amp0: 0.10         # figure-eight elevation half-height
+  az_amp0: 0.30           # figure-eight azimuth half-width; bigger figures
+                          # turn gentler, az ~ 2.5 * beta keeps them balanced
+  beta_reelin_peak: 1.20  # reel-in top elevation; too high starves the kite
+                          # of apparent wind at the top
+  # Any other ARTIFICIAL knob of fit_periodic_cycle_config.py may be set here
+  # (az_reelin_amp, az_reelin_through, ramp_fraction, n_loops, ...).
+
+# Optional. Reference flight for --shape experimental (and the winch-law
+# regression). Loaders: ekf_results (awetrim EKF output, path_to_main defaults
+# to this folder) or protologger_h5 (h5: path relative to this folder).
+flight:
+  loader: ekf_results
+  year: "2019"
+  month: "10"
+  day: "08"
+  kite_model: LEI-V3-Kite
+  cycle_id: 62
+
+# Optional:
+#   m_per_second: 0.2      spline control points per second of flown cycle
+#                          (experimental fit only)
+#   min_turn_radius: 30.0  m, dense turn-radius floor in the NLP (off if absent)

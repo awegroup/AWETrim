@@ -266,13 +266,14 @@ Each kite under `data/<kite_name>/` should include at minimum the following file
 - `struc_geometry.yaml` — structural geometry describing wing nodes, LE/TE positions, bridle nodes and connectivity, spring/rest-length definitions, pulley info. A `bridle_lines` row may carry an optional `w` (flat-tape width [m]); `d` then stays the AREA-equivalent diameter used for mass and EA, while the drag uses the projected width (`awetrim.aerodynamics.line_drag`). Does **not** carry `kcu_mass` (deprecated; ignored with a warning if present — set it in `system.yaml`).
 - `aero_geometry.yaml` — VSM aerodynamic geometry describing wing sections, paneling, and references to airfoil polars; may reference a subfolder with airfoil `.dat` or polar CSVs.
 - `as_config.yaml` (or `aerostructural_configs/config.yaml`) — aerostructural solver settings (time-step, tolerances, actuation options, initialisation flags).
-- `rom_config.yaml` — reduced-order aerodynamic coefficient definitions (plus ROM tether settings) used by ROM or identification flows.
+- `rom_config.yaml` — reduced-order aerodynamic coefficient definitions (plus ROM tether settings) used by ROM or identification flows. A `controls.input_depower: {powered, depowered}` block states the depower band the ROM was identified on, in the ROM's own `u_p` unit (`identification.controls.rom_depower_band`; absent = the V3 power-tape metres 1.7/2.1, but the full-cycle scripts require it). An optional `validity.angle_of_attack_deg: [lo, hi]` states the AoA range the ROM was identified on (the full-cycle optimizer's AoA bound).
 - `ekf_config/` — EKF configuration files and model-specific tuning parameters used by the `experimental` EKF pipeline.
 
 Optional but recommended:
 
 - `flight_logs/` — raw flight CSVs for EKF and identification.
 - `cycle_configs/` — trajectory/pattern YAMLs for timeseries scripts (downloop, uploop, helix, etc.).
+- `cycle_profile.yaml` — inputs of the full-cycle scripts (`scripts/reduced-order-model/optimization/cycle/`, `--kite <folder>`): wind, winch force law and seed size (r0, duration prior, figure-eight/reel-in size), all required; see `cycle_kites.py` and the annotated LEI-V3 file. Data folders of kites whose data must stay private (e.g. `data/LEI-V9-KITE/`) are git-ignored; nothing kite-specific lives in code.
 
 Results layout (convention):
 
