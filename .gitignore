@@ -193,7 +193,7 @@ scripts/personal/
 # Scratch sweep/probe working directories written by the continuation drivers
 data/__*_work/
 data/_*_work/
-data/_*_work_s[0-9]/
+data/_*_work_s[0-9]*/
 data/_udp_continuation/
 data/_us_ab_*/
 
