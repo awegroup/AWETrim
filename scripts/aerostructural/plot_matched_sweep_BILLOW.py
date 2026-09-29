@@ -124,8 +124,11 @@ def draw_view(ax, structure, row, title, view="front", note=True):
     ax.axis("off")
 
 
-def shapes_figure(rows, structure, va, path, udp_steering):
-    """Depower in side view over steering in front view, at one apparent speed."""
+def shapes_figure(rows, structure, va, path, udp_steering, paper=False):
+    """Depower in side view over steering in front view, at one apparent speed.
+
+    ``paper`` drops the figure title (the caption carries it) and the
+    "paper's match" tags on the depower panels."""
     solved = sorted({r["udp"] for r in rows if r["mode"] == "depower" or r["us"] < 1e-9})
     wanted = [u for u in (UDP_REELOUT, 0.283, UDP_REELIN) if any(abs(u - s) < 6e-4 for s in solved)]
     depower = [(u, find(rows, "depower", va, udp=u)) for u in wanted]
@@ -135,7 +138,8 @@ def shapes_figure(rows, structure, va, path, udp_steering):
         if row is None:
             ax.axis("off")
             continue
-        label = {UDP_REELOUT: " (paper's reel-out match)", UDP_REELIN: " (paper's reel-in match)"}.get(u, "")
+        label = "" if paper else {UDP_REELOUT: " (paper's reel-out match)",
+                                  UDP_REELIN: " (paper's reel-in match)"}.get(u, "")
         draw_view(ax, structure, row, rf"$u_\mathrm{{dp}}$ = {u:.3f}{label}", view="side")
     for ax, (st, row) in zip(axes[1], steering):
         if row is None:
@@ -145,16 +149,17 @@ def shapes_figure(rows, structure, va, path, udp_steering):
     handles = [plt.Rectangle((0, 0), 1, 1, color=c) for c in REGIME_COLOURS]
     fig.legend(handles, ["slack", "wrinkled", "taut"], loc="lower center", ncol=3, frameon=False,
                bbox_to_anchor=(0.5, 0.0))
-    fig.suptitle(rf"LEI V3 on Billow's full model at $v_a$ = {va} m s$^{{-1}}$: depower across "
-                 rf"the span (top), steering at $u_\mathrm{{dp}}$ = {udp_steering:.3f} from the "
-                 r"front (bottom)", fontsize=11.5, y=0.99)
-    fig.tight_layout(rect=(0, 0.05, 1, 0.95), h_pad=4.0)
+    if not paper:
+        fig.suptitle(rf"LEI V3 on Billow's full model at $v_a$ = {va} m s$^{{-1}}$: depower across "
+                     rf"the span (top), steering at $u_\mathrm{{dp}}$ = {udp_steering:.3f} from the "
+                     r"front (bottom)", fontsize=11.5, y=0.99)
+    fig.tight_layout(rect=(0, 0.05, 1, 0.95 if not paper else 1.0), h_pad=4.0)
     fig.savefig(path, dpi=180)
     plt.close(fig)
     print(f"written {path}")
 
 
-def curves_figure(rows, comparison, va, path, udp_steering):
+def curves_figure(rows, comparison, va, path, udp_steering, paper=False):
     fig, (ax_f, ax_t) = plt.subplots(1, 2, figsize=(10.5, 4.2))
     colours = {"reel-out": plotting.PALETTE["Sky Blue"], "reel-in": plotting.PALETTE["Orange"]}
     for phase, udp in (("reel-out", UDP_REELOUT), ("reel-in", UDP_REELIN)):
@@ -168,7 +173,7 @@ def curves_figure(rows, comparison, va, path, udp_steering):
             own = [r for r in rows if abs(r["udp"] - udp_steering) < 6e-4 and r["us"] < 1e-9]
             own = sorted({r["target_va"]: r for r in own}.values(), key=lambda r: r["va"])
             ax_f.plot([r["va"] for r in own], [r["tether_force"] / 1e3 for r in own], "-o", color=colour,
-                      lw=2, ms=4, label=rf"full, $u_\mathrm{{dp}}$ = {udp_steering:.3f} (its match)")
+                      lw=2, ms=4, label=rf"full, $u_\mathrm{{dp}}$ = {udp_steering:.3f}" + ("" if paper else " (its match)"))
         if comparison:
             flight = comparison["flight"][phase]
             curve = [p for p in flight["wireframe_curve"] if not p["extrapolated"]]
@@ -225,6 +230,8 @@ def main():
                         help="depower the steering chains were solved at")
     parser.add_argument("--output-dir", default=None)
     parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
+    parser.add_argument("--paper", action="store_true",
+                        help="no figure title, no 'paper's match' tags, and a PDF next to each PNG")
     args = parser.parse_args()
 
     project = Path(__file__).resolve().parents[2]
@@ -236,8 +243,9 @@ def main():
     va = int(args.va) if float(args.va).is_integer() else args.va
     structure = rebuild(project, args.kite, 2, {"canopy_pattern": "cross", "canopy_refinement": 1})
     comparison = json.loads(Path(args.comparison).read_text(encoding="utf-8")) if args.comparison else None
-    shapes_figure(rows, structure, va, out / "matched_sweep_shapes.png", args.udp_steering)
-    curves_figure(rows, comparison, va, out / "matched_sweep_curves.png", args.udp_steering)
+    for ext in (("png", "pdf") if args.paper else ("png",)):
+        shapes_figure(rows, structure, va, out / f"matched_sweep_shapes.{ext}", args.udp_steering, args.paper)
+        curves_figure(rows, comparison, va, out / f"matched_sweep_curves.{ext}", args.udp_steering, args.paper)
 
 
 if __name__ == "__main__":

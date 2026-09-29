@@ -280,9 +280,9 @@ def draw_kite_tether(
         label="KCU" if state_label is None else None,
     )
 
-    ax.set_xlabel("x [m]")
-    ax.set_ylabel("y [m]")
-    ax.set_zlabel("z [m]")
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("y (m)")
+    ax.set_zlabel("z (m)")
     if set_aspect:
         # Equal aspect so the quarter-sphere actually looks like a sphere.
         try:

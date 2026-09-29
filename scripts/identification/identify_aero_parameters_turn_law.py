@@ -1180,10 +1180,10 @@ def make_figure(ctx, phase_results, phase_col):
         [phase_label(p) for p in phase_keys], rotation=30, ha="center"
     )
     if PLOT_METRIC == "R2":
-        ax_bar.set_ylabel(r"$R^2$  [—]")
+        ax_bar.set_ylabel(r"$R^2$")
         ax_bar.set_ylim(0, 1)
     else:
-        ax_bar.set_ylabel("RMSE [rad/s]")
+        ax_bar.set_ylabel(r"RMSE (rad s$^{-1}$)")
     ax_bar.grid(True, axis="y")
 
     # --- (b) representative scatter: raw signals + the two linear laws ---
@@ -1264,8 +1264,8 @@ def make_figure(ctx, phase_results, phase_col):
                 lw=2.0,
                 label=f"Linear ({alt_label.lower()})",
             )
-        ax_scatter.set_xlabel(r"$u_s \cdot v_a$  [m/s]")
-        ax_scatter.set_ylabel(r"$\dot{\chi}$  [rad/s]")
+        ax_scatter.set_xlabel(r"$u_s \cdot v_a$ (m s$^{-1}$)")
+        ax_scatter.set_ylabel(r"$\dot{\chi}_\mathrm{turn}$ (rad s$^{-1}$)")
         ax_scatter.grid(True)
 
     handles, labels = [], []
