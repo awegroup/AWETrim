@@ -124,6 +124,10 @@ class CasadiTrimOptions:
     polar_interpolation: str = "linear"
     is_with_artificial_viscosity: bool = False
     artificial_viscosity_factor: float = 0.035
+    #: The panel kernels implement the freestream-direction force law only;
+    #: ``True`` (VSM develop's quarter-chord directions) is refused at build
+    #: time rather than silently solved with the wrong law.
+    is_aoa_corrected: bool = False
     include_gravity: bool = False
     tolerance: float = 1e-8
     max_iterations: int = 100
@@ -235,7 +239,18 @@ class CasadiTrim:
             rho=opt.rho,
             core_radius_fraction=opt.core_radius_fraction,
             aerodynamic_model_type=opt.aerodynamic_model_type,
+            # The panel kernels are the uncorrected (freestream-direction)
+            # force law; VSM develop defaults to the corrected one since
+            # 2026-09-17, so pin it.
+            is_aoa_corrected=False,
         )
+        if opt.is_aoa_corrected:
+            raise ValueError(
+                "CasadiTrim implements the freestream-direction force law only "
+                "(is_aoa_corrected=False); the quarter-chord-corrected VSM "
+                "force directions are not available in the CasADi trim. Use "
+                "the least_squares trims."
+            )
         self.vsm.panels = panels
         self.vsm.n_panels = self.n
         self.panel_fn = self.vsm._casadi_newton_function()

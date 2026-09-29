@@ -86,6 +86,7 @@ def _default_vsm_solver(
     is_with_artificial_viscosity: bool = False,
     artificial_viscosity_factor: float = 0.035,
     anderson_max_iterations: int | None = None,
+    is_aoa_corrected: bool = False,
 ) -> VsmSolver:
     try:
         from VSM.core.Solver import Solver
@@ -143,6 +144,12 @@ def _default_vsm_solver(
         gamma_loop_type=gamma_loop_type,
         is_with_artificial_viscosity=is_with_artificial_viscosity,
         artificial_viscosity_factor=artificial_viscosity_factor,
+        # Force directions from the freestream (False, the model every
+        # AWETrim result is built on and what the CasADi panel kernels
+        # reproduce) or from the quarter-chord flow (True, VSM develop's own
+        # default since 2026-09-17). Stated rather than inherited, so the
+        # trim never silently follows the VSM checkout.
+        is_aoa_corrected=bool(is_aoa_corrected),
         **kwargs,
     )
 
@@ -504,6 +511,7 @@ def solve_vsm_quasi_steady_trim(
     is_with_artificial_viscosity: bool = False,
     artificial_viscosity_factor: float = 0.035,
     anderson_max_iterations: int | None = None,
+    is_aoa_corrected: bool = False,
     kcu_drag: "KcuDragModel | None" = None,
     gamma_seed: np.ndarray | None = None,
 ) -> tuple[dict[str, Any], VsmBodyAerodynamics]:
@@ -580,6 +588,7 @@ def solve_vsm_quasi_steady_trim(
             is_with_artificial_viscosity=is_with_artificial_viscosity,
             artificial_viscosity_factor=artificial_viscosity_factor,
             anderson_max_iterations=anderson_max_iterations,
+            is_aoa_corrected=is_aoa_corrected,
         )
 
     def evaluate_kinematics(x: np.ndarray) -> dict[str, np.ndarray]:
@@ -1427,6 +1436,7 @@ def solve_vsm_qs_trim_with_williams_tether(
     is_with_artificial_viscosity: bool = False,
     artificial_viscosity_factor: float = 0.035,
     anderson_max_iterations: int | None = None,
+    is_aoa_corrected: bool = False,
     tether_model: str = "williams",
     prescribed_roll_deg: float | None = None,
     gamma_seed: np.ndarray | None = None,
@@ -1609,6 +1619,7 @@ def solve_vsm_qs_trim_with_williams_tether(
             is_with_artificial_viscosity=is_with_artificial_viscosity,
             artificial_viscosity_factor=artificial_viscosity_factor,
             anderson_max_iterations=anderson_max_iterations,
+            is_aoa_corrected=is_aoa_corrected,
         )
 
     _gamma_seed = None if gamma_seed is None else np.asarray(gamma_seed, dtype=float)

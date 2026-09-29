@@ -267,6 +267,10 @@ def _solve_trim_casadi(
         artificial_viscosity_factor=float(
             getattr(solver, "artificial_viscosity_factor", 0.035)
         ),
+        # Refused inside CasadiTrim when True: the kernels are the
+        # freestream-direction law, so a config asking for the corrected
+        # directions must run the least_squares trims.
+        is_aoa_corrected=bool(getattr(solver, "is_aoa_corrected", False)),
         include_gravity=bool(include_gravity),
         tolerance=float(tolerance),
         rho=float(getattr(solver, "rho", 1.225)),
@@ -288,16 +292,21 @@ def _solve_trim_casadi(
             solver._awetrim_casadi_trims = cache
         except AttributeError:  # a slotted or mock solver: no cache
             pass
-    key = (
-        CasadiTrim.geometry_signature(body_aero),
-        dataclasses.astuple(options),
-        None if kcu_drag is None else dataclasses.astuple(kcu_drag),
-        tuple(np.asarray(bounds_lower, dtype=float).ravel().tolist()),
-        tuple(np.asarray(bounds_upper, dtype=float).ravel().tolist()),
-        tuple(np.asarray(reference_point, dtype=float).ravel().tolist()),
-    )
-
     def run_once():
+        # The key is taken HERE, with the polars actually installed: the
+        # attached-first stage swaps in continued polars, so a key computed
+        # once up front filed that stage's graph under the TRUE polars' entry,
+        # and every stalled-stage solve then tripped update_geometry's polar
+        # check and fell back to an untrimmed direct VSM solve (2026-09-15:
+        # every coupled iteration of the deep-depower reel-in grid points).
+        key = (
+            CasadiTrim.geometry_signature(body_aero),
+            dataclasses.astuple(options),
+            None if kcu_drag is None else dataclasses.astuple(kcu_drag),
+            tuple(np.asarray(bounds_lower, dtype=float).ravel().tolist()),
+            tuple(np.asarray(bounds_upper, dtype=float).ravel().tolist()),
+            tuple(np.asarray(reference_point, dtype=float).ravel().tolist()),
+        )
         entry = cache.get(key)
         if entry is not None and entry[0] is system_model:
             trim = entry[1]
@@ -428,6 +437,11 @@ def initialize(
         # trim this solver calls unless `allowed_error` is ~1e-8. Set the two
         # together or not at all.
         gamma_loop_type=aero_cfg.get("gamma_loop_type", "base"),
+        # Force directions from the freestream (VSM ``is_aoa_corrected``):
+        # False is the model every AWETrim result is built on and what the
+        # CasADi trim kernels reproduce. VSM develop flipped its own default
+        # to True on 2026-09-17 (quarter-chord flow), so it is stated here.
+        is_aoa_corrected=bool(aero_cfg.get("is_aoa_corrected", False)),
         # Anderson headroom instead of the Picard fallback (2026-09-03):
         # across the 2019+2025 steering campaigns the base-loop fallback
         # rescued 99 of ~92,400 Anderson failures (0.1%) while costing up to

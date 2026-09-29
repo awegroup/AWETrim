@@ -43,6 +43,8 @@ def _solver(av: bool):
     solver = Solver(
         gamma_loop_type="anderson", allowed_error=1e-8, is_with_artificial_viscosity=av,
         artificial_viscosity_factor=0.035, reference_point=[0.0, 0.0, 0.0],
+        # The CasADi trim refuses the quarter-chord law, VSM develop's default.
+        is_aoa_corrected=False,
     )
     solver._awetrim_attached_first = True
     return solver
@@ -84,6 +86,19 @@ def test_attached_first_at_the_trim_level(lei_v3):
     assert np.all(alpha <= onsets)
     for panel_out, panel_in in zip(body.panels, lei_v3["body"].panels):
         assert panel_out._panel_polar_data is panel_in._panel_polar_data
+
+
+def test_attached_and_true_polar_graphs_get_separate_cache_entries(lei_v3):
+    """The attached-first stage builds its graph on CONTINUED polars; a later
+    true-polar solve on the same solver must get its own graph, not trip the
+    cached one's polar check (the key was once taken before the swap, so every
+    stalled-stage trim raised and fell back to an untrimmed direct solve)."""
+    solver = _solver(av=True)
+    _call(lei_v3, solver)  # attached-first: graph on the continued polars
+    solver._awetrim_attached_first = False  # true polars, same solver object
+    results, _ = _call(lei_v3, solver)
+    assert results["converged"]
+    assert len(solver._awetrim_casadi_trims) == 2
 
 
 def test_graph_is_cached_on_the_solver_and_reused(lei_v3):

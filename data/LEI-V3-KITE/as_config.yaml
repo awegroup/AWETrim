@@ -74,6 +74,7 @@ aerodynamic:
   # AV-on results are not comparable to the AV-off history. The trim scripts
   # inherit this value when --artificial-viscosity is not given, so both
   # halves of a coupled analysis stay on one model.
+  is_aoa_corrected: !!bool false # force directions from the freestream (the AWETrim model); VSM develop's own default became true (quarter-chord flow) on 2026-09-17
   is_with_artificial_viscosity: !!bool true
   artificial_viscosity_factor: !!float 0.035
 
