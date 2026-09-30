@@ -10,6 +10,11 @@
   --accent-soft: rgba(22, 119, 163, 0.12);
   --shadow: 0 24px 70px rgba(18, 48, 67, 0.16);
   --glass-border: rgba(182, 204, 216, 0.74);
+  /* Framework diagram: white boxes, dark outlines, navy title. */
+  --frame: #26323b;
+  --arrow: #4a5660;
+  --navy: #2b5a8c;
+  --shell-fill: rgba(242, 247, 252, 0.94);
 }
 
 * { box-sizing: border-box; }
@@ -131,8 +136,7 @@ h1 {
   max-width: 980px;
   margin: 0 auto;
   display: grid;
-  grid-template-rows: auto auto auto auto;
-  gap: 18px;
+  gap: 0;
 }
 
 .group-card, .reconstruction-card, .framework-shell {
@@ -156,9 +160,11 @@ h1 {
 }
 
 .framework-shell {
-  border-radius: 54px;
-  padding: 22px 26px 26px;
-  background: rgba(231, 244, 250, 0.66);
+  border: 2px solid var(--frame);
+  border-radius: 40px;
+  padding: 18px 34px 14px;
+  background: var(--shell-fill);
+  box-shadow: 0 10px 30px rgba(18, 48, 67, 0.10);
 }
 
 .group-title, .section-title, .shell-title {
@@ -185,14 +191,15 @@ h1 {
 
 .shell-title strong {
   display: block;
-  font-size: 22px;
+  font-size: 26px;
   line-height: 1.1;
+  color: var(--navy);
 }
 
 .shell-title span {
   display: block;
   margin-top: 4px;
-  font-size: 15px;
+  font-size: 14px;
   color: var(--muted);
 }
 
@@ -202,49 +209,177 @@ h1 {
 }
 
 .node-grid-inputs { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.node-grid-reconstruction { grid-template-columns: 1.1fr .9fr; max-width: 520px; margin: 0 auto; }
+.node-grid-reconstruction { grid-template-columns: 1.1fr .9fr; }
 .node-grid-apps { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 
-.framework-grid {
+/* --- AWETrim core: VSM <-> Billow, down to the ROM, down to trajectory
+   optimisation (mirrors the framework figure). --- */
+.solver-pair {
   display: grid;
-  gap: 16px;
-  margin-top: 4px;
-}
-
-.model-row {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) 140px minmax(180px, 1fr);
+  grid-template-columns: minmax(0, 1fr) 96px minmax(0, 1fr);
   align-items: center;
-  gap: 14px;
+  margin-top: 6px;
 }
 
-.support-row {
+.node.node-solver { min-height: 76px; }
+
+.rom-row {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: auto 52px minmax(0, 1fr);
+  align-items: center;
 }
 
-/* The two solvers the aero-structural model couples. Sits under the model row
-   and is indented to read as belonging to the left-hand node. */
-.solver-row {
+.system-models {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 14px;
-  width: calc((100% - 168px) / 2);
-  margin-top: -6px;
+  gap: 6px;
+  width: 132px;
 }
 
-.node-solver {
-  min-height: 60px;
+.system-models-label {
+  font-size: 12px;
+  font-style: italic;
+  color: var(--muted);
+  text-align: center;
+}
+
+.node.node-chip {
+  min-height: 0;
+  padding: 7px 10px;
   font-size: 14px;
-  background: linear-gradient(180deg, var(--accent-soft), var(--node-2));
 }
+
+.node.node-block { width: 100%; min-height: 64px; }
+.rom-row .node.node-block { min-height: 112px; }
+
+.shell-notes {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 18px;
+  margin: 12px 0 0;
+}
+
+.note-link {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  font-size: 13.5px;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 10px;
+  transition: background .16s ease, color .16s ease;
+}
+
+/* Arrows */
+.flow-label {
+  font-size: 13px;
+  font-style: italic;
+  color: var(--muted);
+  line-height: 1.3;
+}
+
+.v-arrow {
+  position: relative;
+  display: block;
+  width: 2px;
+  height: 36px;
+  background: var(--arrow);
+  flex: 0 0 auto;
+}
+
+.v-arrow::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -1px;
+  transform: translateX(-50%);
+  border-top: 9px solid var(--arrow);
+  border-left: 5.5px solid transparent;
+  border-right: 5.5px solid transparent;
+}
+
+.v-arrow-up::after {
+  bottom: auto;
+  top: -1px;
+  border-top: 0;
+  border-bottom: 9px solid var(--arrow);
+}
+
+.v-arrow-dashed {
+  background: repeating-linear-gradient(180deg, var(--arrow) 0 5px, transparent 5px 9px);
+}
+
+.h-arrow {
+  position: relative;
+  display: block;
+  height: 2px;
+  width: calc(100% - 12px);
+  margin: 0 auto;
+  background: var(--arrow);
+}
+
+.h-arrow::after,
+.h-arrow-both::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  border-top: 5.5px solid transparent;
+  border-bottom: 5.5px solid transparent;
+}
+
+.h-arrow::after { right: -1px; border-left: 9px solid var(--arrow); }
+.h-arrow-both::before { left: -1px; border-right: 9px solid var(--arrow); }
+
+.flow-arrow, .coupling-arrow {
+  border: 0;
+  background: transparent;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border-radius: 12px;
+  transition: background .16s ease;
+}
+
+/* Arrow shaft on the centreline, label hanging to its right. */
+.flow-arrow, .connector {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  column-gap: 12px;
+  width: 100%;
+  padding: 0;
+}
+
+.flow-arrow > .v-arrow, .connector > .v-arrow { grid-column: 2; }
+.flow-arrow > .flow-label, .connector > .flow-label { grid-column: 3; text-align: left; }
+.flow-arrow-static { cursor: default; }
+
+.coupling-arrow {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 4px;
+}
+
+.connector .v-arrow { height: 34px; }
+
+.bottom-row {
+  display: grid;
+  grid-template-columns: minmax(0, .9fr) minmax(0, 1.1fr);
+  gap: 18px;
+  align-items: start;
+}
+
+.bottom-col { display: grid; }
 
 .node {
-  min-height: 78px;
-  border: 1.6px solid var(--line);
+  min-height: 72px;
+  border: 1.6px solid var(--frame);
   border-radius: 12px;
-  background: linear-gradient(180deg, var(--node), var(--node-2));
+  background: #fff;
   color: var(--ink);
   box-shadow: 0 6px 20px rgba(18, 48, 67, 0.06);
   cursor: pointer;
@@ -256,57 +391,19 @@ h1 {
   transition: transform .16s ease, border-color .16s ease, box-shadow .16s ease, background .16s ease;
 }
 
-.node span { font-size: 13px; color: var(--muted); }
-.node-emphasis { min-height: 96px; font-size: 17px; }
-.wide { width: 100%; }
+.node strong { display: block; font-size: 18px; }
+.node span { display: block; margin-top: 3px; font-size: 13.5px; color: var(--muted); }
+.node-emphasis strong { font-size: 17px; }
 
-.bridge-arrow {
-  min-height: 60px;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  gap: 9px;
-  text-align: center;
-  border: 0;
-  background: transparent;
-  color: var(--muted);
-  font: inherit;
-  font-size: 13px;
-  line-height: 1.3;
-  cursor: pointer;
-  padding: 4px;
-  border-radius: 14px;
-  transition: background .16s ease, color .16s ease;
-}
-
-.bridge-arrow-label { display: block; }
-.bridge-sub { color: var(--accent); }
-
-.bridge-arrow-line {
-  position: relative;
-  width: 100%;
-  max-width: 120px;
-  height: 2px;
-  background: var(--accent);
-}
-
-.bridge-arrow-line::after {
-  content: "";
-  position: absolute;
-  right: -1px;
-  top: 50%;
-  transform: translateY(-50%);
-  border-left: 10px solid var(--accent);
-  border-top: 6px solid transparent;
-  border-bottom: 6px solid transparent;
-}
-
-.bridge-arrow:hover, .bridge-arrow:focus-visible, .bridge-arrow.active {
+.flow-arrow:hover, .flow-arrow:focus-visible, .flow-arrow.active,
+.coupling-arrow:hover, .coupling-arrow:focus-visible, .coupling-arrow.active,
+.note-link:hover, .note-link:focus-visible, .note-link.active {
   background: var(--accent-soft);
   color: var(--ink);
   outline: none;
 }
+
+.flow-arrow-static:hover { background: transparent; }
 
 .node:hover, .node:focus-visible, .node.active,
 .group-title:hover, .group-title:focus-visible, .group-title.active,
@@ -610,14 +707,20 @@ h1 {
   .site-header { padding-top: 20px; flex-direction: column; align-items: flex-start; gap: 16px; }
   .site-header > div { padding: 18px; }
   .header-logo { padding-top: 0; }
-  .solver-row { width: 100%; margin-top: 0; }
-  .node-grid-inputs, .node-grid-apps, .support-row, .model-row, .node-grid-reconstruction {
-    grid-template-columns: 1fr;
+  .node-grid-inputs { grid-template-columns: 1fr 1fr; }
+  .node-grid-apps, .node-grid-reconstruction, .bottom-row { grid-template-columns: 1fr; }
+  .solver-pair { grid-template-columns: minmax(0, 1fr) 56px minmax(0, 1fr); }
+  .rom-row { grid-template-columns: 1fr; justify-items: center; }
+  .system-models { width: 100%; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .system-models-label { grid-column: 1 / -1; }
+  .rom-row > .h-arrow { width: 2px; height: 30px; }
+  .rom-row > .h-arrow::after {
+    right: auto; left: 50%; top: auto; bottom: -1px; transform: translateX(-50%);
+    border-left: 5.5px solid transparent; border-right: 5.5px solid transparent;
+    border-top: 9px solid var(--arrow); border-bottom: 0;
   }
   .references-grid { grid-template-columns: 1fr; }
-  .framework-shell { border-radius: 34px; padding: 18px; }
-  .bridge-arrow { min-height: 42px; padding: 8px 4px; }
-  .bridge-arrow-line { width: 38px; transform: rotate(90deg); }
+  .framework-shell { border-radius: 28px; padding: 16px; }
   .funding { flex-direction: column; text-align: center; gap: 18px; }
   .funding-logos { justify-content: center; gap: 24px; }
   .site-footer { flex-direction: column; text-align: center; gap: 16px; }

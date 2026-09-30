@@ -53,8 +53,8 @@ const CONTENT = {
       "Couples VSM aerodynamics with the Billow structural solver, reduced to a fast ROM",
       "Fast enough for power-cycle simulation and path optimisation"
     ],
-    image: "assets/computational_framework.png",
-    caption: "The AWETrim computational framework: inputs, experimental reconstruction, the multi-fidelity core, and outputs.",
+    image: "img/awetrim-overview.png",
+    caption: "AWETrim in one picture: VSM and Billow are coupled into the aero-structural model, whose identified aerodynamics give the reduced-order model that trajectory optimisation runs on. Flight data validates the chain and identifies the model.",
     links: [REPO_AWETRIM, REPO_BILLOW, PAPER_ROM, PAPER_AERO, PAPER_EKF]
   },
   "experimental-flight-data": {
@@ -151,7 +151,7 @@ const CONTENT = {
   },
   "model-reduction": {
     title: "Model Reduction & Aero Identification",
-    text: "The reduced-order model is not assumed — it is identified from the high-fidelity aero-structural model. AWETrim sweeps the coupled VSM–Billow model over angle of attack and control inputs, then fits compact quasi-steady aerodynamic coefficient relations to those sweep results. The same fit can be run on EKF flight-data reconstructions, so an aerostructural-identified ROM can be compared directly against an experiment-identified one. This model-reduction / system-identification step is what turns the expensive aero-structural model (left) into the fast ROM (right) used for trajectory simulation and optimisation.",
+    text: "The reduced-order model is not assumed — it is identified from the high-fidelity aero-structural model. AWETrim sweeps the coupled VSM–Billow model over angle of attack and control inputs, then fits compact quasi-steady aerodynamic coefficient relations to those sweep results. The same fit can be run on EKF flight-data reconstructions, so an aerostructural-identified ROM can be compared directly against an experiment-identified one. This model-reduction / system-identification step is what turns the expensive aero-structural model (above) into the fast ROM (below) used for trajectory simulation and optimisation.",
     bullets: [
       "Aerostructural (or EKF flight-data) sweeps over angle of attack, control inputs and airspeed",
       "Fits quasi-steady CL / CD / CS coefficient relations (rom_config.yaml)",
@@ -194,12 +194,24 @@ const CONTENT = {
     links: [PAPER_EKF, REPO_AWERA]
   },
   "trajectory-parametrization": {
-    title: "Trajectory Parametrization",
-    text: "Trajectory parametrisation defines the flight path in the shared course frame using B-spline path patterns, whose control points and parameters become the optimisation variables for power-cycle analysis (Cayon, van Deursen & Schmehl, WES 2026; Cayon & Schmehl, Torque 2026). A full pumping cycle can be represented in two ways: as a single periodic B-spline closing the whole cycle, or by splitting it into a parametrised reel-out production phase — downloop, uploop or helix — followed by a simplified reel-in phase. Only the split reel-out / simplified reel-in representation is currently implemented.",
+    title: "Trajectory Optimisation",
+    text: "Trajectory optimisation runs on the reduced-order model. The parametrisation defines the flight path in the shared course frame using B-spline path patterns, whose control points and parameters become the optimisation variables for power-cycle analysis (Cayon, van Deursen & Schmehl, WES 2026; Cayon & Schmehl, Torque 2026). A full pumping cycle can be represented in two ways: as a single periodic B-spline closing the whole cycle, or by splitting it into a parametrised reel-out production phase — downloop, uploop or helix — followed by a simplified reel-in phase. Only the split reel-out / simplified reel-in representation is currently implemented.",
     bullets: ["B-spline path patterns in the course frame as optimisation variables", "Whole cycle as a single periodic B-spline", "Or split into a parametrised reel-out (downloop/uploop/helix) + simplified reel-in — the only one currently implemented"],
     image: "img/b-spline.png",
     caption: "B-spline parametrisation of a crosswind figure-of-eight in the azimuth–elevation (φ, β) plane: a periodic B-spline (orange) with its control points (blue) reproduces the baseline Lissajous pattern (black).",
     links: [PAPER_ROM, PAPER_OPT, REPO_AWETRIM]
+  },
+  "flight-data-processing": {
+    title: "Flight-Data Processing",
+    text: "Alongside the model chain, AWETrim processes measured flights. The experimental/ module preprocesses raw flight logs into the layout the EKF-AWE filter expects and runs the reconstruction (scripts/experimental/run_analysis_ekf.py); the identification/ module turns the reconstructed states into a tidy aerodynamic dataset with the same schema as the aero-structural sweeps. That shared schema is what lets the reduced-order model be identified from flight data and from the VSM–Billow model with the same fit, and compared one against the other.",
+    bullets: [
+      "Flight-log preprocessing into the EKF-AWE input layout (experimental/)",
+      "EKF reconstruction of states, wind and aerodynamic coefficients",
+      "One aerodynamic dataset schema for flight data and aero-structural sweeps (identification/)"
+    ],
+    image: "img/kite-trajectory.png",
+    caption: "Reconstructed kite flight trajectory from the EKF-AWE pipeline.",
+    links: [REPO_EKF, PAPER_EKF, PAPER_ROM, REPO_AWETRIM]
   },
   "operational-optimization": {
     title: "Operational Optimization",
