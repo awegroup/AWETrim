@@ -29,8 +29,8 @@ const PAPER_WILLIAMS = {
 
 const REPO_AWETRIM = { label: "AWETrim repository", url: "https://github.com/awegroup/AWETrim" };
 const REPO_VSM = { label: "Vortex Step Method", url: "https://github.com/awegroup/Vortex-Step-Method" };
-const REPO_PSS = { label: "Particle System Simulator", url: "https://github.com/awegroup/Particle_System_Simulator" };
-const REPO_FEM = { label: "kite_fem (FEM structure)", url: "https://github.com/awegroup/kite_fem" };
+const REPO_BILLOW = { label: "Billow · structural solver", url: "https://github.com/awegroup/Billow" };
+const DOCS_BILLOW = { label: "Billow documentation", url: "https://awegroup.github.io/Billow/" };
 const REPO_EKF = { label: "EKF-AWE repository", url: "https://github.com/ocayon/EKF-AWE" };
 const REPO_KITE = { label: "TU Delft LEI-V3 kite", url: "https://github.com/awegroup/TUDELFT_V3_KITE" };
 const REPO_ML = { label: "LEI airfoil ML models (Zenodo)", url: "https://doi.org/10.5281/zenodo.16925759" };
@@ -47,15 +47,15 @@ const DATA_20191008 = { label: "Dataset · Flight test 8 Oct 2019", url: "https:
 const CONTENT = {
   "awetrim": {
     title: "AWETrim",
-    text: "AWETrim is a Python library for the modelling, aerostructural simulation, trim analysis and trajectory optimisation of soft-kite Airborne Wind Energy Systems (AWES). It ties external solvers — a vortex aerodynamic method (VSM), a structural model (PSS particle system or kite_fem FEM) and a flight-data Kalman filter (EKF-AWE) — to a CasADi-based system model in one quasi-steady, multi-fidelity workflow.",
+    text: "AWETrim is a Python library for the modelling, aerostructural simulation, trim analysis and trajectory optimisation of soft-kite Airborne Wind Energy Systems (AWES). It ties external solvers — a vortex aerodynamic method (VSM), a minimum-energy structural solver (Billow) and a flight-data Kalman filter (EKF-AWE) — to a CasADi-based system model in one quasi-steady, multi-fidelity workflow.",
     bullets: [
       "CasADi symbolic system model (kite + tether + winch + wind)",
-      "Couples VSM aerodynamics with a PSS/FEM structure, reduced to a fast ROM",
+      "Couples VSM aerodynamics with the Billow structural solver, reduced to a fast ROM",
       "Fast enough for power-cycle simulation and path optimisation"
     ],
-    image: "assets/computational_framework.png",
-    caption: "The AWETrim computational framework: inputs, experimental reconstruction, the multi-fidelity core, and outputs.",
-    links: [REPO_AWETRIM, PAPER_ROM, PAPER_AERO, PAPER_EKF]
+    image: "img/awetrim-overview.png",
+    caption: "AWETrim in one picture: VSM and Billow are coupled into the aero-structural model, whose identified aerodynamics give the reduced-order model that trajectory optimisation runs on. Flight data validates the chain and identifies the model.",
+    links: [REPO_AWETRIM, REPO_BILLOW, PAPER_ROM, PAPER_AERO, PAPER_EKF]
   },
   "experimental-flight-data": {
     title: "Experimental Flight Data",
@@ -88,7 +88,7 @@ const CONTENT = {
   "system-kite": {
     title: "System / Kite Characteristics",
     text: "The system definition holds the geometry and hardware properties of the kite, tether, KCU and winch, following the open awesIO standard schema so a single system.yaml describes the whole system in an interoperable, validated format. The examples use the TU Delft LEI-V3 leading-edge inflatable kite, described by system.yaml (awesIO format), aero_geometry.yaml and struc_geometry.yaml under data/LEI-V3-KITE/.",
-    bullets: ["Defined with the awesIO standard schema (system.yaml)", "Mass, inertia and geometry", "VSM aero and PSS structural configuration files", "Tether, KCU and winch parameters"],
+    bullets: ["Defined with the awesIO standard schema (system.yaml)", "Mass, inertia and geometry", "VSM aero and structural configuration files", "Tether, KCU and winch parameters"],
     image: "img/awesio-logo.svg",
     caption: "System and kite characteristics follow the awesIO open standard.",
     links: [REPO_KITE, REPO_AWESIO, REPO_AWETRIM]
@@ -117,15 +117,41 @@ const CONTENT = {
   },
   "aero-structural": {
     title: "Aero-Structural Kite Model",
-    text: "The high-fidelity model couples two external solvers: aerodynamic loads and the deformed wing shape are iterated against each other until consistent, giving the loaded geometry and force coefficients across flight conditions. Aerodynamics use the Vortex Step Method (VSM); the structure is solved with either the Particle System Simulator (PSS, particle–spring) or a finite-element model (kite_fem) — both are interchangeable and linked below. This is the fast aero-structural model of an LEI kite (Cayon, Gaunaa & Schmehl, Energies 2023), built on the computational-aerodynamics approach for soft-wing kite design (WES 2026).",
-    bullets: ["Aerodynamics: Vortex Step Method (VSM)", "Structure: PSS particle–spring or kite_fem FEM (interchangeable)", "Coupled to the loaded geometry and force coefficients"],
-    image: "img/aerostructural-deformed-shape.png",
-    caption: "Converged LEI-V3 structure from the VSM ↔ PSS coupled solver: initial (blue) versus loaded shape, with bridle/tape rest-length change (colour) and the external aerodynamic loads (red). Default depower trim, ≈14 coupling iterations.",
-    links: [PAPER_AERO, PAPER_VSM, REPO_VSM, REPO_ML, REPO_PSS, REPO_FEM]
+    text: "The high-fidelity model couples two external solvers: aerodynamic loads and the deformed wing shape are iterated against each other until consistent, giving the loaded geometry and force coefficients across flight conditions. Aerodynamics use the Vortex Step Method (VSM); the structure is solved by Billow, which minimises the total potential energy. AWETrim owns the coupling — the load transfer, the trim, the fixed-point loop — and neither solver knows about the other. Which structural fidelity is used is not a detail of accuracy: the trimmed angle of attack is where the moment balance lands, so the structure's stiffness sets it, and the same depower setting means a different flight state on each model. This is the fast aero-structural model of an LEI kite (Cayon, Gaunaa & Schmehl, Energies 2023), built on the computational-aerodynamics approach for soft-wing kite design (WES 2026).",
+    bullets: ["Aerodynamics: Vortex Step Method (VSM)", "Structure: Billow, at either fidelity", "Fixed-point loop on the nodal forces, Aitken-relaxed", "Returns the loaded geometry and force coefficients", "Actuation sweeps: depower and steering, matched against flight"],
+    image: "img/matched-sweep-curves.png",
+    caption: "The coupled model against the 2019 flight. Left: tether force versus apparent speed, each model drawn at the depower where it matches the flown force — the full model at u_dp 0.315, the wireframe at 0.242 — with the near-straight flight medians they are matched to. Right: the turn law under steering, against the flown cloud. Solved at the centre of the wind window, one chain per target apparent speed.",
+    links: [PAPER_AERO, PAPER_VSM, REPO_VSM, REPO_BILLOW, REPO_ML]
+  },
+  "vsm": {
+    title: "VSM · Aerodynamics",
+    text: "The Vortex Step Method resolves the spanwise circulation over the deformed wing and returns the panel forces the structure is loaded with. It is a separate package: AWETrim reaches it through one adapter, and the rest of the coupling is VSM-agnostic. The same solver supplies the quasi-steady trim, including the bridle-line and KCU drag that the force balance has to carry.",
+    bullets: [
+      "Spanwise circulation over the deformed wing, panel by panel",
+      "Li/Gaunaa artificial viscosity for post-stall regularisation",
+      "Anderson-accelerated circulation loop",
+      "Supplies the quasi-steady trim the structure is loaded at"
+    ],
+    image: "img/aero_comparison.png",
+    caption: "VSM force coefficients against reference data.",
+    links: [REPO_VSM, PAPER_VSM, REPO_ML]
+  },
+  "billow": {
+    title: "Billow · Structural Solver",
+    text: "Billow solves for the static equilibrium of the soft structure — a bridle of tension-only lines, an inflatable tube frame, a canopy of fabric that wrinkles rather than buckles — by minimising one total potential energy with IPOPT. That is a physics choice rather than a solver preference: a slack line and a wrinkled panel are exactly the states where a residual-form Newton solve has to fight a near-singular tangent, and posed over the relaxed (quasiconvex) energy they are simply where the minimum is. It is a standalone package that imports only NumPy and CasADi — it knows nothing about aerodynamics or any kite file format, which is what lets its element physics be validated against closed-form solutions before any of it touches a coupled run.",
+    bullets: [
+      "Wireframe fidelity: cables, tension-only lines, frictionless pulleys",
+      "Full fidelity: adds inflatable tube beams and a wrinkling membrane canopy",
+      "One mapped kernel per element type — 9k DOF solves in ~6 s, mesh-independent iteration count",
+      "Validated against the Euler elastica, roll-up, Bathe & Bolourchi, and a measured hanging kite"
+    ],
+    image: "img/matched-sweep-shapes.png",
+    caption: "Converged full-fidelity states across the actuation range. Top, across the span: depower rotates every rib's chord, taking the trimmed angle of attack from 11.8° to 4.8°. Bottom, from the front: steering rolls the wing and turns the trim. Canopy triangles carry the membrane's own regime — slack, wrinkled, taut — and about 70% of this canopy is in a tension field at every setting. Billow's own demonstration and validation figures live in its documentation.",
+    links: [REPO_BILLOW, DOCS_BILLOW, PAPER_AERO]
   },
   "model-reduction": {
     title: "Model Reduction & Aero Identification",
-    text: "The reduced-order model is not assumed — it is identified from the high-fidelity aero-structural model. AWETrim sweeps the coupled VSM–structural model over angle of attack and control inputs, then fits compact quasi-steady aerodynamic coefficient relations to those sweep results. The same fit can be run on EKF flight-data reconstructions, so an aerostructural-identified ROM can be compared directly against an experiment-identified one. This model-reduction / system-identification step is what turns the expensive aero-structural model (left) into the fast ROM (right) used for trajectory simulation and optimisation.",
+    text: "The reduced-order model is not assumed — it is identified from the high-fidelity aero-structural model. AWETrim sweeps the coupled VSM–Billow model over angle of attack and control inputs, then fits compact quasi-steady aerodynamic coefficient relations to those sweep results. The same fit can be run on EKF flight-data reconstructions, so an aerostructural-identified ROM can be compared directly against an experiment-identified one. This model-reduction / system-identification step is what turns the expensive aero-structural model (above) into the fast ROM (below) used for trajectory simulation and optimisation.",
     bullets: [
       "Aerostructural (or EKF flight-data) sweeps over angle of attack, control inputs and airspeed",
       "Fits quasi-steady CL / CD / CS coefficient relations (rom_config.yaml)",
@@ -168,12 +194,24 @@ const CONTENT = {
     links: [PAPER_EKF, REPO_AWERA]
   },
   "trajectory-parametrization": {
-    title: "Trajectory Parametrization",
-    text: "Trajectory parametrisation defines the flight path in the shared course frame using B-spline path patterns, whose control points and parameters become the optimisation variables for power-cycle analysis (Cayon, van Deursen & Schmehl, WES 2026; Cayon & Schmehl, Torque 2026). A full pumping cycle can be represented in two ways: as a single periodic B-spline closing the whole cycle, or by splitting it into a parametrised reel-out production phase — downloop, uploop or helix — followed by a simplified reel-in phase. Only the split reel-out / simplified reel-in representation is currently implemented.",
+    title: "Trajectory Optimisation",
+    text: "Trajectory optimisation runs on the reduced-order model. The parametrisation defines the flight path in the shared course frame using B-spline path patterns, whose control points and parameters become the optimisation variables for power-cycle analysis (Cayon, van Deursen & Schmehl, WES 2026; Cayon & Schmehl, Torque 2026). A full pumping cycle can be represented in two ways: as a single periodic B-spline closing the whole cycle, or by splitting it into a parametrised reel-out production phase — downloop, uploop or helix — followed by a simplified reel-in phase. Only the split reel-out / simplified reel-in representation is currently implemented.",
     bullets: ["B-spline path patterns in the course frame as optimisation variables", "Whole cycle as a single periodic B-spline", "Or split into a parametrised reel-out (downloop/uploop/helix) + simplified reel-in — the only one currently implemented"],
     image: "img/b-spline.png",
     caption: "B-spline parametrisation of a crosswind figure-of-eight in the azimuth–elevation (φ, β) plane: a periodic B-spline (orange) with its control points (blue) reproduces the baseline Lissajous pattern (black).",
     links: [PAPER_ROM, PAPER_OPT, REPO_AWETRIM]
+  },
+  "flight-data-processing": {
+    title: "Flight-Data Processing",
+    text: "Alongside the model chain, AWETrim processes measured flights. The experimental/ module preprocesses raw flight logs into the layout the EKF-AWE filter expects and runs the reconstruction (scripts/experimental/run_analysis_ekf.py); the identification/ module turns the reconstructed states into a tidy aerodynamic dataset with the same schema as the aero-structural sweeps. That shared schema is what lets the reduced-order model be identified from flight data and from the VSM–Billow model with the same fit, and compared one against the other.",
+    bullets: [
+      "Flight-log preprocessing into the EKF-AWE input layout (experimental/)",
+      "EKF reconstruction of states, wind and aerodynamic coefficients",
+      "One aerodynamic dataset schema for flight data and aero-structural sweeps (identification/)"
+    ],
+    image: "img/kite-trajectory.png",
+    caption: "Reconstructed kite flight trajectory from the EKF-AWE pipeline.",
+    links: [REPO_EKF, PAPER_EKF, PAPER_ROM, REPO_AWETRIM]
   },
   "operational-optimization": {
     title: "Operational Optimization",

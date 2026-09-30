@@ -26,55 +26,84 @@
         <section class="group-card inputs-group">
           <button class="group-title" data-id="experimental-flight-data">Inputs</button>
           <div class="node-grid node-grid-inputs">
-            <button class="node" data-id="experimental-flight-data">Experimental<br>Flight Data</button>
-            <button class="node" data-id="system-kite">System / Kite<br>Characteristics</button>
-            <button class="node" data-id="environmental-conditions">Environmental<br>Conditions</button>
-            <button class="node" data-id="operational-constraints">Operational<br>Constraints</button>
+            <button class="node" data-id="experimental-flight-data">Experimental<br>flight data</button>
+            <button class="node" data-id="system-kite">System / kite<br>characteristics</button>
+            <button class="node" data-id="environmental-conditions">Environmental<br>conditions</button>
+            <button class="node" data-id="operational-constraints">Operational<br>constraints</button>
           </div>
         </section>
 
-        <section class="reconstruction-card">
-          <button class="section-title" data-id="ekf-awe">Experimental reconstruction</button>
-          <div class="node-grid node-grid-reconstruction">
-            <button class="node node-emphasis" data-id="ekf-awe">EKF-AWE<br><span>Experimental Reconstruction</span></button>
-            <button class="node" data-id="wind-state-estimation">Wind and State<br>Estimation</button>
-          </div>
-        </section>
+        <div class="connector" aria-hidden="true"><span class="v-arrow"></span></div>
 
         <section class="framework-shell">
-          <button class="shell-title" data-id="awetrim"><strong>AWETrim</strong><span>Quasi-Steady Multi-Fidelity Framework for Soft Kites</span></button>
+          <button class="shell-title" data-id="awetrim"><strong>AWETrim</strong><span>Quasi-steady multi-fidelity framework for soft kites</span></button>
 
-          <div class="framework-grid">
-            <button class="node wide" data-id="shared-kinematics">Shared Kinematics</button>
-
-            <div class="model-row">
-              <button class="node" data-id="aero-structural">Aero-Structural Kite<br>Model</button>
-              <button class="bridge-arrow" data-id="model-reduction"
-                aria-label="Model reduction and aero identification: the reduced-order model is derived from the aero-structural model">
-                <span class="bridge-arrow-label">model reduction<br><span class="bridge-sub">aero identification</span></span>
-                <span class="bridge-arrow-line" aria-hidden="true"></span>
-              </button>
-              <button class="node" data-id="rom">Reduced-Order Kite<br>Model</button>
-            </div>
-
-            <div class="support-row">
-              <button class="node" data-id="tether-models">Tether Models</button>
-              <button class="node" data-id="winch-models">Winch Models</button>
-              <button class="node" data-id="wind-models">Wind Models</button>
-            </div>
-
-            <button class="node wide" data-id="trajectory-parametrization">Trajectory Parametrization</button>
+          <div class="solver-pair" aria-label="The aero-structural model: VSM and Billow, coupled">
+            <button class="node node-solver" data-id="vsm"><strong>VSM</strong><span>aerodynamics</span></button>
+            <button class="coupling-arrow" data-id="aero-structural"
+              aria-label="Aero-structural coupling of VSM and Billow">
+              <span class="h-arrow h-arrow-both" aria-hidden="true"></span>
+              <span class="flow-label">coupled</span>
+            </button>
+            <button class="node node-solver" data-id="billow"><strong>Billow</strong><span>structural deformation</span></button>
           </div>
+
+          <button class="flow-arrow" data-id="model-reduction"
+            aria-label="Identified aerodynamics: the reduced-order model is identified from the aero-structural model">
+            <span class="v-arrow" aria-hidden="true"></span>
+            <span class="flow-label">identified aerodynamics</span>
+          </button>
+
+          <div class="rom-row">
+            <div class="system-models" aria-label="System models the reduced-order model is built with">
+              <span class="system-models-label">system models</span>
+              <button class="node node-chip" data-id="tether-models">Tether</button>
+              <button class="node node-chip" data-id="winch-models">Winch</button>
+              <button class="node node-chip" data-id="wind-models">Wind</button>
+            </div>
+            <span class="h-arrow" aria-hidden="true"></span>
+            <button class="node node-block" data-id="rom"><strong>Reduced-order model</strong><span>point-mass power model in the course reference frame</span></button>
+          </div>
+
+          <div class="flow-arrow flow-arrow-static" aria-hidden="true"><span class="v-arrow"></span></div>
+
+          <button class="node node-block" data-id="trajectory-parametrization"><strong>Trajectory optimisation</strong><span>B-spline path parametrisation · CasADi / IPOPT</span></button>
+
+          <p class="shell-notes">
+            <button class="note-link" data-id="flight-data-processing">(+ flight-data processing)</button>
+            <button class="note-link" data-id="shared-kinematics">(shared course-frame kinematics)</button>
+          </p>
         </section>
 
-        <section class="group-card applications-group">
-          <button class="group-title" data-id="operational-optimization">Outputs and applications</button>
-          <div class="node-grid node-grid-apps">
-            <button class="node" data-id="operational-optimization">Operational<br>Optimization</button>
-            <button class="node" data-id="performance-assessment">Performance<br>Assessment</button>
-            <button class="node" data-id="design-analysis">Design and Model<br>Analysis</button>
+        <div class="bottom-row">
+          <div class="bottom-col">
+            <div class="connector connector-up" aria-hidden="true">
+              <span class="v-arrow v-arrow-up v-arrow-dashed"></span>
+              <span class="flow-label">validation and model identification</span>
+            </div>
+            <section class="reconstruction-card">
+              <button class="section-title" data-id="ekf-awe">Experimental reconstruction</button>
+              <div class="node-grid node-grid-reconstruction">
+                <button class="node node-emphasis" data-id="ekf-awe"><strong>EKF-AWE</strong><span>experimental reconstruction</span></button>
+                <button class="node" data-id="wind-state-estimation">Wind and state<br>estimation</button>
+              </div>
+            </section>
           </div>
-        </section>
+          <div class="bottom-col">
+            <div class="connector" aria-hidden="true">
+              <span class="v-arrow"></span>
+              <span class="flow-label">optimal paths and cycle power</span>
+            </div>
+            <section class="group-card applications-group">
+              <button class="group-title" data-id="operational-optimization">Outputs and applications</button>
+              <div class="node-grid node-grid-apps">
+                <button class="node" data-id="operational-optimization">Operational<br>optimisation</button>
+                <button class="node" data-id="performance-assessment">Performance<br>assessment</button>
+                <button class="node" data-id="design-analysis">Design and<br>model analysis</button>
+              </div>
+            </section>
+          </div>
+        </div>
       </div>
       <p class="hint">Each block is clickable. Selecting one updates the panel on the right with a description, a figure, and links to the relevant repository and publication.</p>
     </section>
@@ -149,12 +178,8 @@
             <span>Trained machine-learning (Extra-Trees) models predicting LEI airfoil aerodynamics for the VSM</span>
           </li>
           <li>
-            <a href="https://github.com/awegroup/Particle_System_Simulator" target="_blank" rel="noopener">Particle System Simulator (PSS)</a>
-            <span>Particle-spring structural solver for flexible membrane kites</span>
-          </li>
-          <li>
-            <a href="https://github.com/awegroup/kite_fem" target="_blank" rel="noopener">kite_fem</a>
-            <span>Finite-element structural solver, alternative to PSS in the coupling</span>
+            <a href="https://github.com/awegroup/Billow" target="_blank" rel="noopener">Billow</a>
+            <span>Minimum-energy structural solver: cables, pulleys, inflatable beams and wrinkling membranes</span>
           </li>
           <li>
             <a href="https://github.com/ocayon/EKF-AWE" target="_blank" rel="noopener">EKF-AWE</a>

@@ -2,12 +2,18 @@
 
 This is a static clickable website for the AWETrim computational workflow.
 
-This version does not use the uploaded PDF or a diagram image. The framework is drawn directly with HTML and CSS. It uses a grouped layout:
+The framework is drawn directly with HTML and CSS, in the style of the AWETrim
+overview figure (`img/awetrim-overview.png`): white boxes with dark outlines inside
+one rounded AWETrim frame, with arrows between them. Top to bottom:
 
-- Inputs
-- Experimental reconstruction
-- AWETrim core framework
-- Outputs and applications
+- Inputs, feeding the AWETrim frame
+- AWETrim core: VSM <-> Billow (the aero-structural coupling), "identified
+  aerodynamics" down into the reduced-order model (fed by the tether, winch and
+  wind system models), down into trajectory optimisation; flight-data processing
+  and the shared kinematics as notes at the bottom of the frame
+- Experimental reconstruction (dashed "validation and model identification"
+  arrow up into the frame) and Outputs and applications (arrow out of the frame),
+  side by side
 
 Each block is clickable. Clicking a block updates the information panel on the right.
 
@@ -63,9 +69,10 @@ The dark-text funding band above the footer carries the MERIDIONAL logo, the
 - EU emblem: `img/eu-funded.svg` — a self-contained SVG (no external hotlink). The
   star ring and text colour are generated; edit the SVG directly to recolour.
 
-The "model reduction / aero identification" arrow in the framework box is a
-clickable block (`data-id="model-reduction"`) whose panel text lives in
-`content.js`; it explains that the ROM is identified from the aero-structural model.
+The arrows inside the frame are clickable too: the VSM <-> Billow arrow opens the
+aero-structural model (`data-id="aero-structural"`) and the "identified
+aerodynamics" arrow opens the model reduction (`data-id="model-reduction"`); their
+panel text lives in `content.js`.
 
 ## Edit the layout
 
@@ -73,10 +80,13 @@ Most layout changes are in `style.css`.
 
 Useful sections:
 
+- `:root` holds the diagram colours (`--frame`, `--arrow`, `--navy`, `--shell-fill`).
 - `.node-grid-inputs` controls the input block layout.
 - `.framework-shell` controls the AWETrim main box.
-- `.model-row` controls the Aero-Structural Model and Reduced-Order Model row.
-- `.support-row` controls Tether, Winch and Wind Models.
+- `.solver-pair` controls the VSM <-> Billow row.
+- `.rom-row` controls the system-model chips and the reduced-order model.
+- `.v-arrow` / `.h-arrow` draw the arrows (`-up`, `-dashed`, `-both` variants).
+- `.bottom-row` controls the reconstruction and outputs cards under the frame.
 - `.node-grid-apps` controls the outputs/applications block.
 
 ## Publish on GitHub Pages
