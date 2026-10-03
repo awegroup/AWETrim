@@ -520,6 +520,8 @@ class ReeloutSession:
         ``sim_parameters["min_azimuth_amplitude"]`` [rad], the one-row
         amplitude floor in ``PhaseParameterized.opti_phase``; ``symmetric``
         becomes ``sim_parameters["symmetric_pattern"]``, its mirror-symmetry
+        rows; ``climb_angle_max`` [deg] becomes
+        ``sim_parameters["max_climb_angle"]`` [rad], the climb-angle ceiling
         rows. Other override entries (e.g. ``speed_radial`` from the winch
         params) are untouched.
         """
@@ -574,6 +576,14 @@ class ReeloutSession:
         else:
             sim_parameters.pop("symmetric_pattern", None)
 
+        climb = limits.get("climb_angle_max")
+        if climb:
+            if not 0.0 < float(climb) < 90.0:
+                raise ValueError("climb_angle_max must be in (0, 90)")
+            sim_parameters["max_climb_angle"] = float(np.radians(climb))
+        else:
+            sim_parameters.pop("max_climb_angle", None)
+
     def pattern_limits(self) -> Optional[Dict[str, Any]]:
         """The pattern limits in force, as the degree-valued struct
         (None when none of them is set -- optimizer defaults apply)."""
@@ -596,6 +606,9 @@ class ReeloutSession:
             out["elevation_amplitude_max"] = float(np.degrees(el_amplitude))
         if sim_parameters.get("symmetric_pattern"):
             out["symmetric"] = True
+        climb = sim_parameters.get("max_climb_angle")
+        if climb:
+            out["climb_angle_max"] = float(np.degrees(climb))
         return out or None
 
     @staticmethod

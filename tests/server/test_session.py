@@ -815,6 +815,12 @@ def test_apply_pattern_limits_maps_degrees_onto_coefficient_bounds():
     ReeloutSession._apply_pattern_limits(sim, {"symmetric": True})
     assert sim["symmetric_pattern"] is True
     assert "min_azimuth_amplitude" not in sim  # replaced as a whole
+    assert "max_climb_angle" not in sim
+    ReeloutSession._apply_pattern_limits(sim, {"climb_angle_max": 45.0})
+    assert sim["max_climb_angle"] == pytest.approx(np.radians(45.0))
+    assert "symmetric_pattern" not in sim  # replaced as a whole
+    with pytest.raises(ValueError, match="climb_angle_max"):
+        ReeloutSession._apply_pattern_limits(sim, {"climb_angle_max": 90.0})
     # {} clears the pattern limits but not the winch entry
     ReeloutSession._apply_pattern_limits(sim, {})
     assert sim == {"opti_limits_override": {"speed_radial": [-10.0, 5.0]}}
@@ -850,6 +856,14 @@ def test_pattern_limits_round_trip_init_step_and_replies(patched_session):
     reply = sess.step_blocking(pattern_limits={"symmetric": True})
     assert reply["pattern_limits"] == {"symmetric": True}
     assert sess.phase.pattern_config["sim_parameters"]["symmetric_pattern"] is True
+
+    phase.results.append(_fake_result())
+    phase.release.set()
+    reply = sess.step_blocking(pattern_limits={"climb_angle_max": 45.0})
+    assert reply["pattern_limits"] == {"climb_angle_max": pytest.approx(45.0)}
+    assert sess.phase.pattern_config["sim_parameters"]["max_climb_angle"] == pytest.approx(
+        np.radians(45.0)
+    )
 
     phase.results.append(_fake_result())
     phase.release.set()

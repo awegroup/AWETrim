@@ -2106,6 +2106,95 @@ class PhaseParameterized(TimeSeries):
                         "optimized"
                     )
 
+        # --- Climb-angle ceiling
+        # ``sim_parameters["max_climb_angle"]`` [rad] caps how steeply the path
+        # may CLIMB in the azimuth/elevation plane: wherever the elevation
+        # rises along the flight direction (s increases with time, s_dot > 0),
+        # d(elevation) <= tan(gamma) * |d(azimuth)|. Descending is free, so
+        # the vertical dives at the sides of a figure-eight stay allowed. A
+        # kite cannot follow a path that rises much steeper than 45 deg: it
+        # loses speed and force on the climb. Written smooth, without abs or
+        # a branch, as
+        #     max(d_el, 0)^2 - tan(gamma)^2 * d_az^2 <= 0,
+        # whose max(., 0)^2 has a continuous derivative. The slopes are
+        # central differences of the spline on ``turn_radius_subsamples``
+        # points per node interval (both are linear in the coefficients), the
+        # rows scaled by the typical slope so they stay O(1). Plain
+        # azimuth/elevation slope, no cos(elevation) factor on the azimuth.
+        # Off by default: the NLP is unchanged when the key is absent or 0.
+        max_climb_angle = float(sim_params.get("max_climb_angle") or 0.0)
+        if not 0.0 <= max_climb_angle < 0.5 * np.pi:
+            raise ValueError(
+                f"max_climb_angle must be in [0, pi/2), got {max_climb_angle}"
+            )
+        if max_climb_angle > 0.0:
+            tan2 = float(np.tan(max_climb_angle)) ** 2
+            # s_grid may be symbolic (an optimized s range): slice, no numpy.
+            ds_nodes = s_grid[1:] - s_grid[:-1]  # N entries
+            h = 0.01 * ds_nodes
+            # Typical slope of the pattern per unit s (angular path length /
+            # s-span) on the numeric start pattern, as for ``_sigma_ref``.
+            try:
+                _pat0 = create_pattern_from_dict(
+                    self.pattern_config["pattern_type"],
+                    self.pattern_config["path_parameters"],
+                )
+                _s0 = float(self.pattern_config["sim_parameters"]["start_angle"])
+                _s1 = float(self.pattern_config["sim_parameters"]["end_angle"])
+                _ss = np.linspace(_s0, _s1, 400)
+                _r0 = float(self.pattern_config["path_parameters"].get("r0", 1.0))
+                _ph = np.asarray(_pat0.azimuth(_r0, _ss)).ravel()
+                _be = np.asarray(_pat0.elevation(_r0, _ss)).ravel()
+                _slope_ref = float(
+                    max(
+                        np.sum(np.hypot(np.diff(_ph), np.diff(_be)))
+                        / max(_s1 - _s0, 1e-9),
+                        1e-3,
+                    )
+                )
+            except Exception:
+                _slope_ref = 1.0
+            climb_rows = []
+            for k in range(turn_radius_subsamples):
+                s_k = s_grid[:-1] + (k / turn_radius_subsamples) * ds_nodes
+                r_nodes = opti_vars["distance_radial"]
+                d_az = (
+                    pattern.azimuth(r_nodes, s_k + h) - pattern.azimuth(r_nodes, s_k - h)
+                ) / (2.0 * h)
+                d_el = (
+                    pattern.elevation(r_nodes, s_k + h)
+                    - pattern.elevation(r_nodes, s_k - h)
+                ) / (2.0 * h)
+                climb_rows.append(
+                    (ca.fmax(d_el, 0.0) ** 2 - tan2 * d_az**2) / _slope_ref**2
+                )
+            climb_row = ca.vertcat(*climb_rows)
+            if isinstance(climb_row, ca.MX) and ca.symvar(climb_row):
+                opti.subject_to(climb_row <= 0.0)
+                _report_ineq("climb_angle_row", climb_row, (-np.inf, 0.0), "-")
+                print(
+                    "Climb-angle ceiling: "
+                    f"{np.degrees(max_climb_angle):.1f} deg on "
+                    f"{turn_radius_subsamples} sample(s) per node interval"
+                )
+            else:
+                # The pattern is fixed: the ceiling is a plain check on it.
+                value = float(
+                    np.max(
+                        np.asarray(
+                            ca.evalf(climb_row)
+                            if isinstance(climb_row, ca.MX)
+                            else ca.DM(climb_row)
+                        )
+                    )
+                )
+                if value > 1e-9:
+                    raise ValueError(
+                        "max_climb_angle "
+                        f"({np.degrees(max_climb_angle):.1f} deg) is violated "
+                        "by the fixed pattern and C_phi/C_beta are not optimized"
+                    )
+
         # Constraint init and end azimuth
         # azimuth = pattern.azimuth(opti_vars["distance_radial"], s_grid[:-1])
         # opti.subject_to(azimuth[0] == 0)

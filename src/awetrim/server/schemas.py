@@ -436,6 +436,17 @@ class PatternLimits(BaseModel):
         "even). Removes the lopsided optima of the multi-modal solve. "
         "false/omitted = off.",
     )
+    climb_angle_max: Optional[float] = Field(
+        default=None,
+        ge=0,
+        lt=90,
+        description="Wherever the path CLIMBS (elevation rising along the "
+        "flight direction), its slope in the azimuth/elevation plane stays "
+        "<= this [deg]: d(elevation) <= tan(value) * |d(azimuth)|, plain "
+        "angles, no cos(elevation) factor. Descending is free, so the "
+        "vertical dives at the sides stay allowed. One smooth row per "
+        "turn-radius sample. 0/omitted = off.",
+    )
 
     @model_validator(mode="after")
     def _check_elevation_band(self):
