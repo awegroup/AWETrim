@@ -1476,6 +1476,15 @@ class PhaseParameterized(TimeSeries):
         # editing the global DEFAULT_OPTI_LIMITS.
         for _name, _bounds in (sim_params.get("opti_limits_override") or {}).items():
             limits[_name] = tuple(_bounds)
+        # The tether length is a physical ceiling, not a tunable bound: an
+        # override may tighten the radial range but never lift it past the
+        # tether (the radial chord cannot exceed the line it is made of).
+        tether_max = (
+            getattr(self.kite_model, "hardware_limits", None) or {}
+        ).get("_max_tether_length")
+        if tether_max is not None:
+            lb, ub = limits["distance_radial"]
+            limits["distance_radial"] = (lb, min(float(ub), float(tether_max)))
 
         pattern = create_pattern_from_dict(
             self.pattern_config_opti["pattern_type"], path_params
