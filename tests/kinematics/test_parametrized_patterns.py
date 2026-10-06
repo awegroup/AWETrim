@@ -273,6 +273,43 @@ def test_full_cycle_angles_lobe_bow_freezes_phase_and_lands_on_lobe():
         full_cycle_angles(s, **{**kwargs, "psi_exit": None})
 
 
+@pytest.mark.parametrize("n_halves", [3, 4])
+def test_full_cycle_angles_dubins_reelin_is_bounded_closed_and_below_apex(n_halves):
+    r0, radius, peak = 220.0, 40.0, 1.25
+    kwargs = dict(
+        bow_shape="dubins",
+        n_halves=n_halves,
+        r0=r0,
+        reelout_fraction=0.64,
+        beta0=0.72,
+        beta_amp0=0.26,
+        az_amp0=0.70,
+        beta_reelin_peak=peak,
+        reelin_turn_radius=radius,
+        reelin_min_turn_radius=radius,
+        reelin_center=0.0,
+    )
+    s = np.linspace(0.0, 1.0, 4000, endpoint=False)
+    az, el = full_cycle_angles(s, **kwargs)
+    az_seam, el_seam = full_cycle_angles(np.array([0.0, 1.0]), **kwargs)
+    np.testing.assert_allclose(az_seam[0], az_seam[1], atol=1e-9)
+    np.testing.assert_allclose(el_seam[0], el_seam[1], atol=1e-9)
+    # Continuous everywhere, peaks at the apex, stays in front of the station.
+    step = np.hypot(np.diff(np.r_[az, az[0]]) * np.cos(el), np.diff(np.r_[el, el[0]]))
+    assert step.max() < 5.0 * np.median(step)
+    assert el.max() <= peak + 0.02
+    assert np.abs(az).max() < 0.5 * np.pi
+    # Reel-in window (u in [f, 1] around s = 0): physical curvature within the
+    # arc radius -- the reel-out figures are faired later, not here.
+    q = np.column_stack((np.cos(az) * np.cos(el), np.sin(az) * np.cos(el), np.sin(el)))
+    ds = 1.0 / s.size
+    q_s = (np.roll(q, -1, 0) - np.roll(q, 1, 0)) / (2 * ds)
+    q_ss = (np.roll(q, -1, 0) - 2 * q + np.roll(q, 1, 0)) / ds**2
+    kappa = np.linalg.norm(np.cross(q_s, q_ss), axis=1) / np.linalg.norm(q_s, axis=1) ** 3 / r0
+    window = np.abs((s + 0.5) % 1.0 - 0.5) < 0.18 - 0.01
+    assert kappa[window].max() <= 1.05 / radius
+
+
 def test_periodic_bspline_local_support_is_exact_on_its_interval_and_sparse():
     """``PeriodicBSpline.local_support(k)`` keeps only the 4 basis terms of
     knot interval k: exact (value, d/ds, d2/ds2) wherever

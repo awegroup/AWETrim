@@ -134,6 +134,7 @@ from awetrim.identification.controls import (  # noqa: E402
     flight_dataframe_depower_to_power_tape_length,
 )
 from awetrim.kinematics.parametrized_patterns import (  # noqa: E402
+    DUBINS_TURN_RADIUS_M,
     LOBE_HANDOVER_PHASE,
     design_reelin_spline,
     fair_periodic_spline_to_curvature_limit,
@@ -645,6 +646,9 @@ def _artificial_path_parameters(art, r0=None):
         psi_exit=art.get("psi_exit"),
         bow_shape=art.get("bow_shape", "sym"),
         lobe_handover_phase=art.get("lobe_handover_phase", LOBE_HANDOVER_PHASE),
+        n_halves=art.get("n_halves"),
+        reelin_turn_radius=art.get("reelin_turn_radius", DUBINS_TURN_RADIUS_M),
+        reelin_min_turn_radius=art.get("reelin_min_turn_radius"),
         downloops=True,
     )
 
@@ -797,14 +801,17 @@ def build_config(
             # the frozen exit/entry handover states -- the window control
             # points solve a bending-energy NLP that hits beta_reelin_peak
             # with curvature bounded as a hard constraint. Knobs and the
-            # figures are never changed.
-            path_parameters, des = design_reelin_spline(
-                path_parameters,
-                float(curvature_limit),
-                reelin_center=art.get("reelin_center", 0.5),
-                reelout_fraction=art["reelout_fraction"],
-                peak_elevation=art.get("beta_reelin_peak"),
-            )
+            # figures are never changed. (bow_shape "dubins" designs its
+            # reel-in already: no sketch to repair, only the fairing below.)
+            des = {"changed": False}
+            if art.get("bow_shape") != "dubins":
+                path_parameters, des = design_reelin_spline(
+                    path_parameters,
+                    float(curvature_limit),
+                    reelin_center=art.get("reelin_center", 0.5),
+                    reelout_fraction=art["reelout_fraction"],
+                    peak_elevation=art.get("beta_reelin_peak"),
+                )
             if des["changed"]:
                 print(
                     f"[design] reel-in designed between the handover states: "
@@ -1037,6 +1044,10 @@ def plot_seed_path(config, art=None, arr=None, save_path=None, show=False):
             psi_exit=art.get("psi_exit"),
             bow_shape=art.get("bow_shape", "sym"),
             lobe_handover_phase=art.get("lobe_handover_phase", LOBE_HANDOVER_PHASE),
+            n_halves=art.get("n_halves"),
+            r0=r0,
+            reelin_turn_radius=art.get("reelin_turn_radius", DUBINS_TURN_RADIUS_M),
+            reelin_min_turn_radius=art.get("reelin_min_turn_radius"),
             downloops=True,
         )
         ax_path.plot(
@@ -1941,6 +1952,26 @@ def main(
     print(f"Kite: {KITE_NAME} ({SYSTEM_CONFIG_PATH})")
     if cross_at is not None:
         ARTIFICIAL["reelin_cross_pos"] = float(cross_at)
+    if reelin_shape == "dubins":
+        # Designed reel-in: --loops is taken as-is (visible reel-out lobes
+        # after the landing half-lobe); n_loops only sizes the spline (M).
+        # Its arcs may tighten down to the kite's turn-radius floor.
+        if not loops:
+            print("--reelin dubins needs --loops")
+            return 1
+        ARTIFICIAL["bow_shape"] = "dubins"
+        ARTIFICIAL["n_halves"] = int(loops)
+        ARTIFICIAL["n_loops"] = (0.5 * int(loops) + 1.0) / float(
+            ARTIFICIAL["reelout_fraction"]
+        )
+        if MIN_TURN_RADIUS:
+            ARTIFICIAL["reelin_min_turn_radius"] = float(MIN_TURN_RADIUS)
+        print(
+            f"[shape] reel-in: dubins -- {int(loops)} visible lobes, arcs "
+            f"{ARTIFICIAL.get('reelin_turn_radius', DUBINS_TURN_RADIUS_M):g} m "
+            f"down to {ARTIFICIAL.get('reelin_min_turn_radius') or 'half that'} m"
+        )
+        loops = None
     if loops:
         # CLI override in the WYSIWYG unit: half figure-eights (lobes) VISIBLE
         # during reel-out. Derive the internal continuous full-period count
@@ -2152,7 +2183,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--reelin",
         dest="reelin_shape",
-        choices=("smooth", "cross"),
+        choices=("smooth", "cross", "dubins"),
         default=None,
         help="How the reel-in gets from the peel-off to the tangential "
         "landing (the sides themselves are not a choice: --loops parity "
@@ -2160,7 +2191,11 @@ if __name__ == "__main__":
         "whole cycle). 'smooth' (default): top loop on the exit side, one "
         "clean arc, no crossing. 'cross': up the middle, out to the "
         "opposite side near the top, DOWN parked on that side, then cross "
-        "az = 0 low (see --cross-at) to the exit azimuth",
+        "az = 0 low (see --cross-at) to the exit azimuth. 'dubins': the "
+        "reel-in is DESIGNED instead of faded out -- bounded-curvature "
+        "Dubins paths on the sphere from the peel-off to a level apex at "
+        "beta_reelin_peak and down to the landing (needs --loops; see "
+        "parametrized_patterns.dubins_full_cycle_angles)",
     )
     parser.add_argument(
         "--cross-at",

@@ -1245,6 +1245,292 @@ def _pinned_handover_edges(
     return psi_in_edge, psi_out_edge, gap
 
 
+# ``bow_shape="dubins"`` reel-in: default turn radius (m) of the arcs.
+DUBINS_TURN_RADIUS_M = 60.0
+# Largest fraction of the reel-in window at each end over which the path
+# speed eases from the figure speed to the window's constant middle speed
+# (shortened automatically when the reel-in is short, so it never stalls).
+DUBINS_SPEED_BLEND = 0.15
+# Reel-in geometry by its inputs: the radius/apex scan costs ~1 min and the
+# seed generator rebuilds the same shape while it fits the depower depth.
+_DUBINS_REELIN_CACHE = {}
+
+
+def _sphere_frame(azimuth, elevation, tangent):
+    """Orthonormal frame [q, t, q x t] (columns) at a point of the unit sphere.
+
+    ``q`` is the radial unit vector in the same convention as the path
+    curvature checks (x downwind, z up); ``tangent`` is any vector along the
+    heading and is projected onto the tangent plane.
+    """
+    q = np.array(
+        [
+            np.cos(azimuth) * np.cos(elevation),
+            np.sin(azimuth) * np.cos(elevation),
+            np.sin(elevation),
+        ]
+    )
+    t = np.asarray(tangent, dtype=float)
+    t = t - q * float(q @ t)
+    t = t / np.linalg.norm(t)
+    return np.column_stack((q, t, np.cross(q, t)))
+
+
+def _geodesic_step(k, sigma):
+    """Body-frame rotation after arc length ``sigma`` at geodesic curvature ``k``.
+
+    On the unit sphere the frame F = [q, t, b] obeys dq = t, dt = -q + k b,
+    db = -k t per unit arc length, i.e. F(sigma) = F0 expm(sigma A) with A the
+    skew generator of the axis (k, 0, 1) -- a rotation, evaluated in closed
+    form (Rodrigues). k > 0 turns toward b = q x t (left, seen from outside
+    the sphere).
+    """
+    rate = np.hypot(k, 1.0)
+    a = np.array([k, 0.0, 1.0]) / rate
+    K = np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
+    th = sigma * rate
+    return np.eye(3) + np.sin(th) * K + (1.0 - np.cos(th)) * (K @ K)
+
+
+def _dubins_sphere_leg(F0, F1, k):
+    """Shortest arc-straight-arc (CSC) path between two sphere frames.
+
+    Each arc turns at unit-sphere geodesic curvature ``k`` (left or right),
+    the middle piece is a great circle. The three lengths are found by a
+    multi-start least-squares shooting on the exact motion. Returns every
+    converged type (LSL, RSR, LSR, RSL; the shortest solution of each) as
+    ``[(curvature, length), ...]`` piece lists, shortest first -- empty when
+    none joins the frames.
+    """
+    from scipy.optimize import least_squares
+
+    def residual(x, turns):
+        F = F0
+        for kk, ln in zip(turns, x):
+            F = F @ _geodesic_step(kk, ln)
+        return np.concatenate((F[:, 0] - F1[:, 0], F[:, 1] - F1[:, 1]))
+
+    chord = float(np.arccos(np.clip(F0[:, 0] @ F1[:, 0], -1.0, 1.0)))
+    full_turn = 2.0 * np.pi / k
+    found = []
+    for s1 in (1.0, -1.0):
+        for s2 in (1.0, -1.0):
+            turns = (s1 * k, 0.0, s2 * k)
+            best = None
+            for a in (0.02, 0.2, 0.5):
+                for c in (0.02, 0.2, 0.5):
+                    x0 = [a * full_turn, max(chord, 1e-3), c * full_turn]
+                    sol = least_squares(
+                        residual,
+                        x0,
+                        args=(turns,),
+                        bounds=([0.0, 0.0, 0.0], [full_turn, np.inf, full_turn]),
+                        xtol=1e-12,
+                        ftol=1e-12,
+                        gtol=1e-12,
+                    )
+                    if np.max(np.abs(sol.fun)) > 1e-7:
+                        continue
+                    total = float(np.sum(sol.x))
+                    if best is None or total < best[0]:
+                        best = (total, list(zip(turns, sol.x)))
+            if best is not None:
+                found.append(best)
+    return [pieces for _, pieces in sorted(found, key=lambda b: b[0])]
+
+
+def _sample_sphere_path(F0, pieces, sigma):
+    """Unit-sphere positions at arc lengths ``sigma`` along ``pieces``."""
+    sigma = np.asarray(sigma, dtype=float)
+    out = np.empty((sigma.size, 3))
+    F_start, s_start = F0, 0.0
+    ends = np.cumsum([ln for _, ln in pieces])
+    ends[-1] = np.inf  # round-off past the end stays on the last piece
+    for (k, ln), s_end in zip(pieces, ends):
+        for i in np.flatnonzero((sigma >= s_start) & (sigma <= s_end)):
+            out[i] = (F_start @ _geodesic_step(k, sigma[i] - s_start))[:, 0]
+        F_start = F_start @ _geodesic_step(k, ln)
+        s_start = s_start + ln
+    return out
+
+
+def dubins_full_cycle_angles(
+    s,
+    n_halves,
+    r0,
+    reelout_fraction=0.7,
+    beta0=0.35,
+    beta_amp0=0.12,
+    az_amp0=0.3,
+    beta_reelin_peak=1.1,
+    turn_radius=DUBINS_TURN_RADIUS_M,
+    min_turn_radius=None,
+    reelin_center=0.5,
+    downloops=True,
+):
+    """Synthetic full cycle whose reel-in is DESIGNED, not faded out.
+
+    The reel-out flies ``n_halves`` visible half figure-eights of the plain
+    figure ``az = A sin(w psi)``, ``beta = beta0 + B sin(2 psi)``: it starts
+    by landing on the left-lobe extreme heading down (``psi = 3 pi / 2``),
+    flies the lower half of that lobe, then ``n_halves`` lobes, and peels off
+    at the next centre crossing, which climbs (``psi = 2 pi + n_halves pi``)
+    -- unless that crossing heads toward the landing side (odd counts): then
+    it peels off the top of the last lobe, heading outward (the last lobe is
+    flown only up to its top).
+    The reel-in joins that peel-off state (position AND heading) to a level
+    apex at ``beta_reelin_peak`` heading toward the landing side, and on to
+    the landing state; each leg is the shortest arc-straight-arc path on the
+    sphere whose arcs turn at radius ``turn_radius`` (m, at ``r0``) -- a
+    Dubins path: bounded curvature by construction, no fade-out wiggle, no
+    hook. The apex azimuth is not a knob: it is scanned and the shortest
+    whole reel-in kept (a prescribed azimuth near the climb admits only
+    paths with a full extra loop, and at high elevation a sideways metre is
+    a lot of azimuth). Candidates that rise above the apex or wrap behind
+    the ground station are rejected. Radii from ``turn_radius`` down to
+    ``min_turn_radius`` (default half of it, steps x0.85) are tried and the
+    reel-in with the least total turning kept, the larger radius on a tie --
+    so a tighter radius is used only where it saves a detour loop.
+
+    Parametrization: ``u = (s - c - h) mod 1`` is 0 at the landing, the
+    reel-out spans ``u in [0, f]`` at a uniform figure phase rate, the
+    reel-in ``[f, 1]`` -- the same window as :func:`reelin_bump`, so the
+    synthetic depower switches in step. The reel-in path speed eases from
+    the figure speed at each end to a constant middle speed that covers the
+    path length, so the curve is C1 in ``s`` and fits the periodic spline
+    without ringing.
+    """
+    s = np.asarray(s, dtype=float).ravel()
+    omega = 1.0 if downloops else -1.0
+    f = float(reelout_fraction)
+    c = float(reelin_center)
+    h = 0.5 * (1.0 - f)
+    u = (s - c - h) % 1.0
+
+    def figure(psi):
+        az = az_amp0 * np.sin(omega * psi)
+        el = beta0 + beta_amp0 * np.sin(2.0 * psi)
+        d_az = omega * az_amp0 * np.cos(omega * psi)
+        d_el = 2.0 * beta_amp0 * np.cos(2.0 * psi)
+        return az, el, d_az, d_el
+
+    psi_land = 1.5 * np.pi
+    psi_peel = 2.0 * np.pi + int(n_halves) * np.pi
+    if np.sign(figure(psi_peel)[2]) == np.sign(figure(psi_land)[0]):
+        # This crossing heads toward the landing side: there is no room to
+        # climb, turn over the top and come back down on that same side
+        # (the shortest bounded-curvature way is a dive below the figures).
+        # Peel off the TOP of the last lobe instead, heading outward, AWAY
+        # from the landing side -- climb out, over the top, down the other
+        # side, like the even counts (and the flown cycle).
+        psi_peel -= 0.75 * np.pi
+    rate = (psi_peel - psi_land) / f
+
+    def frame_and_speed(psi):
+        az, el, d_az, d_el = figure(psi)
+        e_az = np.array([-np.sin(az), np.cos(az), 0.0])
+        e_el = np.array(
+            [-np.cos(az) * np.sin(el), -np.sin(az) * np.sin(el), np.cos(el)]
+        )
+        dq = d_az * np.cos(el) * e_az + d_el * e_el  # dq/dpsi
+        return _sphere_frame(az, el, dq), float(np.linalg.norm(dq)) * rate
+
+    F_peel, v_peel = frame_and_speed(psi_peel)
+    F_land, v_land = frame_and_speed(psi_land)
+    az_land = figure(psi_land)[0]
+    beta_apex = float(beta_reelin_peak)
+    toward = np.sign(az_land) or 1.0
+
+    def stays_below_apex(candidate):
+        # The apex must be the top and the reel-in must stay in front of the
+        # ground station: a path that is short only because it cuts over the
+        # zenith (azimuth wrapping) is not a reel-in.
+        total = sum(ln for _, ln in candidate)
+        q = _sample_sphere_path(F_peel, candidate, np.linspace(0.0, total, 200))
+        return (
+            np.arcsin(np.clip(q[:, 2], -1.0, 1.0)).max() <= beta_apex + 0.02
+            and q[:, 0].min() > 0.0
+        )
+
+    def shortest_reelin(radius):
+        k = float(r0) / float(radius)  # unit-sphere geodesic curvature
+        best = None
+        for az_apex in np.linspace(-1.2, 1.2, 25) * abs(az_land):
+            e_az = toward * np.array([-np.sin(az_apex), np.cos(az_apex), 0.0])
+            F_apex = _sphere_frame(az_apex, beta_apex, e_az)
+            ups = _dubins_sphere_leg(F_peel, F_apex, k)
+            downs = _dubins_sphere_leg(F_apex, F_land, k) if ups else []
+            for up in ups:
+                for down in downs:
+                    total = float(sum(ln for _, ln in up + down))
+                    if best is not None and total >= best[0]:
+                        continue
+                    if stays_below_apex(up + down):
+                        best = (total, up + down)
+        return None if best is None else best[1]
+
+    # Radii from ``turn_radius`` down to the floor; keep the reel-in with the
+    # least total turning (a detour loop -- flying round the outside of a
+    # lobe because a direct climb needs a tighter turn -- costs a full
+    # extra turn), the larger radius on a tie.
+    floor = float(min_turn_radius or 0.5 * turn_radius)
+    key = tuple(
+        round(float(v), 9)
+        for v in (psi_peel, r0, beta0, beta_amp0, az_amp0, beta_apex,
+                  turn_radius, floor, omega)
+    )
+    pieces = _DUBINS_REELIN_CACHE.get(key)
+    if pieces is None:
+        radii = [float(turn_radius)]
+        while radii[-1] > floor:
+            radii.append(max(0.85 * radii[-1], floor))
+        least_turning = np.inf
+        for radius in radii:
+            candidate = shortest_reelin(radius)
+            if candidate is None:
+                continue
+            turning = sum(abs(kk) * ln for kk, ln in candidate)
+            if turning < least_turning - 0.1:
+                pieces, least_turning = candidate, turning
+        if pieces is not None:
+            _DUBINS_REELIN_CACHE[key] = pieces
+    if pieces is None:
+        raise ValueError(
+            "no Dubins reel-in joins the peel-off, apex and landing states "
+            f"with a turn radius >= {floor:g} m; lower beta_reelin_peak or "
+            "widen the figures"
+        )
+    length = float(sum(ln for _, ln in pieces))
+
+    azimuth = np.empty_like(s)
+    elevation = np.empty_like(s)
+    out = u <= f
+    az, el, _, _ = figure(psi_land + rate * u[out])
+    azimuth[out], elevation[out] = az, el
+
+    # Path speed (unit sphere per unit u) across the window: the figure speed
+    # at each end, eased over ``blend`` of the window to a constant middle
+    # speed that makes the window cover exactly the path length.
+    w = 1.0 - f
+    blend = min(DUBINS_SPEED_BLEND, (length / w) / (v_peel + v_land))
+    v_mid = (length / w - 0.5 * blend * (v_peel + v_land)) / (1.0 - blend)
+    xi_fine = np.linspace(0.0, 1.0, 4001)
+    speed = (
+        v_mid
+        + (v_peel - v_mid) * (1.0 - _smoothstep(0.0, blend, xi_fine))
+        + (v_land - v_mid) * _smoothstep(1.0 - blend, 1.0, xi_fine)
+    )
+    sigma_fine = np.concatenate(
+        ([0.0], np.cumsum(0.5 * (speed[1:] + speed[:-1]) * np.diff(xi_fine)))
+    )
+    sigma_fine *= length / sigma_fine[-1]
+    xi = (u[~out] - f) / w
+    q = _sample_sphere_path(F_peel, pieces, np.interp(xi, xi_fine, sigma_fine))
+    azimuth[~out] = np.arctan2(q[:, 1], q[:, 0])
+    elevation[~out] = np.arcsin(np.clip(q[:, 2], -1.0, 1.0))
+    return azimuth, elevation
+
+
 def full_cycle_angles(
     s,
     n_loops=5,
@@ -1264,6 +1550,10 @@ def full_cycle_angles(
     bow_shape="sym",
     downloops=True,
     lobe_handover_phase=LOBE_HANDOVER_PHASE,
+    n_halves=None,
+    r0=None,
+    reelin_turn_radius=DUBINS_TURN_RADIUS_M,
+    reelin_min_turn_radius=None,
 ):
     """Azimuth/elevation samples for a *synthetic full pumping cycle*.
 
@@ -1409,6 +1699,11 @@ def full_cycle_angles(
         sign of ``az_reelin_amp`` picks the side in all three shapes.
     downloops : bool
         Traversal sense (flips the azimuth direction).
+    n_halves, r0, reelin_turn_radius, reelin_min_turn_radius
+        ``bow_shape="dubins"`` only: the reel-in is designed as Dubins paths
+        on the sphere instead of fading the figure out -- see
+        :func:`dubins_full_cycle_angles` (the phase/bow/ramp knobs above do
+        not apply to its path).
     lobe_handover_phase : float
         ``bow_shape="lobe"`` only: the phase budget (rad) the figure still
         advances while the window fades it out / back in (default
@@ -1424,12 +1719,30 @@ def full_cycle_angles(
         unchanged -- vary the budget by less than pi/2 around the value used
         to derive ``n_loops``.
     """
+    if bow_shape == "dubins":
+        if n_halves is None or r0 is None:
+            raise ValueError("bow_shape='dubins' needs n_halves and r0")
+        return dubins_full_cycle_angles(
+            s,
+            n_halves=n_halves,
+            r0=r0,
+            reelout_fraction=reelout_fraction,
+            beta0=beta0,
+            beta_amp0=beta_amp0,
+            az_amp0=az_amp0,
+            beta_reelin_peak=beta_reelin_peak,
+            turn_radius=reelin_turn_radius,
+            min_turn_radius=reelin_min_turn_radius,
+            reelin_center=reelin_center,
+            downloops=downloops,
+        )
     s = np.asarray(s, dtype=float).ravel()
     omega = 1.0 if downloops else -1.0
     f = float(reelout_fraction)
     if bow_shape not in ("sym", "descent", "lobe"):
         raise ValueError(
-            f"bow_shape must be 'sym', 'descent' or 'lobe', got {bow_shape!r}"
+            "bow_shape must be 'sym', 'descent', 'lobe' or 'dubins', "
+            f"got {bow_shape!r}"
         )
     if bow_shape == "lobe" and (psi_entry is None or psi_exit is None):
         raise ValueError(
@@ -1704,6 +2017,9 @@ def make_full_cycle_bspline_path_parameters(
     bow_shape="sym",
     downloops=True,
     lobe_handover_phase=LOBE_HANDOVER_PHASE,
+    n_halves=None,
+    reelin_turn_radius=DUBINS_TURN_RADIUS_M,
+    reelin_min_turn_radius=None,
     precision=6,
 ):
     """YAML-ready *periodic* path parameters for a synthetic full pumping cycle.
@@ -1734,6 +2050,10 @@ def make_full_cycle_bspline_path_parameters(
         bow_shape=bow_shape,
         downloops=downloops,
         lobe_handover_phase=lobe_handover_phase,
+        n_halves=n_halves,
+        r0=r0,
+        reelin_turn_radius=reelin_turn_radius,
+        reelin_min_turn_radius=reelin_min_turn_radius,
     )
     _, C_phi, C_beta = fit_bspline_pattern_to_trajectory(
         spline_type="periodic",
