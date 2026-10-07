@@ -129,8 +129,10 @@ DEFAULT_OPTI_LIMITS = {
     # max_tether_force, via the tension band / force law) is what actually
     # caps tension in the NLP; this bound should never bind.
     "tension_tether_ground": (300, 8.4e6),
-    # u_s = -kcu_actual_steering/100; 2019 V3 flight max deflection was kcu +-35.
-    "input_steering": (-0.35, 0.35),
+    # Standardised u_s (identification.controls: 1.4 m x u_s = steering-tape
+    # half-difference; 2019 V3 u_s = -kcu/200). The 2019 flight max deflection
+    # kcu +-35 is +-0.175 (was +-0.35 in the legacy -kcu/100 unit).
+    "input_steering": (-0.175, 0.175),
     "s_dot": (0.0, 40),  # Range for s_dot: 0 to 30
     "s_ddot": (-100, 100),  # Range for s_ddot: -100 to 100
     "s": (0, 300),  # Range for s: 0 to 10

@@ -124,7 +124,7 @@ class SystemModel(KiteKinematics):
                         "CD0": 0.05,
                         "aspect_ratio": 10,
                         "oswald_efficiency": 1,
-                        "angle_pitch_depower_0": 0,
+                        "angle_pitch_tether_0": 0,
                     },
                 },
             )
@@ -407,6 +407,61 @@ class SystemModel(KiteKinematics):
         self._qs_tether_decisions = [sym.name() for sym in tether_decisions]
         self._qs_ng = int(g.numel())
         self._qs_winch = winch
+        self._qs_wind_signature = self._wind_signature()
+        # Wing angle of attack over the solver's (x, p): callers reject
+        # post-stall roots with it (alpha >= the ROM's angle_of_attack_stall).
+        alpha_expr = self.kite.angle_of_attack_for(self)
+        known = {s.name() for s in ca.symvar(nlp["x"])} | {s.name() for s in ca.symvar(nlp["p"])}
+        self._qs_alpha_function = (
+            ca.Function("qs_angle_of_attack", [nlp["x"], nlp["p"]], [alpha_expr],
+                        ["x", "p"], ["alpha"])
+            if all(s.name() in known for s in ca.symvar(alpha_expr))
+            else None
+        )
+        # Speed stability of a root (paper Eq. 36), over the solver's (x, p),
+        # as a DIAGNOSTIC: S < 0 = stable in v_tau at fixed controls. It is
+        # not used to select roots -- every flown reel-in state reads S > 0.
+        # Only when the tangential speed is an unknown of a square system.
+        self._qs_stability_function = None
+        if "speed_tangential" in unknown_vars and len(x) == int(g.numel()):
+            frozen = (
+                (unknown_vars.index("input_steering"),)
+                if "input_steering" in unknown_vars else ()
+            )
+            stability = tangential_speed_stability(
+                g, ca.vertcat(*x), unknown_vars.index("speed_tangential"),
+                frozen_indices=frozen, dropped_rows=(1,) if frozen else (),
+            )
+            self._qs_stability_function = ca.Function(
+                "qs_speed_stability", [nlp["x"], nlp["p"]], [stability], ["x", "p"], ["S"]
+            )
+
+    def _wind_signature(self):
+        """Hashable snapshot of every wind setting a built graph can bake in.
+
+        A numeric wind amplitude, direction or profile parameter is a
+        CONSTANT of the CasADi graphs built from it (the QS solver and the
+        derived-quantity functions); comparing this snapshot is how
+        ``solve_quasi_steady`` knows they are stale.
+        """
+
+        def freeze(value):
+            if isinstance(value, (ca.MX, ca.SX)):
+                return ("sym", str(value))
+            if isinstance(value, ca.DM):
+                return tuple(np.asarray(value, dtype=float).ravel())
+            if isinstance(value, np.ndarray):
+                return tuple(value.astype(float).ravel())
+            if isinstance(value, (list, tuple)):
+                return tuple(freeze(v) for v in value)
+            return value
+
+        wind = self.wind
+        return tuple(
+            (name, freeze(value))
+            for name, value in sorted(vars(wind).items())
+            if name != "wind_interp"
+        )
 
     def solve_quasi_steady(self, state_obj, unknown_vars=None, winch=None):
         from awetrim.system.protocols import FlightCondition
@@ -424,6 +479,13 @@ class SystemModel(KiteKinematics):
         state_dict = state_obj.to_dict()
 
         cached_winch = getattr(self, "_qs_winch", None)
+        if (
+            self._qs_solver is not None
+            and getattr(self, "_qs_wind_signature", None) != self._wind_signature()
+        ):
+            # The wind changed since the solver (and the derived functions)
+            # were built with it baked in: both are stale.
+            self.reset_solver()
         if (
             self._qs_solver is None
             or self._qs_vars != unknown_vars
@@ -750,6 +812,50 @@ class SystemModel(KiteKinematics):
         self._qs_vars = None
         self._qs_inputs = None
         self._derived_functions = None
+        self._qs_wind_signature = None
+
+
+def tangential_speed_stability(
+    residual, unknowns, rate_index, frozen_indices=(), dropped_rows=()
+):
+    """Sensitivity of the tangential force to the path speed at a QS root.
+
+    Cayon, van Deursen, Schmehl (2026), Eqs. 34-36: of the roots of
+    v_dot_tau = 0 only those with d(v_dot_tau)/d(v_tau) < 0 are physical (a
+    speed perturbation is pushed back). The derivative is taken at FIXED
+    CONTROLS: in the paper's DAE the steering u_s is an input and the course
+    rate chi_dot is algebraic, and chi_dot enters only the NORMAL force row
+    (Eq. 17), so holding u_s fixed means dropping the normal row -- it is
+    absorbed by chi_dot and does not feed back on the other rows.
+
+    ``residual`` has the TANGENTIAL force balance as row 0
+    (``SystemModel.force_residual`` is [chi, n, r]); ``unknowns`` are its
+    decision symbols, ``unknowns[rate_index]`` the speed (``speed_tangential``
+    or the path rate ``s_dot``). ``frozen_indices`` are unknowns held fixed
+    (the steering) and ``dropped_rows`` the rows they balanced (the normal
+    row, 1). The remaining unknowns (tension, reeling speed, tether shape)
+    re-balance the remaining rows:
+
+        S = dg_0/dv - dg_0/db . (dg_rest/db)^-1 . dg_rest/dv
+
+    Row 0 equals m * v_dot_tau at the root, so the root is stable iff S < 0
+    (speed and path rate grow together). Returns the CasADi expression of S.
+    """
+    n = int(unknowns.numel())
+    rate = unknowns[rate_index]
+    keep = [i for i in range(n) if i != rate_index and i not in set(frozen_indices)]
+    rows = [k for k in range(1, int(residual.numel())) if k not in set(dropped_rows)]
+    if len(rows) != len(keep):
+        raise ValueError(
+            f"{len(rows)} balancing rows for {len(keep)} balancing unknowns"
+        )
+    g_0 = residual[0]
+    if not keep:
+        return ca.jacobian(g_0, rate)
+    others = ca.vertcat(*[unknowns[i] for i in keep])
+    g_rest = ca.vertcat(*[residual[k] for k in rows])
+    sensitivity = ca.solve(ca.jacobian(g_rest, others), ca.jacobian(g_rest, rate))
+    return ca.jacobian(g_0, rate) - ca.jacobian(g_0, others) @ sensitivity
 
 
 def safe_value(val):

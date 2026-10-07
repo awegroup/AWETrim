@@ -112,6 +112,25 @@ def _load_yaml(path: Path) -> dict:
         return yaml.safe_load(f)
 
 
+def resolve_rom_config_path(
+    system_yaml_path: Union[str, Path],
+    rom_config_path: Union[str, Path, None] = None,
+) -> Path | None:
+    """The ROM config a kite's system file selects (None if it has none).
+
+    Resolution order: an explicit ``rom_config_path`` (relative paths are
+    taken against the system file's folder), the system file's
+    ``models.reduced_order.aerodynamics``, then a sibling ``rom_config.yaml``
+    (legacy ``aero_coeffs_rom.yaml``). A kite with several ROMs (e.g. the
+    LEI-V3 ``rom_config_aerostructural_flight_corrected.yaml`` and
+    ``rom_config_aerostructural.yaml``) names its default in the system file.
+    """
+    system_yaml_path = Path(system_yaml_path)
+    return _resolve_aero_config_path(
+        _load_yaml(system_yaml_path), system_yaml_path, rom_config_path
+    )
+
+
 def _resolve_aero_config_path(
     cfg: dict,
     config_path: Path | None = None,

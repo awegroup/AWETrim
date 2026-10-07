@@ -1,0 +1,930 @@
+% Copyright (c) 2023-2026 Oriol Cayon, Delft University of Technology
+% SPDX-License-Identifier: Apache-2.0
+%
+% Numbers, tables and figures come from generated/ and figures/, written by
+%   python scripts/identification/report_rom_aerostructural.py
+% Rebuild:  latexmk -pdf rom_aerostructural.tex   (in docs/identification/)
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{xcolor}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{xurl}
+\usepackage[hidelinks]{hyperref}
+\usepackage{siunitx}
+\sisetup{range-phrase={--},range-units=single}
+
+\graphicspath{{figures/}}
+\input{generated/macros.tex}
+
+\definecolor{accent}{HTML}{D55E00}
+\captionsetup{font=small,labelfont=bf}
+\setlist{itemsep=2pt,parsep=0pt,topsep=3pt}
+
+\pagestyle{fancy}
+\fancyhf{}
+\fancyhead[L]{\small\textsc{AWETrim --- aerostructural ROM identification}}
+\fancyhead[R]{\small\thepage}
+\renewcommand{\headrulewidth}{0.3pt}
+
+\newcommand{\code}[1]{\texttt{\small #1}}
+
+\title{%
+  \vspace{-1.5cm}
+  {\Huge\textbf{An aerostructural reduced-order model}}\\[6pt]
+  {\large Identifying the LEI-V3 quasi-steady ROM from coupled simulations
+   only}\\[10pt]
+  {\normalsize Model, identification method, uncertainty and validation}
+}
+\author{Oriol Cayon \\ \small Delft University of Technology}
+\date{\today}
+
+\begin{document}
+\maketitle
+\thispagestyle{fancy}
+
+\begin{abstract}
+\noindent
+The quasi-steady reduced-order model (ROM) of Cayon, van Deursen and
+Schmehl~\cite{cayon2026rom} needs a lift and a drag polar, the bridle pitch
+$\theta_b$ between the bridle resultant and the wing chord, and a steering gain.
+The existing LEI-V3 ROM is semi-empirical: rigid-wing vortex-step-method (VSM)
+polars with drag offsets and a $\theta_b$ tuned to flight data. This note
+documents a second ROM in which \emph{every} parameter is identified from
+coupled VSM + Billow-wireframe solutions at the centre of the wind window.
+The lift and drag polynomials are selected by forward--backward stepwise
+regression on a cross-validation error that holds out whole frozen shapes,
+include a smooth stall switch, and carry anchor-cluster bootstrap intervals.
+The ROM reproduces the coupled trims it was identified from to about one
+percent in speed and tension. Validating it against the 2019 flight exposed a
+frame error in the ROM code itself: the bridle pitch and roll were taken in a
+frame rotated by twice the sideslip angle off the apparent wind, which put the
+bridle angle of attack 2--3$^\circ$ off in turns (and zero off at the
+centre-window states the ROM was identified on). With that corrected, the
+simulation-only ROM reproduces held-out reel-out cycles to $+7\,\%$ in tension
+and $+10\,\%$ in speed with the measured turn rate as input, while the
+paper's flight-calibrated ROM, which had absorbed the error, read $-19\,\%$
+and $-11\,\%$ until it was recalibrated the same way. A third ROM keeps the simulated lift polynomial and stall and
+refits the bridle pitch $\theta_b(u_p)$, the roll gain and a single-input drag
+correction $\Delta C_D(u_p,u_s^2)$ to the 2019 flight, first on the EKF
+coefficients and then jointly by output error on the quasi-steady solve with
+the steering gain set by the turn-rate law; it reproduces the held-out
+reel-out to $-3\,\%$ in tension and $-1\,\%$ in speed. Reel-in remains
+unresolved by every ROM.
+\end{abstract}
+
+\tableofcontents
+
+%======================================================================
+\section{Purpose and scope}
+
+The ROM is a point mass in the course reference frame whose wing is assumed to
+align instantaneously with the bridle resultant~\cite{cayon2026rom}. Its
+aerodynamic inputs are
+\begin{itemize}
+  \item the wing lift and drag coefficients $C_L$, $C_D$;
+  \item the geometric bridle pitch $\theta_b$ that turns the bridle angle of
+        attack $\alpha_b$ into the wing angle of attack,
+        $\alpha_w=\alpha_b-\theta_b$ (paper Eqs.~1--2);
+  \item the steering gain $k_{\phi,s}$ of the control-induced aerodynamic roll,
+        $\phi_{a,w}=k_{\phi,s}\,u_s$ (paper Eq.~43).
+\end{itemize}
+The semi-empirical LEI-V3 ROM (\code{rom\_config\_semi\_empirical.yaml}) takes
+its polars from rigid-wing VSM and calibrates drag offsets and $\theta_b$ on
+flight-identified states~\cite[Sect.~5.1]{cayon2026rom}. The aerostructural ROM
+(\code{rom\_config\_aerostructural.yaml}) is identified from simulations only:
+the VSM aerodynamics of the \emph{deformed} kite, coupled to the Billow
+structural model. It is the simulation-only reference against which flight
+data can then be used for a minimal correction.
+
+Scope and limits, stated once:
+\begin{itemize}
+  \item centre of the wind window (azimuth and elevation $0$), gravity off,
+        tetherless trims (the ROM models gravity and the tether itself);
+  \item 2019 LEI-V3 hardware; power-tape band
+        $u_p\in[\upLow,\upHigh]\,\si{\metre}$; steering up to the coupled
+        data's $|u_s|\le0.18$;
+  \item the stall comes from VSM with artificial viscosity on frozen shapes.
+\end{itemize}
+
+%======================================================================
+\section{The model}
+
+\subsection{Inputs and conventions}
+\begin{itemize}
+  \item $u_p$ is the power-tape length $l_\mathrm{dp}$ in metres.
+  \item $u_s$ is the \emph{standardised} steering of
+        \code{awetrim.identification.controls}: $\SI{1.4}{\metre}\times u_s$ is the
+        steering-tape half-difference (2019 KCU: $u_s=-\mathrm{kcu}/200$, full
+        deflection $\pm0.175$).
+  \item $\alpha$ is the angle of attack of the wing's centre-panel chord.
+  \item $v_a$ is the apparent wind speed.
+  \item All coefficients are referenced to $S=\SI{\refArea}{\square\metre}$, the
+        EKF/flight area also used by the semi-empirical ROM; the ROM file states
+        it (\code{aerodynamics.reference\_area}).
+\end{itemize}
+
+\subsection{Lift and drag}
+Both coefficients are linear combinations of plain monomials,
+\begin{equation}
+  C_L = c_0 + \sum_i c_i\, m_i(\alpha,u_p,u_s,v_a,\sigma), \qquad
+  C_D = d_0 + \sum_j d_j\, m_j(\alpha,u_p,u_s,v_a,\sigma),
+  \label{eq:polys}
+\end{equation}
+where $\sigma(\alpha)$ is a smooth attached-to-separated switch,
+\begin{equation}
+  \sigma(\alpha) = \tfrac12\left[1+\tanh\!\left(\frac{\alpha-\alpha_s}{w}\right)\right],
+  \label{eq:stall}
+\end{equation}
+with stall angle $\alpha_s$ and width $w$ (ROM parameters
+\code{angle\_of\_attack\_stall}, \code{width\_stall}). Terms multiplied by
+$\sigma$ act only past the stall, so $C=C_\mathrm{att}+\sigma\,(C_\mathrm{sep}-C_\mathrm{att})$
+stays linear in its coefficients. Every term is smooth: the ROM evaluates
+monomials as written (a term may ask for $|m|$ with \code{abs: true}; the
+identification never does).
+
+\subsection{Bridle pitch and steering}
+\begin{equation}
+  \alpha_w=\alpha_b-\theta_b,\qquad
+  \theta_b=\theta_0+\theta_1\,u_p,\qquad
+  \phi_{a,w}=k_{\phi,s}\,u_s ,
+\end{equation}
+with $\theta_0$, $\theta_1$, $k_{\phi,s}$ the ROM parameters
+\code{angle\_pitch\_tether\_0}, \code{slope\_angle\_pitch\_tether\_depower},
+\code{gain\_roll\_steering}.
+
+\subsection{KCU drag, a separate force}
+$C_D$ is the \emph{wing's} drag, bridle lines included. The kite control unit
+is a separate bluff body hanging on the tether at the bridle point (ROM flag
+\code{kcu\_drag\_in\_coefficients: false}), with the finite-cylinder law of
+\code{awetrim.aerodynamics.kcu\_drag},
+\begin{equation}
+  \mathbf F_\mathrm{KCU}=\tfrac12\rho\left(A_\parallel\,|\mathbf v_\parallel|\,\mathbf v_\parallel
+  + A_\perp\,|\mathbf v_\perp|\,\mathbf v_\perp\right),
+\end{equation}
+where $\mathbf v_\parallel$, $\mathbf v_\perp$ split the apparent wind about the
+tether, and the drag areas come from the system file's KCU length, diameter and
+onboard turbine. The KCU drag enters the total aerodynamic force \emph{and} the
+bridle resultant $\mathbf F_b$ (tether plus the KCU's weight, inertia and drag),
+so swapping the KCU changes $\mathbf F_b$ without re-identifying the wing.
+
+%======================================================================
+\section{Data}
+
+\paragraph{Coupled trims (anchors).}
+\nAnchorsAll{} converged coupled VSM + Billow-wireframe trims (VSM main at
+\code{8825a12}, artificial viscosity on, 45 panels) from the \code{\_billow9}
+continuation chains of the 2019 hardware: power-tape sweeps at zero steering
+for $v_a=13$--\SI{25}{\metre\per\second}, and steering sweeps at the reel-out
+and reel-in depower.
+
+\paragraph{Frozen-shape polars.}
+A trimmed chain ties $\alpha$ to $u_p$ almost one to one ($\alpha$ moves by
+about \SI{1}{\degree} across the whole $v_a$ range), so the trims alone cannot
+separate the polar slope from the depower effect. Around every anchor the
+deformed snapshot is frozen, re-trimmed, and the inflow angle of attack is
+stepped in the centre-panel body axes from \SI{-6}{\degree} to \SI{+22}{\degree}
+about the trim (\code{run\_center\_sweep\_alpha\_polar.py}), recording the wing
+force at each step.
+
+\paragraph{Lens check.}
+A polar is used only if its frozen-shape re-trim reproduces the coupled trim:
+$C_L$ at the coupled $\alpha$ within \lensTolPct\,\%. Steered snapshots with a
+steering tape of \SI{0.125}{\metre} or more re-trim to a different roll/rate
+state ($\alpha$ up to \SI{2}{\degree} off, $C_L$ 10--23\,\% high); their polars
+are dropped and their coupled trims enter as single samples instead.
+
+\paragraph{Sample.}
+Within the depower band and up to $\alpha=\SI{30}{\degree}$:
+\nPolarSamples{} polar samples and \nTrimSamples{} coupled-trim samples from
+\nAnchorsFit{} anchors.
+
+%======================================================================
+\section{Identification method}
+
+\subsection{Bridle pitch}
+With gravity off, the coupled equilibrium is
+$\mathbf F_\mathrm{wing}+\mathbf F_\mathrm{KCU}+\mathbf F_t+\mathbf F_\mathrm{in}=0$,
+and the ROM's bridle resultant is
+$\mathbf F_b=-(\mathbf F_\mathrm{wing}+\tfrac{m_w}{m}\mathbf F_\mathrm{in})$.
+$\alpha_b$ is its paper Eq.~D11 angle about the apparent wind and $\alpha_w$ the
+centre-panel angle; $\theta_b=\alpha_b-\alpha_w$ is fitted linearly in $u_p$ by
+ordinary least squares on the \thetaN{} unsteered trims in the band.
+
+\subsection{Steering gain}
+$\phi_{a,w}$ is the roll of the wing lift about $\mathbf v_a$ relative to
+$-\mathbf F_b$ (paper Eqs.~D6--D8, D13); $k_{\phi,s}$ is the least-squares slope
+through the origin over the \rollN{} steered trims.
+
+\subsection{Stall location}
+$\alpha_s$ and $w$ are chosen first, on a grid
+($\alpha_s=15.5$--\SI{18}{\degree}, $w=0.5$--\SI{1.5}{\degree}), by the
+cross-validation error of the full $C_L$ library with fixed terms. This
+separates locating the stall from choosing the terms.
+
+\subsection{Candidate terms}
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Group & Terms & Reason \\
+\midrule
+attached polar & $\alpha$, $\alpha^2$ & lift slope and curvature \\
+depower & $u_p$, $u_p^2$, $\alpha u_p$, $\alpha^2u_p$ & shape change with the power tape \\
+steering & $u_s^2$, $\alpha u_s^2$, $u_pu_s^2$ & symmetric in left/right steering \\
+load & $v_a$, $\alpha v_a$, $u_pv_a$ & deformation grows with dynamic pressure \\
+stall & $\sigma$, $\sigma\alpha$, $\sigma\alpha^2$, $\sigma u_p$, $\sigma u_s^2$ & active past the stall only \\
+\bottomrule
+\end{tabular}
+\end{center}
+There is no $\alpha^3$: the ROM's solvers do not bound $\alpha$, a cubic $C_D$
+went negative beyond the data, and a cubic $C_L$ cannot follow the sharp stall.
+
+\subsection{Least squares and selection}
+For a term set $\mathcal T$, the coefficients minimise the sum of squared
+residuals, $\hat{\mathbf c}=\arg\min_{\mathbf c}\lVert\mathbf y-X_\mathcal T\mathbf c\rVert_2^2$,
+solved with each column scaled to unit RMS for conditioning and mapped back.
+
+Polar samples of one frozen shape are strongly correlated, so the selection
+score is the \emph{grouped} $K$-fold cross-validation error with whole anchors
+held out ($K=5$):
+\begin{equation}
+  \mathrm{CV}(\mathcal T)=\frac1K\sum_{k=1}^K
+  \sqrt{\frac{1}{|G_k|}\sum_{i\in G_k}\bigl(y_i-\hat y_i^{(-k)}\bigr)^2},
+\end{equation}
+where $\hat y^{(-k)}$ is fitted without fold $G_k$. A random split would score
+interpolation inside a polar rather than prediction at an unseen state. BIC
+is not used: it treats the correlated samples as independent evidence and
+keeps accepting terms worth a fraction of a percent.
+
+\begin{enumerate}
+  \item \textbf{Forward}: from the intercept, add the candidate that lowers
+        $\mathrm{CV}$ most; stop when the best improves it by less than
+        \minImprovementPct\,\%.
+  \item \textbf{Backward}: drop any term whose removal costs less than the same
+        \minImprovementPct\,\%; a term picked early can become redundant later.
+  \item \textbf{Extrapolation check}: $C_D$ must stay positive over
+        $\pm\SI{30}{\degree}$ across the fitted $u_p$, $u_s$, $v_a$ ranges, or
+        the identification fails.
+\end{enumerate}
+
+\subsection{Metrics and uncertainty}
+Reported are the in-sample RMSE and $R^2=1-\sum r_i^2/\sum(y_i-\bar y)^2$ per
+$\alpha$ band, and the grouped CV RMSE.
+
+The coefficient intervals are an \emph{anchor-cluster bootstrap}: \nBoot{}
+resamples draw anchors with replacement, refit the selected terms on their
+samples, and report the 2.5/97.5\,\% percentiles. Resampling whole anchors
+respects the within-shape correlation that makes ordinary least-squares
+standard errors far too optimistic. The intervals are \emph{conditional on the
+selected term set}: the selection is not repeated per resample. $\theta_b$
+and $k_{\phi,s}$ have one sample per trim, and their standard errors are the
+ordinary least-squares ones.
+
+%======================================================================
+\section{Results}
+\label{sec:results}
+
+\subsection{Identified coefficients}
+\begin{table}[H]
+\centering\small
+\caption{Selected $C_L$ and $C_D$ terms ($\alpha$ in rad, $u_p$ in m, $v_a$ in
+\si{\metre\per\second}) with anchor-cluster bootstrap 95\,\% intervals.}
+\input{generated/coefficients.tex}
+\end{table}
+
+\begin{table}[H]
+\centering\small
+\caption{Selection path: the term added ($+$) or removed ($-$) at each step and
+the grouped CV RMSE after it.}
+\input{generated/selection.tex}
+\end{table}
+
+\begin{table}[H]
+\centering\small
+\caption{Fit quality per angle-of-attack band (all fitted samples).}
+\input{generated/fit_metrics.tex}
+\end{table}
+
+\paragraph{Stall.} $\alpha_s=\SI{\stallDeg}{\degree}$, $w=\SI{\stallWidthDeg}{\degree}$.
+Every coupled polar peaks near $C_L\approx1.2$ at 15.5--\SI{16.7}{\degree} and
+drops within about \SI{2}{\degree} to a plateau near $0.87$. The stall band
+carries the largest residual, because one polynomial family has to follow a
+sharp drop; the operating range below \SI{13}{\degree} is fitted to a $C_L$ RMSE
+of about $0.012$.
+
+\paragraph{Bridle pitch.}
+$\theta_0=\thetaZero\pm\thetaZeroSE$\,rad and
+$\theta_1=\thetaSlope\pm\thetaSlopeSE$\,rad\,m$^{-1}$ (residual
+\SI{\thetaRMSdeg}{\degree} RMS): $\theta_b=\SI{\thetaPoweredDeg}{\degree}$ at
+\SI{1.7}{\metre} and \SI{\thetaDepoweredDeg}{\degree} at \SI{2.1}{\metre}. With the KCU
+drag inside $C_D$, the bridle resultant would lie along the tether and
+$\theta_b$ would be about \SI{2.5}{\degree} larger (Fig.~\ref{fig:theta}). The
+semi-empirical ROM, calibrated in that convention, has a 45\,\% steeper slope.
+
+\paragraph{Steering gain.}
+$k_{\phi,s}=\rollGain\pm\rollGainSE$\,rad per unit $u_s$ (residual
+\SI{\rollRMSdeg}{\degree} RMS), against $-0.689$ for the semi-empirical ROM in
+the same units.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{polars.pdf}
+\caption{Lift and drag polars at the powered and depowered setting
+($u_s=0$, $v_a\approx\SI{19}{\metre\per\second}$, $C_D$ with the 2019 KCU): coupled
+frozen-shape data, the aerostructural ROM and the semi-empirical ROM.}
+\label{fig:polars}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.75\textwidth]{theta_b.pdf}
+\caption{Bridle pitch against power-tape length: coupled trims in both bridle
+conventions, the aerostructural relation and the semi-empirical one.}
+\label{fig:theta}
+\end{figure}
+
+\subsection{Check against the coupled trims}
+Each coupled trim is re-solved with the ROM's own quasi-steady solver at the
+same condition: centre of the window, same wind, $u_p$, $u_s$, gravity off,
+tetherless (\code{validate\_rom\_aerostructural.py}).
+
+\begin{table}[H]
+\centering\small
+\caption{ROM against the coupled trims it was identified from: mean $\pm$
+standard deviation of the relative errors.}
+\input{generated/coupled_check.tex}
+\end{table}
+
+\subsection{Flight validation}
+The 2019 flight (cycles 60--67) is reconstructed sample by sample with the
+quasi-steady ROM on the flown hardware, in two modes:
+\begin{itemize}
+  \item \textbf{$\dot\chi$ in}: the measured turn rate is prescribed and the ROM
+        solves the steering it needs, as in the paper's Fig.~8.
+  \item \textbf{$u_s$ in}: the logged steering, plus the 2019 rig's zero offset
+        ($-0.01645/1.4$), is fed in and the ROM solves the turn rate. This is
+        the paper's causality, with $u_s$ an input and $\dot\chi$ algebraic.
+\end{itemize}
+The $\dot\chi$-in mode is also run with the discretised Williams tether (10
+inelastic elements, sag and per-element drag; \code{--tether williams}),
+solved together with the ground closure for the tether length and the angles
+of its last element. The optimisations keep the rigid tether; the Williams
+rows test whether the reconstruction errors come from it.
+
+Every number in this section is on the corrected bridle-angle frame of
+Sect.~\ref{sec:frame}. The first validation runs, on the frame the ROM code
+had used since the paper, read very differently (aerostructural reel-out
+$+49\,\%$ tension, semi-empirical $+11\,\%$) and led the flight correction of
+Sect.~\ref{sec:flight-correction} astray for a day; they are kept under
+\path{results/LEI-V3-KITE/rom_validation_oldframe/} for the record only.
+
+The quasi-steady equations have a pre-stall root and a spurious post-stall one.
+A root at or past the ROM's stall angle is retried from faster speed guesses,
+and kept and flagged if no pre-stall root turns up. Every converged root is
+scored, and the pre-stall share is reported. The speed stability
+$\partial\dot v_\tau/\partial v_\tau$ at fixed controls (paper Eq.~36) is
+reported as a diagnostic only: it selects correctly in crosswind flight, but
+every flown reel-in state reads as unstable (Sect.~\ref{sec:open}).
+
+\IfFileExists{generated/flight.tex}{%
+\begin{table}[H]
+\centering\scriptsize
+\caption{Flight validation, 2019 cycles 60--67: medians of the relative errors
+(tension interquartile range in brackets) and of the absolute turn-rate error,
+over the samples that converged (Solved). In the $\dot\chi$-in mode the
+solved steering is regressed on the logged steering plus the zero offset
+(slope and correlation; medians of $|u_s|$ are not a valid check, thousands
+of near-zero samples make them read $2\times$ for a slope of one).}
+\label{tab:flight}
+\resizebox{\textwidth}{!}{\input{generated/flight.tex}}
+\end{table}}{\textit{(flight tables not generated yet)}}
+
+\IfFileExists{figures/flight_solved.pdf}{%
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{flight_solved.pdf}
+\caption{Cycle 64 (held out) with the measured turn rate as input and the
+steering solved: ground tension, tangential speed and the steering each ROM
+needs, against the EKF reconstruction (solid black, logged $u_s$ with the
+rig's zero offset). Shaded: reel-in. Gaps are samples without a converged
+root.}
+\label{fig:flight-solved-64}
+\end{figure}}{}
+
+\IfFileExists{figures/flight_solved_cycle61.pdf}{%
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{flight_solved_cycle61.pdf}
+\caption{As Fig.~\ref{fig:flight-solved-64} for cycle 61.}
+\label{fig:flight-solved-61}
+\end{figure}}{}
+
+\IfFileExists{figures/flight_measured.pdf}{%
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{flight_measured.pdf}
+\caption{Cycle 64 with the logged steering as input.}
+\end{figure}}{}
+
+With the measured turn rate as input, the simulation-only ROM reproduces the
+held-out reel-out to $+7\,\%$ in tension and $+10\,\%$ in speed, with no
+flight data in it at all; with the logged steering as input, to $+23\,\%$ and
+$+14\,\%$. It still flies somewhat faster than the kite did, which is the
+direction of the VSM's known drag deficit~\cite{poland2025wind}, but the
+deficit is a fraction of what the uncorrected frame had made it look like.
+Its solved steering has slope 1.6 against the logged steering: the
+aerostructural roll gain ($-0.53$) is too weak, by exactly that factor
+(Sect.~\ref{sec:flight-correction}). The semi-empirical rows are the paper's
+ROM \emph{recalibrated} on the corrected frame with the step-3 method of
+Sect.~\ref{sec:flight-correction} ($\theta_b$, $C_{D,0}$, the $|u_s|$ drag
+and the roll gain; \code{refine\_rom\_flight\_output\_error.py --rom
+semi\_empirical}, the paper's values kept in the file's comments): reel-out
+$-10\,\%$/$-6\,\%$ with the turn rate in and $-6\,\%$/$-1\,\%$ with the
+logged steering in, its reel-in tension within $-6\,\%$ but its reel-in
+speed $-18\,\%$. Its recalibrated gain, $-0.69$, is the paper's. After this
+comparison the semi-empirical ROM was removed from the repository (archived
+in git history; \code{config\_paths} keeps its path): the flight-corrected
+aerostructural ROM is the better-founded model and is now the default in
+every LEI-V3 system file. The rows and figures here are kept as the record.
+
+Reel-in is where the aerostructural polar fails: that ROM doubles the
+tension, and the flight-corrected one (aerostructural-flight rows,
+Sect.~\ref{sec:flight-correction}), which brings the reel-out within a few
+percent in both modes, still reads $+33\,\%$ there. The recalibrated
+semi-empirical ROM does better on reel-in tension but not on reel-in speed;
+Sect.~\ref{sec:open} discusses why reel-in resists.
+
+The tether model is not what separates the ROMs. With the Williams tether
+the reel-out errors move by a few points (aerostructural $+14\,\%$/$+12\,\%$,
+flight-corrected $+6\,\%$/$+4\,\%$, semi-empirical $-20\,\%$/$-11\,\%$) and
+the steering regressions are unchanged. On reel-in it helps the
+flight-corrected ROM ($+33\to+21\,\%$ tension) and costs the semi-empirical
+one most of its roots (\SI{34}{\percent} solved).
+
+%======================================================================
+\section{The bridle-angle frame}
+\label{sec:frame}
+The ROM takes two angles of the bridle resultant $\mathbf F_b$ about the
+apparent wind: the bridle pitch $\alpha_b$ (paper Eq.~D11), from which
+$\alpha_w=\alpha_b-\theta_b$, and the bridle roll $\phi_b$ (Eqs.~D6--D8), the
+reference the steering roll $k_{\phi,s}u_s$ is measured from. In
+\code{awetrim.system.kite} both were computed by rotating $\mathbf F_b$ into
+an Euler-angle ``aerodynamic'' frame built from the pitch and yaw of
+$\mathbf v_a$. Checked numerically on a flown state with sideslip (the
+apparent wind having a component normal to the course), that frame's $x$ axis
+was not along $\mathbf v_a$: $\hat{\mathbf x}_A\cdot\hat{\mathbf v}_a=-0.97$,
+and flipping the sign of the yaw angle gives $-1.0000$ exactly. The yaw sign
+was mirrored for the rotation order used, so the frame sat at twice the
+sideslip angle off $\mathbf v_a$ in the tangent plane, with the normal axis
+off by the same amount. The lift direction, built directly from the
+$\mathbf v_a$ vector elsewhere in the same class, was right.
+
+The error is zero at zero sideslip: the centre-window trims the
+aerostructural ROM was identified on and checked against
+(Sect.~\ref{sec:results}) have none. In crosswind flight the apparent wind
+has a normal component of 3--\SI{5}{\metre\per\second} at
+\SI{20}{\metre\per\second}, a sideslip of 7--14$^\circ$, and the frame error
+let the normal component of $\mathbf F_b$ --- the KCU's inertia in a turn,
+some \SI{600}{\newton} on \SI{5}{\kilo\newton} --- leak into the pitch and
+the roll. On cycle 64 the bridle pitch came out 2.3--3.0$^\circ$ too high at
+samples of one sideslip sign and correspondingly low at the other, and the
+bridle roll about 1$^\circ$ off. Since the lift direction was consistent, the
+wing's roll relative to the \emph{true} bridle roll was no longer
+$k_{\phi,s}u_s$ but $k_{\phi,s}u_s$ plus a sideslip-dependent offset, which
+is what made the solved steering noisy and bimodal: before the fix, in the
+$|u_s|>0.12$ bin, the aerostructural ROM solved $0.34$ for a flown $0.16$,
+the semi-empirical one $0.16$; after it, both solve the flown value and the
+regression of solved on logged steering has correlation 0.92--0.93 for every
+ROM.
+
+The fix builds the paper's frame from the $\mathbf v_a$ vector
+(\code{Kite.\_force\_in\_wind\_frame}: $x=-\hat{\mathbf v}_a$,
+$y=-\mathbf e_n$, $z=\mathbf e_r'$), as the lift direction already did, and
+a regression test now holds the bridle pitch to Eq.~D11 and the bridle roll
+to the roll of the resultant on a KCU-loaded case with sideslip. What is
+affected: every flight validation and every flight calibration done before
+the fix, including the paper's semi-empirical ROM, whose output-error
+calibration absorbed the mean of the error (its reel-out tension went from
+$+11\,\%$ on the old frame to $-19\,\%$ on the correct one without changing
+a parameter; it has been recalibrated, Sect.~\ref{sec:results}); and the
+optimisations, whose stall margin acts on an $\alpha$ that was up to
+3$^\circ$ off in the lobes (rerun, Sect.~\ref{sec:optimisations}). The
+identification of the aerostructural ROM is not affected.
+
+%======================================================================
+\section{Flight correction}
+\label{sec:flight-correction}
+The third LEI-V3 ROM, \path{rom_config_aerostructural_flight_corrected.yaml}
+(\code{--rom aerostructural\_flight}), starts from the aerostructural one and
+refits six parameters to the 2019 flight; everything else (lift polynomial,
+stall, reference area, separate KCU drag) stays simulated:
+\begin{align}
+  \theta_b &= \theta_0 + \theta_1 u_p, \\
+  \phi_{a,w} &= k_{\phi,s}\, u_s, \\
+  C_D &= C_{D,\mathrm{AS}}(\alpha, u_p, u_s, v_a)
+         + \Delta C_{D,0} + c_p\, u_p + c_s\, u_s^2 .
+\end{align}
+The bridle pitch absorbs the as-built versus flown bridle geometry and the
+calibration from logged depower to power-tape length. The drag correction has
+single-input terms only, no products; steering enters squared because the drag
+cannot depend on the turn direction, and $|u_s|$ would put a kink at zero.
+The roll gain and the steering drag are the two things steering does to the
+wing, so they are identified together, from the same flown states.
+Cycles 60--67, the flight-validation cycles, are held out of every step.
+
+\subsection{Steps 1--2: equation error on the EKF coefficients}
+Each flown sample gives the EKF lift coefficient, the total aerodynamic drag of
+wing, bridle and KCU (minus the ROM's own KCU drag model, so the target is in
+the ROM's $C_D$ convention), and the bridle angle of attack $\alpha_b$ of paper
+Eq.~D11, computed on the bridle resultant the ROM builds from the EKF's
+bridle-element force. That is a force angle, not a vane reading.
+\begin{enumerate}
+  \item \textbf{Bridle pitch from lift.} The angle $\alpha^*$ at which the
+        aerostructural $C_L(\alpha^*, u_p, u_s, v_a)$ equals the flight
+        $C_L$ is found per sample; $\alpha_b-\alpha^*$ is the $\theta_b$ the
+        flight needs. A correction $\Delta\theta_0\,[+\Delta\theta_1u_p]$ to the
+        aerostructural relation is fitted to it, with the slope kept only if
+        the cross-validation (folds by cycle) asks for it. It did: the flight
+        needs a steeper depower authority than the simulations
+        (Table~\ref{tab:fc-params}, top-left of Fig.~\ref{fig:fc}).
+  \item \textbf{Drag at equal lift.} $C_{D,\mathrm{AS}}$ is evaluated at
+        the same $\alpha^*$: the correction is to the drag \emph{polar}
+        $C_D(C_L)$. Evaluating it at $\alpha_b-\theta_b$ instead would be
+        circular: $\alpha_b$ is essentially the flight glide angle
+        $\arctan(C_D/C_L)$ plus wing-mass terms, so the flight drag would pick
+        the angle it is compared at.
+  \item \textbf{Roll gain.} Paper Eq.~43, $\phi_{a,w}=k_{\phi,s}u_s$: the
+        roll of the wing force about $\mathbf v_a$ relative to the bridle
+        resultant (Eqs.~D6--D8, as on the coupled trims), the wing force being
+        minus the bridle resultant plus the wing's inertia and weight. Fitted
+        through the origin against $u_s$ delayed by \SI{0.3}{\second}, the
+        EKF's own steering-input lag ($R^2=\fcRollRsq$; without the delay
+        $k_{\phi,s}=\fcRollGainNoLag$). A free intercept comes out at
+        $\fcRollOffsetDeg^\circ$, an independent check of the 2019 steering
+        zero offset. The flight gain, $\fcRollGain$, is about
+        \SI{44}{\percent} stronger than the aerostructural $-0.53$ and close
+        to the semi-empirical $-0.69$.
+\end{enumerate}
+The first two are linear least squares with forward--backward selection on
+grouped cross-validation RMSE, the third a one-parameter least squares. The
+intervals are a cycle bootstrap (\num{500} draws) repeating all three.
+
+\IfFileExists{figures/flight_correction.pdf}{%
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{flight_correction.pdf}
+\caption{Steps 1--2 on the 2019 flight. Top: the $\theta_b$ the flight lift
+needs against $u_p$, with the aerostructural, flight-corrected (steps 1--2)
+and semi-empirical relations, and its residual against steering. Middle: the
+drag residual at equal lift against $u_p$ and $u_s$, fit and held-out
+cycles. Bottom: drag against $\alpha^*$ and the drag polar.}
+\label{fig:fc}
+\end{figure}}{}
+
+Two cautions on what these fits mean. The measured roll is almost entirely
+the wing's inertia term: in the EKF's own force balance
+$\mathbf F_w+\mathbf F_b=m_w(\mathbf a-\mathbf g)$, so the roll of the wing
+force relative to the bridle resultant \emph{is} $m_w a_n/|\mathbf F|$, and
+it correlates with $u_s$ because steering turns the kite. Without the inertia
+term the fitted gain collapses to $-0.09$ ($R^2=0.06$), and it scales with the
+wing mass assumed (\SI{11}{\kilogram}: $-0.60$; \SI{17}{\kilogram}: $-0.91$).
+It is a turn-response-per-steering times a mass split, not an aerodynamic
+measurement on its own, and it is the roll the wing \emph{had} at the turn
+it made, against every other normal force the point-mass model puts on the
+kite; Sect.~\ref{sec:fc-result} shows it reads \SI{20}{\percent} too strong
+once compared with the turn-rate law. It serves as the starting value and as
+a check of the sign and order of magnitude. And the equal-lift drag rise with steering
+sits where the EKF is least reliable: at $|u_s|>0.12$ its innovation
+statistics are 2--3$\times$ worse than in straight flight and the inertial
+force is of the order of the drag.
+
+\subsection{Step 3: output error on the quasi-steady solve}
+Steps 1--2 match the flight coefficients at the flown states, but the
+quasi-steady reconstruction with them still over-predicts the held-out
+reel-out ($+19\,\%$ tension, $+12\,\%$ speed). The flown samples are not
+equilibria: $|m\dot v_\tau|/D$ is 0.1 at the median and 0.3 at the 90th
+percentile on reel-out, and the EKF coefficients are instantaneous, whereas
+the ROM is used as a quasi-steady model. Step 3 therefore refits all six
+parameters together on the output the ROM is used for: the quasi-steady
+ground tension and tangential speed with the measured turn rate in and the
+steering solved, on the rigid tether of the optimisations
+(\code{refine\_rom\_flight\_output\_error.py}). Tension and speed barely
+see the roll gain, which mostly sets how much steering the solve uses, so
+the gain gets its own condition, the turn-rate law the paper defines the
+steering by: the solved steering must regress 1:1 on the logged steering
+(zero offset, \SI{0.3}{\second} lag) over the reel-out training samples, one
+residual $5\,(\text{slope}-1)$ with its exact Jacobian from the per-sample
+sensitivities. The condition pins the gain only if drag cannot buy
+steering: left free, the fit met the slope with the gain at $-0.77$ and the
+total $u_s^2$ drag driven to $-0.25$ (a negative steering drag, which makes
+the solve fly faster and roll less at high steering), so the steering-drag
+coefficients are bounded at zero in total, $C_D$ non-decreasing with
+steering. Holding the gain with the measured aerodynamic roll of step 2
+instead was tried first and gives $-0.75$; Sect.~\ref{sec:fc-result} shows
+why that is \SI{20}{\percent} too strong. \fcSamples{} samples from \fcCycles{} training cycles
+enter, half reel-out, half reel-in. Each sample's root is found by Newton's
+method, warm-started from its last root, and its derivative with respect to
+the parameters follows from the implicit-function theorem, so the outer
+Gauss--Newton (trust region) has exact Jacobians. A sample that loses its
+root, or whose root lies past the stall, is charged a fixed error instead.
+One large NLP with every sample's balance as a constraint was tried first
+and is infeasible: reel-in samples sit at the fold of the radial balance
+(Sect.~\ref{sec:open}) and lose their root when the parameters move. A
+variant that let a steering error (solved against logged $u_s$) hold the
+gain instead of the measured roll drove it to a non-physical $-4.9$, the
+logged steering explaining the turn poorly (lag; gravity and tether turn
+the kite at zero steering), and is not used.
+
+\IfFileExists{generated/flight_correction_params.tex}{%
+\begin{table}[H]
+\centering\small
+\caption{Bridle pitch, drag correction and roll gain. Drag terms are
+corrections to the aerostructural $C_D$ (whose own $u_s^2$ coefficient is
+about $-0.53$). Steps 1--2 with the cycle-bootstrap 95\,\% interval; step 3 is
+the adopted ROM.}
+\label{tab:fc-params}
+\input{generated/flight_correction_params.tex}
+\end{table}}{}
+
+\IfFileExists{generated/flight_correction_training.tex}{%
+\begin{table}[H]
+\centering\small
+\caption{Quasi-steady reconstruction of the \fcCycles{} training cycles
+(median errors, steering solved, rigid tether) with the step 1--2 and the
+step 3 values; $u_s$ rms against the logged steering plus the zero offset.}
+\input{generated/flight_correction_training.tex}
+\end{table}}{}
+
+\subsection{Result}
+\label{sec:fc-result}
+\paragraph{The steering gain against the turn-rate law.} The empirical
+turn-rate law $\dot\chi = K\,v_a u_s + c_g\,g\cos\beta\sin\chi/v_\tau$
+fitted to the 2019 reel-out (logged $u_s$ with the zero offset and the
+\SI{0.3}{\second} lag) gives $K=\turnK$\,\si{\radian\per\metre} and
+$c_g=\turnG$; a point mass has $c_g=1$, so the kite turns under gravity
+about half as much as its mass would, its yaw stiffness resisting course
+changes it was not steered into. The same regression on each ROM's turn rate
+in the logged-steering mode (Table~\ref{tab:turn-law}) is the check of the
+gain: with the gain from the measured roll ($-0.75$) the flight-corrected ROM
+gave $K=0.41$, \SI{20}{\percent} above the flight, with the aerostructural
+gain ($-0.53$) $K=0.27$; and every ROM has $c_g\approx1.1$--$1.2$, i.e.
+2--2.5$\times$ the flight's gravity-driven turn. The two are coupled: the
+measured roll is the roll needed to make the measured turn \emph{against}
+that exaggerated gravity turn, which is why it over-reads the gain. The
+turn-rate-law condition of step 3 sets the gain where the solved steering
+regresses 1:1 on the logged one: $-0.67$ for the flight-corrected ROM and
+$-0.69$ for the recalibrated semi-empirical one, whose held-out $K$ are
+$\turnKaerostructuralflight$ and $\turnKsemiempirical$. The gravity-turn
+excess is a property of the point-mass force model (Sect.~\ref{sec:open}).
+
+\IfFileExists{generated/turn_law.tex}{%
+\begin{table}[H]
+\centering\small
+\caption{Turn-rate law fitted to the flight and to each ROM's reconstructed
+turn rate (logged steering in, reel-out, cycles 60--67).}
+\label{tab:turn-law}
+\input{generated/turn_law.tex}
+\end{table}}{}
+
+\IfFileExists{figures/turn_rate_law.pdf}{%
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{turn_rate_law.pdf}
+\caption{The turn rate of each ROM with the logged steering as input against
+the measured one (left, held-out reel-out samples), and the turn-rate law
+with the gravity term removed, binned in $v_a u_s$ (right): the flight
+against the ROMs. The tuned ROMs sit on the flight's $K$ within
+\SI{10}{\percent}; the aerostructural gain under-turns by a third. The
+flight's response bends below linear beyond $|v_a u_s|\approx3$, a
+saturation at full steering that a linear gain cannot follow, which is where
+the tuned ROMs' peak turn rates overshoot.}
+\label{fig:turn-law}
+\end{figure}}{}
+
+\paragraph{Held out.}
+On the held-out cycles (Table~\ref{tab:flight},
+Figs.~\ref{fig:flight-solved-64} and~\ref{fig:flight-solved-61}), with the turn
+rate in, the corrected ROM reproduces the reel-out tension and speed to
+$-3\,\%$ and $-1\,\%$ (median) and the reel-in to $+32\,\%$ and $0\,\%$,
+with its solved steering on the logged one (slope 0.88, correlation 0.89).
+With the logged steering in, it reproduces the reel-out to $+1\,\%$ and
+$+4\,\%$ (semi-empirical: $-6\,\%$ and $-1\,\%$) and the turn rate with
+correlation 0.90, and the reel-in tension again to $+33\,\%$; with the
+Williams tether the reel-in tension error drops to $+20\,\%$.
+\fcValidPct{}\,\% of the training samples keep a valid root at the step-3
+parameters. Refitting on the reel-out samples alone (last column of
+Table~\ref{tab:fc-params}) moves $\theta_b$ by $0.2^\circ$ at the powered and
+$0.7^\circ$ at the depowered setting and the gain by \SI{5}{\percent}: the
+reel-out parameters do not depend on the reel-in samples' pull.
+
+Three cautions on the parameters themselves:
+\begin{itemize}
+  \item \textbf{$\Delta C_{D,0}$ and $c_p$ are nearly interchangeable.} The
+        flown $u_p$ takes essentially two values (\SI{1.7}{\metre} and
+        \SI{2.1}{\metre}), so only their sum at those two settings is
+        identified; the split between them is not.
+  \item \textbf{Lift terms without $\alpha$ would not be identifiable
+        either.} A lift offset $\Delta C_{L,0}$ or $c_{L,p}u_p$ raises the lift
+        at the operating point exactly as a pitch shift $\Delta\theta_0$ or
+        $\Delta\theta_1u_p$ does; tension and speed fix the lift and drag at
+        the operating point, not the $\alpha$ they occur at, and the only
+        independent $\alpha$ measurement, the EKF's bridle vane, sits
+        4$^\circ$ from the force-based angle. Where the depower correction
+        lives (pitch or polar) is a modelling choice; it matters only where
+        $\alpha$ itself matters, the stall margin.
+  \item \textbf{Steering drag is not identified.} At equal lift the flight
+        drag rises with steering by $c_s\approx+2.9$; the output error on both
+        phases keeps $+2.3$ of it, on the reel-out samples alone it goes to
+        the bound at zero with the zero-steering drag level rising by $0.03$
+        to compensate. Tension and speed cannot tell a steering drag from a
+        drag level, so $c_s$ is a range, 0 to about 2.3, tied to the drag
+        level, not a value; a $u_s^2$ lift loss, the natural companion term,
+        would sit in the same unidentified regime.
+\end{itemize}
+
+%======================================================================
+\section{Optimisations}
+\label{sec:optimisations}
+The three ROMs were run through the reel-out downloop optimisation
+(\code{downloop\_pattern.py}: one figure-eight at \SI{8}{\metre\per\second}
+and \SI{100}{\metre}, logarithmic wind, rigid tether, power-tape length
+bounded to 1.6--\SI{2.2}{\metre}, a 3$^\circ$ stall margin on $\alpha$), on
+the optimisation hardware of \path{system.yaml} and on the flown 2019
+hardware (KCU \SI{22}{\kilogram} with its turbine), all on the corrected
+frame. This is an application of the tuned ROMs, not part of their
+identification or validation: no optimisation result enters any fitted
+parameter, and none of these loops was flown, so nothing here can be checked
+against data. The optimiser lets each ROM pick its own loop
+(Fig.~\ref{fig:opt-loops}), so the comparison is of what each ROM thinks the
+kite can do, not of one path flown with three polars.
+
+\IfFileExists{generated/optimisations.tex}{%
+\begin{table}[H]
+\centering\small
+\caption{Optimised downloop reel-out per ROM: mean power, mean tension, mean
+tangential speed and loop time.}
+\label{tab:opt}
+\resizebox{\textwidth}{!}{\input{generated/optimisations.tex}}
+\end{table}}{}
+
+\IfFileExists{figures/optimisation_loops.pdf}{%
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{optimisation_loops.pdf}
+\caption{The optimised loops in azimuth and elevation, per ROM and hardware.}
+\label{fig:opt-loops}
+\end{figure}}{}
+
+On the flown 2019 hardware the three ROMs are within $5.0$--\SI{5.9}{\kilo\watt},
+the flight-corrected one highest and the semi-empirical lowest, in the order
+of their reel-out tension in the validation. On the lighter optimisation
+hardware the two aerostructural ROMs reach \SI{10.4}{\kilo\watt} and
+\SI{10.8}{\kilo\watt} against the semi-empirical \SI{7.1}{\kilo\watt}, and fly
+taller loops (elevation up to 28$^\circ$ against 23$^\circ$). The difference
+is the polar: the aerostructural one has the higher lift-to-drag ratio (it
+flew the validation \SI{10}{\percent} faster) and a steering that costs it
+little drag, the semi-empirical one carries more drag at the same lift and,
+after recalibration, a larger $|u_s|$ drag; with the KCU at
+\SI{8.4}{\kilogram} the gravity-driven part of the turn shrinks, and the
+higher-$L/D$ polar lets the optimiser pull the loop up and fly it faster.
+The spread between the two aerostructural ROMs ($\pm2\,\%$) is
+within what the flight correction can resolve; the spread to the
+semi-empirical ROM (about a third lower) is a difference of polar shape, not of
+calibration, and is not resolved by the 2019 flight, which never flew that
+hardware or that pattern.
+
+%======================================================================
+\section{Limitations and open points}
+\label{sec:open}
+\begin{itemize}
+  \item \textbf{Reel-in reads as speed-unstable.} At fixed controls, every
+        flown 2019 reel-in state reconstructed by the semi-empirical ROM has
+        $\partial\dot v_\tau/\partial v_\tau>0$, while reel-out reads
+        negative. A $\dot v_\tau(v_\tau)$ sweep at flown states, controls fixed and
+        the radial balance solved for the tension at each speed
+        (Fig.~\ref{fig:vdot}, \code{sweep\_vdot\_tangential.py}), shows why. On
+        reel-out it reproduces the paper's Fig.~6: a stable fast root at the
+        reconstructed speed and an unstable post-stall root below it at the
+        fastest state; at the slower reel-out states (\SI{12}{\metre\per\second}
+        to \SI{15}{\metre\per\second} measured) the branch through the
+        reconstructed root already ends at a fold below the measured speed,
+        the reconstruction sitting low ($-7\,\%$ in the median,
+        Table~\ref{tab:flight}). On reel-in there is no fast root at any
+        state. Each branch \emph{ends}, at
+        $v_\tau\approx3$--\SI{7}{\metre\per\second}, where no tension can
+        balance the radial forces any more: tension also pitches the bridle
+        resultant, so the radial residual has a maximum over tension that
+        crosses zero at that speed (a fold). The flown reel-in states sit
+        within about \SI{1}{\metre\per\second} of the fold, where
+        $\partial\dot v_\tau/\partial v_\tau>0$. In this model the kite reels in
+        as fast as the radial balance allows. The straight, rigid tether is
+        weakest exactly at this low tension, so the sweep was repeated with the
+        Williams tether, the radial row solved together with the ground
+        closure (Fig.~\ref{fig:vdot-williams}). The fold survives: the reel-in
+        branches still end at $v_\tau\approx4$--\SI{7}{\metre\per\second}
+        with $\partial\dot v_\tau/\partial v_\tau>0$. The fold is a property
+        of the kite model, not of the tether model.
+  \item \textbf{Steering range.} The steering terms are identified up to
+        $|u_s|\approx0.18$. Beyond it the lift loss with steering
+        ($\propto\alpha u_s^2$) extrapolates quadratically, and tight seed
+        paths that need more steering are not followable.
+  \item \textbf{Stall.} The stall is that of VSM with artificial viscosity on
+        frozen deformed shapes; it locates the lift maximum but is the least
+        validated part of the model.
+  \item \textbf{Centre of the window, gravity off.} Position-dependent
+        aerodynamics (sideslip, gravity-induced attitude) are outside the data.
+  \item \textbf{Drag deficit.} Most of the apparent deficit was the frame
+        error of Sect.~\ref{sec:frame}; what remains ($+7\,\%$ tension,
+        $+10\,\%$ speed on reel-out) is within what the flight correction
+        absorbs, but it is absorbed by $\theta_b$ and a drag level, which the
+        data cannot tell apart from a lift level.
+  \item \textbf{Reel-in.} No ROM reproduces both its tension and its speed:
+        the aerostructural polar doubles the tension even after the flight
+        correction ($+33\,\%$), the recalibrated semi-empirical ROM gets the
+        tension ($-7\,\%$) but not the speed ($-18\,\%$). The flown reel-in
+        states sit at the fold above, with the kite reeling in near the speed
+        the radial balance allows; a quasi-steady point-mass model has one
+        knob there, the tension, and the winch transient the kite is actually
+        in is outside it.
+  \item \textbf{Flight data.} The EKF reconstruction is a model output too:
+        its forces depend on its tether model, its coefficients are
+        instantaneous at states that are not equilibria, and its innovation
+        statistics are 2--3$\times$ worse in turns than in straight flight.
+        The cycle bootstrap intervals quoted here cover cycle-to-cycle
+        variation only, not these systematic effects, and the 3--4$^\circ$ by
+        which the equation-error and output-error $\theta_b$ differ is a
+        better measure of what the data pin down.
+\end{itemize}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{vdot_sweep.pdf}
+\caption{Tangential acceleration and wing angle of attack against tangential
+speed at flown 2019 states (semi-empirical ROM, controls fixed, tension from the
+radial balance). Reel-in branches end at the fold of the radial balance.}
+\label{fig:vdot}
+\end{figure}
+
+\IfFileExists{figures/vdot_sweep_williams.pdf}{%
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{vdot_sweep_williams.pdf}
+\caption{As Fig.~\ref{fig:vdot} with the Williams tether: the radial row and
+the ground closure are solved at each speed for the kite-end tension, the
+tether length and the last element's angles. The reel-in fold remains.}
+\label{fig:vdot-williams}
+\end{figure}}{}
+
+%======================================================================
+\section{Reproduction}
+From the repository root:
+\begin{enumerate}
+  \item \path{scripts/personal/wes-quasi-steady/run_center_sweep_alpha_polar.py}
+        (pinned VSM) for the frozen-shape polars;
+  \item \path{scripts/identification/identify_rom_aerostructural.py}, which
+        writes the ROM file and the tidy datasets;
+  \item \path{scripts/identification/validate_rom_aerostructural.py} and
+        \path{plot_rom_comparison.py};
+  \item \path{scripts/reduced-order-model/validation/validate_quasi_steady_state_v3.py}
+        with \path{--rom <rom> --steering solved|measured}, then
+        \path{plot_rom_flight_validation.py};
+  \item for the flight correction:
+        \path{scripts/identification/identify_rom_flight_correction.py}
+        (steps 1--2, writes the ROM file); the validator with
+        \path{--rom aerostructural_flight --steering solved --out}
+        on training cycles 20--27, 40--47 and 75--82, into
+        \path{results/LEI-V3-KITE/identification/rom_flight_correction/output_error/train_*.csv};
+        then \path{refine_rom_flight_output_error.py} (step 3, the
+        turn-rate-law gain by default, edits the ROM file in place), the
+        held-out validation in both modes and
+        \path{plot_rom_turn_rate_law.py}; the same with
+        \path{--rom semi_empirical} (training CSVs under
+        \path{output_error_semi_empirical/}) recalibrates the paper's ROM;
+  \item \path{scripts/identification/report_rom_aerostructural.py}, then
+        \path{latexmk -pdf} in \path{docs/identification/}.
+\end{enumerate}
+
+\begin{thebibliography}{9}
+\bibitem{cayon2026rom}
+O.~Cayon, V.~van~Deursen and R.~Schmehl,
+\emph{Translational dynamics of bridled kites: a reduced-order model in the
+course reference frame}, Wind Energ.\ Sci.\ 11, 1097--1121, 2026.
+
+\bibitem{cayon2023vsm}
+O.~Cayon, M.~Gaunaa and R.~Schmehl,
+\emph{Fast aero-structural model of a leading-edge inflatable kite},
+Energies 16, 3061, 2023.
+
+\bibitem{poland2025wind}
+J.~A.~W.~Poland, J.~M.~van~Spronsen, M.~Gaunaa and R.~Schmehl,
+\emph{Wind tunnel load measurements of a leading-edge inflatable kite rigid
+scale model}, Wind Energ.\ Sci.\ Discuss., 2025.
+\end{thebibliography}
+
+\end{document}
