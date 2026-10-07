@@ -9,7 +9,10 @@ three files in its folder.
   system.yaml        hardware (awesIO format): mass, tether, the drum envelope
                      (reel speeds, acceleration, force rating) and the KCU
                      actuator ranges/rates -> the optimizer's hardware limits
-  rom_config.yaml    the aerodynamic ROM plus two blocks the cycle needs:
+  ROM config         the aerodynamic ROM the system file selects
+                     (models.reduced_order.aerodynamics, else a sibling
+                     rom_config.yaml; awetrim.system.factory.
+                     resolve_rom_config_path), plus two blocks the cycle needs:
                        controls.input_depower: {powered, depowered}  REQUIRED
                          the depower band the ROM was identified on, in the
                          ROM's own u_p unit (V3: power-tape metres)
@@ -42,6 +45,7 @@ from pathlib import Path
 import yaml
 
 from awetrim.identification.controls import rom_depower_band
+from awetrim.system.factory import resolve_rom_config_path
 from awetrim.utils.config_paths import DATA_DIR
 
 DEFAULT_KITE = "LEI-V3-KITE"
@@ -90,8 +94,8 @@ def _require(mapping: dict, keys, where: Path, section: str) -> None:
 def _load_yaml(path: Path) -> dict:
     if not path.is_file():
         raise FileNotFoundError(
-            f"{path} not found; a kite folder needs system.yaml, rom_config.yaml "
-            f"and {PROFILE_FILENAME} (see cycle_kites.py)"
+            f"{path} not found; a kite folder needs system.yaml, the ROM config "
+            f"it selects and {PROFILE_FILENAME} (see cycle_kites.py)"
         )
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
@@ -106,10 +110,11 @@ def resolve_kite(kite: str | Path | None = None) -> dict:
     folder = kite_dir(kite)
     profile_path = folder / PROFILE_FILENAME
     profile = _load_yaml(profile_path)
-    rom_path = folder / "rom_config.yaml"
-    rom = _load_yaml(rom_path)
     system_path = folder / "system.yaml"
     _load_yaml(system_path)  # existence check; parsed by the scripts
+    # The SAME file the system model is built with (factory resolution).
+    rom_path = resolve_rom_config_path(system_path) or folder / "rom_config.yaml"
+    rom = _load_yaml(rom_path)
 
     unknown = sorted(set(profile) - _SECTIONS)
     if unknown:

@@ -1,4 +1,6 @@
 metadata:
+  recalibration: >-
+    2026-10-07: theta0, theta1, cd0, cd_us_abs, gain recalibrated by scripts/identification/refine_rom_flight_output_error.py --rom semi_empirical (output error on the quasi-steady tension and v_tau of 24 2019 training cycles, cycles 60-67 held out, roll gain held by the measured aerodynamic roll) on the corrected bridle-angle frame of Kite._force_in_wind_frame; the paper's values were calibrated on the pre-fix frame. Report: results\LEI-V3-KITE\identification\rom_flight_correction\output_error_semi_empirical\refinement_report.json
   description: >-
     SEMI-EMPIRICAL ROM of the LEI-V3 kite (Cayon, van Deursen, Schmehl 2026,
     WES 11, 1097, Sect. 5.1): rigid-VSM polar fits with drag offsets and the
@@ -35,20 +37,22 @@ aerodynamics:
   # so their drag is already inside C_D; the ROM adds no separate KCU drag.
   kcu_drag_in_coefficients: true
   params:
-    # CD0: 0.1130532
     CL0: 0.04671295
     # Geometric pitch between the bridle resultant and the wing chord (paper
     # Eqs. 1-2, alpha_w = alpha_b - theta_b), theta_b = angle_pitch_tether_0 +
     # slope_angle_pitch_tether_depower * u_p, u_p = l_dp [m]. Anchored to the
     # 2019 states by C_L matching: theta_b 7.89 deg at 1.7 m, 18.36 deg at
     # 2.1 m. (Pre-2026-10 keys: angle_pitch_depower_0 = -angle_pitch_tether_0,
-    # delta_pitch_depower = -slope_angle_pitch_tether_depower.)
-    CD0: 0.113142
-    angle_pitch_tether_0: -0.638999           # rad
-    slope_angle_pitch_tether_depower: 0.456901   # rad/m
+    # delta_pitch_depower = -slope_angle_pitch_tether_depower.) Paper values
+    # (pre-fix frame): CD0 0.113142, theta_b -0.638999 + 0.456901 u_p (7.89 deg
+    # at 1.7 m, 18.36 deg at 2.1 m), gain -0.688820, |u_s| drag 0.1285714; see
+    # metadata.recalibration for the 2026-10-07 values below.
+    CD0: 0.104879
+    angle_pitch_tether_0: -0.547305           # rad
+    slope_angle_pitch_tether_depower: 0.395302   # rad/m
     # Steering -> aerodynamic roll, phi_a,w = gain_roll_steering * u_s [rad]
     # (paper Eq. 43). Was carried as CS u_s = 0.12 / 0.35 with the sign flipped.
-    gain_roll_steering: -0.688820   # rad per u_s (legacy -kcu/100 unit: -0.344410)
+    gain_roll_steering: -0.693502   # rad per u_s
     # Stall angle [rad], used by the optimiser's stall margin
     # (sim_parameters.stall_margin_deg). This ROM has no stall model; its C_L
     # polynomial peaks at alpha = 6.0913 / (2 x 10.1123) = 0.3012 rad = 17.3 deg.
@@ -82,7 +86,7 @@ aerodynamics:
       # -kcu/100 guess scale and improves IPOPT conditioning.
       - var: u_s
         power: 1
-        coef: 0.1285714   # = 2 x 0.0642857 (legacy -kcu/100 unit) = 0.045 / 0.35
+        coef: 0.206321   # recalibrated 2026-10-07 (paper: 0.1285714 = 2 x 0.0642857 legacy)
         abs: true         # symmetric in left/right steering (|u_s|)
       - var: u_p
         power: 1

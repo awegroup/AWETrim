@@ -135,3 +135,10 @@ components:
     - name: LEI-V3 Gearbox
       type: planetary
       gear_ratio: 1.0
+
+# Reduced-order model this system runs with (awetrim.system.factory.
+# resolve_rom_config_path). The LEI-V3 has two: rom_config_semi_empirical.yaml
+# (flight-calibrated) and rom_config_aerostructural.yaml (simulation-only).
+models:
+  reduced_order:
+    aerodynamics: rom_config_semi_empirical.yaml

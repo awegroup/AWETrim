@@ -119,7 +119,62 @@ src/awetrim/
 ```
 
 ROM is **script-based**, not a `src/` module: see `scripts/reduced-order-model/`
-(`optimization/`, `validation/`), configured via each kite's `rom_config.yaml`.
+(`optimization/`, `validation/`), configured via the ROM config the kite's
+`system.yaml` selects (`models.reduced_order.aerodynamics`, resolved by
+`system.factory.resolve_rom_config_path`; fallback a sibling `rom_config.yaml`).
+The LEI-V3 has three: `rom_config_semi_empirical.yaml` (flight-calibrated, the
+default; recalibrated 2026-10-07 on the corrected bridle-angle frame by
+`refine_rom_flight_output_error.py --rom semi_empirical`, the paper's values
+kept in its comments), `rom_config_aerostructural.yaml` (identified from the coupled
+Billow-wireframe centre-window simulations only, by
+`scripts/identification/identify_rom_aerostructural.py`) and
+`rom_config_aerostructural_flight_corrected.yaml` (the aerostructural one with
+theta_b and a single-input dC_D(u_p, u_s^2) fitted to 2019 flight, cycles 60-67
+held out: `identify_rom_flight_correction.py` (equation error: theta_b from the
+flight LIFT, drag at equal lift) then `refine_rom_flight_output_error.py`
+(output error on the quasi-steady tension and v_tau, with the roll gain set by
+the turn-rate law -- the solved steering regressing 1:1 on the logged steering
+-- which edits the file in place; the equation-error values alone do not transfer to the rigid-tether
+quasi-steady solve)).
+
+**ROM parameter names** (`aerodynamics.params`, read by `system/kite.py`):
+`angle_pitch_tether_0` + `slope_angle_pitch_tether_depower` give the bridle
+pitch theta_b(u_p) in the PAPER sign, `alpha_w = alpha_b - theta_b`;
+`gain_roll_steering` is k_phi,s (`phi_a,w = k u_s`, asymmetric steering); both
+angles are taken in the paper's App. D apparent-wind frame, which
+`Kite._force_in_wind_frame` builds from the v_a VECTOR (until 2026-10-06 an
+Euler-angle frame with a mirrored yaw sign put the bridle pitch 2-3 deg off
+in sideslip, zero only at the centre-window trims; every flight calibration
+before that date absorbed it);
+`aerodynamics.reference_area` [m2] states the area the coefficients are
+normalised by and overrides the system wing area (the LEI-V3 ROMs both use
+19.75 m2, the EKF area; system.yaml's projected 17.2119 m2 is geometry, not a
+ROM reference). `aerodynamics.kcu_drag_in_coefficients` (default true) says
+whether C_D already carries the KCU drag (flight-calibrated ROM); false = the
+Kite adds it from the system file's KCU length/diameter/turbine through
+`aerodynamics/kcu_drag.py`, as a force at the bridle point that also enters the
+bridle resultant F_b (so swapping the KCU needs no re-identification). Coefficient
+terms may use `alpha`, `u_p`, `u_s`, `v_a` and `stall` (the smooth
+attached->separated switch `kite.stall_blend`, needing params
+`angle_of_attack_stall`, `width_stall`). Every term is a PLAIN monomial (C_D
+included, since 2026-10; before, every C_D term was |monomial|, a kink at 0);
+`abs: true` on a term asks for |monomial| and is kept only for the legacy
+steering-drag terms. `u_s` is the STANDARDISED steering of
+`identification.controls` (1.4 m x u_s = steering-tape half-difference; 2019
+V3 u_s = -kcu/200, KCU limit +-0.175) in every V3 file and in
+DEFAULT_OPTI_LIMITS.
+`aerodynamics.params.angle_of_attack_stall` is the ROM's stall angle; the
+optimiser's `sim_parameters.stall_margin_deg` keeps alpha that far below it at
+every node and then REPLACES the generic alpha box (no lower bound, no other
+upper bound). Quasi-steady roots are selected by being BELOW THE STALL (alpha <
+angle_of_attack_stall): the phase seed march prefers pre-stall roots
+(`seed_reject_post_stall`) and keeps simulating on the closest post-stall one
+when none exists; `setup_qs_solver` exposes `_qs_alpha_function` for other
+callers (the flight validator). The speed stability (paper Eq. 36,
+`system_model.tangential_speed_stability`, at fixed steering) is a DIAGNOSTIC
+(`_qs_stability_function`): every flown reel-in state reads unstable. Legacy keys
+`angle_pitch_depower_0` / `delta_pitch_depower` (opposite sign) and a
+`CS: u_s` roll gain are still read, with a DeprecationWarning.
 
 **The structural solver is [Billow](https://github.com/awegroup/Billow)**, a
 separate package (`pip install billow`), imported as `billow`. It was
@@ -266,7 +321,7 @@ Each kite under `data/<kite_name>/` should include at minimum the following file
 - `struc_geometry.yaml` — structural geometry describing wing nodes, LE/TE positions, bridle nodes and connectivity, spring/rest-length definitions, pulley info. A `bridle_lines` row may carry an optional `w` (flat-tape width [m]); `d` then stays the AREA-equivalent diameter used for mass and EA, while the drag uses the projected width (`awetrim.aerodynamics.line_drag`). Does **not** carry `kcu_mass` (deprecated; ignored with a warning if present — set it in `system.yaml`).
 - `aero_geometry.yaml` — VSM aerodynamic geometry describing wing sections, paneling, and references to airfoil polars; may reference a subfolder with airfoil `.dat` or polar CSVs.
 - `as_config.yaml` (or `aerostructural_configs/config.yaml`) — aerostructural solver settings (time-step, tolerances, actuation options, initialisation flags).
-- `rom_config.yaml` — reduced-order aerodynamic coefficient definitions (plus ROM tether settings) used by ROM or identification flows. A `controls.input_depower: {powered, depowered}` block states the depower band the ROM was identified on, in the ROM's own `u_p` unit (`identification.controls.rom_depower_band`; absent = the V3 power-tape metres 1.7/2.1, but the full-cycle scripts require it). An optional `validity.angle_of_attack_deg: [lo, hi]` states the AoA range the ROM was identified on (the full-cycle optimizer's AoA bound).
+- `rom_config*.yaml` — reduced-order aerodynamic coefficient definitions (one file per ROM; `system.yaml` `models.reduced_order.aerodynamics` names the one in use, else a sibling `rom_config.yaml` is used) (plus ROM tether settings) used by ROM or identification flows. A `controls.input_depower: {powered, depowered}` block states the depower band the ROM was identified on, in the ROM's own `u_p` unit (`identification.controls.rom_depower_band`; absent = the V3 power-tape metres 1.7/2.1, but the full-cycle scripts require it). An optional `validity.angle_of_attack_deg: [lo, hi]` states the AoA range the ROM was identified on (the full-cycle optimizer's AoA bound).
 - `ekf_config/` — EKF configuration files and model-specific tuning parameters used by the `experimental` EKF pipeline.
 
 Optional but recommended:

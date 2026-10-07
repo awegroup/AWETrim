@@ -1,3 +1,6 @@
+import argparse
+from pathlib import Path
+
 import h5py
 import pandas as pd
 import numpy as np
@@ -8,11 +11,13 @@ from awetrim.system.tether import (
     FlexibleLumpedTether,
     RigidLinkTether,
 )
-from awetrim.system.factory import load_aero_input_from_system_config
+from awetrim.system.factory import create_system_model_from_yaml
+from awetrim.system.system_model import tangential_speed_stability
 from awetrim.system.williams_tether import WilliamsTether
 from awetrim.environment.Wind import Wind
 from awetrim.environment.profile_laws import friction_velocity, speed_from_friction_velocity
 from awetrim.identification.controls import (
+    FLIGHT_STEERING_ZERO_OFFSET_2019,
     ROM_POWERED_INPUT_DEPOWER,
     ROM_DEPOWERED_INPUT_DEPOWER,
     flight_dataframe_depower_to_power_tape_length,
@@ -30,13 +35,60 @@ from awetrim.utils.system_config import get_kite, get_tether
 
 RUN_WILLIAMS = False
 RUN_RIGID = True
-SHOW_PLOTS = True
 
+# Which ROM to validate: the system file's default (semi-empirical), a named
+# LEI-V3 ROM, or a path. The KCU drag of a ROM whose C_D excludes it comes
+# from the flown system's KCU hardware (factory-built Kite).
+ROM_CONFIGS = {
+    "semi_empirical": "rom_config_semi_empirical.yaml",
+    "aerostructural": "rom_config_aerostructural.yaml",
+    "aerostructural_flight": "rom_config_aerostructural_flight_corrected.yaml",
+}
+_parser = argparse.ArgumentParser(description="ROM quasi-steady validation, LEI-V3 2019")
+_parser.add_argument("--rom", default=None,
+                     help="semi_empirical | aerostructural | aerostructural_flight | path (default: system file's)")
+_parser.add_argument("--cycles", default="64",
+                     help="cycle numbers, e.g. 64 or 60-67 (default: %(default)s)")
+_parser.add_argument("--no-show", action="store_true", help="never open windows")
+_parser.add_argument(
+    "--tether", choices=("rigid", "williams"), default="rigid",
+    help="rigid: the ROM's straight lumped tether (default); williams: the "
+    "discretised Williams tether (sag, distributed weight and drag)")
+_parser.add_argument(
+    "--steering", choices=("solved", "measured"), default="solved",
+    help="solved: prescribe the measured turn rate and solve the steering the "
+    "ROM needs (default); measured: feed the logged steering (+ the 2019 zero "
+    "offset) and solve the turn rate -- the paper's causality, u_s input and "
+    "chi_dot algebraic")
+_parser.add_argument("--out", default=None,
+                     help="CSV of per-sample measured vs predicted (default: "
+                     "results/LEI-V3-KITE/rom_validation/<rom>/qs_validation.csv)")
+ARGS = _parser.parse_args()
+SHOW_PLOTS = not ARGS.no_show
+RUN_WILLIAMS = ARGS.tether == "williams"
+RUN_RIGID = ARGS.tether == "rigid"
 if not SHOW_PLOTS:
     plt.switch_backend("Agg")
+ROM_PATH = None
+if ARGS.rom is not None:
+    ROM_PATH = (
+        LEI_V3_SYSTEM_FLOWN_CONFIG.parent / ROM_CONFIGS[ARGS.rom]
+        if ARGS.rom in ROM_CONFIGS else Path(ARGS.rom)
+    )
+ROM_LABEL = ARGS.rom if ARGS.rom in ROM_CONFIGS else (
+    Path(ARGS.rom).stem if ARGS.rom else "system_default")
+_lo, _, _hi = ARGS.cycles.partition("-")
+CYCLES = list(range(int(_lo), int(_hi or _lo) + 1))
 
 
-def build_williams_validation_solver(kite_model):
+def build_williams_validation_solver(kite_model, steering="solved"):
+    """Williams-tether reconstruction NLP (force balance + ground closure).
+
+    ``steering="solved"``: u_s is an unknown, the measured turn rate an input;
+    ``"measured"``: the turn rate is the unknown, u_s an input. Returns the
+    solver, the output function, and alpha / speed-stability functions over
+    the same (x, p) (stability: paper Eq. 36 at fixed steering, a diagnostic).
+    """
     tether = kite_model.tether
     if not isinstance(tether, WilliamsTether):
         raise TypeError(f"Expected WilliamsTether, got {type(tether).__name__}")
@@ -45,9 +97,13 @@ def build_williams_validation_solver(kite_model):
     # ground closure simultaneously with free tether-end angles and tension.
     # The tether reads wind/rho/g/omega off ``kite_model`` via the
     # ``_for(model)`` API; nothing is stored on the tether instance.
+    second = (
+        kite_model.timeder_angle_course if steering == "measured"
+        else kite_model.input_steering
+    )
     x = ca.vertcat(
         kite_model.speed_tangential,
-        kite_model.input_steering,
+        second,
         tether.tension_tether_kite,
         tether.tether_length,
         tether.azimuth_last_element,
@@ -60,7 +116,8 @@ def build_williams_validation_solver(kite_model):
         kite_model.angle_azimuth,
         kite_model.angle_elevation,
         kite_model.wind.speed_friction,
-        kite_model.timeder_angle_course,
+        kite_model.input_steering if steering == "measured"
+        else kite_model.timeder_angle_course,
         kite_model.input_depower,
     )
 
@@ -95,6 +152,17 @@ def build_williams_validation_solver(kite_model):
         ["x", "p"],
         ["outputs"],
     )
+    alpha_fun = ca.Function(
+        "williams_alpha", [x, p], [kite_model.kite.angle_of_attack_for(kite_model)]
+    )
+    # Rows: force [chi, n, r] + ground closure (3). Solved steering: u_s (x[1])
+    # held fixed and the normal row dropped; measured: chi_dot balances it.
+    stability = tangential_speed_stability(
+        residual, x, 0,
+        frozen_indices=(1,) if steering == "solved" else (),
+        dropped_rows=(1,) if steering == "solved" else (),
+    )
+    stability_fun = ca.Function("williams_stability", [x, p], [stability])
     nlp = {"x": x, "p": p, "f": 0, "g": residual}
     solver = ca.nlpsol(
         "williams_validation_solver",
@@ -111,7 +179,7 @@ def build_williams_validation_solver(kite_model):
             "print_time": False,
         },
     )
-    return solver, output_fun
+    return solver, output_fun, alpha_fun, stability_fun
 
 
 def read_results(year, month, day, kite_model, addition="", path_to_main=""):
@@ -177,15 +245,13 @@ results, flight_data, config_data = read_results(
     "2019",
     "10",
     "08",
-    "LEI-V3-Kite",
+    "LEI-V3 Kite",  # the EKF writes "<kite name>_<date>.h5"
     addition="",
     path_to_main="./results/LEI-V3-KITE/ekf/",
 )
 print(max(flight_data.cycle))
 # mask = (flight_data.cycle>10)&(flight_data.cycle<70)
-mask = flight_data.cycle.isin(range(10, 120))
-mask = flight_data.cycle.isin(range(60, 68))
-mask = flight_data.cycle == 64
+mask = flight_data.cycle.isin(CYCLES)
 # mask = mask & (flight_data.kite_elevation < 0.75)
 flight_data = flight_data[mask]
 results = results[mask]
@@ -257,9 +323,6 @@ for cfg, label in zip(aero_cfgs, aero_labels):
     cs_struct = kite.get("control_system", {}).get("structure", {})
     tether_struct = get_tether(cfg).get("structure", {})
 
-    aero_input = load_aero_input_from_system_config(
-        cfg, config_path=LEI_V3_SYSTEM_FLOWN_CONFIG
-    )
     mass_wing = wing_struct.get("mass", 14)
     area_wing = wing_struct.get("projected_surface_area", 20)
     mass_kcu = cs_struct.get("mass", 0.0)
@@ -275,13 +338,14 @@ for cfg, label in zip(aero_cfgs, aero_labels):
     else:
         tether = RigidLumpedTether(diameter=tether_diameter)
     wind_model = Wind(wind_model="logarithmic", z0=0.1, direction_wind=0)
-    kite = Kite(
-        mass_wing=mass_wing,
-        area_wing=area_wing,
-        aero_input=aero_input,
-        mass_kcu=mass_kcu,
+    # Factory-built kite: the selected ROM plus the flown KCU hardware
+    # (length, diameter, onboard turbine) for an explicit KCU drag.
+    kite = create_system_model_from_yaml(
+        LEI_V3_SYSTEM_FLOWN_CONFIG, aero_yaml_path=ROM_PATH,
         steering_control="asymmetric",
-    )
+    ).kite
+    print(f"ROM: {ROM_PATH or 'system default'} (area {kite.area_wing} m2, "
+          f"KCU drag {'in C_D' if kite.kcu_drag_in_coefficients else 'explicit'})")
     kite_model = SystemModel(
         dof=3, quasi_steady=True, kite=kite, tether=tether, wind_model=wind_model
     )
@@ -300,7 +364,7 @@ for cfg, label in zip(aero_cfgs, aero_labels):
         # free tether-end tension and angles.
         unknown_vars = [
             "speed_tangential",
-            "input_steering",
+            "timeder_angle_course" if ARGS.steering == "measured" else "input_steering",
             "tension_tether_kite",
             "tether_length",
             "azimuth_last_element",
@@ -309,7 +373,7 @@ for cfg, label in zip(aero_cfgs, aero_labels):
     else:
         unknown_vars = [
             "tension_tether_ground",
-            "input_steering",
+            "timeder_angle_course" if ARGS.steering == "measured" else "input_steering",
             "speed_tangential",
         ]
 
@@ -326,7 +390,9 @@ for cfg, label in zip(aero_cfgs, aero_labels):
     qs_guess = [1e5, 0, 60]
 
     if label == "Williams":
-        qs_solver, williams_output_fun = build_williams_validation_solver(kite_model)
+        (qs_solver, williams_output_fun, williams_alpha_fun,
+         williams_stability_fun) = build_williams_validation_solver(
+            kite_model, steering=ARGS.steering)
         kite_model._qs_inputs = [
             "distance_radial",
             "angle_course",
@@ -334,7 +400,7 @@ for cfg, label in zip(aero_cfgs, aero_labels):
             "angle_azimuth",
             "angle_elevation",
             "speed_friction",
-            "timeder_angle_course",
+            "input_steering" if ARGS.steering == "measured" else "timeder_angle_course",
             "input_depower",
         ]
         qs_guess = [
@@ -374,7 +440,7 @@ for cfg, label in zip(aero_cfgs, aero_labels):
             uf_window.pop(0)
             wdir_window.pop(0)
 
-        uf = np.mean(uf_window)
+        uf_avg = np.mean(uf_window)  # NOT uf: that is the per-sample series
         wdir = np.mean(wdir_window)
 
         current_state = {
@@ -383,11 +449,18 @@ for cfg, label in zip(aero_cfgs, aero_labels):
             "speed_radial": row.tether_reelout_speed,
             "angle_azimuth": azimuth[i] - wdir,
             "angle_elevation": row.kite_elevation,
-            "speed_friction": uf,
+            "speed_friction": uf_avg,
             "timeder_angle_course": course_rate[i],
             "input_depower": row.input_depower,
+            # Logged steering + the 2019 rig's zero offset (identification.
+            # controls); an INPUT only in --steering measured.
+            "input_steering": row.input_steering_measured
+            + FLIGHT_STEERING_ZERO_OFFSET_2019,
         }
-        qs_guess[1] = row.input_steering_measured
+        qs_guess[1] = (
+            course_rate[i] if ARGS.steering == "measured"
+            else row.input_steering_measured
+        )
 
         p = np.asarray(
             [current_state[name] for name in kite_model._qs_inputs],
@@ -418,9 +491,41 @@ for cfg, label in zip(aero_cfgs, aero_labels):
             lbg=np.asarray(lbg, dtype=float),
             ubg=np.asarray(ubg, dtype=float),
         )
+        # Keep a PRE-STALL root: a converged root at or past the ROM's stall
+        # angle (aerodynamics.params.angle_of_attack_stall) is the spurious
+        # post-stall branch; it is retried from faster guesses around the
+        # measured speed and, if no pre-stall root turns up, kept and flagged.
+        # The speed stability (paper Eq. 36) is recorded as a DIAGNOSTIC only:
+        # every flown reel-in state reads d(v_dot_tau)/d(v_tau) > 0.
+        if label == "Williams":
+            alpha_fn, stability_fn = williams_alpha_fun, williams_stability_fun
+        else:
+            alpha_fn = getattr(kite_model, "_qs_alpha_function", None)
+            stability_fn = getattr(kite_model, "_qs_stability_function", None)
+        alpha_stall = kite_model.kite.aero_params.get("angle_of_attack_stall")
+        stability = np.nan
+        if np.linalg.norm(sol["g"]) < 1 and alpha_fn is not None and alpha_stall is not None:
+            post_stall = float(alpha_fn(sol["x"], p)) >= alpha_stall
+            i_speed = unknown_vars.index("speed_tangential")
+            for factor in (1.0, 1.5, 2.0):
+                if not post_stall:
+                    break
+                guess = np.asarray(qs_guess, dtype=float).copy()
+                guess[i_speed] = factor * max(speed_tangential[i], 5.0)
+                retry = qs_solver(
+                    x0=guess, p=p,
+                    lbx=np.asarray(lbx, dtype=float), ubx=np.asarray(ubx, dtype=float),
+                    lbg=np.asarray(lbg, dtype=float), ubg=np.asarray(ubg, dtype=float),
+                )
+                if (np.linalg.norm(retry["g"]) < 1
+                        and float(alpha_fn(retry["x"], p)) < alpha_stall):
+                    sol, post_stall = retry, False
+        if stability_fn is not None and np.linalg.norm(sol["g"]) < 1:
+            stability = float(stability_fn(sol["x"], p))
         qs_guess = np.asarray(sol["x"], dtype=float).reshape(-1)
         qs_state = {name: float(sol["x"][i]) for i, name in enumerate(unknown_vars)}
-        state_combined = {**qs_state, **current_state}
+        # Solved unknowns win over the inputs of the same name.
+        state_combined = {**current_state, **qs_state}
         if np.linalg.norm(sol["g"]) < 1:
             if label == "Williams":
                 out = np.asarray(
@@ -503,6 +608,7 @@ for cfg, label in zip(aero_cfgs, aero_labels):
                 )
             state_combined["time"] = row.time
             state_combined["original_index"] = i  # Track original index
+            state_combined["speed_stability"] = stability  # < 0: stable root
             solutions.append(state_combined)
             # print(
             #     "angle_of_attack (deg):",
@@ -556,6 +662,43 @@ for cfg, label in zip(aero_cfgs, aero_labels):
     #     solutions_df = solutions_df.drop(columns=["original_index"])
     solutions_df = solutions_df.reset_index(drop=True)
     all_solutions[label] = solutions_df
+
+    # Per-sample measured vs predicted, for comparing ROMs afterwards.
+    out_csv = Path(ARGS.out) if ARGS.out else (
+        Path("results/LEI-V3-KITE/rom_validation") / ROM_LABEL
+        / ("qs_validation"
+           + ("_williams" if label == "Williams" else "")
+           + ("_measured_steering" if ARGS.steering == "measured" else "")
+           + ".csv"))
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({
+        "time": flight_data.time.to_numpy(),
+        "cycle": flight_data.cycle.to_numpy(),
+        "kite_elevation": flight_data.kite_elevation.to_numpy(),
+        "speed_radial": flight_data.tether_reelout_speed.to_numpy(),
+        "input_depower": flight_data.input_depower.to_numpy(),
+        "measured_tension": flight_data.ground_tether_force.to_numpy(),
+        "measured_speed_tangential": np.asarray(speed_tangential),
+        "measured_input_steering": flight_data.input_steering_measured.to_numpy(),
+        "predicted_tension": solutions_df["tension_tether_ground"].to_numpy(),
+        "predicted_speed_tangential": solutions_df["speed_tangential"].to_numpy(),
+        "predicted_input_steering": solutions_df["input_steering"].to_numpy(),
+        # The per-sample condition, so a state can be re-solved elsewhere
+        # (e.g. sweep_vdot_tangential.py).
+        "distance_radial": solutions_df["distance_radial"].to_numpy(),
+        "angle_azimuth": solutions_df["angle_azimuth"].to_numpy(),
+        "angle_elevation": solutions_df["angle_elevation"].to_numpy(),
+        "angle_course": solutions_df["angle_course"].to_numpy(),
+        "speed_friction": solutions_df["speed_friction"].to_numpy(),
+        "measured_course_rate": flight_data.course_rate.to_numpy(),
+        "predicted_course_rate": solutions_df["timeder_angle_course"].to_numpy(),
+        "predicted_angle_of_attack": solutions_df["angle_of_attack"].to_numpy(),
+        "predicted_lift_coefficient": solutions_df["lift_coefficient"].to_numpy(),
+        "predicted_drag_coefficient": solutions_df["drag_coefficient"].to_numpy(),
+        "predicted_speed_stability": solutions_df["speed_stability"].to_numpy()
+        if "speed_stability" in solutions_df else np.nan,
+    }).to_csv(out_csv, index=False)
+    print(f"Wrote {out_csv}")
 
 # Print comparison results for both models
 for label, solutions_df in all_solutions.items():
