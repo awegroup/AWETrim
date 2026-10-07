@@ -447,7 +447,11 @@ and the roll gain; \code{refine\_rom\_flight\_output\_error.py --rom
 semi\_empirical}, the paper's values kept in the file's comments): reel-out
 $-10\,\%$/$-6\,\%$ with the turn rate in and $-6\,\%$/$-1\,\%$ with the
 logged steering in, its reel-in tension within $-6\,\%$ but its reel-in
-speed $-18\,\%$. Its recalibrated gain, $-0.69$, is the paper's.
+speed $-18\,\%$. Its recalibrated gain, $-0.69$, is the paper's. After this
+comparison the semi-empirical ROM was removed from the repository (archived
+in git history; \code{config\_paths} keeps its path): the flight-corrected
+aerostructural ROM is the better-founded model and is now the default in
+every LEI-V3 system file. The rows and figures here are kept as the record.
 
 Reel-in is where the aerostructural polar fails: that ROM doubles the
 tension, and the flight-corrected one (aerostructural-flight rows,

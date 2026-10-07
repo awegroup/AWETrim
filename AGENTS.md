@@ -122,20 +122,22 @@ ROM is **script-based**, not a `src/` module: see `scripts/reduced-order-model/`
 (`optimization/`, `validation/`), configured via the ROM config the kite's
 `system.yaml` selects (`models.reduced_order.aerodynamics`, resolved by
 `system.factory.resolve_rom_config_path`; fallback a sibling `rom_config.yaml`).
-The LEI-V3 has three: `rom_config_semi_empirical.yaml` (flight-calibrated, the
-default; recalibrated 2026-10-07 on the corrected bridle-angle frame by
-`refine_rom_flight_output_error.py --rom semi_empirical`, the paper's values
-kept in its comments), `rom_config_aerostructural.yaml` (identified from the coupled
+The LEI-V3 has two: `rom_config_aerostructural.yaml` (identified from the coupled
 Billow-wireframe centre-window simulations only, by
 `scripts/identification/identify_rom_aerostructural.py`) and
-`rom_config_aerostructural_flight_corrected.yaml` (the aerostructural one with
+`rom_config_aerostructural_flight_corrected.yaml` (the DEFAULT in every
+LEI-V3 system file: the aerostructural one with
 theta_b and a single-input dC_D(u_p, u_s^2) fitted to 2019 flight, cycles 60-67
 held out: `identify_rom_flight_correction.py` (equation error: theta_b from the
 flight LIFT, drag at equal lift) then `refine_rom_flight_output_error.py`
 (output error on the quasi-steady tension and v_tau, with the roll gain set by
 the turn-rate law -- the solved steering regressing 1:1 on the logged steering
 -- which edits the file in place; the equation-error values alone do not transfer to the rigid-tether
-quasi-steady solve)).
+quasi-steady solve)). The paper's semi-empirical ROM
+(`rom_config_semi_empirical.yaml`) was removed on 2026-10-07 after the
+comparison in `docs/identification/`; it lives in git history (last at
+commit bad8a9b) and `config_paths.LEI_V3_ROM_SEMI_EMPIRICAL_CONFIG` keeps its
+path so the comparison scripts run on a checkout of it.
 
 **ROM parameter names** (`aerodynamics.params`, read by `system/kite.py`):
 `angle_pitch_tether_0` + `slope_angle_pitch_tether_depower` give the bridle

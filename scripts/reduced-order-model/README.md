@@ -83,8 +83,9 @@ mass (`LEI_V3_SYSTEM_FLOWN_CONFIG`).
 - ROM aero parameters are calibrated/identified by the
   [`identification/`](../identification/) scripts; the coefficient definitions
   live in the ROM config the kite's `system.yaml` selects (LEI-V3:
-  `rom_config_semi_empirical.yaml` by default, or
-  `rom_config_aerostructural.yaml`). The depower input the ROM was identified on is a
+  `rom_config_aerostructural_flight_corrected.yaml` by default, or
+  `rom_config_aerostructural.yaml`; the paper's semi-empirical ROM was removed
+  2026-10-07 and is archived in git history). The depower input the ROM was identified on is a
   per-kite convention (V3: power-tape length in metres; a kite logging a
   normalised signal uses that) declared in that file's `controls.input_depower` block and read by
   `awetrim.identification.controls.rom_depower_band`; the cycle scripts express

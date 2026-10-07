@@ -190,6 +190,9 @@ def main() -> None:
     polar = pd.read_csv(OUT_DIR / "polar_samples.csv")
     trims = pd.read_csv(OUT_DIR / "trim_samples.csv")
     new = load_rom(LEI_V3_ROM_AEROSTRUCTURAL_CONFIG)
+    if not LEI_V3_ROM_SEMI_EMPIRICAL_CONFIG.exists():
+        raise SystemExit("the semi-empirical ROM is archived in git history (see "
+                         "config_paths); check it out to data/LEI-V3-KITE/ to redraw")
     old = load_rom(LEI_V3_ROM_SEMI_EMPIRICAL_CONFIG)
     assert not new["kcu_in_cd"] and old["kcu_in_cd"]
     assert new["area"] == old["area"] == S_REF, "compare on one reference area"

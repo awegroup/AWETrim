@@ -90,6 +90,8 @@ def main() -> None:
 
     rows = []
     for name, path in ROMS.items():
+        if not path.exists():  # the semi-empirical ROM is archived (config_paths)
+            continue
         model = build_model(path)
         for row in trims.itertuples():
             res = solve(model, row)

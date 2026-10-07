@@ -130,7 +130,7 @@ def main() -> None:
     table.round(3).to_csv(ROOT / f"rom_flight_validation_errors{suffix}.csv", index=False)
 
     fig, axes = plt.subplots(3, 1, figsize=(10.0, 8.0), sharex=True)
-    base = frames["semi_empirical"]
+    base = next(iter(frames.values()))  # any ROM: the measured columns are the same
     cyc = base.cycle == args.cycle
     t = base.time[cyc] - base.time[cyc].iloc[0]
     for ax, (col, label, scale) in zip(axes, (

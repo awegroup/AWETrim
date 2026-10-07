@@ -122,7 +122,7 @@ def resolve_rom_config_path(
     taken against the system file's folder), the system file's
     ``models.reduced_order.aerodynamics``, then a sibling ``rom_config.yaml``
     (legacy ``aero_coeffs_rom.yaml``). A kite with several ROMs (e.g. the
-    LEI-V3 ``rom_config_semi_empirical.yaml`` and
+    LEI-V3 ``rom_config_aerostructural_flight_corrected.yaml`` and
     ``rom_config_aerostructural.yaml``) names its default in the system file.
     """
     system_yaml_path = Path(system_yaml_path)

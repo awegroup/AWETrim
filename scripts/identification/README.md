@@ -20,7 +20,6 @@ Mechanics of Tethered Flight*, and mirror the ROM validators in
 | [`identify_rom_flight_correction.py`](identify_rom_flight_correction.py) | Steps 1-2 of the flight correction of the aerostructural ROM (equation error on the 2019 EKF coefficients): theta_b(u_p) from the flight lift, a single-input drag correction at equal lift, a roll-gain starting value; writes `rom_config_aerostructural_flight_corrected.yaml` and the correction report/figure. Cycles 60-67 held out. |
 | [`refine_rom_flight_output_error.py`](refine_rom_flight_output_error.py) | Step 3 (the identification proper): output error on the quasi-steady tension and v_tau of training cycles (validator `--out` CSVs), nested Newton roots with exact parameter sensitivities, the roll gain set by the turn-rate law (solved steering 1:1 on the logged steering), steering drag bounded >= 0. `--rom aerostructural_flight` (default) or `--rom semi_empirical` (recalibrates the paper's ROM in place, comments kept). |
 | [`plot_rom_turn_rate_law.py`](plot_rom_turn_rate_law.py) | The check of the roll gain: each ROM's turn rate with the logged steering in against the measured one, and the turn-rate law chi_dot = K v_a u_s + c_g g-term for the flight and the ROMs. |
-| [`calibrate_cd0_depower_qs.py`](calibrate_cd0_depower_qs.py) | Calibrate the ROM aero parameters `CD0`, `angle_pitch_depower_0` and `delta_pitch_depower` (legacy names of `angle_pitch_tether_0` / `slope_angle_pitch_tether_depower`, opposite sign) against the quasi-steady validation: fit them so the **predicted** tether force and tangential speed match the **measured** ones, split per powered/depowered phase (this jointly breaks the CD0 ↔ depower-pitch degeneracy). |
 | [`identify_aero_parameters_turn_law.py`](identify_aero_parameters_turn_law.py) | Identify the turn-rate law from flight data in three formulations (simple, two-term, full rational) by least-squares / nonlinear fit, per flight phase. Produces the fitted gains and per-phase fit plots. |
 | [`plot_body_axes.py`](plot_body_axes.py) | 3-D visualisation of the centre-panel body axes for a deformed aerostructural result: deformed nodes (sized by nodal mass), CG, the body triad (anchored to the wing's centre panel, which is drawn) and the global frame. Locates the struc geometry from the result path (override with `--struc`); `--save` to write a PNG. |
 
@@ -116,7 +115,7 @@ step) is written to
 - `validate_rom_aerostructural.py` re-solves every coupled trim with the ROM's
   own quasi-steady solver.
 - `plot_rom_comparison.py` compares the polars and θ_b with the
-  semi-empirical ROM.
+  semi-empirical ROM (removed 2026-10-07, archived in git history at bad8a9b).
 - Flight validation: `../reduced-order-model/validation/validate_quasi_steady_state_v3.py --rom aerostructural --cycles 60-67 --no-show`,
   then `plot_rom_flight_validation.py`.
 

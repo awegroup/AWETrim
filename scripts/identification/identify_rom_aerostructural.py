@@ -61,9 +61,12 @@ import yaml
 
 from awetrim.identification import aero_polynomial as ap
 from awetrim.system.kite import stall_blend
+from awetrim.identification.controls import (
+    ROM_DEPOWERED_INPUT_DEPOWER,
+    ROM_POWERED_INPUT_DEPOWER,
+)
 from awetrim.utils.config_paths import (
     LEI_V3_ROM_AEROSTRUCTURAL_CONFIG,
-    LEI_V3_ROM_SEMI_EMPIRICAL_CONFIG,
     REPO_ROOT,
 )
 
@@ -367,7 +370,12 @@ def _grid(alpha, up, us, va, stall):
 
 # ───────────────────────────────────────────────────────────────── output
 def rom_document(fits, theta, roll, polar, area, stall) -> dict:
-    semi = yaml.safe_load(LEI_V3_ROM_SEMI_EMPIRICAL_CONFIG.read_text(encoding="utf-8"))
+    # The depower band and the ROM tether block used to be copied from the
+    # semi-empirical file (removed 2026-10-07); they are the LEI-V3 conventions.
+    controls_block = {"input_depower": {"powered": ROM_POWERED_INPUT_DEPOWER,
+                                        "depowered": ROM_DEPOWERED_INPUT_DEPOWER}}
+    tether_block = {"model": "williams", "n_elements": 10, "wind_model": "uniform",
+                    "cf": 0.01, "is_elastic": False}
     aero = ap.build_rom_aerodynamics(
         fits.values(),
         extra_params={
@@ -387,7 +395,7 @@ def rom_document(fits, theta, roll, polar, area, stall) -> dict:
                 "AEROSTRUCTURAL ROM of the LEI-V3 kite: every parameter "
                 "identified from coupled VSM + Billow-wireframe solutions at "
                 "the centre of the wind window (gravity off), no flight data. "
-                "Counterpart of rom_config_semi_empirical.yaml."
+                "Basis of rom_config_aerostructural_flight_corrected.yaml."
             ),
             "identified_by": "scripts/identification/identify_rom_aerostructural.py",
             "identified_on": date.today().isoformat(),
@@ -417,7 +425,7 @@ def rom_document(fits, theta, roll, polar, area, stall) -> dict:
                 "roll_rms_deg": roll["rms_deg"],
             },
         },
-        "controls": semi["controls"],
+        "controls": controls_block,
         "validity": {
             "angle_of_attack_deg": [float(np.floor(alpha_deg.min())),
                                     float(np.ceil(alpha_deg.max()))],
@@ -425,7 +433,7 @@ def rom_document(fits, theta, roll, polar, area, stall) -> dict:
             "input_steering_abs_max": float(polar.u_s.abs().max()),
         },
         "aerodynamics": aero,
-        "tether": semi["tether"],
+        "tether": tether_block,
     }
 
 

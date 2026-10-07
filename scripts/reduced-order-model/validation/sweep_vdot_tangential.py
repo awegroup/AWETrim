@@ -201,7 +201,7 @@ def pick_states(data, phase, n):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--rom", choices=sorted(ROM_FILES), default="semi_empirical")
+    parser.add_argument("--rom", choices=sorted(ROM_FILES), default="aerostructural_flight")
     parser.add_argument("--n", type=int, default=4, help="states per phase")
     parser.add_argument("--tether", choices=("rigid", "williams"), default="rigid")
     parser.add_argument("--csv", type=Path, default=None,

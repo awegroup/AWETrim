@@ -36,7 +36,7 @@ from awetrim.utils.system_config import get_kite, get_tether
 RUN_WILLIAMS = False
 RUN_RIGID = True
 
-# Which ROM to validate: the system file's default (semi-empirical), a named
+# Which ROM to validate: the system file's default (flight-corrected), a named
 # LEI-V3 ROM, or a path. The KCU drag of a ROM whose C_D excludes it comes
 # from the flown system's KCU hardware (factory-built Kite).
 ROM_CONFIGS = {

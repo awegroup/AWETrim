@@ -216,6 +216,8 @@ def write_coupled_check():
              r"\midrule"]
     names = {"aerostructural": "Aerostructural", "semi_empirical": "Semi-empirical"}
     for rom in ("aerostructural", "semi_empirical"):
+        if not (t.rom == rom).any():
+            continue
         for kind in ("unsteered", "steered"):
             g = t[(t.rom == rom) & (t.kind == kind)]
             lines.append(
@@ -408,9 +410,11 @@ def write_turn_law() -> dict:
     roms = (("semi_empirical", "semi-empirical"), ("aerostructural", "aerostructural"),
             ("aerostructural_flight", "aerostructural-flight"))
     rows, macros = [], {}
-    first = FLIGHT / roms[0][0] / "qs_validation_measured_steering.csv"
-    if not first.exists():
+    available = [FLIGHT / key / "qs_validation_measured_steering.csv" for key, _ in roms]
+    available = [p for p in available if p.exists()]
+    if not available:
         return {}
+    first = available[0]
     d = regressors(first)
     k, cg, r2 = fit(d, d.measured_course_rate)
     rows.append(("flight", k, cg, r2))
