@@ -966,8 +966,8 @@ points, a circulation-map eigenvalue above 1, NaN gamma in both coupled
 stages ("Residuals are not finite in the initial point"). The VSM now also
 logs "Wing sections double back" for a genuinely folded mesh and stops its
 gamma loops on the first non-finite iterate. Reproduce with
-`scripts/personal/wes-quasi-steady/probe_vsm_steered_divergence.py` on an
-`attached_failed_vw_*/deformation` snapshot.
+the retired probe `probe_vsm_steered_divergence.py` (personal repo history,
+snapshot 7668c0e) on an `attached_failed_vw_*/deformation` snapshot.
 
 ### Convergence criterion
 

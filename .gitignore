@@ -205,15 +205,7 @@ docs/**/*.out
 docs/**/*.toc
 docs/billow/integration_new.pdf
 
-# Figure outputs that scripts/personal writes into the repo root
-/coupling_scheme.*
-/course_rates.*
-/course_rates_tex.svg
-/reference_frames.*
-/reference_frames_tex.svg
-/velocity_triangle*.pdf
-/velocity_triangle*.svg
-/velocity_triangles.*
+# Debug log the EKF pipeline drops in the repo root
 /ekf_debug.log
 
 # One-off A/B probe variants of the as-flown system files
