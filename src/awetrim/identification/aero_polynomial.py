@@ -37,9 +37,12 @@ Conventions
 * A *term* is a monomial in the regressors, represented as a power map, e.g.
   ``{"alpha": 2}`` or ``{"alpha": 1, "u_s": 1}``.  The intercept (constant) is
   handled separately and serialised to ``params`` (``CL0`` / ``CD0`` / ``phi_a0``).
-* ``CD`` uses an **absolute-value basis** because the ROM evaluates each CD term
-  as ``coef * sqrt(value**2 + eps)`` (``kite.py``).  Fitting in the same basis
-  makes the identified coefficients transfer 1:1 into ``rom_config.yaml``.
+* Every coefficient is fitted in the plain monomial basis, as the ROM evaluates
+  it (``kite.py``). A ROM term may ask for ``abs: true`` (|monomial|, e.g. a
+  steering drag symmetric in u_s); :class:`PolynomialFit` carries such terms
+  in ``abs_terms`` so a ROM file evaluates and round-trips exactly. (Until
+  2026-10 the ROM took |monomial| of EVERY C_D term and C_D was fitted in that
+  basis, which put a kink at alpha = 0 in every odd-alpha drag term.)
 """
 
 from __future__ import annotations
@@ -57,7 +60,7 @@ DEFAULT_REGRESSORS: tuple[str, ...] = ("alpha", "u_s", "u_p", "v_a")
 # Map each target to its ROM intercept parameter name and whether it is fit in
 # the absolute-value basis (CD only).
 TARGET_INTERCEPT_PARAM = {"CL": "CL0", "CD": "CD0", "phi_a": "phi_a0"}
-TARGET_ABS_BASIS = {"CL": False, "CD": True, "phi_a": False}
+TARGET_ABS_BASIS = {"CL": False, "CD": False, "phi_a": False}
 
 # Power map for a monomial term: variable name -> non-negative integer power.
 PowerMap = Mapping[str, int]
@@ -242,6 +245,10 @@ class PolynomialFit:
     abs_basis: bool
     metrics: dict[str, float] = field(default_factory=dict)
     cv_rmse: float = float("nan")
+    #: How select_model got here: ("+term" | "-term", criterion after the step).
+    selection_path: list[tuple[str, float]] = field(default_factory=list)
+    #: term_key()s evaluated as |monomial| (a ROM entry's ``abs: true``).
+    abs_terms: set = field(default_factory=set)
 
     def predict(self, data: Mapping[str, np.ndarray]) -> np.ndarray:
         """Evaluate the fitted polynomial, mirroring the ROM evaluation."""
@@ -249,7 +256,7 @@ class PolynomialFit:
         out = np.full(n, float(self.intercept), dtype=float)
         for power_map, coef in self.terms:
             col = term_column(data, power_map)
-            if self.abs_basis:
+            if self.abs_basis or term_key(power_map) in self.abs_terms:
                 col = np.abs(col)
             out = out + coef * col
         return out
@@ -285,6 +292,24 @@ def fit_terms(
     return fit
 
 
+def _fold_indices(
+    n: int, folds: int, seed: int, groups: np.ndarray | None
+) -> list[np.ndarray]:
+    """Test-index sets of a k-fold split; whole groups when ``groups`` given.
+
+    Samples that share a group (e.g. the steps of one frozen-shape alpha
+    sweep) are strongly correlated; splitting them across train and test
+    would score interpolation within a sweep, not prediction at a new state.
+    """
+    rng = np.random.default_rng(seed)
+    if groups is None:
+        return np.array_split(rng.permutation(n), folds)
+    groups = np.asarray(groups)
+    unique = rng.permutation(np.unique(groups))
+    return [np.flatnonzero(np.isin(groups, chunk))
+            for chunk in np.array_split(unique, folds)]
+
+
 def _cv_rmse(
     data: Mapping[str, np.ndarray],
     y: np.ndarray,
@@ -293,18 +318,17 @@ def _cv_rmse(
     abs_basis: bool,
     folds: int,
     seed: int = 0,
+    groups: np.ndarray | None = None,
 ) -> float:
-    """K-fold cross-validation RMSE for a fixed term set."""
+    """K-fold cross-validation RMSE for a fixed term set (grouped if asked)."""
     n = len(y)
-    if folds < 2 or n < folds:
+    n_units = n if groups is None else len(np.unique(groups))
+    if folds < 2 or n_units < folds:
         return float("nan")
-    rng = np.random.default_rng(seed)
-    order = rng.permutation(n)
-    fold_id = np.array_split(order, folds)
+    fold_id = _fold_indices(n, folds, seed, groups)
     errors: list[float] = []
-    for k in range(folds):
-        test_idx = fold_id[k]
-        train_idx = np.concatenate([fold_id[j] for j in range(folds) if j != k])
+    for test_idx in fold_id:
+        train_idx = np.setdiff1d(np.arange(n), test_idx)
         train = {var: np.asarray(data[var])[train_idx] for var in data}
         test = {var: np.asarray(data[var])[test_idx] for var in data}
         A_tr = design_matrix(train, terms, include_intercept=True, abs_basis=abs_basis)
@@ -327,13 +351,30 @@ def select_model(
     include_squared_interactions: Sequence[str] = (),
     cv_folds: int = 5,
     cv_seed: int = 0,
+    cv_groups: np.ndarray | None = None,
+    criterion: str = "bic",
+    min_relative_improvement: float = 0.0,
+    backward: bool = False,
     verbose: bool = False,
 ) -> PolynomialFit:
-    """Forward-stepwise model selection minimising BIC.
+    """Forward-stepwise model selection minimising BIC or the CV RMSE.
 
     Starts from the intercept-only model and greedily adds the candidate term
-    that most reduces the BIC, stopping when no remaining term improves it.
-    The selected model's k-fold CV RMSE is recorded on the returned fit.
+    that most reduces the criterion, stopping when no remaining term improves
+    it by more than ``min_relative_improvement`` (a fraction of the current
+    value; 0 = any improvement). The selected model's k-fold CV RMSE is
+    recorded on the returned fit.
+
+    ``criterion="cv"`` selects on the (grouped) cross-validation RMSE itself.
+    Prefer it for densely sampled data such as frozen-shape alpha sweeps:
+    BIC counts every correlated sample as independent evidence and keeps
+    accepting terms worth a fraction of a percent. ``cv_groups`` (one label
+    per sample) keeps each group in a single fold.
+
+    ``backward=True`` follows the forward pass with backward elimination: a
+    term picked early can become redundant once later terms enter (forward
+    selection never revisits), so the term whose removal costs least is
+    dropped while that cost stays within the same threshold.
 
     Args:
         data: mapping regressor name -> 1-D array.
@@ -358,45 +399,78 @@ def select_model(
     remaining = [dict(t) for t in candidate_terms]
     selected: list[dict[str, int]] = []
 
-    def bic_of(terms: Sequence[PowerMap]) -> float:
+    if criterion not in ("bic", "cv"):
+        raise ValueError(f"criterion must be 'bic' or 'cv', got {criterion!r}")
+
+    def score_of(terms: Sequence[PowerMap]) -> float:
+        if criterion == "cv":
+            return _cv_rmse(data, y, terms, abs_basis=abs_basis, folds=cv_folds,
+                            seed=cv_seed, groups=cv_groups)
         A = design_matrix(data, terms, include_intercept=True, abs_basis=abs_basis)
         coeffs = _solve_scaled(A, y)
         return _metrics(y, A @ coeffs, A.shape[1])["bic"]
 
-    best_bic = bic_of(selected)
+    best = score_of(selected)
+    path: list[tuple[str, float]] = [("1", float(best))]
     improved = True
     while improved and remaining:
         improved = False
         best_candidate = None
-        best_candidate_bic = best_bic
+        best_candidate_score = best
         for term in remaining:
-            trial_bic = bic_of(selected + [term])
-            if trial_bic < best_candidate_bic - 1e-9:
-                best_candidate_bic = trial_bic
+            trial = score_of(selected + [term])
+            if trial < best_candidate_score - 1e-9:
+                best_candidate_score = trial
                 best_candidate = term
-        if best_candidate is not None:
+        # BIC is a log-likelihood difference, compared absolutely; the CV
+        # RMSE is a scale, compared relatively.
+        gain = best - best_candidate_score
+        threshold = (min_relative_improvement * abs(best)) if criterion == "cv" else 0.0
+        if best_candidate is not None and gain > threshold:
             selected.append(best_candidate)
             remaining = [t for t in remaining if term_key(t) != term_key(best_candidate)]
-            best_bic = best_candidate_bic
+            best = best_candidate_score
             improved = True
+            path.append((f"+{term_label(best_candidate)}", float(best)))
             if verbose:
                 print(
-                    f"[{target}] + {term_label(best_candidate):<14} BIC={best_bic:.3f}"
+                    f"[{target}] + {term_label(best_candidate):<14} "
+                    f"{criterion.upper()}={best:.6g}"
                 )
+
+    while backward and len(selected) > 1:
+        trials = [
+            (score_of([t for t in selected if t is not term]), term)
+            for term in selected
+        ]
+        trial_score, weakest = min(trials, key=lambda pair: pair[0])
+        threshold = (min_relative_improvement * abs(best)) if criterion == "cv" else 0.0
+        if trial_score - best > threshold:
+            break
+        selected = [t for t in selected if t is not weakest]
+        best = min(best, trial_score) if criterion == "cv" else trial_score
+        path.append((f"-{term_label(weakest)}", float(trial_score)))
+        if verbose:
+            print(
+                f"[{target}] - {term_label(weakest):<14} "
+                f"{criterion.upper()}={trial_score:.6g}"
+            )
 
     fit = fit_terms(
         data, y, selected, target=target, regressors=regressors, abs_basis=abs_basis
     )
     fit.cv_rmse = _cv_rmse(
-        data, y, selected, abs_basis=abs_basis, folds=cv_folds, seed=cv_seed
+        data, y, selected, abs_basis=abs_basis, folds=cv_folds, seed=cv_seed,
+        groups=cv_groups,
     )
+    fit.selection_path = path
     return fit
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Serialisation to the rom_config "coeffs" format
 # ──────────────────────────────────────────────────────────────────────────────
-def _term_to_rom_entry(power_map: dict[str, int], coef: float) -> dict:
+def _term_to_rom_entry(power_map: dict[str, int], coef: float, absolute: bool = False) -> dict:
     """Serialise one monomial to a rom_config coefficient entry.
 
     Single-variable terms use the compact ``{var, power, coef}`` form; multi-
@@ -406,8 +480,12 @@ def _term_to_rom_entry(power_map: dict[str, int], coef: float) -> dict:
     norm = _normalise_term(power_map)
     if len(norm) == 1:
         (var, power), = norm.items()
-        return {"var": var, "power": int(power), "coef": float(coef)}
-    return {"vars": {var: int(p) for var, p in norm.items()}, "coef": float(coef)}
+        entry = {"var": var, "power": int(power), "coef": float(coef)}
+    else:
+        entry = {"vars": {var: int(p) for var, p in norm.items()}, "coef": float(coef)}
+    if absolute:
+        entry["abs"] = True
+    return entry
 
 
 def build_rom_aerodynamics(
@@ -419,8 +497,8 @@ def build_rom_aerodynamics(
 
     Args:
         fits: fitted polynomials for some/all of {CL, CD, phi_a}.
-        extra_params: additional ``params`` entries to merge (e.g. legacy
-            ``angle_pitch_depower_0``).
+        extra_params: additional ``params`` entries to merge (e.g.
+            ``angle_pitch_tether_0``).
 
     Returns:
         A dict with ``{model, params, coefficients}`` ready to dump under the
@@ -432,8 +510,39 @@ def build_rom_aerodynamics(
         intercept_name = TARGET_INTERCEPT_PARAM.get(fit.target, f"{fit.target}0")
         params[intercept_name] = float(fit.intercept)
         coefficients[fit.target] = [
-            _term_to_rom_entry(pm, coef) for pm, coef in fit.terms
+            _term_to_rom_entry(
+                pm, coef, fit.abs_basis or term_key(pm) in fit.abs_terms
+            )
+            for pm, coef in fit.terms
         ]
     if extra_params:
         params.update({k: float(v) for k, v in extra_params.items()})
     return {"model": "coeffs", "params": params, "coefficients": coefficients}
+
+
+def fits_from_rom_aerodynamics(aerodynamics: Mapping) -> dict[str, PolynomialFit]:
+    """Inverse of :func:`build_rom_aerodynamics`: a ROM ``aerodynamics`` block
+    as one :class:`PolynomialFit` per coefficient, for NumPy evaluation with
+    exactly the ROM's law (C_D terms as ``coef*|monomial|``)."""
+    params = aerodynamics.get("params", {})
+    fits = {}
+    for target, entries in aerodynamics.get("coefficients", {}).items():
+        terms, abs_terms = [], set()
+        for entry in entries:
+            power_map = (
+                dict(entry["vars"]) if "vars" in entry
+                else {entry["var"]: int(entry.get("power", 1))}
+            )
+            terms.append((_normalise_term(power_map), float(entry["coef"])))
+            if entry.get("abs", False):
+                abs_terms.add(term_key(power_map))
+        regressors = tuple(sorted({v for pm, _ in terms for v in pm}))
+        fits[target] = PolynomialFit(
+            target=target,
+            regressors=regressors,
+            intercept=float(params.get(TARGET_INTERCEPT_PARAM.get(target, ""), 0.0)),
+            terms=terms,
+            abs_basis=False,
+            abs_terms=abs_terms,
+        )
+    return fits

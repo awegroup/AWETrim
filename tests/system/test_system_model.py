@@ -588,3 +588,33 @@ class TestSystemModelFullWorkflow:
         original_mass = v3_system.kite.mass_wing
         system_copy.kite.mass_wing = 50.0
         assert v3_system.kite.mass_wing == original_mass
+
+
+def test_tangential_speed_stability_matches_the_implicit_derivative():
+    """g = [F(v, b) , b - c v] -> S = dF/dv + dF/db * c."""
+    import casadi as ca
+    from awetrim.system.system_model import tangential_speed_stability
+
+    v, b = ca.MX.sym("v"), ca.MX.sym("b")
+    residual = ca.vertcat(5.0 - v**2 + 3.0 * b, b - 2.0 * v)
+    S = tangential_speed_stability(residual, ca.vertcat(v, b), rate_index=0)
+    f = ca.Function("S", [v, b], [S])
+    # dF/dv = -2v, dF/db = 3, db/dv = 2  ->  S = -2v + 6
+    assert float(f(1.0, 2.0)) == pytest.approx(4.0)
+    assert float(f(4.0, 8.0)) == pytest.approx(-2.0)
+
+
+def test_tangential_speed_stability_holds_frozen_unknowns_fixed():
+    """Dropping the row a frozen unknown balanced leaves the rest exact."""
+    import casadi as ca
+    from awetrim.system.system_model import tangential_speed_stability
+
+    v, u, b = ca.MX.sym("v"), ca.MX.sym("u"), ca.MX.sym("b")
+    # row0 tangential, row1 'normal' (balanced by u), row2 balanced by b
+    residual = ca.vertcat(-v**2 + 3.0 * b + u, u - 7.0 * v, b - 2.0 * v)
+    S = tangential_speed_stability(
+        residual, ca.vertcat(v, u, b), 0, frozen_indices=(1,), dropped_rows=(1,)
+    )
+    f = ca.Function("S", [v, u, b], [S])
+    # u fixed: dF/dv = -2v + 3 * db/dv = -2v + 6
+    assert float(f(1.0, 0.0, 0.0)) == pytest.approx(4.0)

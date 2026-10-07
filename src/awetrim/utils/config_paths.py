@@ -33,7 +33,18 @@ LEI_V3_SYSTEM_FLOWN_2025_CONFIG = LEI_V3_DATA_DIR / "system_flown_2025.yaml"
 # Unqualified alias, kept for callers that predate the per-flight split; it is
 # the 2019 hardware, which every existing validation script assumed.
 LEI_V3_SYSTEM_FLOWN_CONFIG = LEI_V3_SYSTEM_FLOWN_2019_CONFIG
-LEI_V3_ROM_AERO_CONFIG = LEI_V3_DATA_DIR / "rom_config.yaml"
+# The LEI-V3 has two reduced-order models (system.yaml names the default):
+# flight-calibrated semi-empirical, and identified from aerostructural
+# simulations only.
+LEI_V3_ROM_SEMI_EMPIRICAL_CONFIG = LEI_V3_DATA_DIR / "rom_config_semi_empirical.yaml"
+LEI_V3_ROM_AEROSTRUCTURAL_CONFIG = LEI_V3_DATA_DIR / "rom_config_aerostructural.yaml"
+# The aerostructural ROM with theta_b and dC_D(u_p, u_s) fitted to 2019 flight
+# (scripts/identification/identify_rom_flight_correction.py).
+LEI_V3_ROM_AEROSTRUCTURAL_FLIGHT_CONFIG = (
+    LEI_V3_DATA_DIR / "rom_config_aerostructural_flight_corrected.yaml"
+)
+# Unqualified alias, kept for callers that predate the split.
+LEI_V3_ROM_AERO_CONFIG = LEI_V3_ROM_SEMI_EMPIRICAL_CONFIG
 LEI_V3_CYCLE_CONFIG_DIR = LEI_V3_DATA_DIR / "cycle_configs"
 LEI_V3_DOWNLOOP_SPLINE_CONFIG = LEI_V3_CYCLE_CONFIG_DIR / "downloop_spline.yaml"
 LEI_V3_UPLOOP_SPLINE_CONFIG = LEI_V3_CYCLE_CONFIG_DIR / "uploop_spline.yaml"

@@ -14,13 +14,76 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+import logging
+import warnings
+
 import casadi as ca
+from awetrim.aerodynamics.kcu_drag import CT_TURBINE_OPERATING, KcuDragModel, force_drag_kcu
 from awetrim.utils.utils import skew_symmetric
 from awetrim.utils.reference_frames import (
     transformation_C_from_W,
     transformation_C_from_A,
     transformation_C_from_K,
 )
+
+#: Pre-2026-10 ROM parameter keys, in the code's old sign convention
+#: ``alpha_w = alpha_b + angle_pitch_depower`` (i.e. angle_pitch_depower =
+#: -theta_b), mapped onto the paper-sign keys ``alpha_w = alpha_b - theta_b``
+#: (Cayon, van Deursen, Schmehl 2026, Eqs. 1-2). Each maps to (new key, sign).
+LEGACY_AERO_PARAM_KEYS = {
+    "angle_pitch_depower_0": ("angle_pitch_tether_0", -1.0),
+    "delta_pitch_depower": ("slope_angle_pitch_tether_depower", -1.0),
+}
+
+
+def canonical_aero_params(params):
+    """ROM ``aerodynamics.params`` with legacy keys translated.
+
+    The geometric pitch ``theta_b`` between the bridle resultant and the wing
+    chord is ``angle_pitch_tether_0 + slope_angle_pitch_tether_depower * u_p``
+    [rad, rad per u_p unit]. Legacy files state ``angle_pitch_depower_0`` /
+    ``delta_pitch_depower`` with the opposite sign; they are converted here
+    with a DeprecationWarning. A file carrying both spellings of one
+    parameter is ambiguous and rejected.
+    """
+    params = dict(params)
+    for old, (new, sign) in LEGACY_AERO_PARAM_KEYS.items():
+        if old not in params:
+            continue
+        if new in params:
+            raise ValueError(
+                f"aerodynamics.params states both {old!r} (legacy) and {new!r}"
+            )
+        warnings.warn(
+            f"ROM parameter {old!r} is deprecated; state {new!r} = "
+            f"{sign:+.0f} x {old} instead (paper sign, alpha_w = alpha_b - theta_b)",
+            DeprecationWarning,
+            stacklevel=3,
+        )
+        params[new] = sign * params.pop(old)
+    return params
+
+
+def stall_blend(alpha, angle_of_attack_stall, width_stall, xp=ca):
+    """Smooth attached -> separated switch, 0 well below the stall, 1 above.
+
+    ``sigma = 0.5 * (1 + tanh((alpha - angle_of_attack_stall) / width_stall))``
+    [alpha, stall angle and width in rad]. A ROM coefficient term multiplied
+    by the ``stall`` variable acts only past the stall, so
+    ``C = C_attached + stall * (C_separated - C_attached)`` stays linear in its
+    coefficients. ``xp`` is the math namespace (casadi in the ROM, numpy for
+    identification and plots) -- this is the one place the formula lives.
+    """
+    return 0.5 * (1.0 + xp.tanh((alpha - angle_of_attack_stall) / width_stall))
+
+
+def _uses_variable(coefficients, name):
+    """True if any ``coeffs`` term (``var`` or ``vars`` form) uses ``name``."""
+    return any(
+        term.get("var") == name or name in term.get("vars", {})
+        for terms in coefficients.values()
+        for term in terms
+    )
 
 
 class Wing:
@@ -30,20 +93,44 @@ class Wing:
         Initialize the kite system with its parameters.
         """
         self.mass_wing = mass_wing
-        self.area_wing = area_wing
+        # A ROM file that states the area its coefficients are referenced to
+        # wins over the system's projected area: a coefficient is only
+        # meaningful with the area it was normalised by.
+        area_reference = aero_input.get("reference_area")
+        if area_reference is not None and abs(float(area_reference) - area_wing) > 1e-6:
+            logging.info(
+                "ROM coefficients referenced to %.4f m2; overriding the system "
+                "wing area %.4f m2",
+                float(area_reference),
+                area_wing,
+            )
+        self.area_wing = (
+            float(area_reference) if area_reference is not None else area_wing
+        )
         self.input_steering = ca.MX.sym("input_steering")
         self.input_depower = ca.MX.sym("input_depower")
-        # Aerodynamic inputs
-        self.angle_pitch_tether = aero_input["params"].get(
-            "angle_pitch_depower_0", ca.MX.sym("angle_pitch_tether")
+        # Geometric pitch theta_b(u_p) between the bridle resultant and the
+        # wing chord (paper Eq. 2): alpha_w = alpha_b - theta_b.
+        params = canonical_aero_params(aero_input.get("params", {}))
+        self.angle_pitch_tether_0 = params.get(
+            "angle_pitch_tether_0", ca.MX.sym("angle_pitch_tether_0")
         )
-        self.delta_pitch_depower = aero_input["params"].get(
-            "delta_pitch_depower", ca.MX.sym("delta_pitch_depower")
+        self.slope_angle_pitch_tether_depower = params.get(
+            "slope_angle_pitch_tether_depower",
+            ca.MX.sym("slope_angle_pitch_tether_depower"),
         )
-        # self.aerodynamic_coeffs_function(aero_input)
+        self.aero_params = params
         self.aero_input = aero_input
+        # Whether the ROM's C_D already contains the KCU drag (a flight-
+        # calibrated ROM: the KCU flew with the wing) or the KCU is a separate
+        # bluff body the Kite adds from its hardware (an identified wing-only
+        # ROM, so a KCU/turbine swap needs no re-identification). Absent =
+        # True, the behaviour of every pre-2026-10 file.
+        self.kcu_drag_in_coefficients = bool(
+            aero_input.get("kcu_drag_in_coefficients", True)
+        )
         # Cached drag parameters for easy external tuning
-        self._cd0_param = aero_input["params"].get("CD0", 0)
+        self._cd0_param = params.get("CD0", 0)
         self._cd_us_param = None  # optional override for u_s drag term
         self._velocity_apparent_wind_wing = None
         self._angle_of_attack = None
@@ -77,12 +164,28 @@ class Wing:
         }
         # Also support derived variables
         variables["alpha_squared"] = variables["alpha"] ** 2
+        # Apparent wind speed [m/s]: the load level of an aeroelastic
+        # (deforming) wing, whose polar shifts with dynamic pressure. Built
+        # only when a term uses it, so rigid-wing ROMs keep their graph.
+        if _uses_variable(aero_input.get("coefficients", {}), "v_a"):
+            vec_va = model.velocity_apparent_wind
+            variables["v_a"] = ca.sqrt(ca.mtimes(vec_va.T, vec_va) + 1e-10)
+        if _uses_variable(aero_input.get("coefficients", {}), "stall"):
+            missing = [k for k in ("angle_of_attack_stall", "width_stall")
+                       if k not in self.aero_params]
+            if missing:
+                raise ValueError(f"ROM 'stall' terms need params {missing}")
+            variables["stall"] = stall_blend(
+                variables["alpha"],
+                self.aero_params["angle_of_attack_stall"],
+                self.aero_params["width_stall"],
+            )
 
         # Inviscid model
         if aero_input["model"] == "inviscid":
-            e = aero_input["params"]["oswald_efficiency"]
-            AR = aero_input["params"]["aspect_ratio"]
-            CD0 = aero_input["params"]["CD0"]
+            e = self.aero_params["oswald_efficiency"]
+            AR = self.aero_params["aspect_ratio"]
+            CD0 = self.aero_params["CD0"]
             C_L0 = 2 * ca.pi * variables["alpha"] / (1 + 2 / (AR * e))
             C_D = C_L0**2 / (ca.pi * e * AR) + CD0
             # Decompose the wing lift into lift/side components when rolled;
@@ -94,9 +197,9 @@ class Wing:
 
         # Coeff-based model
         elif aero_input["model"] == "coeffs":
-            C_L = aero_input["params"].get("CL0", 0)
+            C_L = self.aero_params.get("CL0", 0)
             C_D = self._cd0_param
-            C_S = aero_input["params"].get("CS0", 0)
+            C_S = self.aero_params.get("CS0", 0)
 
             # Loop over defined terms per coefficient
             for coeff_key, terms in aero_input.get("coefficients", {}).items():
@@ -121,10 +224,17 @@ class Wing:
                         value = variables[var] ** power if var in variables else None
                     if value is None:
                         continue
+                    # Every term is a plain monomial. ``abs: true`` asks for
+                    # |monomial| (e.g. a steering drag symmetric in left/right
+                    # u_s); it has a kink at zero, so use it deliberately.
+                    # Until 2026-10 EVERY C_D term was |monomial|, which bent
+                    # each odd-alpha drag term into a V at alpha = 0.
+                    if term.get("abs", False):
+                        value = ca.sqrt(value**2 + 1e-10)
                     if coeff_key == "CL":
                         C_L += coef * value
                     elif coeff_key == "CD":
-                        C_D += coef * ca.sqrt((value) ** 2 + 1e-10)
+                        C_D += coef * value
                     elif coeff_key == "CS":
                         C_S += coef * value
             return C_L, C_D
@@ -153,29 +263,71 @@ class Wing:
         return self.aerodynamic_force_coefficients_for(model)[1]
 
     @property
-    def angle_pitch_depower(self):
-        """
-        Compute the tether angle based on the powered angle and the tether angle at t=0.
-        """
-        return self.angle_pitch_tether + self.input_depower * self.delta_pitch_depower
+    def angle_pitch_tether(self):
+        """Geometric pitch theta_b between the bridle resultant and the wing chord [rad]."""
+        return self.angle_pitch_tether_for(self)
 
-    def angle_pitch_depower_for(self, model):
-        return self.angle_pitch_tether + model.input_depower * self.delta_pitch_depower
+    def angle_pitch_tether_for(self, model):
+        return (
+            self.angle_pitch_tether_0
+            + model.input_depower * self.slope_angle_pitch_tether_depower
+        )
 
     @property
     def pitch_bridle(self):
         return self.pitch_bridle_for(self)
 
-    def pitch_bridle_for(self, model):
-        force_kcu = model.force_gravity_kcu - model.kite.mass_kcu * model.acceleration
-        force_bridle = model.force_tether_at_kite + force_kcu
-        tow_line = (
-            transformation_C_from_A(
-                model.angle_pitch_aerodynamic, model.angle_yaw_aerodynamic, 0
-            ).T
-            @ force_bridle
+    def force_bridle_for(self, model):
+        """Resultant the bridle lines carry to the wing: tether + KCU loads.
+
+        The KCU hangs at the bridle point, so its weight, inertia and (when
+        explicit) drag enter here, not through the wing's lift and drag.
+        """
+        force_kcu = (
+            model.force_gravity_kcu
+            - model.kite.mass_kcu * model.acceleration
+            + model.kite.force_drag_kcu_for(model)
         )
-        # tow_line = project_onto_plane(force_bridle, ca.vertcat(0, 1, 0))
+        return model.force_tether_at_kite + force_kcu
+
+    def force_drag_kcu_for(self, model):
+        """Explicit KCU drag [N]; zero for a bare wing."""
+        return ca.MX.zeros(3, 1)
+
+    @staticmethod
+    def _force_in_wind_frame(model, force):
+        """Components of ``force`` in the apparent-wind frame of paper App. D.
+
+        Axes: x = -v_a/|v_a| (into the wind, paper e_chi'), y = -e_n with
+        e_n = e_r x v_a / |.| (paper e_n'), z = e_r' = e_r projected
+        perpendicular to v_a. Built from the apparent wind VECTOR, like the
+        lift direction in :meth:`force_aerodynamic_wing`, so the bridle pitch
+        (paper Eq. D11) and bridle roll (Eqs. D6-D8) are taken about v_a.
+        The Euler-angle route (transformation_C_from_A with
+        angle_yaw_aerodynamic = -atan(v_y/v_x)) is NOT this frame: its yaw
+        sign is mirrored for that composition, so its x axis sat twice the
+        sideslip angle off v_a in the tangent plane. That leaked the normal
+        component of the bridle resultant (the KCU's inertia in a turn) into
+        the bridle pitch -- 2-3 deg of alpha_b with a sign that follows the
+        sideslip -- and into the bridle roll (about 1 deg), zero only at zero
+        sideslip, i.e. at the centre-window identification states.
+        """
+        vec_va = model.velocity_apparent_wind
+        va = ca.sqrt(ca.mtimes(vec_va.T, vec_va) + 1e-10)
+        va_tau = ca.sqrt(vec_va[0] ** 2 + vec_va[1] ** 2 + 1e-10)
+        x_axis = -vec_va / va
+        y_axis = ca.vertcat(vec_va[1], -vec_va[0], 0.0) / va_tau
+        z_axis = ca.vertcat(
+            -vec_va[0] * vec_va[2], -vec_va[1] * vec_va[2], va_tau**2
+        ) / (va * va_tau)
+        return ca.vertcat(
+            ca.dot(force, x_axis), ca.dot(force, y_axis), ca.dot(force, z_axis)
+        )
+
+    def pitch_bridle_for(self, model):
+        """Bridle pitch alpha_b, paper Eq. D11: the angle of the bridle
+        resultant from -e_r' toward e_chi' (= -v_a)."""
+        tow_line = self._force_in_wind_frame(model, self.force_bridle_for(model))
         angle_bridle = ca.atan2(tow_line[0], -tow_line[2] + 1e-6)
         return angle_bridle
 
@@ -184,15 +336,10 @@ class Wing:
         return self.roll_bridle_for(self)
 
     def roll_bridle_for(self, model):
-        force_kcu = model.force_gravity_kcu - model.kite.mass_kcu * model.acceleration
-        force_bridle = model.force_tether_at_kite + force_kcu
-        tow_line = (
-            transformation_C_from_A(
-                model.angle_pitch_aerodynamic, model.angle_yaw_aerodynamic, 0
-            ).T
-            @ force_bridle
-        )
-        # tow_line = project_onto_plane(force_bridle, ca.vertcat(1, 0, 0))
+        """Bridle roll phi_b, paper Eqs. D6-D8: the roll of the bridle
+        resultant about v_a (0 along -e_r'), the reference the wing's
+        steering roll k u_s is measured from."""
+        tow_line = self._force_in_wind_frame(model, self.force_bridle_for(model))
         angle_bridle = ca.atan2(-tow_line[1], -tow_line[2] + 1e-6)
         return angle_bridle
 
@@ -206,9 +353,14 @@ class Wing:
         return self._angle_of_attack
 
     def angle_of_attack_for(self, model):
-        return self.pitch_bridle_for(model) + self.angle_pitch_depower_for(model)
+        # Paper Eq. 1: alpha_w = alpha_b - theta_b.
+        return self.pitch_bridle_for(model) - self.angle_pitch_tether_for(model)
 
     def force_aerodynamic(self, model):
+        """Total aerodynamic force on the kite [N, C-frame]."""
+        return self.force_aerodynamic_wing(model)
+
+    def force_aerodynamic_wing(self, model):
         """
         Compute the aerodynamic forces based on the aerodynamic coefficients.
         """
@@ -294,6 +446,23 @@ class Kite(Wing):
         # DRAG parameters only.
         self.diameter_turbine = float(diameter_turbine or 0.0)
         self.thrust_coefficient_turbine = float(thrust_coefficient_turbine or 0.0)
+        # Explicit KCU bluff-body drag (awetrim.aerodynamics.kcu_drag, the
+        # single source) for a ROM whose C_D excludes it; None = none added.
+        self.kcu_drag_model = None
+        if not self.kcu_drag_in_coefficients:
+            self.kcu_drag_model = KcuDragModel.from_dimensions(
+                self.length_kcu,
+                self.diameter_kcu,
+                diameter_turbine=self.diameter_turbine,
+                thrust_coefficient_turbine=(
+                    self.thrust_coefficient_turbine or CT_TURBINE_OPERATING
+                ),
+            )
+            if self.kcu_drag_model is None:
+                logging.warning(
+                    "ROM C_D excludes the KCU drag but the system has no KCU "
+                    "length/diameter: the KCU drag is NOT modelled."
+                )
         self.steering_control = steering_control
         self.g = g  # Gravitational acceleration
         self.rho = rho  # Air density
@@ -309,17 +478,56 @@ class Kite(Wing):
         self._override_centripetal = False
         self._override_coriolis = False
 
-        # print(aero_input)
+        # Steering -> aerodynamic roll gain, phi_a,w = gain_roll_steering * u_s
+        # [rad per u_s] (paper Eq. 43, k_phi,s), for asymmetric steering: an
+        # explicit parameter wins, legacy files carry it as minus the CS
+        # coefficient of u_s. Roll steering takes u_s as the roll angle itself.
         if self.steering_control == "asymmetric":
-            cs_terms = aero_input["coefficients"].get("CS", [])
-            k_steering = -next(
-                (term["coef"] for term in cs_terms if term["var"] == "u_s"), 0.0
-            )
-            self.k_steering = k_steering
+            gain = self.aero_params.get("gain_roll_steering")
+            if gain is None:
+                cs_terms = aero_input.get("coefficients", {}).get("CS", [])
+                gain = -next(
+                    (term["coef"] for term in cs_terms if term.get("var") == "u_s"),
+                    0.0,
+                )
+            self.gain_roll_steering = gain
         else:
-            self.k_steering = 1.0
+            self.gain_roll_steering = 1.0
+        # Sideslip -> aerodynamic roll, phi_a,w += gain_roll_sideslip * beta_a
+        # [rad per rad], beta_a = angle_sideslip_for(model): the restoring roll
+        # (weathercock / sideforce) of a wing flying in sideslip, which the
+        # point-mass lift (perpendicular to v_a in the (v_a, e_r) plane) has
+        # no other way to carry. Measured on the 2019 flight as +0.05 rad/rad
+        # (held-out R2 of the roll 0.93 -> 0.95); absent/0 = the paper's model.
+        self.gain_roll_sideslip = float(self.aero_params.get("gain_roll_sideslip", 0.0) or 0.0)
 
         self._acceleration_total = None  # Cache for total acceleration
+
+    def force_drag_kcu_for(self, model):
+        """KCU drag [N, C-frame], hanging on the tether (axis = e_r).
+
+        The apparent wind at the kite point (the ROM is a point mass; the
+        rotational correction of apparent_wind.py is a VSM-trim refinement).
+        """
+        if self.kcu_drag_model is None:
+            return ca.MX.zeros(3, 1)
+        return force_drag_kcu(
+            model.velocity_apparent_wind,
+            [0.0, 0.0, 1.0],
+            self.rho,
+            self.kcu_drag_model.cd_area_axial,
+            self.kcu_drag_model.cd_area_broadside,
+            xp=ca,
+        )
+
+    def force_aerodynamic(self, model):
+        """Wing aerodynamic force plus the explicit KCU drag [N, C-frame]."""
+        return self.force_aerodynamic_wing(model) + self.force_drag_kcu_for(model)
+
+    @property
+    def k_steering(self):
+        """Deprecated alias of :attr:`gain_roll_steering`."""
+        return self.gain_roll_steering
 
     @property
     def angle_roll(self):
@@ -327,10 +535,21 @@ class Kite(Wing):
 
     @property
     def angle_roll_aerodynamic(self):
-        return self.input_steering * self.k_steering
+        return self.angle_roll_aerodynamic_for(self)
 
     def angle_roll_aerodynamic_for(self, model):
-        return model.input_steering * self.k_steering
+        roll = model.input_steering * self.gain_roll_steering
+        if self.gain_roll_sideslip:
+            roll = roll + self.gain_roll_sideslip * self.angle_sideslip_for(model)
+        return roll
+
+    @staticmethod
+    def angle_sideslip_for(model):
+        """Course-frame sideslip beta_a [rad]: the angle of the oncoming
+        apparent wind (-v_a) from the course direction, in the tangent plane,
+        positive toward -e_n (atan2(-v_a,n, -v_a,chi))."""
+        vec_va = model.velocity_apparent_wind
+        return ca.atan2(-vec_va[1], -vec_va[0] + 1e-10)
 
     @property
     def angle_pitch(self):

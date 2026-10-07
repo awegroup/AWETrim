@@ -947,8 +947,29 @@ class PhaseParameterized(TimeSeries):
             )
             return _finalize_guesses(guesses)
 
+        # Branch selection: a root must lie BELOW THE STALL (the ROM's
+        # aerodynamics.params.angle_of_attack_stall). The node residual has a
+        # pre-stall root and a spurious post-stall one (alpha ~20-25 deg), and
+        # a retry from a perturbed guess can land on either -- one retry used
+        # to put the march on the post-stall branch for the rest of the loop.
+        # A converged post-stall root is only kept as a fallback while the
+        # remaining retries look for a pre-stall one. The seed is NOT
+        # constrained: when only post-stall roots exist the one closest in
+        # path rate to the previous node is used and the march goes on.
+        # (The paper's speed-stability criterion, Eq. 36, was tried first: it
+        # selects correctly in crosswind flight but classifies every flown
+        # reel-in state as unstable.) sim_parameters.seed_reject_post_stall
+        # (default True; off when the ROM states no stall angle).
+        alpha_function = getattr(self, "_node_alpha_function", None)
+        alpha_stall = self.kite_model.kite.aero_params.get("angle_of_attack_stall")
+        if not sim_params.get("seed_reject_post_stall", True) or alpha_stall is None:
+            alpha_function = None
+        rate_index = 1 if use_williams else 2
+        rate_previous = [None]  # path rate s_dot of the last returned node root
+
         def _solve_node(z_guess, p_solver, node_index):
             last_error = None
+            fallback = None  # (|s_dot - s_dot_previous|, solution, alpha)
             accept_residual_norm = float(
                 sim_params.get("solver_accept_residual_norm", 1e-5)
             )
@@ -974,6 +995,23 @@ class PhaseParameterized(TimeSeries):
                 accepted = stats.get("success", False) or (
                     finite and residual_norm <= accept_residual_norm
                 )
+                if accepted and finite and alpha_function is not None:
+                    alpha_node = float(alpha_function(sol_candidate["x"], p_solver))
+                    logger.debug(
+                        "node %d attempt %d: s_dot %.4f, alpha %.2f deg",
+                        node_index, attempt,
+                        float(sol_candidate["x"][rate_index]), np.degrees(alpha_node),
+                    )
+                    if not alpha_node < float(alpha_stall):
+                        rate = float(sol_candidate["x"][rate_index])
+                        jump = (
+                            abs(rate - rate_previous[0])
+                            if rate_previous[0] is not None
+                            else 0.0
+                        )
+                        if fallback is None or jump < fallback[0]:
+                            fallback = (jump, sol_candidate, alpha_node)
+                        continue
                 if accepted and finite:
                     if attempt:
                         logger.info(
@@ -981,12 +1019,23 @@ class PhaseParameterized(TimeSeries):
                             node_index,
                             attempt,
                         )
+                    rate_previous[0] = float(sol_candidate["x"][rate_index])
                     return sol_candidate
 
                 last_error = RuntimeError(
                     f"status={stats.get('return_status')}, finite={finite}, "
                     f"||g||={residual_norm:.3e}"
                 )
+
+            if fallback is not None:
+                logger.info(
+                    "Phase node %d: no pre-stall root found; continuing on the "
+                    "post-stall one closest to the previous node (alpha %.1f deg)",
+                    node_index,
+                    np.degrees(fallback[2]),
+                )
+                rate_previous[0] = float(fallback[1]["x"][rate_index])
+                return fallback[1]
 
             message = (
                 f"Phase residual solve failed at node {node_index} after "
@@ -1476,6 +1525,24 @@ class PhaseParameterized(TimeSeries):
         # editing the global DEFAULT_OPTI_LIMITS.
         for _name, _bounds in (sim_params.get("opti_limits_override") or {}).items():
             limits[_name] = tuple(_bounds)
+        # Stall margin: keep alpha at least ``sim_parameters.stall_margin_deg``
+        # below the ROM's stall angle (aerodynamics.params.angle_of_attack_stall)
+        # at every node. It REPLACES the generic alpha box (a stand-in for
+        # "stay off the stall"), so alpha has no lower bound and no other
+        # upper bound when a margin is set. Independent of the seed march,
+        # which is not bounded.
+        stall_margin_deg = sim_params.get("stall_margin_deg")
+        if stall_margin_deg is not None:
+            alpha_stall = self.kite_model.kite.aero_params.get("angle_of_attack_stall")
+            if alpha_stall is None:
+                raise ValueError(
+                    "sim_parameters.stall_margin_deg needs the ROM to state "
+                    "aerodynamics.params.angle_of_attack_stall"
+                )
+            limits["angle_of_attack"] = (
+                -np.inf,
+                float(alpha_stall) - np.radians(float(stall_margin_deg)),
+            )
         # The tether length is a physical ceiling, not a tunable bound: an
         # override may tighten the radial range but never lift it past the
         # tether (the radial chord cannot exceed the line it is made of).
@@ -2275,8 +2342,10 @@ class PhaseParameterized(TimeSeries):
                     opti_vars["distance_radial"][i],
                     *node_syms,
                 )
-                opti.subject_to(aoa_i <= limits["angle_of_attack"][1])
-                opti.subject_to(aoa_i >= limits["angle_of_attack"][0])
+                if np.isfinite(limits["angle_of_attack"][1]):
+                    opti.subject_to(aoa_i <= limits["angle_of_attack"][1])
+                if np.isfinite(limits["angle_of_attack"][0]):
+                    opti.subject_to(aoa_i >= limits["angle_of_attack"][0])
                 _rep_aoa.append(aoa_i)
 
             # Turn radius of the pattern over this node's interval: R = r_i /
@@ -2948,6 +3017,22 @@ class PhaseParameterized(TimeSeries):
             "g": alg,
             "p": p,
         }
+        # Wing angle of attack over the same (x, p) as the node NLP, so the
+        # forward march can tell WHICH root a converged node landed on: the
+        # residual has a pre-stall root and a spurious post-stall one (alpha
+        # ~20-25 deg). None when alpha depends on anything outside (x, p).
+        alpha_expr = km_copy.kite.angle_of_attack_for(km_copy)
+        if use_williams:
+            alpha_expr = ca.substitute(
+                alpha_expr, km_copy.tether.tension_tether_kite,
+                tension_kite_scaled * self.WILLIAMS_TENSION_SCALE,
+            )
+        known = {sym.name() for sym in ca.symvar(z)} | {sym.name() for sym in ca.symvar(p)}
+        self._node_alpha_function = (
+            ca.Function("node_angle_of_attack", [z, p], [alpha_expr], ["x", "p"], ["alpha"])
+            if all(sym.name() in known for sym in ca.symvar(alpha_expr))
+            else None
+        )
         if use_williams:
             self._williams_tension_ground_function = ca.Function(
                 "williams_tension_tether_ground",

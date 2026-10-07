@@ -40,6 +40,15 @@ FLIGHT_STEERING_KCU_NORM_2025: float = 100.0
 # Deprecated alias (pre-calibration name); kept for old callers, 2019 value.
 FLIGHT_STEERING_KCU_NORM: float = FLIGHT_STEERING_KCU_NORM_2019
 
+# Hardware steering zero offset of the 2019 rig (KCU/bridle asymmetry), in
+# standardised u_s: add it to the logged u_s to get the physical steering.
+# Fitted on 2019 REEL-OUT (the strong, clean steering response; the reel-in
+# fit absorbs the gravity/tether baseline turn) as a steering-tape offset of
+# -16.45 mm = -0.01645 m / 1.4 m (states_2019 meta
+# steering_asymmetry_tape_offset_m; the flown-state campaigns apply the same
+# tape offset since 2026-09-13).
+FLIGHT_STEERING_ZERO_OFFSET_2019: float = -0.01645 / 1.4
+
 FLIGHT_DEPOWER_POWERED_KCU: float = 22.0
 FLIGHT_DEPOWER_POWERED_LDP_M: float = 1.7
 FLIGHT_DEPOWER_DEPOWERED_KCU: float = 30.0

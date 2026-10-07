@@ -185,7 +185,10 @@ cd_area_broadside)` and `KcuDragModel` (constructors `from_dimensions`,
 `from_system_model`, `from_cd_areas`, `from_trim_result`; methods `force`,
 `drag_coefficient` = the additive CD share, `force_coefficient` = |F|/qS, the
 EKF's normalisation). Every constructor returns `None` when the KCU envelope is
-missing, which is the single "no KCU drag" sentinel the call sites test for. The
+missing, which is the single "no KCU drag" sentinel the call sites test for.
+Callers: the VSM trims and their linearisations, and (since 2026-10) the ROM
+`system/kite.py` when a ROM states `kcu_drag_in_coefficients: false`
+(`Kite.force_drag_kcu_for`, CasADi branch of `force_drag_kcu`, axis = e_r). The
 coefficients depend only on the constant fineness ratio L/D, so they collapse to
 two floats per kite and this module needs neither the `xp` namespace pattern nor
 `ca.interpolant`. Read its module docstring before touching the coefficient
