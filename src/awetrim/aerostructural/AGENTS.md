@@ -116,6 +116,10 @@ scripts/aerostructural/
                                    attributed from flight, one chain per target
                                    apparent speed; resumable, rows saved as solved
   export_matched_sweep_data.py     Packs those rows into one JSON payload
+  build_matched_sweep_page.py      Fills matched_sweep_page_template.html with
+                                   that payload + the paper's comparison.json +
+                                   matched_sweep_page_findings.json: ONE
+                                   self-contained HTML (no Claude dependency)
   plot_matched_sweep_BILLOW.py     Solved shapes and curves against flight
 ```
 

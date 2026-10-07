@@ -1,0 +1,962 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Matched Depower on Billow</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&display=swap">
+
+<style>
+:root {
+  --ground:      #eef0f4;
+  --viewport:    #f7f8fa;
+  --surface:     #ffffff;
+  --line:        #d2d7e0;
+  --grid:        #e6e9ef;
+  --ink:         #171b25;
+  --ink-soft:    #5b6478;
+  --ink-faint:   #8a93a6;
+  --accent:      #2c497f;
+  --accent-soft: #e3e9f5;
+  --tube:        #23293a;
+  --cable:       #1d7a5e;
+  --rope:        #2c497f;
+  --kcu:         #a4548a;
+  --slack:       #3a9dc5;
+  --wrinkled:    #e69f00;
+  --taut:        #d55e00;
+  --plain:       #7f8ba3;
+  --ghost:       rgba(23, 27, 37, .28);
+  --load-0: #b7d3f6; --load-1: #86b6ef; --load-2: #3987e5; --load-3: #1c5cab; --load-4: #0d366b;
+  --line-0: #eeb35f; --line-1: #e08a35; --line-2: #c8621c; --line-3: #9a430f; --line-4: #642508;
+  --line-slack:  #8a93a6;
+  /* chart roles: this study, the paper's model, the two flight phases */
+  --full:        #1d2433;
+  --wire:        #a3a9b3;
+  --reelout:     #23729d;
+  --reelin:      #c27c00;
+  --warn:        #b3261e;
+  --shadow:      0 1px 2px rgba(23, 27, 37, .08), 0 8px 24px rgba(23, 27, 37, .06);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0e1118; --viewport: #141924; --surface: #1a1f2b; --line: #2b3241; --grid: #232a37;
+    --ink: #e6e9f0; --ink-soft: #a3abbd; --ink-faint: #6f7889;
+    --accent: #7ba3e0; --accent-soft: #1e2534;
+    --tube: #c9d0de; --cable: #3fbf93; --rope: #7ba3e0; --kcu: #d98ec0;
+    --slack: #3a9dc5; --wrinkled: #e69f00; --taut: #d55e00; --plain: #5d6880;
+    --ghost: rgba(230, 233, 240, .30);
+    --load-0: #184f95; --load-1: #256abf; --load-2: #3987e5; --load-3: #6da7ec; --load-4: #b7d3f6;
+    --line-0: #8d5020; --line-1: #bb6a26; --line-2: #e3873a; --line-3: #f4ad62; --line-4: #ffd69c;
+    --line-slack: #6f7889;
+    --full: #eceff5; --wire: #6f7686; --reelout: #4fb3dc; --reelin: #e69f00; --warn: #f28b82;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #0e1118; --viewport: #141924; --surface: #1a1f2b; --line: #2b3241; --grid: #232a37;
+  --ink: #e6e9f0; --ink-soft: #a3abbd; --ink-faint: #6f7889;
+  --accent: #7ba3e0; --accent-soft: #1e2534;
+  --tube: #c9d0de; --cable: #3fbf93; --rope: #7ba3e0; --kcu: #d98ec0;
+  --slack: #3a9dc5; --wrinkled: #e69f00; --taut: #d55e00; --plain: #5d6880;
+  --ghost: rgba(230, 233, 240, .30);
+  --load-0: #184f95; --load-1: #256abf; --load-2: #3987e5; --load-3: #6da7ec; --load-4: #b7d3f6;
+  --line-0: #8d5020; --line-1: #bb6a26; --line-2: #e3873a; --line-3: #f4ad62; --line-4: #ffd69c;
+  --line-slack: #6f7889;
+  --full: #eceff5; --wire: #6f7686; --reelout: #4fb3dc; --reelin: #e69f00; --warn: #f28b82;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 24px rgba(0, 0, 0, .3);
+}
+
+* { box-sizing: border-box; }
+html { background: var(--ground); }
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+.mono, .num { font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; }
+h1, h2, h3 { text-wrap: balance; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+header.top {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 22px;
+  padding: 18px 22px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--surface);
+}
+header.top h1 { margin: 0; font-size: 1.1rem; font-weight: 600; letter-spacing: -.01em; }
+header.top p { margin: 0; color: var(--ink-soft); font-size: .84rem; max-width: 78ch; }
+
+/* ---- viewer -------------------------------------------------------- */
+.stage { display: grid; grid-template-columns: 292px 1fr; border-bottom: 1px solid var(--line); }
+@media (max-width: 860px) { .stage { grid-template-columns: 1fr; } .rail { border-right: 0; border-bottom: 1px solid var(--line); } }
+.rail {
+  background: var(--surface); border-right: 1px solid var(--line);
+  padding: 16px 16px 20px; display: flex; flex-direction: column; gap: 18px;
+}
+.group { display: flex; flex-direction: column; gap: 8px; }
+.group > h2, .eyebrow {
+  margin: 0; font-size: .66rem; font-weight: 600; text-transform: uppercase;
+  letter-spacing: .09em; color: var(--ink-faint);
+}
+.knob { display: flex; flex-direction: column; gap: 4px; }
+.knob-head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.knob-head label { font-size: .82rem; font-weight: 500; color: var(--ink); }
+.knob-head output { font-family: "IBM Plex Mono", monospace; font-size: .78rem; color: var(--ink); font-variant-numeric: tabular-nums; }
+.knob-sub { font-size: .72rem; color: var(--ink-faint); min-height: 1.1em; }
+input[type="range"] { width: 100%; accent-color: var(--accent); margin: 2px 0; }
+.ticks { position: relative; height: 16px; font-size: .64rem; color: var(--ink-soft); font-family: "IBM Plex Mono", monospace; }
+.ticks span { position: absolute; top: 0; transform: translateX(-50%); white-space: nowrap; }
+.ticks span::before { content: ""; position: absolute; left: 50%; top: -5px; width: 1px; height: 5px; background: var(--ink-faint); }
+.knob.dim label, .knob.dim output { color: var(--ink-faint); }
+.row-buttons { display: flex; flex-wrap: wrap; gap: 6px; }
+button.ghost {
+  appearance: none; font: inherit; font-size: .76rem; padding: 5px 9px; border-radius: 5px;
+  border: 1px solid var(--line); background: transparent; color: var(--ink-soft); cursor: pointer;
+}
+button.ghost:hover { border-color: var(--accent); color: var(--ink); }
+button.ghost[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--ink); }
+.check { display: flex; align-items: center; gap: 8px; font-size: .8rem; color: var(--ink-soft); cursor: pointer; }
+.check input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+.legend { display: flex; flex-direction: column; gap: 4px; }
+.legend .ramp { height: 9px; border-radius: 3px; }
+.ramp-labels { display: flex; justify-content: space-between; font-family: "IBM Plex Mono", monospace; font-size: .68rem; color: var(--ink-soft); }
+.ramp-labels.log { position: relative; display: block; height: 1.2em; }
+.ramp-labels.log span { position: absolute; top: 0; white-space: nowrap; }
+.legend-title { margin: 4px 0 0; font-size: .72rem; font-weight: 500; color: var(--ink-soft); }
+.legend .row { display: grid; grid-template-columns: 12px 1fr auto; align-items: center; gap: 8px; font-size: .76rem; color: var(--ink-soft); }
+.legend .sw { width: 12px; height: 12px; border-radius: 2px; }
+.legend .pct { font-family: "IBM Plex Mono", monospace; color: var(--ink); }
+
+.viewport { position: relative; background: var(--viewport); min-height: 560px; }
+@media (max-width: 860px) { .viewport { min-height: 420px; } }
+canvas#view { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+canvas#view:active { cursor: grabbing; }
+.hint { position: absolute; right: 14px; top: 12px; font-size: .7rem; color: var(--ink-faint); text-align: right; pointer-events: none; }
+.state-line {
+  position: absolute; left: 14px; top: 12px; max-width: min(34rem, 70%);
+  font-size: .8rem; color: var(--ink-soft); pointer-events: none;
+}
+.state-line strong { color: var(--ink); font-weight: 600; }
+.badge {
+  display: inline-block; font-size: .64rem; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  padding: 1px 6px; border-radius: 3px; border: 1px solid var(--line); color: var(--ink-soft); margin-left: 6px; vertical-align: 1px;
+}
+.badge.warn { color: var(--warn); border-color: var(--warn); }
+.readout {
+  position: absolute; left: 14px; right: 14px; bottom: 12px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px 14px;
+  padding: 10px 14px; border: 1px solid var(--line); border-radius: 6px;
+  background: color-mix(in srgb, var(--surface) 90%, transparent); backdrop-filter: blur(6px);
+  box-shadow: var(--shadow); pointer-events: none;
+}
+.readout div { display: flex; flex-direction: column; min-width: 0; }
+.readout dt { margin: 0; font-size: .6rem; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-faint); white-space: nowrap; }
+.readout dd { margin: 0; font-family: "IBM Plex Mono", monospace; font-variant-numeric: tabular-nums; font-size: .84rem; color: var(--ink); white-space: nowrap; }
+.empty-note { position: absolute; inset: 0; display: grid; place-items: center; color: var(--ink-faint); font-size: .9rem; pointer-events: none; }
+.tip {
+  position: absolute; pointer-events: none; padding: 5px 8px; border: 1px solid var(--line); border-radius: 4px;
+  background: var(--surface); box-shadow: var(--shadow); color: var(--ink);
+  font-family: "IBM Plex Mono", monospace; font-size: .72rem; font-variant-numeric: tabular-nums; white-space: nowrap; z-index: 5;
+}
+
+/* ---- findings & charts --------------------------------------------- */
+main.report { max-width: 1320px; margin: 0 auto; padding-inline: 22px; padding-block: 26px 40px; display: flex; flex-direction: column; gap: 34px; }
+@media (max-width: 600px) { main.report { padding-inline: 16px; } }
+.findings { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.finding {
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  padding: 14px 16px 15px; display: flex; flex-direction: column; gap: 6px;
+}
+.finding .eyebrow { color: var(--ink-faint); }
+.finding .big { font-family: "IBM Plex Sans Condensed", "IBM Plex Sans", sans-serif; font-weight: 600; font-size: 1.7rem; line-height: 1.1; letter-spacing: -.01em; font-variant-numeric: tabular-nums; }
+.finding .big small { font-size: .9rem; font-weight: 500; color: var(--ink-soft); margin-left: 4px; }
+.finding p { margin: 0; font-size: .8rem; color: var(--ink-soft); }
+
+section.block { display: flex; flex-direction: column; gap: 12px; }
+.block-head { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 20px; }
+.block-head h2 { margin: 0; font-size: 1.02rem; font-weight: 600; }
+.block-head p { margin: 0; font-size: .82rem; color: var(--ink-soft); max-width: 76ch; }
+.key { display: flex; flex-wrap: wrap; gap: 6px 16px; font-size: .74rem; color: var(--ink-soft); }
+.key span { display: inline-flex; align-items: center; gap: 6px; }
+.key svg { display: block; }
+.charts { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+.charts.wide { grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); }
+@media (max-width: 480px) { .charts.wide { grid-template-columns: 1fr; } }
+figure.chart { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 10px 10px 6px; position: relative; min-width: 0; }
+figure.chart figcaption { font-size: .78rem; font-weight: 500; color: var(--ink); padding: 0 4px 2px; }
+figure.chart figcaption span { font-weight: 400; color: var(--ink-faint); }
+figure.chart svg { display: block; width: 100%; height: auto; overflow: visible; }
+.axis text, .tick text { fill: var(--ink-soft); font-family: "IBM Plex Mono", monospace; font-size: 10px; }
+.axis-label { fill: var(--ink-soft); font-family: "IBM Plex Sans", sans-serif; font-size: 10.5px; }
+.gridline { stroke: var(--grid); stroke-width: 1; }
+.domain { stroke: var(--line); }
+.refline { stroke: var(--ink-faint); stroke-width: 1; stroke-dasharray: 2 3; }
+.reflabel { fill: var(--ink-faint); font-family: "IBM Plex Sans", sans-serif; font-size: 9.5px; }
+.chart-note { position: absolute; right: 12px; top: 10px; font-size: .7rem; color: var(--ink-faint); font-family: "IBM Plex Mono", monospace; }
+
+details.table { background: var(--surface); border: 1px solid var(--line); border-radius: 6px; }
+details.table summary { cursor: pointer; padding: 11px 14px; font-size: .86rem; font-weight: 500; }
+.table-wrap { overflow-x: auto; padding: 0 0 8px; }
+table { border-collapse: collapse; font-size: .74rem; width: 100%; }
+th, td { padding: 4px 10px; text-align: right; white-space: nowrap; border-top: 1px solid var(--grid); font-variant-numeric: tabular-nums; }
+th { font-weight: 600; color: var(--ink-soft); position: sticky; top: 0; background: var(--surface); }
+td { font-family: "IBM Plex Mono", monospace; }
+td.l, th.l { text-align: left; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--accent-soft); }
+tr.current { background: var(--accent-soft); }
+
+.notes { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px 28px; font-size: .8rem; color: var(--ink-soft); }
+.notes h3 { margin: 0 0 4px; font-size: .82rem; color: var(--ink); font-weight: 600; }
+.notes p { margin: 0 0 8px; max-width: 68ch; }
+.notes code { font-family: "IBM Plex Mono", monospace; font-size: .74rem; color: var(--ink); }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Matched Depower on Billow<span class="badge" id="runBadge" hidden></span></h1>
+  <p>TU&nbsp;Delft V3 at the centre of the wind window, solved by the coupled VSM trim on Billow&rsquo;s <em>full</em> model &mdash; inflatable tube beams and a wrinkling membrane canopy &mdash; across the 2019 depower the wes-quasi-steady paper attributes on the wireframe (u<sub>dp</sub>&nbsp;0.242 reel-out, 0.323 reel-in), and steered at the full model&rsquo;s own reel-out force match, u<sub>dp</sub>&nbsp;0.315. Scrub the sliders; the camera stays where you put it.</p>
+</header>
+
+<div class="stage">
+  <div class="rail">
+    <div class="group">
+      <h2>Flight condition</h2>
+      <div class="knob" id="knobVa">
+        <div class="knob-head"><label for="va">Apparent speed</label><output id="vaOut"></output></div>
+        <input type="range" id="va" min="0" max="6" step="1">
+        <div class="ticks" id="vaTicks"></div>
+      </div>
+      <div class="knob" id="knobUdp">
+        <div class="knob-head"><label for="udp">Depower u<sub>dp</sub></label><output id="udpOut"></output></div>
+        <input type="range" id="udp" min="0" max="18" step="1">
+        <div class="ticks" id="udpTicks"></div>
+        <div class="knob-sub" id="udpSub"></div>
+      </div>
+      <div class="knob" id="knobUs">
+        <div class="knob-head"><label for="us">Steering tape half-difference</label><output id="usOut"></output></div>
+        <input type="range" id="us" min="0" max="10" step="1">
+        <div class="knob-sub" id="usSub"></div>
+      </div>
+      <div class="row-buttons">
+        <button class="ghost" id="playUdp" type="button" aria-pressed="false">Play depower</button>
+        <button class="ghost" id="playUs" type="button" aria-pressed="false">Play steering</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <h2>Shade by</h2>
+      <div role="radiogroup" aria-label="Shade the canopy and bridle by">
+        <label class="check"><input type="radio" name="shading" id="shadeLoad" value="load" checked> Aerodynamic load</label>
+        <label class="check"><input type="radio" name="shading" id="shadeRegime" value="regime"> Wrinkling state</label>
+        <label class="check"><input type="radio" name="shading" id="shadePlain" value="plain"> Plain</label>
+      </div>
+      <div class="legend" id="legend"></div>
+    </div>
+
+    <div class="group">
+      <h2>Show</h2>
+      <label class="check"><input type="checkbox" id="showCanopy" checked> Canopy</label>
+      <label class="check"><input type="checkbox" id="showTubes" checked> Inflated tubes</label>
+      <label class="check"><input type="checkbox" id="showBridle" checked> Bridle and pulleys</label>
+      <label class="check"><input type="checkbox" id="showMesh"> Mesh edges</label>
+      <label class="check"><input type="checkbox" id="showGhost"> Built shape, outlined</label>
+      <button class="ghost" id="reset" type="button">Reset camera</button>
+    </div>
+  </div>
+
+  <div class="viewport" id="viewport">
+    <canvas id="view"></canvas>
+    <div class="state-line" id="stateLine"></div>
+    <div class="hint">drag to orbit &middot; scroll to zoom<br>shift + drag to pan</div>
+    <div class="empty-note" id="emptyNote" hidden></div>
+    <dl class="readout" id="readout"></dl>
+    <div class="tip" id="tip" hidden></div>
+  </div>
+</div>
+
+<main class="report">
+  <div class="findings" id="findings"></div>
+
+  <section class="block">
+    <div class="block-head">
+      <h2>Depower sweep</h2>
+      <p>One chain per target apparent speed, u<sub>dp</sub> 0.180&nbsp;&rarr;&nbsp;0.323 on the paper&rsquo;s tape grid, steering zero. The selected speed is drawn heavy; the other six stay thin.</p>
+    </div>
+    <div class="key" id="keyDepower"></div>
+    <div class="charts" id="chartsDepower"></div>
+  </section>
+
+  <section class="block">
+    <div class="block-head">
+      <h2>Tether force against the 2019 flight</h2>
+      <p>Near-straight flight samples (|steering tape| &lt; 0.05&nbsp;m) with binned medians, and each model at the depower the paper matched per phase. On the wireframe the curve lies on the median ridge of its own colour &mdash; that is the attribution.</p>
+    </div>
+    <div class="key" id="keyMatch"></div>
+    <div class="charts wide" id="chartsMatch"></div>
+  </section>
+
+  <section class="block">
+    <div class="block-head">
+      <h2>Steering sweep at u<sub>dp</sub> 0.315</h2>
+      <p>Each model steered at its own reel-out force match: the full model at u<sub>dp</sub>&nbsp;0.315, the paper&rsquo;s wireframe at 0.242. Tape half-difference 0&nbsp;&rarr;&nbsp;0.25&nbsp;m, the 2019 envelope, in 0.025&nbsp;m steps. Hollow marks: part of the span past its 2-D stall onset.</p>
+    </div>
+    <div class="key" id="keySteering"></div>
+    <div class="charts" id="chartsSteering"></div>
+  </section>
+
+  <details class="table" id="tableBlock">
+    <summary>All solved rows</summary>
+    <div class="table-wrap"><table id="rowsTable"></table></div>
+  </details>
+
+  <section class="notes" id="notes"></section>
+</main>
+
+<script>
+const DATA = __DATA__;
+const COMP = __COMPARISON__;
+const AN = __ANALYSIS__;
+
+/* ---- decoding ------------------------------------------------------ */
+function decode(b64, Type) {
+  const bin = atob(b64), bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return new Type(bytes.buffer);
+}
+function nodesFrom(b64) {
+  const raw = decode(b64, Int16Array), out = new Array(raw.length / 3);
+  for (let i = 0; i < out.length; i++) out[i] = [raw[3 * i] / 1e3, raw[3 * i + 1] / 1e3, raw[3 * i + 2] / 1e3];
+  return out;
+}
+const EKF_AREA = 19.75;
+const REFERENCE = nodesFrom(DATA.reference);
+const decoded = new Map();
+function stateOf(row) {
+  if (!decoded.has(row)) {
+    decoded.set(row, {
+      positions: nodesFrom(row.pos),
+      load: decode(row.load, Uint16Array),
+      regime: decode(row.regime, Uint8Array),
+      cable: decode(row.cable, Uint16Array),
+      pulley: decode(row.pulley, Uint16Array),
+    });
+  }
+  return decoded.get(row);
+}
+
+/* ---- rows and grids ------------------------------------------------ */
+const VA = DATA.vaGrid, UDP = DATA.udpGrid, US = DATA.usGrid;
+const UDP_OUT = DATA.udpReelout, UDP_IN = DATA.udpReelin, UDP_ST = DATA.udpSteer;
+const ST_INDEX = () => UDP.findIndex((u) => near(u, UDP_ST));
+const near = (a, b, tol = 6e-4) => Math.abs(a - b) < tol;
+for (const r of DATA.rows) {
+  const area = r.kcu_area_reference_m2 || EKF_AREA;
+  r.clE = r.cl == null ? null : r.cl * area / EKF_AREA;
+  r.cdE = r.cd == null ? null : r.cd * area / EKF_AREA;
+  r.ld = r.cl && r.cd ? r.cl / r.cd : null;
+  r.k = r.force_over_va2;
+  r.stalled = (r.n_stalled_panels || 0) > 0;
+}
+const byMode = (mode) => DATA.rows.filter((r) => r.mode === mode);
+function rowFor(va, udp, us) {
+  if (us > 1e-9) return DATA.rows.find((r) => r.mode === "steering" && r.target_va === va && near(r.us, us, 1e-6) && near(r.udp, UDP_ST));
+  return DATA.rows.find((r) => r.mode === "depower" && r.target_va === va && near(r.udp, udp))
+      || (near(udp, UDP_ST) ? DATA.rows.find((r) => r.mode === "steering" && r.target_va === va && r.us < 1e-9 && near(r.udp, UDP_ST)) : undefined);
+}
+const WF_DEP = (COMP.wireframe_depower || []).filter((r) => r.us < 1e-9 && r.udp <= 0.335);
+const WF_STEER = COMP.wireframe_steering || [];
+for (const r of [...WF_DEP, ...WF_STEER]) {
+  r.k = r.tether_force_kite / (r.v_a * r.v_a);
+  r.ld = r.cl && r.cd ? r.cl / r.cd : null;
+  r.stalled = (r.n_stalled_panels || 0) > 0;
+}
+
+/* ---- view state ---------------------------------------------------- */
+const view = {
+  va: VA.indexOf(19) >= 0 ? VA.indexOf(19) : 0,
+  udp: UDP.findIndex((u) => near(u, UDP_ST)),
+  us: 0,
+  shading: "load", canopy: true, tubes: true, bridle: true, mesh: false, ghost: false,
+};
+const cur = () => ({ va: VA[view.va], udp: view.us > 0 ? UDP_ST : UDP[view.udp], us: US[view.us] });
+const currentRow = () => { const c = cur(); return rowFor(c.va, c.udp, c.us); };
+
+/* ---- 3-D viewer ---------------------------------------------------- */
+const canvas = document.getElementById("view");
+const ctx = canvas.getContext("2d");
+const cam = { yaw: -0.62, pitch: 0.28, zoom: 1.35, panX: 0, panY: 0 };
+const HOME = { ...cam };
+const cssVar = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const LOAD_STOPS = ["--load-0", "--load-1", "--load-2", "--load-3", "--load-4"];
+const LINE_STOPS = ["--line-0", "--line-1", "--line-2", "--line-3", "--line-4"];
+const SLACK_N = 1;
+const REGIMES = [
+  { key: 0, name: "slack", varName: "--slack" },
+  { key: 1, name: "wrinkled", varName: "--wrinkled" },
+  { key: 2, name: "taut", varName: "--taut" },
+];
+
+// ONE frame for every state: the built shape's box. Re-centring per state
+// would make the kite jump as the sliders move.
+const FRAME = (() => {
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const p of REFERENCE) for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], p[i]); hi[i] = Math.max(hi[i], p[i]); }
+  return { centre: [0, 1, 2].map((i) => 0.5 * (lo[i] + hi[i])), span: Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) };
+})();
+
+function rampColour(stops, t) {
+  const x = Math.min(1, Math.max(0, t)) * (stops.length - 1);
+  const k = Math.min(stops.length - 2, Math.floor(x)), f = x - k;
+  const rgb = (hex) => { const n = parseInt(hex.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
+  const a = rgb(stops[k]), b = rgb(stops[k + 1]);
+  return "#" + a.map((c, i) => Math.round(c + f * (b[i] - c)).toString(16).padStart(2, "0")).join("");
+}
+function shade(hex, amount) {
+  const n = parseInt(hex.slice(1), 16);
+  const mix = (c) => Math.round(Math.min(255, Math.max(0, c * amount)));
+  return `rgb(${mix((n >> 16) & 255)},${mix((n >> 8) & 255)},${mix(n & 255)})`;
+}
+function projector() {
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width, h = rect.height;
+  const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  const dist = FRAME.span * 2.6;
+  const focal = Math.min(w, h) * 0.5 * cam.zoom * 2.6;
+  const rotate = (v) => { const x = v[0] * cy - v[1] * sy, y0 = v[0] * sy + v[1] * cy; return [x, y0 * cp - v[2] * sp, y0 * sp + v[2] * cp]; };
+  const project = (p) => {
+    const r = rotate([p[0] - FRAME.centre[0], p[1] - FRAME.centre[1], p[2] - FRAME.centre[2]]);
+    const depth = r[1] + dist, f = focal / Math.max(depth, 1e-3);
+    // Lift the kite above the readout panel a little.
+    return [w / 2 + r[0] * f + cam.panX, h * 0.47 - r[2] * f + cam.panY, depth];
+  };
+  return { project, rotate };
+}
+
+let drawnTriangles = [], drawnLines = [];
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  if (canvas.width !== Math.round(rect.width * dpr) || canvas.height !== Math.round(rect.height * dpr)) {
+    canvas.width = Math.round(rect.width * dpr); canvas.height = Math.round(rect.height * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  const row = currentRow();
+  const empty = document.getElementById("emptyNote");
+  drawnTriangles = []; drawnLines = [];
+  const { project, rotate } = projector();
+
+  if (view.ghost) {
+    const refScreen = REFERENCE.map(project);
+    ctx.strokeStyle = cssVar("--ghost"); ctx.lineWidth = 1; ctx.setLineDash([3, 3]);
+    for (const e of DATA.tubes) { ctx.beginPath(); ctx.moveTo(...refScreen[e[0]].slice(0, 2)); ctx.lineTo(...refScreen[e[1]].slice(0, 2)); ctx.stroke(); }
+    ctx.setLineDash([]);
+  }
+  if (!row) {
+    empty.hidden = false;
+    empty.textContent = "No converged solution stored for this combination.";
+    return;
+  }
+  empty.hidden = true;
+  const st = stateOf(row);
+  const pos = st.positions;
+  const screen = pos.map(project);
+  const colours = {
+    slack: cssVar("--slack"), wrinkled: cssVar("--wrinkled"), taut: cssVar("--taut"), plain: cssVar("--plain"),
+    tube: cssVar("--tube"), cable: cssVar("--cable"), rope: cssVar("--rope"), kcu: cssVar("--kcu"),
+    line: cssVar("--line"), lineSlack: cssVar("--line-slack"),
+  };
+  const regimeColour = [colours.slack, colours.wrinkled, colours.taut];
+  const stops = LOAD_STOPS.map(cssVar), lineStops = LINE_STOPS.map(cssVar);
+  const light = [0.32, -0.78, 0.54];
+  const prims = [];
+
+  if (view.canopy) {
+    DATA.triangles.forEach((tri, i) => {
+      const a = pos[tri[0]], b = pos[tri[1]], c = pos[tri[2]];
+      const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+      let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+      const len = Math.hypot(...n) || 1;
+      n = rotate([n[0] / len, n[1] / len, n[2] / len]);
+      const lambert = Math.abs(n[0] * light[0] + n[1] * light[1] + n[2] * light[2]);
+      let base, lit = 0.6 + 0.55 * lambert;
+      if (view.shading === "load") { base = rampColour(stops, st.load[i] / DATA.loadScale); lit = 0.88 + 0.18 * lambert; }
+      else if (view.shading === "regime") base = regimeColour[st.regime[i]];
+      else base = colours.plain;
+      prims.push({ depth: (screen[tri[0]][2] + screen[tri[1]][2] + screen[tri[2]][2]) / 3, kind: "tri", index: i,
+        pts: [screen[tri[0]], screen[tri[1]], screen[tri[2]]], fill: shade(base, lit) });
+    });
+  }
+  if (view.tubes) {
+    const dMax = Math.max(...DATA.tubeDiameter);
+    DATA.tubes.forEach((e, i) => prims.push({ depth: (screen[e[0]][2] + screen[e[1]][2]) / 2 - 0.02, kind: "line",
+      pts: [screen[e[0]], screen[e[1]]], colour: colours.tube, width: 1.6 + 6.4 * (DATA.tubeDiameter[i] / dMax), cap: "round" }));
+  }
+  if (view.bridle) {
+    const style = (t, fallback) => {
+      if (t < SLACK_N) return { colour: colours.lineSlack, width: 1.25, dash: [4, 3] };
+      if (view.shading !== "load") return { colour: fallback, width: 1.15, dash: null };
+      const x = Math.min(1, Math.log10(Math.max(t, 1)) / Math.log10(DATA.tensionScale));
+      return { colour: rampColour(lineStops, x), width: 1.1 + 1.9 * x, dash: null };
+    };
+    const push = (e, s, line) => prims.push({ depth: (screen[e[0]][2] + screen[e[1]][2]) / 2, kind: "line",
+      pts: [screen[e[0]], screen[e[1]]], colour: s.colour, width: s.width, dash: s.dash, cap: "butt", line });
+    DATA.cables.forEach((e, i) => push(e, style(st.cable[i], colours.cable), { set: "cable", index: i }));
+    DATA.pulleys.forEach((p, i) => {
+      const s = style(st.pulley[i], colours.rope);
+      for (const e of [[p[0], p[1]], [p[1], p[2]]]) push(e, s, { set: "pulley", index: i });
+    });
+  }
+  prims.sort((a, b) => b.depth - a.depth);
+  drawnTriangles = prims.filter((p) => p.kind === "tri");
+  drawnLines = prims.filter((p) => p.line);
+  for (const p of prims) {
+    ctx.beginPath();
+    ctx.moveTo(p.pts[0][0], p.pts[0][1]);
+    ctx.lineTo(p.pts[1][0], p.pts[1][1]);
+    if (p.kind === "tri") {
+      ctx.lineTo(p.pts[2][0], p.pts[2][1]); ctx.closePath();
+      ctx.fillStyle = p.fill; ctx.fill();
+      if (view.mesh) { ctx.strokeStyle = colours.line; ctx.lineWidth = 0.35; ctx.stroke(); }
+    } else {
+      ctx.strokeStyle = p.colour; ctx.lineWidth = p.width; ctx.lineCap = p.cap; ctx.setLineDash(p.dash || []); ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+  if (view.bridle) {
+    for (const i of DATA.fixed) { const s = screen[i]; ctx.beginPath(); ctx.arc(s[0], s[1], 5, 0, 2 * Math.PI); ctx.fillStyle = colours.kcu; ctx.fill(); }
+  }
+}
+
+/* ---- viewer interaction -------------------------------------------- */
+const tip = document.getElementById("tip");
+let dragging = null;
+function segDist(x, y, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / (dx * dx + dy * dy || 1)));
+  return Math.hypot(x - a[0] - t * dx, y - a[1] - t * dy);
+}
+function inside(x, y, p) {
+  const side = (a, b) => (x - b[0]) * (a[1] - b[1]) - (a[0] - b[0]) * (y - b[1]);
+  const d1 = side(p[0], p[1]), d2 = side(p[1], p[2]), d3 = side(p[2], p[0]);
+  return !((d1 < 0 || d2 < 0 || d3 < 0) && (d1 > 0 || d2 > 0 || d3 > 0));
+}
+function hover(e) {
+  const row = currentRow();
+  if (!row) { tip.hidden = true; return; }
+  const st = stateOf(row);
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  let nearest = null, best = 5;
+  for (const p of drawnLines) { const d = segDist(x, y, p.pts[0], p.pts[1]); if (d <= best) { best = d; nearest = p; } }
+  let hit = -1;
+  for (let k = drawnTriangles.length - 1; k >= 0 && hit < 0 && !nearest; k--) if (inside(x, y, drawnTriangles[k].pts)) hit = drawnTriangles[k].index;
+  if (!nearest && hit < 0) { tip.hidden = true; return; }
+  if (nearest) {
+    const names = nearest.line.set === "cable" ? DATA.cableNames : DATA.pulleyNames;
+    const t = st[nearest.line.set][nearest.line.index];
+    tip.textContent = `${names[nearest.line.index] || "line"}${nearest.line.set === "pulley" ? " (pulley rope)" : ""} · ${t < SLACK_N ? "slack" : `${t} N`}`;
+  } else {
+    tip.textContent = `${st.load[hit]} Pa · ${REGIMES[st.regime[hit]].name}`;
+  }
+  tip.hidden = false;
+  tip.style.left = `${Math.min(x + 14, rect.width - tip.offsetWidth - 8)}px`;
+  tip.style.top = `${Math.max(8, y - tip.offsetHeight - 10)}px`;
+}
+canvas.addEventListener("pointerdown", (e) => { dragging = { x: e.clientX, y: e.clientY, pan: e.shiftKey }; canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener("pointermove", (e) => {
+  if (!dragging) { hover(e); return; }
+  tip.hidden = true;
+  const dx = e.clientX - dragging.x, dy = e.clientY - dragging.y;
+  dragging.x = e.clientX; dragging.y = e.clientY;
+  if (dragging.pan) { cam.panX += dx; cam.panY += dy; }
+  else { cam.yaw += dx * 0.0072; cam.pitch = Math.max(-1.45, Math.min(1.45, cam.pitch + dy * 0.0072)); }
+  draw();
+});
+for (const type of ["pointerup", "pointercancel", "pointerleave"]) canvas.addEventListener(type, () => { dragging = null; if (type !== "pointerup") tip.hidden = true; });
+canvas.addEventListener("wheel", (e) => { e.preventDefault(); cam.zoom = Math.max(0.3, Math.min(7, cam.zoom * Math.exp(-e.deltaY * 0.0012))); draw(); }, { passive: false });
+document.getElementById("reset").addEventListener("click", () => { Object.assign(cam, HOME); draw(); });
+
+/* ---- controls ------------------------------------------------------ */
+const fmt = (v, d = 2) => (v == null || !isFinite(v) ? "—" : Number(v).toFixed(d));
+const sliders = { va: document.getElementById("va"), udp: document.getElementById("udp"), us: document.getElementById("us") };
+sliders.va.max = VA.length - 1; sliders.udp.max = UDP.length - 1; sliders.us.max = US.length - 1;
+function placeTicks(el, values, label, marks) {
+  const n = values.length - 1;
+  el.innerHTML = marks.map(([i, text]) => `<span style="left:calc(${(100 * i) / n}% + ${8 - (16 * i) / n}px)">${text}</span>`).join("");
+}
+placeTicks(document.getElementById("vaTicks"), VA, null, VA.map((v, i) => [i, v]));
+placeTicks(document.getElementById("udpTicks"), UDP, null, [
+  [UDP.findIndex((u) => near(u, UDP_OUT)), "0.242 wire"], [ST_INDEX(), "0.315 full"],
+]);
+
+function setState(patch, fromChart = false) {
+  Object.assign(view, patch);
+  if (patch.udp !== undefined && !near(UDP[view.udp], UDP_ST)) view.us = 0;
+  sync();
+}
+function sync() {
+  const c = cur();
+  sliders.va.value = view.va; sliders.udp.value = view.us > 0 ? ST_INDEX() : view.udp; sliders.us.value = view.us;
+  document.getElementById("vaOut").textContent = `${c.va} m/s`;
+  const lTape = DATA.tapeOf[UDP.findIndex((u) => near(u, c.udp))];
+  document.getElementById("udpOut").textContent = `${c.udp.toFixed(3)} · ${lTape.toFixed(3)} m`;
+  document.getElementById("udpSub").textContent = near(c.udp, UDP_ST) ? "Reel-out force match on the full model" : near(c.udp, UDP_OUT) ? "Reel-out match on the wireframe (paper)" : near(c.udp, UDP_IN) ? "Reel-in match on the wireframe (paper)" : "";
+  document.getElementById("usOut").textContent = `${c.us.toFixed(3)} m`;
+  const dim = !near(c.udp, UDP_ST);
+  document.getElementById("knobUs").classList.toggle("dim", dim);
+  document.getElementById("usSub").textContent = dim ? "Solved at u_dp 0.315 — moving it jumps there" : "One tape shortened, the other lengthened";
+  refresh();
+}
+sliders.va.addEventListener("input", () => setState({ va: +sliders.va.value }));
+sliders.udp.addEventListener("input", () => setState({ udp: +sliders.udp.value, us: 0 }));
+sliders.us.addEventListener("input", () => setState({ us: +sliders.us.value, udp: ST_INDEX() }));
+for (const [id, key] of [["showCanopy", "canopy"], ["showTubes", "tubes"], ["showBridle", "bridle"], ["showMesh", "mesh"], ["showGhost", "ghost"]]) {
+  const input = document.getElementById(id);
+  input.checked = view[key];
+  input.addEventListener("change", () => { view[key] = input.checked; refresh(); });
+}
+for (const radio of document.querySelectorAll('input[name="shading"]')) radio.addEventListener("change", () => { if (radio.checked) { view.shading = radio.value; refresh(); } });
+
+let player = null;
+function play(button, key, length, extra) {
+  const other = button.id === "playUdp" ? document.getElementById("playUs") : document.getElementById("playUdp");
+  if (player) { clearInterval(player.id); player.button.setAttribute("aria-pressed", "false"); player.button.textContent = player.label; const same = player.button === button; player = null; if (same) return; }
+  other.setAttribute("aria-pressed", "false");
+  const label = button.textContent;
+  button.setAttribute("aria-pressed", "true"); button.textContent = "Stop";
+  if (extra) Object.assign(view, extra);
+  let dir = 1;
+  const id = setInterval(() => {
+    let next = view[key] + dir;
+    if (next >= length || next < 0) { dir = -dir; next = view[key] + dir; }
+    const patch = { [key]: next };
+    if (key === "us") patch.udp = ST_INDEX();
+    setState(patch);
+  }, 520);
+  player = { id, button, label };
+}
+document.getElementById("playUdp").addEventListener("click", (e) => play(e.currentTarget, "udp", UDP.length, { us: 0 }));
+document.getElementById("playUs").addEventListener("click", (e) => play(e.currentTarget, "us", US.length));
+
+/* ---- readout + legend ---------------------------------------------- */
+function decadeLabels(scale) {
+  const top = Math.log10(scale), labels = [];
+  for (let k = 0; 10 ** k <= scale; k++) { const f = k / top, shift = f < 0.05 ? 0 : f > 0.9 ? -100 : -50; labels.push(`<span style="left:${(100 * f).toFixed(1)}%;transform:translateX(${shift}%)">${10 ** k}</span>`); }
+  return labels.join("");
+}
+function refresh() {
+  const row = currentRow();
+  const c = cur();
+  const legend = document.getElementById("legend");
+  const st = row ? stateOf(row) : null;
+  const slack = st ? [...st.cable, ...st.pulley].filter((t) => t < SLACK_N).length : 0;
+  const slackRow = st ? `<div class="row"><span class="sw" style="background:none;border-top:2px dashed var(--line-slack);height:0"></span><span>slack line</span><span class="pct">${slack}</span></div>` : "";
+  if (view.shading === "load") {
+    legend.innerHTML = `<p class="legend-title">Canopy load (Pa)</p>
+      <div class="ramp" style="background:linear-gradient(to right,${LOAD_STOPS.map((v) => `var(${v})`).join(",")})"></div>
+      <div class="ramp-labels"><span>0</span><span>${DATA.loadScale / 2}</span><span>${DATA.loadScale}</span></div>
+      <p class="legend-title">Line tension (N), logarithmic</p>
+      <div class="ramp" style="background:linear-gradient(to right,${LINE_STOPS.map((v) => `var(${v})`).join(",")})"></div>
+      <div class="ramp-labels log">${decadeLabels(DATA.tensionScale)}</div>${slackRow}`;
+  } else if (view.shading === "regime" && st) {
+    const total = st.regime.length;
+    legend.innerHTML = REGIMES.map((r) => `<div class="row"><span class="sw" style="background:var(${r.varName})"></span><span>${r.name}</span><span class="pct">${((100 * st.regime.filter((v) => v === r.key).length) / total).toFixed(0)}%</span></div>`).join("") + slackRow;
+  } else legend.innerHTML = slackRow;
+
+  const line = document.getElementById("stateLine");
+  if (row) {
+    const what = row.mode === "steering" ? `steering chain, u<sub>s</sub> ${row.us.toFixed(3)} m` : "depower chain, unsteered";
+    const badge = row.status === "ok" ? "" : `<span class="badge warn">${row.status.replace("_", " ")}</span>`;
+    line.innerHTML = `<strong>v<sub>a</sub> ${fmt(row.va)} m/s</strong> · u<sub>dp</sub> ${row.udp.toFixed(3)} · ${what}${badge}`;
+  } else line.innerHTML = `<strong>v<sub>a</sub> ${c.va} m/s</strong> · u<sub>dp</sub> ${c.udp.toFixed(3)} · u<sub>s</sub> ${c.us.toFixed(3)} m`;
+
+  const items = row ? [
+    ["Wind v_w", `${fmt(row.wind_speed, 2)} m/s`],
+    ["Tether F_t", `${fmt(row.tether_force / 1e3, 2)} kN`],
+    ["C_L (19.75 m²)", fmt(row.clE, 3)],
+    ["C_D (19.75 m²)", fmt(row.cdE, 3)],
+    ["L/D wing", fmt(row.ld, 2)],
+    ["α centre", `${fmt(row.aoa_deg, 1)}°`],
+    ["Stall margin", `${fmt(row.stall_margin_min_deg, 1)}°`],
+    ["Course rate", `${fmt(row.course_rate, 3)} rad/s`],
+    ["Roll", `${fmt(row.roll_deg, 1)}°`],
+    ["Wrinkled", `${(100 * row.wrinkled).toFixed(0)}%`],
+    ["Coupled its", `${row.iterations}`],
+    ["Residual", `${fmt(row.residual, 2)} N`],
+  ] : [];
+  document.getElementById("readout").innerHTML = items.map(([k, v]) => `<div><dt>${k}</dt><dd>${v}</dd></div>`).join("");
+  document.getElementById("readout").hidden = !row;
+  draw();
+  renderCharts();
+  markTable();
+}
+new ResizeObserver(() => draw()).observe(document.getElementById("viewport"));
+
+/* ---- SVG charts ---------------------------------------------------- */
+const NS = "http://www.w3.org/2000/svg";
+const el = (tag, attrs = {}, parent) => { const n = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v); if (parent) parent.appendChild(n); return n; };
+function niceTicks(lo, hi, count = 5) {
+  const span = hi - lo || 1, raw = span / count, mag = 10 ** Math.floor(Math.log10(raw));
+  const step = [1, 2, 2.5, 5, 10].map((s) => s * mag).find((s) => s >= raw);
+  const out = []; for (let v = Math.ceil(lo / step - 1e-9) * step; v <= hi + 1e-9 * step; v += step) out.push(+v.toFixed(10));
+  return { ticks: out, step };
+}
+function extent(values, pad = 0.06, include) {
+  let lo = Math.min(...values), hi = Math.max(...values);
+  if (include != null) { lo = Math.min(lo, include); hi = Math.max(hi, include); }
+  if (!isFinite(lo)) return [0, 1];
+  const p = (hi - lo || Math.abs(hi) || 1) * pad; return [lo - p, hi + p];
+}
+const decimals = (step) => Math.max(0, -Math.floor(Math.log10(step) + 1e-9));
+
+function chart(container, spec) {
+  const fig = document.createElement("figure"); fig.className = "chart";
+  fig.innerHTML = `<figcaption>${spec.title}${spec.sub ? ` <span>${spec.sub}</span>` : ""}</figcaption>`;
+  container.appendChild(fig);
+  const W = spec.width || 320, H = spec.height || 206, m = { l: 46, r: 12, t: 12, b: 34 };
+  const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": spec.title }, fig);
+  const pts = spec.series.flatMap((s) => s.points);
+  const xs = spec.xDomain || extent(pts.map((p) => p.x), 0.04);
+  const ys = spec.yDomain || extent(pts.map((p) => p.y).filter((v) => v != null && isFinite(v)), 0.08, spec.yInclude);
+  const X = (v) => m.l + ((v - xs[0]) / (xs[1] - xs[0])) * (W - m.l - m.r);
+  const Y = (v) => H - m.b - ((v - ys[0]) / (ys[1] - ys[0])) * (H - m.t - m.b);
+  const xt = niceTicks(xs[0], xs[1], spec.xTicks || 5), yt = niceTicks(ys[0], ys[1], 4);
+  const g = el("g", {}, svg);
+  for (const v of yt.ticks) { el("line", { class: "gridline", x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v) }, g); const t = el("text", { x: m.l - 6, y: Y(v) + 3.5, "text-anchor": "end", class: "tick" }, g); t.textContent = v.toFixed(decimals(yt.step)); t.setAttribute("style", "fill:var(--ink-soft);font:10px 'IBM Plex Mono',monospace"); }
+  for (const v of xt.ticks) { const t = el("text", { x: X(v), y: H - m.b + 14, "text-anchor": "middle" }, g); t.textContent = v.toFixed(decimals(xt.step)); t.setAttribute("style", "fill:var(--ink-soft);font:10px 'IBM Plex Mono',monospace"); }
+  el("line", { class: "domain", x1: m.l, x2: W - m.r, y1: H - m.b, y2: H - m.b }, g);
+  const xl = el("text", { x: (m.l + W - m.r) / 2, y: H - 4, "text-anchor": "middle", class: "axis-label" }, g); xl.innerHTML = spec.xLabel;
+  const yl = el("text", { x: 11, y: (m.t + H - m.b) / 2, "text-anchor": "middle", class: "axis-label", transform: `rotate(-90 11 ${(m.t + H - m.b) / 2})` }, g); yl.innerHTML = spec.yLabel;
+  const clipId = `c${Math.random().toString(36).slice(2)}`;
+  const clip = el("clipPath", { id: clipId }, el("defs", {}, svg)); el("rect", { x: m.l, y: m.t - 4, width: W - m.l - m.r, height: H - m.t - m.b + 8 }, clip);
+  const plot = el("g", { "clip-path": `url(#${clipId})` }, svg);
+  for (const r of spec.refs || []) {
+    if (r.x < xs[0] || r.x > xs[1]) continue;
+    el("line", { class: "refline", x1: X(r.x), x2: X(r.x), y1: m.t, y2: H - m.b }, plot);
+    const t = el("text", { x: X(r.x) - 3, y: m.t + 8 + 10 * (r.row || 0), class: "reflabel", "text-anchor": "end" }, svg); t.textContent = r.label;
+  }
+  for (const s of spec.series) {
+    const valid = s.points.filter((p) => p.y != null && isFinite(p.y));
+    if (s.cloud) {
+      for (const p of valid) el("circle", { cx: X(p.x), cy: Y(p.y), r: 1.3, fill: s.colour, "fill-opacity": s.opacity ?? 0.12 }, plot);
+      continue;
+    }
+    if (s.line !== false && valid.length > 1) {
+      const d = valid.map((p, i) => `${i ? "L" : "M"}${X(p.x).toFixed(1)},${Y(p.y).toFixed(1)}`).join("");
+      el("path", { d, fill: "none", stroke: s.colour, "stroke-width": s.width || 1.4, "stroke-opacity": s.opacity ?? 1, "stroke-dasharray": s.dash || "", "stroke-linejoin": "round", "stroke-linecap": "round" }, plot);
+    }
+    if (s.markers) {
+      for (const p of valid) {
+        const hollow = s.hollow || p.hollow;
+        el(s.markerShape === "tri" ? "path" : "circle", s.markerShape === "tri"
+          ? { d: `M${X(p.x)},${Y(p.y) - s.markers * 1.2}l${s.markers},${s.markers * 1.9}h${-2 * s.markers}z`, fill: hollow ? "var(--surface)" : s.colour, stroke: hollow ? s.colour : "var(--surface)", "stroke-width": hollow ? 1.3 : 1, "fill-opacity": s.opacity ?? 1, "stroke-opacity": s.opacity ?? 1 }
+          : { cx: X(p.x), cy: Y(p.y), r: s.markers, fill: hollow ? "var(--surface)" : s.colour, stroke: hollow ? s.colour : "var(--surface)", "stroke-width": hollow ? 1.3 : 1, "fill-opacity": s.opacity ?? 1, "stroke-opacity": s.opacity ?? 1 }, plot);
+      }
+    }
+    if (s.label && valid.length) {
+      const last = valid[valid.length - 1];
+      const t = el("text", { x: Math.min(X(last.x) + 4, W - m.r - 2), y: Y(last.y) - 5, "text-anchor": X(last.x) > W - 60 ? "end" : "start" }, svg);
+      t.textContent = s.label; t.setAttribute("style", "fill:var(--ink-soft);font:10px 'IBM Plex Sans',sans-serif");
+    }
+  }
+  // Current row: a ring on the heavy series' matching point.
+  if (spec.current) {
+    const p = spec.current;
+    if (p.y != null && isFinite(p.y) && p.x >= xs[0] && p.x <= xs[1]) el("circle", { cx: X(p.x), cy: Y(p.y), r: 6.5, fill: "none", stroke: "var(--accent)", "stroke-width": 2 }, svg);
+  }
+  if (spec.note) { const n = document.createElement("div"); n.className = "chart-note"; n.textContent = spec.note; fig.appendChild(n); }
+
+  // Hover: nearest interactive point; click selects it in the viewer.
+  const hot = spec.series.filter((s) => s.hover).flatMap((s) => s.points.filter((p) => p.y != null && isFinite(p.y)).map((p) => ({ ...p, s })));
+  const tipEl = document.createElement("div"); tipEl.className = "tip"; tipEl.hidden = true; fig.appendChild(tipEl);
+  const ring = el("circle", { r: 5, fill: "none", stroke: "var(--ink)", "stroke-width": 1.5, visibility: "hidden" }, svg);
+  const locate = (evt) => {
+    const box = svg.getBoundingClientRect(), sx = W / box.width;
+    const x = (evt.clientX - box.left) * sx, y = (evt.clientY - box.top) * sx;
+    let best = null, bd = 18;
+    for (const p of hot) { const d = Math.hypot(X(p.x) - x, Y(p.y) - y); if (d < bd) { bd = d; best = p; } }
+    return best;
+  };
+  svg.addEventListener("pointermove", (evt) => {
+    const p = locate(evt);
+    if (!p) { tipEl.hidden = true; ring.setAttribute("visibility", "hidden"); svg.style.cursor = ""; return; }
+    ring.setAttribute("cx", X(p.x)); ring.setAttribute("cy", Y(p.y)); ring.setAttribute("visibility", "visible");
+    tipEl.textContent = p.tip; tipEl.hidden = false;
+    const box = svg.getBoundingClientRect(), fb = fig.getBoundingClientRect(), k = box.width / W;
+    tipEl.style.left = `${Math.min(X(p.x) * k + (box.left - fb.left) + 10, fb.width - tipEl.offsetWidth - 6)}px`;
+    tipEl.style.top = `${Math.max(4, Y(p.y) * k + (box.top - fb.top) - tipEl.offsetHeight - 8)}px`;
+    svg.style.cursor = p.row ? "pointer" : "";
+  });
+  svg.addEventListener("pointerleave", () => { tipEl.hidden = true; ring.setAttribute("visibility", "hidden"); });
+  svg.addEventListener("click", (evt) => { const p = locate(evt); if (p && p.row) selectRow(p.row); });
+}
+function selectRow(row) {
+  const patch = { va: VA.indexOf(row.target_va) };
+  if (row.mode === "steering") { patch.us = US.findIndex((u) => near(u, row.us, 1e-6)); patch.udp = ST_INDEX(); }
+  else { patch.udp = UDP.findIndex((u) => near(u, row.udp)); patch.us = 0; }
+  setState(patch);
+}
+
+function keyItem(kind, colour, text) {
+  const svg = kind === "cloud" ? `<svg width="22" height="10"><circle cx="5" cy="5" r="1.6" fill="${colour}" opacity=".5"/><circle cx="11" cy="3" r="1.6" fill="${colour}" opacity=".5"/><circle cx="17" cy="6" r="1.6" fill="${colour}" opacity=".5"/></svg>`
+    : kind === "median" ? `<svg width="22" height="10"><circle cx="11" cy="5" r="4" fill="${colour}" stroke="var(--surface)"/></svg>`
+    : kind === "hollow" ? `<svg width="22" height="10"><circle cx="11" cy="5" r="3.5" fill="var(--surface)" stroke="${colour}" stroke-width="1.3"/></svg>`
+    : kind === "ring" ? `<svg width="22" height="12"><circle cx="11" cy="6" r="5" fill="none" stroke="var(--accent)" stroke-width="2"/></svg>`
+    : kind === "dot" ? `<svg width="26" height="10"><line x1="1" x2="25" y1="5" y2="5" stroke="${colour}" stroke-width="1.6" stroke-dasharray="1 3"/></svg>`
+    : `<svg width="26" height="10"><line x1="1" x2="25" y1="5" y2="5" stroke="${colour}" stroke-width="2" ${kind === "dash" ? 'stroke-dasharray="5 3"' : ""}/></svg>`;
+  return `<span>${svg}${text}</span>`;
+}
+
+/* ---- chart definitions --------------------------------------------- */
+const FULL = "var(--full)", WIRE = "var(--wire)", OUT = "var(--reelout)", IN = "var(--reelin)";
+const REFS_UDP = [{ x: UDP_OUT, label: "wire out", row: 0 }, { x: UDP_ST, label: "full out", row: 1 }, { x: UDP_IN, label: "wire in", row: 2 }];
+const tipFull = (r) => `full · v_a ${fmt(r.va, 1)} · u_dp ${r.udp.toFixed(3)}${r.mode === "steering" ? ` · u_s ${r.us.toFixed(3)}` : ""}`;
+
+function familySeries(rows, xKey, yFn, groupKey, colour, dash, hoverable, tipper, selectedVa) {
+  const groups = new Map();
+  for (const r of rows) { const k = r[groupKey]; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(r); }
+  const out = [];
+  for (const [k, list] of [...groups.entries()].sort((a, b) => (a[0] === selectedVa) - (b[0] === selectedVa))) {
+    list.sort((a, b) => a[xKey] - b[xKey]);
+    const sel = k === selectedVa;
+    out.push({
+      colour, dash, width: sel ? 2.4 : 1, opacity: sel ? 1 : 0.28, markers: sel ? 2.8 : 0, hover: hoverable && sel,
+      points: list.map((r) => ({ x: r[xKey], y: yFn(r), row: hoverable ? r : null, hollow: r.stalled, tip: `${tipper(r)} · ${fmt(yFn(r), 3)}` })),
+    });
+  }
+  return out;
+}
+
+function renderCharts() {
+  const c = cur(), selVa = c.va, row = currentRow();
+  // A collapsed row (landed far off its apparent speed) is kept in the table
+  // and the viewer, but not drawn into a curve it does not belong to.
+  const flying = (r) => r.status !== "failed" && Math.abs(r.va - r.target_va) <= 0.2 * r.target_va;
+  const depFull = byMode("depower").filter(flying);
+  const steerFull = byMode("steering").filter((r) => flying(r) && near(r.udp, UDP_ST));
+  // Steering u_s = 0 belongs on the depower axis too, at the reel-out match.
+  const depAll = [...depFull, ...steerFull.filter((r) => r.us < 1e-9 && !depFull.some((d) => d.target_va === r.target_va && near(d.udp, r.udp)))];
+
+  const depHost = document.getElementById("chartsDepower"); depHost.innerHTML = "";
+  const depCharts = [
+    { title: "Tether force coefficient", yLabel: "F_t / v_a² (N s² m⁻²)", f: (r) => r.k, wf: (r) => r.k },
+    { title: "Lift coefficient", sub: "on 19.75 m²", yLabel: "C_L", f: (r) => r.clE, wf: (r) => r.cl },
+    { title: "Drag coefficient", sub: "wing + bridle, on 19.75 m²", yLabel: "C_D", f: (r) => r.cdE, wf: (r) => r.cd },
+    { title: "Angle of attack", sub: "centre chord", yLabel: "α (°)", f: (r) => r.aoa_deg, wf: (r) => r.alpha_deg },
+    { title: "Tip stall margin", sub: "min over panels", yLabel: "onset − α (°)", f: (r) => r.stall_margin_min_deg, wf: (r) => r.stall_margin_min_deg, yInclude: 0 },
+    { title: "Tip-to-tip span", sub: "full model only", yLabel: "span (m)", f: (r) => r.span, wf: null },
+  ];
+  for (const d of depCharts) {
+    const series = [];
+    if (d.wf) series.push(...familySeries(WF_DEP, "udp", d.wf, "target_va", WIRE, "5 3", false, () => "", selVa));
+    series.push(...familySeries(depAll, "udp", d.f, "target_va", FULL, "", true, tipFull, selVa));
+    const curRow = row && row.us < 1e-9 ? { x: row.udp, y: d.f(row) } : null;
+    chart(depHost, { title: d.title, sub: d.sub, xLabel: "u_dp", yLabel: d.yLabel, series, refs: REFS_UDP, xDomain: [0.172, 0.331], current: curRow, yInclude: d.yInclude });
+  }
+  document.getElementById("keyDepower").innerHTML = keyItem("line", FULL, "Billow full (this study)") + keyItem("dash", WIRE, "Billow wireframe (paper)") + keyItem("hollow", FULL, "part of span stalled") + keyItem("ring", null, "shown in the viewer");
+
+  // Force against flight.
+  const matchHost = document.getElementById("chartsMatch"); matchHost.innerHTML = "";
+  const series = [];
+  const phases = [["reel-out", OUT, UDP_OUT], ["reel-in", IN, UDP_IN]];
+  for (const [ph, col] of phases) {
+    const f = COMP.flight[ph]; if (!f) continue;
+    series.push({ cloud: true, colour: col, opacity: 0.1, points: f.cloud_va.map((x, i) => ({ x, y: f.cloud_ft_kN[i] })) });
+  }
+  for (const [ph, col, u] of phases) {
+    const f = COMP.flight[ph]; if (!f) continue;
+    const wf = (f.wireframe_curve || []).filter((p) => !p.extrapolated);
+    series.push({ colour: col, dash: "5 3", width: 1.6, points: wf.map((p) => ({ x: p.v_a, y: p.f_t / 1e3 })) });
+    const full = depAll.filter((r) => near(r.udp, u)).sort((a, b) => a.va - b.va);
+    if (ph === "reel-out") {
+      const own = depAll.filter((r) => near(r.udp, UDP_ST)).sort((a, b) => a.va - b.va);
+      series.push({ colour: col, width: 2.4, markers: 3.4, hover: true, points: own.map((r) => ({ x: r.va, y: r.tether_force / 1e3, row: r, hollow: r.stalled, tip: `full · u_dp ${UDP_ST.toFixed(3)} · v_a ${fmt(r.va, 1)} · ${fmt(r.tether_force / 1e3, 2)} kN` })) });
+    }
+    series.push({ colour: col, width: ph === "reel-out" ? 1.4 : 2.4, dash: ph === "reel-out" ? "1 3" : "", opacity: ph === "reel-out" ? 0.75 : 1, markers: ph === "reel-out" ? 2.2 : 3.4, hover: true, points: full.map((r) => ({ x: r.va, y: r.tether_force / 1e3, row: r, hollow: r.stalled, tip: `full · u_dp ${u.toFixed(3)} · v_a ${fmt(r.va, 1)} · ${fmt(r.tether_force / 1e3, 2)} kN` })) });
+    series.push({ colour: col, markers: 4.2, line: false, markerShape: ph === "reel-in" ? "tri" : "circle", hover: true, points: f.medians_va.map((x, i) => ({ x, y: f.medians_ft_kN[i], tip: `flight ${ph} median · v_a ${fmt(x, 1)} · ${fmt(f.medians_ft_kN[i], 2)} kN` })) });
+  }
+  const curMatch = row && row.us < 1e-9 && (near(row.udp, UDP_OUT) || near(row.udp, UDP_IN) || near(row.udp, UDP_ST)) ? { x: row.va, y: row.tether_force / 1e3 } : null;
+  chart(matchHost, { title: "Tether force at the kite", sub: "vs apparent speed", xLabel: "v_a (m s⁻¹)", yLabel: "F_t (kN)", series, width: 640, height: 300, xDomain: [11.5, 26.5], current: curMatch, yInclude: 0 });
+  document.getElementById("keyMatch").innerHTML = keyItem("line", OUT, "u_dp 0.315, full (its match)") + keyItem("dot", OUT, "u_dp 0.242, full") + keyItem("dash", OUT, "u_dp 0.242, wireframe") + keyItem("median", OUT, "reel-out flight medians") + keyItem("line", IN, "u_dp 0.323, full") + keyItem("dash", IN, "u_dp 0.323, wireframe") + keyItem("median", IN, "reel-in flight medians");
+
+  // Steering.
+  const stHost = document.getElementById("chartsSteering"); stHost.innerHTML = "";
+  const stCharts = [
+    { title: "Course rate", yLabel: "χ̇ (rad s⁻¹)", f: (r) => r.course_rate, wf: (r) => r.course_rate },
+    { title: "Tether force coefficient", yLabel: "F_t / v_a² (N s² m⁻²)", f: (r) => r.k, wf: (r) => r.k },
+    { title: "Roll of the wing", sub: "full model only", yLabel: "roll (°)", f: (r) => r.roll_deg, wf: null },
+    { title: "Tip stall margin", yLabel: "onset − α (°)", f: (r) => r.stall_margin_min_deg, wf: (r) => r.stall_margin_min_deg, yInclude: 0 },
+  ];
+  for (const d of stCharts) {
+    const s = [];
+    if (d.wf) s.push(...familySeries(WF_STEER, "us", d.wf, "target_va", WIRE, "5 3", false, () => "", selVa));
+    s.push(...familySeries(steerFull, "us", d.f, "target_va", FULL, "", true, tipFull, selVa));
+    const curRow = row && near(row.udp, UDP_ST) ? { x: row.us, y: d.f(row) } : null;
+    chart(stHost, { title: d.title, sub: d.sub, xLabel: "u_s tape (m)", yLabel: d.yLabel, series: s, xDomain: [-0.008, 0.258], current: curRow, yInclude: d.yInclude });
+  }
+  // Turn law with the flight.
+  const turn = COMP.turn && COMP.turn["reel-out"];
+  const ts = [];
+  if (turn) {
+    ts.push({ cloud: true, colour: OUT, opacity: 0.08, points: turn.x.map((x, i) => ({ x, y: turn.y[i] })) });
+    ts.push({ colour: OUT, markers: 4.2, line: false, hover: true, points: turn.medians.map(([x, y]) => ({ x, y, tip: `flight median · ${fmt(x, 2)} m² s⁻¹ · ${fmt(y, 3)} rad/s` })) });
+  }
+  ts.push({ colour: WIRE, markers: 2.6, line: false, hollow: true, points: WF_STEER.filter((r) => r.us > 0).map((r) => ({ x: r.v_a * r.us, y: r.chi_dot_turn })) });
+  ts.push({ colour: FULL, markers: 3, line: false, hover: true, points: steerFull.filter((r) => r.us > 0).map((r) => ({ x: r.va * r.us, y: r.course_rate, row: r, hollow: r.stalled, tip: `${tipFull(r)} · ${fmt(r.course_rate, 3)} rad/s` })) });
+  const xMax = 6.6;
+  for (const [gain, col, dash, label] of [[AN.gain_flight, OUT, "", "flight"], [AN.gain_wire, WIRE, "5 3", "wireframe"], [AN.gain_full, FULL, "", "full"]]) {
+    if (gain == null) continue;
+    ts.push({ colour: col, dash, width: 1.2, label: `${label} ${gain.toFixed(3)}`, points: [{ x: 0, y: 0 }, { x: xMax, y: gain * xMax }] });
+  }
+  const curTurn = row && row.mode === "steering" && row.us > 0 ? { x: row.va * row.us, y: row.course_rate } : null;
+  chart(stHost, { title: "Turn law", sub: "gain through the origin", xLabel: "v_a u_s (m² s⁻¹)", yLabel: "χ̇ (rad s⁻¹)", series: ts, xDomain: [0, xMax], current: curTurn, yInclude: 0 });
+  // Spanwise angle of attack of the viewer row.
+  if (row && row.alpha_at_ac_deg) {
+    const n = row.alpha_at_ac_deg.length;
+    const base = rowFor(c.va, UDP_ST, 0);
+    const sp = [];
+    if (row.mode === "steering" && row.us > 0 && base && base.alpha_at_ac_deg) sp.push({ colour: WIRE, width: 1.4, points: base.alpha_at_ac_deg.map((a, i) => ({ x: (i + 0.5) / n, y: a })) });
+    sp.push({ colour: FULL, width: 2, markers: 2, hover: true, points: row.alpha_at_ac_deg.map((a, i) => ({ x: (i + 0.5) / n, y: a, tip: `panel ${i + 1} · α ${fmt(a, 2)}°` })) });
+    chart(stHost, { title: "Spanwise angle of attack", sub: row.mode === "steering" && row.us > 0 ? "viewer row; grey = unsteered" : "viewer row", xLabel: "span fraction", yLabel: "α at a.c. (°)", series: sp, xDomain: [0, 1] });
+  }
+  document.getElementById("keySteering").innerHTML = keyItem("line", FULL, "Billow full, u_dp 0.315") + keyItem("dash", WIRE, "Billow wireframe, u_dp 0.242") + keyItem("median", OUT, "2019 reel-out flight medians") + keyItem("hollow", FULL, "part of span stalled") + keyItem("ring", null, "shown in the viewer");
+}
+
+/* ---- findings, table, notes ---------------------------------------- */
+document.getElementById("findings").innerHTML = (AN.findings || []).map((f) => `
+  <div class="finding"><span class="eyebrow">${f.eyebrow}</span><span class="big">${f.big}<small>${f.unit || ""}</small></span><p>${f.text}</p></div>`).join("");
+
+const COLS = [
+  ["chain", "Chain", (r) => r.mode, "l"], ["va", "v_a", (r) => fmt(r.va, 2)], ["udp", "u_dp", (r) => r.udp.toFixed(3)],
+  ["us", "u_s (m)", (r) => r.us.toFixed(3)], ["wind", "v_w", (r) => fmt(r.wind_speed, 3)], ["ft", "F_t (N)", (r) => fmt(r.tether_force, 0)],
+  ["cl", "C_L", (r) => fmt(r.clE, 3)], ["cd", "C_D", (r) => fmt(r.cdE, 4)], ["aoa", "α (°)", (r) => fmt(r.aoa_deg, 2)],
+  ["m", "margin (°)", (r) => fmt(r.stall_margin_min_deg, 2)], ["chi", "χ̇", (r) => fmt(r.course_rate, 4)], ["roll", "roll (°)", (r) => fmt(r.roll_deg, 2)],
+  ["span", "span (m)", (r) => fmt(r.span, 3)], ["it", "its", (r) => r.iterations], ["res", "residual (N)", (r) => fmt(r.residual, 3)], ["st", "status", (r) => r.status, "l"],
+];
+const tableRows = [...DATA.rows].sort((a, b) => (a.mode > b.mode) - (a.mode < b.mode) || a.target_va - b.target_va || a.udp - b.udp || a.us - b.us);
+const table = document.getElementById("rowsTable");
+table.innerHTML = `<thead><tr>${COLS.map(([, h, , a]) => `<th class="${a || ""}">${h}</th>`).join("")}</tr></thead><tbody>${tableRows.map((r, i) => `<tr data-i="${i}">${COLS.map(([, , f, a]) => `<td class="${a || ""}">${f(r)}</td>`).join("")}</tr>`).join("")}</tbody>`;
+table.querySelector("tbody").addEventListener("click", (e) => { const tr = e.target.closest("tr"); if (tr) { selectRow(tableRows[+tr.dataset.i]); document.getElementById("viewport").scrollIntoView({ behavior: "smooth", block: "center" }); } });
+function markTable() {
+  const row = currentRow();
+  for (const tr of table.querySelectorAll("tbody tr")) tr.classList.toggle("current", tableRows[+tr.dataset.i] === row);
+}
+document.getElementById("notes").innerHTML = AN.notes || "";
+if (AN.status) { const badge = document.getElementById("runBadge"); badge.textContent = AN.status; badge.hidden = false; }
+
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => refresh());
+new MutationObserver(() => refresh()).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+sync();
+</script>
+
+</body>
+</html>

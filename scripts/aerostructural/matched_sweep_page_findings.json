@@ -1,0 +1,33 @@
+{
+  "gain_full": 0.19888120499936698,
+  "gain_wire": 0.1836458639337697,
+  "gain_flight": 0.23505,
+  "findings": [
+    {
+      "eyebrow": "At the paper's matched reel-out depower",
+      "big": "+74%",
+      "unit": "tether force",
+      "text": "u_dp 0.242: the full model pulls 4.62 kN where the wireframe pulls 2.66 kN at v_a 18.9 m/s (72 to 76% across the swept speeds). It flies at a much higher angle of attack for the same tape."
+    },
+    {
+      "eyebrow": "Force-matched reel-out depower, full model",
+      "big": "0.317",
+      "unit": "± 0.001",
+      "text": "Inverting the flown force at 5 of 5 near-straight flight bins. The same inversion on the paper's wireframe returns 0.241 ± 0.002, reproducing its published 0.242 — so this is the model moving, not the method."
+    },
+    {
+      "eyebrow": "Reel-in",
+      "big": "> 0.323",
+      "unit": "u_dp",
+      "text": "The flown reel-in force is below everything the full model reaches inside the swept range: 8 of 8 bins sit past the deepest row, which still over-predicts them by 65%. Matching reel-in would need depower past 0.323."
+    },
+    {
+      "eyebrow": "Turn gain, each model at its own match",
+      "big": "0.199",
+      "unit": "rad s⁻¹ per m² s⁻¹",
+      "text": "Full model at u_dp 0.315, against 0.235 for the 2019 reel-out flight and 0.184 for the wireframe at its own 0.242. Fitted through the origin."
+    }
+  ],
+  "notes": "<div>\n  <h3>Load case</h3>\n  <p>The paper&rsquo;s REF state: centre of the wind window (elevation 0, azimuth 0, course 90&deg;), no gravity, no radial speed, trim without the tether, as-flown 2019 system (KCU 22&nbsp;kg). One chain per <em>target</em> apparent speed, 13&ndash;25&nbsp;m&nbsp;s<sup>&minus;1</sup>: each row&rsquo;s wind is predicted from the paper&rsquo;s v<sub>a</sub>/v<sub>w</sub> table, scaled by the ratio the chain achieved one row back, and re-converged at a corrected wind if it lands more than 0.3&nbsp;m&nbsp;s<sup>&minus;1</sup> off.</p>\n  <h3>Continuation</h3>\n  <p>Each chain is one process holding one Billow structure: every row starts from the previous row&rsquo;s equilibrium with its tapes in place, and the driver walks the next tape step inside its own loop. Depower walks both ways from the geometry&rsquo;s built tape (1.90&nbsp;m, u<sub>dp</sub>&nbsp;0.278); steering walks up from u<sub>s</sub>&nbsp;0 at u<sub>dp</sub>&nbsp;0.242.</p>\n</div>\n<div>\n  <h3>Model</h3>\n  <p>VSM quasi-steady trim, 54 panels, base circulation loop, artificial viscosity on with the attached-first guard, moment-matched chordwise load placement, bridle and KCU drag at their own stations. Billow full fidelity on <code>struc_geometry_FEM_full.yaml</code>: 97 inflatable tube beams, 47 cables, 20 pulleys, cross-pattern wrinkling membrane canopy.</p>\n  <h3>Convergence</h3>\n  <p>Coupled residual gate max(0.5&nbsp;N, 2&times;10<sup>&minus;4</sup>&nbsp;F<sub>t</sub>); after a steering step the course rate must also settle. Rows that stagnate above the gate but within 2&times;10<sup>&minus;3</sup>&nbsp;F<sub>t</sub> with a steady turn are kept and labelled <em>plateau</em> &mdash; the steered limit cycle the wireframe campaign accepts the same way.</p>\n</div>\n<div>\n  <h3>Comparison layers</h3>\n  <p>Wireframe: the paper&rsquo;s <code>_billow9</code> centre-of-window chains (Billow wireframe, bridle 9&times;, 45 panels, PSM geometry). Flight: 2019-10-08 EKF, near-straight samples. Coefficients on the EKF&rsquo;s 19.75&nbsp;m<sup>2</sup>; the full model&rsquo;s VSM normalises by its deformed projected area and is rescaled.</p>\n  <h3>Fixed on the way</h3>\n  <p>The full-model geometry reader charged the KCU&rsquo;s mass to the canopy and took it off the tubes, so with the flown 22&nbsp;kg KCU the wing and bridle weighed &minus;8.6&nbsp;kg. It is fixed; unsteered, gravity-off rows never felt it, steered ones would have.</p>\n</div>\n",
+  "status": ""
+}

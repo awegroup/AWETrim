@@ -34,6 +34,13 @@ case; the scripts differ in which of its two fidelities they drive.
 - [`export_matched_sweep_data.py`](export_matched_sweep_data.py) packs every solved row
   — scalars, node positions, canopy load, wrinkling regime, line tensions — into one
   JSON payload for an interactive page.
+- [`build_matched_sweep_page.py`](build_matched_sweep_page.py) fills
+  [`matched_sweep_page_template.html`](matched_sweep_page_template.html) with that payload,
+  the paper's comparison layers (`scripts/personal/billow-paper/comparison.json`) and the
+  findings text in [`matched_sweep_page_findings.json`](matched_sweep_page_findings.json):
+  one self-contained HTML file (sliders over depower, steering and apparent speed, charts
+  against the wireframe and the 2019 flight, every row in a table) that can be hosted or
+  sent anywhere.
 - [`plot_matched_sweep_BILLOW.py`](plot_matched_sweep_BILLOW.py) draws the solved shapes
   (depower across the span, steering from the front) and the curves against flight.
 
