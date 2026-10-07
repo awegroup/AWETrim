@@ -688,6 +688,21 @@ turn rate (logged steering in, reel-out, cycles 60--67).}
 \input{generated/turn_law.tex}
 \end{table}}{}
 
+\IfFileExists{figures/turn_rate_law.pdf}{%
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{turn_rate_law.pdf}
+\caption{The turn rate of each ROM with the logged steering as input against
+the measured one (left, held-out reel-out samples), and the turn-rate law
+with the gravity term removed, binned in $v_a u_s$ (right): the flight
+against the ROMs. The tuned ROMs sit on the flight's $K$ within
+\SI{10}{\percent}; the aerostructural gain under-turns by a third. The
+flight's response bends below linear beyond $|v_a u_s|\approx3$, a
+saturation at full steering that a linear gain cannot follow, which is where
+the tuned ROMs' peak turn rates overshoot.}
+\label{fig:turn-law}
+\end{figure}}{}
+
 \paragraph{Held out.}
 On the held-out cycles (Table~\ref{tab:flight},
 Figs.~\ref{fig:flight-solved-64} and~\ref{fig:flight-solved-61}), with the turn
@@ -881,8 +896,12 @@ From the repository root:
         \path{--rom aerostructural_flight --steering solved --out}
         on training cycles 20--27, 40--47 and 75--82, into
         \path{results/LEI-V3-KITE/identification/rom_flight_correction/output_error/train_*.csv};
-        then \path{refine_rom_flight_output_error.py} (step 3, edits the ROM
-        file in place) and the held-out validation;
+        then \path{refine_rom_flight_output_error.py} (step 3, the
+        turn-rate-law gain by default, edits the ROM file in place), the
+        held-out validation in both modes and
+        \path{plot_rom_turn_rate_law.py}; the same with
+        \path{--rom semi_empirical} (training CSVs under
+        \path{output_error_semi_empirical/}) recalibrates the paper's ROM;
   \item \path{scripts/identification/report_rom_aerostructural.py}, then
         \path{latexmk -pdf} in \path{docs/identification/}.
 \end{enumerate}

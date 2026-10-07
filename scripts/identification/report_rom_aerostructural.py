@@ -59,6 +59,7 @@ FIGURES = {
     ident.OUT_DIR / "rom_comparison_theta_b.pdf": "theta_b.pdf",
     FLIGHT / "rom_flight_validation_cycle64.pdf": "flight_solved.pdf",
     FLIGHT / "rom_flight_validation_cycle61.pdf": "flight_solved_cycle61.pdf",
+    FLIGHT / "rom_turn_rate_law.pdf": "turn_rate_law.pdf",
     CORRECTION / "alpha_lift" / "flight_correction.pdf": "flight_correction.pdf",
     FLIGHT / "rom_flight_validation_cycle64_measured_steering.pdf": "flight_measured.pdf",
     FLIGHT / "semi_empirical" / "vdot_sweep.pdf": "vdot_sweep.pdf",
