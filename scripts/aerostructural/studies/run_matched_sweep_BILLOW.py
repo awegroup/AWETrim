@@ -33,8 +33,8 @@ after an interruption: rows already on disk are skipped and the first missing
 one is reached from a cold start by walking the tapes to it.
 
 Usage (from project root):
-    python scripts/aerostructural/run_matched_sweep_BILLOW.py --mode steering --target-va 19
-    python scripts/aerostructural/run_matched_sweep_BILLOW.py --mode depower --direction up --target-va 19
+    python scripts/aerostructural/studies/run_matched_sweep_BILLOW.py --mode steering --target-va 19
+    python scripts/aerostructural/studies/run_matched_sweep_BILLOW.py --mode depower --direction up --target-va 19
 """
 
 import argparse
@@ -48,7 +48,7 @@ import numpy as np
 
 from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
 from awetrim.aerostructural.results import aerostructural_results_root, save_sim_output
-from common import DEFAULT_KITE_NAME
+from awetrim.aerostructural.case import DEFAULT_KITE_NAME
 
 from run_chain_depower_BILLOW import (
     DEPOWER_QUADRATIC,
@@ -209,7 +209,7 @@ def main():
     parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
     args = parser.parse_args()
 
-    project = Path(__file__).resolve().parents[2]
+    project = Path(__file__).resolve().parents[3]
     shared = build_once(project, args.kite, args.panels_per_section,
                         {"aerodynamic": {"gamma_loop_type": args.gamma_loop}},
                         system_config_path=project / args.system_config)

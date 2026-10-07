@@ -8,7 +8,7 @@ up to -- above it the moment has saturated and the tube is hinging, which is
 reported rather than enforced.
 
 Usage (from project root):
-    python scripts/aerostructural/plot_billow_strut_bending.py
+    python scripts/aerostructural/studies/plot_billow_strut_bending.py
 """
 
 import sys
@@ -27,7 +27,7 @@ from awetrim.aerostructural.utils import load_yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from plot_billow_geometry import rebuild  # noqa: E402
 
-from common import DEFAULT_KITE_NAME  # noqa: E402
+from awetrim.aerostructural.case import DEFAULT_KITE_NAME  # noqa: E402
 
 #: (results folder, label) -- the three converged states.
 CASES = [
@@ -64,7 +64,7 @@ def strut_metrics(positions, strut_sections, law_of):
 
 
 def main():
-    project = Path(__file__).resolve().parents[2]
+    project = Path(__file__).resolve().parents[3]
     kite = DEFAULT_KITE_NAME
     geometry = load_yaml(project / "data" / kite / "struc_geometry_FEM_full.yaml")
     with (project / "data" / kite / "system.yaml").open(encoding="utf-8") as handle:

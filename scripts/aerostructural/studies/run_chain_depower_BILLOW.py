@@ -20,8 +20,8 @@ than a line of constant v_a. Cross-chain interpolation onto constant v_a is left
 to the analysis.
 
 Usage (from project root):
-    python scripts/aerostructural/run_chain_depower_BILLOW.py
-    python scripts/aerostructural/run_chain_depower_BILLOW.py --wind 3 4 5 --reach 0.2
+    python scripts/aerostructural/studies/run_chain_depower_BILLOW.py
+    python scripts/aerostructural/studies/run_chain_depower_BILLOW.py --wind 3 4 5 --reach 0.2
 """
 
 import argparse
@@ -43,7 +43,7 @@ from awetrim.aerostructural.billow import structural_billow
 from awetrim.aerostructural.coupled import coupled_solver, read_struc_geometry_yaml
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.utils.system_config import get_tether
-from common import (
+from awetrim.aerostructural.case import (
     DEFAULT_KITE_NAME,
     build_system_model,
     resolve_initial_geometry_rotation_kwargs,
@@ -328,7 +328,7 @@ def main():
     parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
     args = parser.parse_args()
 
-    project_dir = Path(__file__).resolve().parents[2]
+    project_dir = Path(__file__).resolve().parents[3]
     shared = build_once(project_dir, args.kite, args.panels_per_section)
     gate = float(shared["config"]["aero_structural_solver"]["tol"])
     root = aerostructural_results_root(project_dir, args.kite) / "billow_depower_chains"

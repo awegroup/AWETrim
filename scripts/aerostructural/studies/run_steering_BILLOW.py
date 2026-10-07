@@ -19,8 +19,8 @@ asymmetry the steering produced, split into a rigid rotation and a genuine
 change of shape.
 
 Usage (from project root):
-    python scripts/aerostructural/run_steering_BILLOW.py
-    python scripts/aerostructural/run_steering_BILLOW.py --steer 0.025
+    python scripts/aerostructural/studies/run_steering_BILLOW.py
+    python scripts/aerostructural/studies/run_steering_BILLOW.py --steer 0.025
 """
 
 import argparse
@@ -32,7 +32,7 @@ import numpy as np
 
 from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
 from awetrim.aerostructural.results import aerostructural_results_root
-from common import DEFAULT_KITE_NAME
+from awetrim.aerostructural.case import DEFAULT_KITE_NAME
 
 from check_mirror_asymmetry import decompose, kabsch, mirror_partners
 from run_chain_depower_BILLOW import build_once, run_chain
@@ -140,7 +140,7 @@ def main():
     parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
     args = parser.parse_args()
 
-    project = Path(__file__).resolve().parents[2]
+    project = Path(__file__).resolve().parents[3]
     # Before build_once: it constructs the VSM solver from the config it is
     # handed, so a loop type set afterwards would be silently ignored.
     shared = build_once(project, args.kite, args.panels_per_section,

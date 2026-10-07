@@ -24,8 +24,8 @@ the far half arrived rolled by up to 60 degrees; positions were exact). With
 ``check_symmetric_equilibrium.py`` and docs/billow/integration.md section 8.6.
 
 Usage (from project root):
-    python scripts/aerostructural/check_structural_symmetry.py
-    python scripts/aerostructural/check_structural_symmetry.py --scales 0.01 0.1
+    python scripts/aerostructural/studies/check_structural_symmetry.py
+    python scripts/aerostructural/studies/check_structural_symmetry.py --scales 0.01 0.1
 """
 
 import argparse
@@ -37,7 +37,7 @@ import numpy as np
 from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
 from awetrim.aerostructural.billow import structural_billow as sb
 from awetrim.aerostructural.coupled import aero2struc
-from common import DEFAULT_KITE_NAME
+from awetrim.aerostructural.case import DEFAULT_KITE_NAME
 
 from check_load_transfer import build, transfer
 from check_mirror_asymmetry import MIRROR, decompose, mirror_partners
@@ -74,7 +74,7 @@ def main():
     parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
     args = parser.parse_args()
 
-    project = Path(__file__).resolve().parents[2]
+    project = Path(__file__).resolve().parents[3]
     settings = {"canopy_pattern": args.pattern, "canopy_refinement": args.refine}
     shared = build_once(project, args.kite, args.panels_per_section,
                         {"aerodynamic": {"gamma_loop_type": "base"}})

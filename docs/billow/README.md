@@ -17,10 +17,10 @@ physical.
   and apparent speed, the sweeps charted against the paper's wireframe chains
   and the 2019 flight, every solved row in a table. One self-contained file;
   served at <https://awegroup.github.io/AWETrim/billow/matched_sweep.html> once
-  pushed. Rebuilt by `scripts/aerostructural/export_matched_sweep_data.py` and
+  pushed. Rebuilt by `scripts/aerostructural/studies/export_matched_sweep_data.py` and
   `build_matched_sweep_page.py`.
 - `figures/` — its figures, produced by the scripts in
-  `scripts/aerostructural/` (`plot_billow_geometry.py`,
+  `scripts/aerostructural/studies/` (`plot_billow_geometry.py`,
   `plot_billow_strut_bending.py`, `plot_chordwise_moment_matching.py`,
   `plot_billow_depower_chains.py`).
 

@@ -13,7 +13,7 @@ u_dp -- panel (d) is therefore not a control variable but a readout, and it is
 what any later interpolation onto constant v_a has to work from.
 
 Usage (from project root):
-    python scripts/aerostructural/plot_billow_depower_chains.py
+    python scripts/aerostructural/studies/plot_billow_depower_chains.py
 """
 
 import argparse
@@ -25,7 +25,7 @@ import numpy as np
 
 from awetrim import plotting
 from awetrim.aerostructural.results import aerostructural_results_root
-from common import DEFAULT_KITE_NAME
+from awetrim.aerostructural.case import DEFAULT_KITE_NAME
 
 
 def read_chains(csv_path):
@@ -58,7 +58,7 @@ def main():
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
-    project_dir = Path(__file__).resolve().parents[2]
+    project_dir = Path(__file__).resolve().parents[3]
     root = aerostructural_results_root(project_dir, args.kite) / "billow_depower_chains"
     grouped = read_chains(root / "chains.csv")
 

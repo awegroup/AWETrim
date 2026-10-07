@@ -40,12 +40,35 @@ src/awetrim/aerostructural/
                                    interface a structural backend presents to the
                                    drivers (particles, extract_rest_length,
                                    update_rest_length, springdampers, f_int)
-  mapping.py                       LinearStructuralToAeroMapper, BilinearAeroToStructuralLoadMapper
+  mapping.py                       LinearStructuralToAeroMapper, BilinearAeroToStructuralLoadMapper,
+                                   SkinStructuralToAeroMapper (aero edges of a
+                                   finer mesh carried on coarser ribs by
+                                   bilinear coordinates + normal offset, exact
+                                   at the reference, rigid under rigid motion;
+                                   the reduced-FEM wireframe flies Billow's
+                                   aero mesh through it)
   forces.py                        distribute_total_force_by_particle_mass
   convergence.py                   check_convergence, resolve_residual_tolerances,
                                    resultant_tether_force, relative_residual_norm,
                                    element_elongations, max_element_elongation
   results.py                       save_sim_output, append_sweep_csv_row, build_sweep_csv_row
+  case.py                          Case setup shared by drivers and scripts:
+                                   DEFAULT_KITE_NAME, CONFIG_DEFAULTS,
+                                   resolve_kite_paths, build_system_model,
+                                   build_actuation_case_folder,
+                                   build_flight_case_folder. Was
+                                   scripts/aerostructural/common.py until
+                                   2026-10-07 (that file now re-exports it)
+  case_view.py                     case.json (what a converged case looks like:
+                                   wing surface, tubes, bridle lines with kind,
+                                   name and tension, flight state; written by
+                                   both drivers via build_case_view /
+                                   save_case_view) and the trim table
+                                   (load_case, trim_summary, format_summary;
+                                   one table over both drivers' meta layouts,
+                                   lift/drag from trim_results'
+                                   total_aero_force_vec, CL/CD only with their
+                                   area)
   tracking.py                      setup_tracking_arrays, update_tracking_arrays
   utils.py                         rotate_geometry, calculate_cg, calculate_inertia, load_yaml
   logging_config.py                Package-level logging setup
@@ -94,10 +117,43 @@ src/awetrim/aerostructural/
     structural_geometry_io.py      Parse struc_geometry.yaml -> StructuralGeometry arrays
     actuation.py                   update_steering_tape_actuation, update_power_tape_actuation
     coupled_solver_qsm.py          The PSM production driver
+    driver.py                      solve_deformation: one whole wireframe case
+                                   (config, geometry, VSM, structure, coupled
+                                   loop, sim_output.h5 + snapshot + case.json).
+                                   Was in scripts/aerostructural/
+                                   run_simulation_PSM.py until 2026-10-07.
+                                   solve_deformation_reduced_fem: the same on
+                                   the wireframe REDUCED from
+                                   struc_geometry_FEM_full.yaml, flying the full
+                                   geometry's aero mesh -- the public demo, so
+                                   it and Billow differ only in the structure
+    reduce_fem.py                  reduce_fem_geometry: FEM_full -> PSM-format
+                                   wireframe. One rib per strut, front/rear
+                                   node = the bridle attachments (x/c 0.01 /
+                                   0.90; tip: the a5 LE node and br_5 at 0.77);
+                                   per-strut line fans -> one *_equiv line
+                                   (rest = built distance); a line into a bare
+                                   pulley sheave is absorbed into the pulley
+                                   (l0 + 2L). Reproduces
+                                   struc_geometry_PSM_reduced.yaml's topology and
+                                   fixed lengths (tests/aerostructural/
+                                   test_reduce_fem.py; that file's knots sit
+                                   0.2-0.45 m elsewhere, so its *_equiv lengths
+                                   differ by up to 0.13 m). Wing members from
+                                   Billow's materials: le/strut EA from
+                                   structural_billow.tube_axial_stiffness
+                                   (compressive), te = E t (b/2)/a and X
+                                   diagonals = G t d^2/(2ab) (tension-only).
+                                   Masses lumped from the full model (total
+                                   conserved, incl. the reader dropping the
+                                   half-masses of lines on node 0)
 
   # -- Full fidelity ---------------------------------------------------------
   billow/
     __init__.py                    Re-exports the structural_billow API
+    driver.py                      solve_deformation: one whole Billow case
+                                   (was scripts/aerostructural/
+                                   run_simulation_BILLOW.py until 2026-10-07)
     structural_billow.py           Adapts the full Billow model (cables,
                                    pulleys, inflatable Timoshenko tube beams,
                                    wrinkling CST membrane canopy) to the same
@@ -105,23 +161,38 @@ src/awetrim/aerostructural/
                                    coupled/read_struc_geometry_yaml.main
                                    returns, so one geometry reader serves both.
                                    See "Billow backend" below.
+                                   relax_bridle_nodes = instantiate's bridle
+                                   relaxation on its own (any model reduced from
+                                   the same geometry starts from Billow's
+                                   shape); tube_axial_stiffness = the beams' EA
 
-scripts/aerostructural/
-  common.py                        CONFIG_DEFAULTS, build_system_model, shared helpers
-  run_simulation_PSM.py            Single-case wireframe/QSM (PSM) solve with optional steering sweep
-  run_simulation_BILLOW.py         Single-case full-fidelity solve
-  run_steering_BILLOW.py           Steered full-fidelity solve
-  run_chain_depower_BILLOW.py      Depower continuation chain
-  run_matched_sweep_BILLOW.py      Depower and steering chains at the depower
+scripts/aerostructural/            The PUBLIC demonstrator: keep it to these
+  run_simulation_PSM.py            One wireframe case; an Inputs block (kite,
+                                   elevation, azimuth, course, tether length,
+                                   reel speed, wind, gravity, tapes) over
+                                   wireframe.driver.solve_deformation
+  run_simulation_BILLOW.py         The same for billow.driver.solve_deformation
+  plot_simulation.py               Trim table + kite_view.html (3-D viewer,
+                                   kite_viewer_template.html) of one case
+  common.py                        Re-export of aerostructural.case (old name)
+  studies/                         The Billow analyses docs/billow/ cites; they
+                                   import from each other, keep them together
+  studies/run_steering_BILLOW.py   Steered full-fidelity solve
+  studies/run_chain_depower_BILLOW.py  Depower continuation chain
+  studies/run_matched_sweep_BILLOW.py  Depower and steering chains at the depower
                                    attributed from flight, one chain per target
                                    apparent speed; resumable, rows saved as solved
-  export_matched_sweep_data.py     Packs those rows into one JSON payload
-  build_matched_sweep_page.py      Fills matched_sweep_page_template.html with
+  studies/export_matched_sweep_data.py  Packs those rows into one JSON payload
+  studies/build_matched_sweep_page.py  Fills matched_sweep_page_template.html with
                                    that payload + the paper's comparison.json +
                                    matched_sweep_page_findings.json: ONE
                                    self-contained HTML (no Claude dependency)
-  plot_matched_sweep_BILLOW.py     Solved shapes and curves against flight
+  studies/plot_matched_sweep_BILLOW.py  Solved shapes and curves against flight
 ```
+
+Debugging-only checks (check_aero_symmetry, check_tip_stall,
+check_trim_structure_moment) moved to the private scripts/personal/aerostructural/
+on 2026-10-07.
 
 ## The pulley rest-length convention
 
@@ -411,7 +482,7 @@ Four things the adapter has to do that are not obvious:
 solve runs with exactly the numerics of the free one it is compared against;
 `symmetric_equalities(structure)` returns the mirror-symmetry equalities over
 EVERY node of the built model (bridle knots and quad centres included) and the
-partner map. Diagnostics: `scripts/aerostructural/check_symmetric_equilibrium.py`
+partner map. Diagnostics: `scripts/aerostructural/studies/check_symmetric_equilibrium.py`
 (free vs symmetric-constrained vs released solves, `Pi`, and the tangent
 stiffness on the symmetric/antisymmetric subspaces -- IPOPT checks first-order
 optimality only, so a released solve alone would stop on a symmetric saddle),
@@ -630,13 +701,13 @@ about. But:
   whatever `struc_nodes` the driver is handed. Clean on the built shape (0 of
   45 collapsed), but a converged shape moves nodes up to 0.571 m and then 2 of
   45 segments snap BOTH ends onto one node -- zero length, **NaN** forces --
-  with 8 more re-paired. `run_simulation_PSM`'s `starting_from_sim_subdir`
+  with 8 more re-paired. `wireframe.driver.solve_deformation`'s `starting_from_sim_subdir`
   continuation starts exactly there. `_bridle_node_pairs` now takes the indices
   from `bridle_line_specs`, which is what they are; the geometric match stays
   as the fallback when a caller passes no specs. Verified identical to the old
   pairing on the built shape, so cold runs keep their behaviour.
 
-Diagnostic: `scripts/aerostructural/check_trim_structure_moment.py` -- one
+Diagnostic: `check_trim_structure_moment.py` (private, scripts/personal/aerostructural/) -- one
 trim, then the full moment budget of both sides about the bridle point,
 term by term, plus the rigid swing that nulls the structure's loads.
 `--backend billow|pss` replicates either driver's load assembly (the pss one on
@@ -662,7 +733,7 @@ pair for all three backends. Tracking gains `steering_half_difference` and
 `trim_state` (the trim's `[kite_speed, roll, pitch, yaw, course_rate]` per
 iteration; the attitude entries are INCREMENTS the geometry is rotated by, so
 read the kite's attitude off the positions, not the last row). Script:
-`scripts/aerostructural/run_steering_BILLOW.py`.
+`scripts/aerostructural/studies/run_steering_BILLOW.py`.
 
 A gravity-only load case is NOT a valid smoke test: the KCU is pinned below the
 wing, so gravity slackens every bridle line and the bridle knots become a
@@ -737,7 +808,7 @@ load then reaches the structural NODES is another. `aero2struc.main`'s
 - `sections` -- the historical lattice mapping onto the YAML's chordwise node
   chains; the only route for the wireframe backend.
 
-`scripts/aerostructural/check_load_transfer.py` compares the three on one aero
+`scripts/aerostructural/studies/check_load_transfer.py` compares the three on one aero
 state. Measured on the coarse `cross` canopy (413 canopy nodes):
 
 | route | loaded | force rel. error | moment rel. diff. |
@@ -767,7 +838,7 @@ wing, where the two coincide, the moment is exact
 
 ## Config Keys (aerostructural_configs/config.yaml)
 
-All defaults are defined in `scripts/aerostructural/common.CONFIG_DEFAULTS`. Key sections:
+All defaults are defined in `awetrim.aerostructural.case.CONFIG_DEFAULTS`. Key sections:
 
 ```yaml
 aerodynamic:
@@ -1071,4 +1142,30 @@ Output goes to `results/aerostructural/<kite_name>/<case_folder>/sim_output.h5` 
 
 - Read `structural_geometry_io.main()` before changing how struc_geometry.yaml is parsed; the node index ordering (odd = LE, even = TE) and pulley dict format `[cj, ck, l0_cj_ck, l0_ci_cj, ci]` are load-bearing.
 - Any change to `WireframeQsmCoupler` must keep `QsmCouplingRequest` / `QsmCouplingResult` stable; the protocol tests check these fields.
-- Scripts in `scripts/aerostructural/` import shared helpers from `common.py` — add new shared defaults to `CONFIG_DEFAULTS` there, not as literals in individual scripts.
+- Shared case helpers live in `awetrim.aerostructural.case` — add new shared defaults to `CONFIG_DEFAULTS` there, not as literals in individual scripts. Driver logic belongs in `wireframe/driver.py` / `billow/driver.py`; the run scripts only set inputs.
+
+
+## Trim settings reach the Billow trim (2026-10-07)
+
+`coupled_solver.main` called `aerodynamic_vsm.run_vsm_package` WITHOUT
+`config` until 2026-10-07, so every Billow trim before that date was
+TETHERLESS with the default uncapped trim, whatever as_config said
+(`tether.include_in_trim` / `model: williams`, the `quasi_steady_trim` block).
+The wireframe driver always passed it. Both now pass it; a Billow result from
+before that date is a tetherless trim. The Billow driver builds its tether with
+`case.build_tether` (the class `tether.model` names), as the wireframe driver
+does.
+
+Both demo scripts and the Billow studies use VSM's `base` circulation loop:
+with artificial viscosity on, the LEI-V3's stalled tips trap Anderson
+(as_config's loop) in a post-stall limit cycle and the tip loads never converge.
+
+**Open (issue to be filed): unsteered Billow + tether-in-trim goes asymmetric.**
+At the demo state (window centre, v_w 4.2 m/s, no gravity, unactuated) the
+Williams-tether trim returns small non-zero roll/yaw/course-rate increments
+(~0.05-0.08 deg, -0.011 rad/s in the first iterations) where the tetherless
+trim returns exactly zero. The wireframe absorbs them (sideslip 1e-4 deg);
+Billow converges to a shape 170 mm left-right asymmetric at the centre
+trailing edge (LE 2 mm), which VSM's centre-chord sideslip reads as 3.1 deg.
+Tetherless, the same case is symmetric to 0.00 mm. Not pinned on purpose: see
+the issue before forcing symmetry in the trim.

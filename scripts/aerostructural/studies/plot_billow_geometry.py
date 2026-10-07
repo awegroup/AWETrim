@@ -11,8 +11,8 @@ The model is rebuilt from the kite YAML (deterministic, ~1 s) and the node
 positions are read from the run's ``sim_output.h5``, so nothing is re-solved.
 
 Usage (from project root):
-    python scripts/aerostructural/plot_billow_geometry.py
-    python scripts/aerostructural/plot_billow_geometry.py --case depower_p0000mm_steer_p0000mm_135panels
+    python scripts/aerostructural/studies/plot_billow_geometry.py
+    python scripts/aerostructural/studies/plot_billow_geometry.py --case depower_p0000mm_steer_p0000mm_135panels
 """
 
 import argparse
@@ -30,7 +30,7 @@ from awetrim.aerostructural.billow import structural_billow as sb
 from awetrim.aerostructural.coupled import read_struc_geometry_yaml
 from awetrim.aerostructural.utils import load_yaml, rotate_geometry
 from billow.elements.membrane import SLACK, TAUT, WRINKLED, membrane_regimes
-from common import DEFAULT_KITE_NAME, resolve_initial_geometry_rotation_kwargs, resolve_kite_paths
+from awetrim.aerostructural.case import DEFAULT_KITE_NAME, resolve_initial_geometry_rotation_kwargs, resolve_kite_paths
 
 STRUC_GEOMETRY_FILENAME = "struc_geometry_FEM_full.yaml"
 REGIME_LABELS = {SLACK: "slack", WRINKLED: "wrinkled", TAUT: "taut"}
@@ -179,7 +179,7 @@ def main():
     parser.add_argument("--output", default=None)
     args = parser.parse_args()
 
-    project_dir = Path(__file__).resolve().parents[2]
+    project_dir = Path(__file__).resolve().parents[3]
     results = (
         project_dir / "results" / args.kite / "aerostructural" / "billow" / args.case
     )

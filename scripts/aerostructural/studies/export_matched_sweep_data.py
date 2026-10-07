@@ -16,7 +16,7 @@ arrays, so a few hundred states stay near a megabyte:
     cable / pulley  uint16, newtons     (line tensions)
 
 Usage (from project root):
-    python scripts/aerostructural/export_matched_sweep_data.py --output sweep.json
+    python scripts/aerostructural/studies/export_matched_sweep_data.py --output sweep.json
 """
 
 import argparse
@@ -28,7 +28,7 @@ import numpy as np
 
 from awetrim.aerostructural.billow import structural_billow as sb
 from billow.elements.membrane import membrane_regimes
-from common import DEFAULT_KITE_NAME
+from awetrim.aerostructural.case import DEFAULT_KITE_NAME
 
 from check_mirror_asymmetry import final_positions
 from export_billow_viewer import bridle_tensions, canopy_load, nice_ceiling, topology
@@ -55,7 +55,7 @@ def main():
     parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
     args = parser.parse_args()
 
-    project = Path(__file__).resolve().parents[2]
+    project = Path(__file__).resolve().parents[3]
     root = project / "results" / args.kite / "aerostructural" / args.root
     structure = rebuild(project, args.kite, args.panels_per_section,
                         {"canopy_pattern": args.pattern, "canopy_refinement": 1})

@@ -295,7 +295,7 @@ Common commands
 Scripts
 
  - Scripts live in `scripts/` and are executed from the project root, for example:
-   - python scripts/aerostructural/run_simulation_level_qsm.py
+   - python scripts/aerostructural/run_simulation_PSM.py
    - python scripts/aerodynamics/solve_single_state.py
    - python scripts/experimental/run_analysis_ekf.py
 
@@ -313,7 +313,8 @@ Notes
 
  - The `aerodynamics/` module uses the VSM solver via an adapter; see `src/awetrim/aerodynamics/AGENTS.md` for module-specific guidance.
  - `PSS` (Particle System Simulator) and `kite_fem` were removed on 2026-09-12. Billow replaced both; do not reintroduce either. `tests/aerostructural/test_wireframe_package.py` asserts that importing the package pulls in neither.
- - `scripts/aerostructural/common.py` defines `CONFIG_DEFAULTS` used by multiple scripts; prefer importing it for consistent defaults.
+ - `awetrim.aerostructural.case` defines `CONFIG_DEFAULTS` and the case helpers used by the aerostructural drivers and scripts (`scripts/aerostructural/common.py` re-exports it); prefer importing it for consistent defaults.
+ - `scripts/aerostructural/` is the public demonstrator: `run_simulation_PSM.py` / `run_simulation_BILLOW.py` (edit the Inputs block) and `plot_simulation.py` (trim table + 3-D viewer). Studies cited by `docs/billow/` live in `scripts/aerostructural/studies/`.
 
 ## Per-kite data layout
 
@@ -337,5 +338,5 @@ Results layout (convention):
 - `results/<kite_name>/<analysis_type>/sim_output.h5` — aerostructural coupled-solver outputs.
 - `results/<kite_name>/ekf/` — EKF outputs and diagnostics.
 
-Use the canonical filenames above so helper utilities (e.g., `resolve_kite_paths` in `scripts/aerostructural/common.py`) locate files automatically.
+Use the canonical filenames above so helper utilities (e.g., `resolve_kite_paths` in `awetrim.aerostructural.case`) locate files automatically.
 

@@ -746,7 +746,7 @@ Public functions should use these names:
   loop can converge onto a different branch than the one a deformed geometry
   was produced with; seeding each evaluation from the same fixed vector
   (e.g. the coupled solver's converged `gamma_distribution`, which
-  `scripts/aerostructural/run_simulation_PSM.py` exports as
+  `awetrim.aerostructural.wireframe.driver` exports as
   `gamma_distribution.npy` next to the geometry snapshot) selects the
   intended branch while staying deterministic and smooth in the trim
   unknowns — unlike history-dependent warm chaining, which would corrupt the

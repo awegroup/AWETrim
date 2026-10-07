@@ -33,8 +33,8 @@ What this script still buys is per-point v_a targeting, which the chains give up
 exact apparent speed.
 
 Usage (from project root):
-    python scripts/aerostructural/run_sweep_depower_BILLOW.py
-    python scripts/aerostructural/run_sweep_depower_BILLOW.py --va 15 20 --dl -0.1 0 0.1
+    python scripts/aerostructural/studies/run_sweep_depower_BILLOW.py
+    python scripts/aerostructural/studies/run_sweep_depower_BILLOW.py --va 15 20 --dl -0.1 0 0.1
 """
 
 import argparse
@@ -62,7 +62,7 @@ from awetrim.aerostructural.billow import structural_billow
 from awetrim.aerostructural.coupled import coupled_solver, read_struc_geometry_yaml
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.utils.system_config import get_tether
-from common import (
+from awetrim.aerostructural.case import (
     DEFAULT_KITE_NAME,
     build_system_model,
     resolve_initial_geometry_rotation_kwargs,
@@ -275,7 +275,7 @@ def main():
     parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
     args = parser.parse_args()
 
-    project_dir = Path(__file__).resolve().parents[2]
+    project_dir = Path(__file__).resolve().parents[3]
     shared = build_once(project_dir, args.kite)
     root = aerostructural_results_root(project_dir, args.kite) / "billow_depower_sweep"
     root.mkdir(parents=True, exist_ok=True)

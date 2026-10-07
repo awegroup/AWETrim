@@ -1,942 +1,104 @@
-import argparse
-import copy
-import csv
-import subprocess
-import sys
+"""Run one coupled aerostructural simulation of the kite with the WIREFRAME model.
+
+The aerodynamics (Vortex Step Method) and the structure are iterated to a
+converged deformed shape, trimmed at the flight state set below. The structure
+is a wireframe: one rib per strut with two wing nodes (where the front and rear
+bridle attach), the leading edge and struts as stiff axial springs, the canopy
+as tension-only springs, and the bridle with its pulleys. It is reduced from
+the SAME geometry file run_simulation_BILLOW.py reads
+(struc_geometry_FEM_full.yaml) -- the per-strut line fans collapsed to one
+equivalent line each, the tube and canopy stiffnesses taken from the Billow
+materials -- so with the same inputs the two scripts differ only in the
+structural model. The reduced geometry is saved in the case folder.
+
+This is not the photogrammetry-corrected PSM geometry of the wes-quasi-steady
+paper (awetrim.aerostructural.wireframe.driver.solve_deformation loads that).
+
+Edit the inputs below, then from the project root:
+
+    python scripts/aerostructural/run_simulation_PSM.py
+
+The case is written to results/<KITE>/aerostructural/wireframe/<case>/ and, with
+SHOW_RESULT on, opened in the 3-D viewer with its trim characteristics (or
+afterwards: python scripts/aerostructural/plot_simulation.py <case folder>).
+Solver settings come from data/<KITE>/as_config.yaml.
+"""
+
 from pathlib import Path
 
-import numpy as np
-
-from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
-from awetrim.plotting.kite_structure import plot_3d_kite_structure
-from awetrim.aerostructural.mapping import BilinearAeroToStructuralLoadMapper
-from awetrim.aerostructural.results import (
-    aerostructural_results_root,
-    build_deformed_aero_geometry,
-    build_deformed_struc_geometry,
-    save_geometry_snapshot,
-    save_input_snapshot,
-    save_sim_output,
-)
-from awetrim.aerostructural.utils import (
-    load_sim_output,
-    load_yaml,
-    printing_rest_lengths,
-    rotate_geometry,
-)
-from awetrim.aerostructural import aerodynamic_vsm
-from awetrim.aerostructural.wireframe import (
-    coupled_solver_qsm,
-    structural_geometry_io,
-    structural_wireframe,
-)
-from awetrim.system.tether import RigidLumpedTether
-from awetrim.utils.system_config import get_tether
-from common import (
-    CONFIG_DEFAULTS,
-    DEFAULT_KITE_NAME,
-    build_actuation_case_folder,
-    build_system_model,
-    resolve_initial_geometry_rotation_kwargs,
-    resolve_kite_paths,
-)
-from awesio.validator import validate as awesio_validate
-
-
-def _build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Run ASKITE QSM simulation")
-    parser.add_argument(
-        "--steering-final-extension",
-        type=float,
-        default=None,
-        help="Override steering_tape_final_extension [m] for this run.",
-    )
-    parser.add_argument(
-        "--steering-sweep-start",
-        type=float,
-        default=None,
-        help="Sweep start for steering_tape_final_extension [m].",
-    )
-    parser.add_argument(
-        "--steering-sweep-end",
-        type=float,
-        default=None,
-        help="Sweep end for steering_tape_final_extension [m].",
-    )
-    parser.add_argument(
-        "--steering-sweep-step",
-        type=float,
-        default=None,
-        help="Sweep step for steering_tape_final_extension [m].",
-    )
-    return parser
-
-
-def _run_steering_sweep(args):
-    """Launch one process per steering setting to keep runs isolated."""
-    if args.steering_sweep_step is None or args.steering_sweep_step <= 0:
-        raise ValueError("--steering-sweep-step must be > 0")
-    if args.steering_sweep_end < args.steering_sweep_start:
-        raise ValueError("--steering-sweep-end must be >= --steering-sweep-start")
-
-    values = np.arange(
-        args.steering_sweep_start,
-        args.steering_sweep_end + 0.5 * args.steering_sweep_step,
-        args.steering_sweep_step,
-    )
-
-    script_path = Path(__file__).resolve()
-    for idx, value in enumerate(values, start=1):
-        print(
-            f"\n=== Steering sweep {idx}/{len(values)}: steering_tape_final_extension={value:.4f} m ==="
-        )
-        cmd = [
-            sys.executable,
-            str(script_path),
-            "--steering-final-extension",
-            f"{float(value):.10g}",
-        ]
-        completed = subprocess.run(cmd, check=False)
-        if completed.returncode != 0:
-            raise RuntimeError(
-                f"Sweep aborted at steering_tape_final_extension={value:.4f} m "
-                f"(exit code {completed.returncode})."
-            )
-
-
-def _resolve_starting_struc_nodes(
-    config,
-    project_dir,
-    kite_name,
-    struc_nodes_default,
-):
-    """
-    Optionally override start nodes from a previous simulation result folder.
-
-    Priority:
-      1) config["starting_from_sim_subdir"] (new)
-      2) config["starting_from_sim_of_date"] (legacy)
-
-    The value is treated as a subdir under results/<kite_name>/, e.g.
-    depower_p0100mm_steer_m0020mm/run_003.
-
-    If both keys are empty, return struc_nodes_default.
-    """
-    sim_subdir = str(config.get("starting_from_sim_subdir", "")).strip()
-    if sim_subdir == "":
-        sim_subdir = str(config.get("starting_from_sim_of_date", "")).strip()
-
-    if sim_subdir == "":
-        return struc_nodes_default
-
-    base_results_dir = Path(project_dir) / "results" / kite_name
-
-    # Candidate 1: exact path from config
-    candidates = [base_results_dir / sim_subdir]
-
-    # Candidate 2/3: tolerate zero-sign naming mismatch, e.g. m0000mm vs p0000mm
-    sim_subdir_m_to_p = sim_subdir.replace("m0000mm", "p0000mm")
-    sim_subdir_p_to_m = sim_subdir.replace("p0000mm", "m0000mm")
-    if sim_subdir_m_to_p != sim_subdir:
-        candidates.append(base_results_dir / sim_subdir_m_to_p)
-    if sim_subdir_p_to_m != sim_subdir:
-        candidates.append(base_results_dir / sim_subdir_p_to_m)
-
-    start_dir = None
-    for cand in candidates:
-        if cand.exists() and cand.is_dir():
-            start_dir = cand
-            break
-
-    if start_dir is None:
-        raise FileNotFoundError(
-            "Configured starting simulation directory does not exist. "
-            f"Tried: {', '.join(str(c) for c in candidates)}"
-        )
-
-    # Preferred: direct case-folder storage (sim_output.h5 inside start_dir).
-    h5_path = start_dir / "sim_output.h5"
-    # Backward compatibility: if not found, try legacy run_XXX layout.
-    if not h5_path.exists():
-        run_dirs = [
-            d
-            for d in start_dir.iterdir()
-            if d.is_dir() and d.name.startswith("run_") and d.name[4:].isdigit()
-        ]
-        if len(run_dirs) > 0:
-            start_dir = sorted(run_dirs, key=lambda p: int(p.name[4:]))[-1]
-            logging.info(
-                f"Using latest legacy run folder inside case folder: {start_dir.name}"
-            )
-            h5_path = start_dir / "sim_output.h5"
-
-    if not h5_path.exists():
-        raise FileNotFoundError(
-            f"Configured starting simulation has no sim_output.h5: {h5_path}"
-        )
-
-    _, tracking_data = load_sim_output(h5_path)
-    if "positions" not in tracking_data:
-        raise KeyError(f"Expected 'positions' dataset in: {h5_path}")
-
-    positions = np.asarray(tracking_data["positions"])
-    if positions.ndim != 3 or positions.shape[2] != 3:
-        raise ValueError(
-            f"Invalid positions shape in {h5_path}: {positions.shape}. Expected (nt, n_nodes, 3)."
-        )
-
-    struc_nodes_loaded = np.array(positions[-1], dtype=float)
-    if struc_nodes_loaded.shape != np.asarray(struc_nodes_default).shape:
-        raise ValueError(
-            "Loaded node shape does not match current geometry. "
-            f"loaded={struc_nodes_loaded.shape}, current={np.asarray(struc_nodes_default).shape}"
-        )
-
-    logging.info(
-        f"Starting from previous simulation final nodes: {start_dir} (n_nodes={len(struc_nodes_loaded)})"
-    )
-    return struc_nodes_loaded
-
-
-def _resolve_starting_rest_lengths(
-    config,
-    project_dir,
-    kite_name,
-    l0_arr_default,
-):
-    """
-    Optionally load final rest_lengths from a previous simulation result.
-
-    If config["starting_from_sim_subdir"] is set, load the rest_lengths from the
-    corresponding H5 file. Otherwise return l0_arr_default.
-
-    Args:
-        config: Configuration dictionary
-        project_dir: Path to project root
-        kite_name: Name of the kite
-        l0_arr_default: Default rest length array from YAML geometry
-
-    Returns:
-        np.ndarray: Updated rest lengths (or defaults if not recovering)
-    """
-    sim_subdir = str(config.get("starting_from_sim_subdir", "")).strip()
-    if sim_subdir == "":
-        sim_subdir = str(config.get("starting_from_sim_of_date", "")).strip()
-
-    if sim_subdir == "":
-        return l0_arr_default
-
-    base_results_dir = Path(project_dir) / "results" / kite_name
-
-    # Candidate 1: exact path from config
-    candidates = [base_results_dir / sim_subdir]
-
-    # Candidate 2/3: tolerate zero-sign naming mismatch
-    sim_subdir_m_to_p = sim_subdir.replace("m0000mm", "p0000mm")
-    sim_subdir_p_to_m = sim_subdir.replace("p0000mm", "m0000mm")
-    if sim_subdir_m_to_p != sim_subdir:
-        candidates.append(base_results_dir / sim_subdir_m_to_p)
-    if sim_subdir_p_to_m != sim_subdir:
-        candidates.append(base_results_dir / sim_subdir_p_to_m)
-
-    start_dir = None
-    for cand in candidates:
-        if cand.exists() and cand.is_dir():
-            start_dir = cand
-            break
-
-    if start_dir is None:
-        # No previous sim found, return defaults
-        return l0_arr_default
-
-    # Try to find sim_output.h5
-    h5_path = start_dir / "sim_output.h5"
-    if not h5_path.exists():
-        run_dirs = [
-            d
-            for d in start_dir.iterdir()
-            if d.is_dir() and d.name.startswith("run_") and d.name[4:].isdigit()
-        ]
-        if len(run_dirs) > 0:
-            start_dir = sorted(run_dirs, key=lambda p: int(p.name[4:]))[-1]
-            h5_path = start_dir / "sim_output.h5"
-
-    if not h5_path.exists():
-        logging.warning(
-            f"No sim_output.h5 found in {start_dir}, using default rest lengths"
-        )
-        return l0_arr_default
-
-    # Load rest_lengths from metadata
-    try:
-        metadata, _ = load_sim_output(h5_path)
-        if "rest_lengths" in metadata:
-            rest_lengths_loaded = np.asarray(metadata["rest_lengths"], dtype=float)
-            if rest_lengths_loaded.shape == np.asarray(l0_arr_default).shape:
-                logging.info(
-                    f"Loaded final rest lengths from previous simulation: {start_dir.name}"
-                )
-                return rest_lengths_loaded
-            else:
-                logging.warning(
-                    f"Loaded rest_lengths shape {rest_lengths_loaded.shape} "
-                    f"does not match current geometry {np.asarray(l0_arr_default).shape}, "
-                    f"using defaults"
-                )
-                return l0_arr_default
-        else:
-            logging.warning(
-                f"No 'rest_lengths' in {h5_path} metadata, using default rest lengths"
-            )
-            return l0_arr_default
-    except Exception as e:
-        logging.warning(
-            f"Error loading rest_lengths from {h5_path}: {e}, using defaults"
-        )
-        return l0_arr_default
-
-
-def _build_qsm_csv_row(
-    config,
-    results,
-    case_folder,
-    results_dir,
-    power_tape_index=None,
-    steering_tape_indices=None,
-):
-    """
-    Flatten one simulation run into a CSV row.
-
-    Args:
-        config: Configuration dictionary
-        results: Metadata dictionary from solver (includes rest_lengths)
-        case_folder: Case folder name
-        results_dir: Results directory path
-        power_tape_index: Index of power tape in rest_lengths array (optional)
-        steering_tape_indices: List of [left_idx, right_idx] for steering tapes (optional)
-    """
-    opt_x = np.asarray(results.get("opt_x", []), dtype=float).reshape(-1)
-    opt_names = [
-        "kite_speed",
-        "roll_deg",
-        "pitch_deg",
-        "yaw_deg",
-        "course_rate_body",
-    ]
-    row = {
-        "case_folder": case_folder,
-        "results_dir": str(results_dir),
-        "is_with_gravity": bool(
-            config.get("is_with_gravity", CONFIG_DEFAULTS["is_with_gravity"])
-        ),
-        "is_with_aero_bridle": bool(
-            config.get("is_with_aero_bridle", CONFIG_DEFAULTS["is_with_aero_bridle"])
-        ),
-        "angle_elevation_deg": float(
-            config.get("angle_elevation_deg", CONFIG_DEFAULTS["angle_elevation_deg"])
-        ),
-        "angle_azimuth_deg": float(
-            config.get("angle_azimuth_deg", CONFIG_DEFAULTS["angle_azimuth_deg"])
-        ),
-        "angle_course_deg": float(
-            config.get("angle_course_deg", CONFIG_DEFAULTS["angle_course_deg"])
-        ),
-        "speed_radial": float(
-            config.get("speed_radial", CONFIG_DEFAULTS["speed_radial"])
-        ),
-        "distance_radial": float(
-            config.get("distance_radial", CONFIG_DEFAULTS["distance_radial"])
-        ),
-        "wind_speed_wind_ref": float(
-            config.get("wind_speed_wind_ref", CONFIG_DEFAULTS["wind_speed_wind_ref"])
-        ),
-        "timeder_speed_tangential": float(
-            config.get(
-                "timeder_speed_tangential", CONFIG_DEFAULTS["timeder_speed_tangential"]
-            )
-        ),
-        "timeder_speed_radial": float(
-            config.get("timeder_speed_radial", CONFIG_DEFAULTS["timeder_speed_radial"])
-        ),
-        "aero_roll_deg": float(results.get("aero_roll_deg", np.nan)),
-        "aoa_deg": float(results.get("aoa_deg", np.nan)),
-        "side_slip_deg": float(results.get("side_slip_deg", np.nan)),
-    }
-
-    # Add final actual rest_lengths instead of input extensions
-    rest_lengths = np.asarray(results.get("rest_lengths", []), dtype=float)
-    if power_tape_index is not None and rest_lengths.size > power_tape_index:
-        row["power_tape_final_length_m"] = float(rest_lengths[power_tape_index])
-    else:
-        row["power_tape_final_length_m"] = np.nan
-
-    if steering_tape_indices is not None and len(steering_tape_indices) >= 2:
-        left_idx = int(steering_tape_indices[0])
-        right_idx = int(steering_tape_indices[1])
-        if rest_lengths.size > max(left_idx, right_idx):
-            row["steering_tape_left_final_length_m"] = float(rest_lengths[left_idx])
-            row["steering_tape_right_final_length_m"] = float(rest_lengths[right_idx])
-        else:
-            row["steering_tape_left_final_length_m"] = np.nan
-            row["steering_tape_right_final_length_m"] = np.nan
-    else:
-        row["steering_tape_left_final_length_m"] = np.nan
-        row["steering_tape_right_final_length_m"] = np.nan
-
-    for idx, name in enumerate(opt_names):
-        row[f"opt_{name}"] = float(opt_x[idx]) if idx < opt_x.size else np.nan
-
-    return row
-
-
-def _append_row_to_csv(csv_path, row):
-    """Append one row to a CSV file, creating the header if needed."""
-    csv_path = Path(csv_path)
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-
-    file_exists = csv_path.exists()
-    fieldnames = list(row.keys())
-    with csv_path.open("a", newline="", encoding="utf-8") as csv_file:
-        writer = csv.DictWriter(csv_file, fieldnames=fieldnames)
-        if not file_exists:
-            writer.writeheader()
-        writer.writerow(row)
-
-
-def solve_deformation(
-    config: dict | None = None,
-    *,
-    config_overrides: dict | None = None,
-    kite_name: str = DEFAULT_KITE_NAME,
-    project_dir=None,
-    results_dir=None,
-    tether_diameter: float | None = None,
-    system_config_path=None,
-) -> dict:
-    """Run one PSS/QSM aerostructural deformation and snapshot the result.
-
-    This is the whole coupled pipeline: resolve the kite's config/geometry,
-    initialise the VSM body and the PSS structure, run the fixed-point
-    aero-structural loop (which converges the VSM quasi-steady trim against the
-    deforming structure), then write ``sim_output.h5`` and -- when the config
-    sets ``is_save_geometry_snapshots`` -- the deformed ``struc_geometry.yaml``
-    / ``aero_geometry.yaml`` / ``system.yaml`` into the results directory.
-
-    Extracted from ``main()`` so callers other than the CLI can drive a
-    deformation at a chosen flight condition and then reuse the deformed shape
-    (e.g. the representative-state stability pipeline, which linearises about
-    the deformed geometry). ``main()`` calls this function, so there is a single
-    code path.
-
-    ``config_overrides`` is merged over the kite's ``config.yaml`` -- use it to
-    set the flight condition (``angle_elevation_deg``, ``angle_azimuth_deg``,
-    ``angle_course_deg``, ``speed_radial``, ``distance_radial``,
-    ``wind_speed_wind_ref``) and ``is_save_geometry_snapshots``.
-
-    ``system_config_path`` overrides the kite's ``system.yaml`` (default
-    ``data/<kite_name>/system.yaml``), e.g. to deform with the as-flown KCU
-    mass in ``system_flown_2019.yaml``.
-
-    Returns a dict with the results directory, the deformed nodes, the solver
-    tracking data/meta, and the pieces the caller needs for reporting.
-    """
-    PROJECT_DIR = (
-        Path(project_dir)
-        if project_dir is not None
-        else (Path(__file__).resolve().parents[2])
-    )
-
-    # Resolve standard kite paths (config, aero_geometry, struc_geometry)
-    config_path, aero_geometry_path, struc_geometry_path = resolve_kite_paths(
-        PROJECT_DIR, kite_name
-    )
-
-    # Load and validate the awesIO system config (single source of truth for physical params)
-    # ``system_config_path`` lets a caller drive the deformation with a variant
-    # of the kite's system.yaml -- e.g. system_flown_2019.yaml, whose KCU mass is the
-    # as-flown 22.75 kg rather than the 8.4 kg optimisation value. The KCU mass
-    # is read from here (see fem.read_struc_geometry_yaml._resolve_kcu_mass) and
-    # again by build_system_model below, so overriding the path is the only way
-    # to keep the structural cloud and the coupled QSM trim on the same mass.
-    system_config_path = (
-        Path(system_config_path)
-        if system_config_path is not None
-        else Path(PROJECT_DIR) / "data" / kite_name / "system_flown_2019.yaml"
-    )
-    import yaml as _yaml
-
-    with system_config_path.open("r", encoding="utf-8") as _f:
-        system_config = _yaml.safe_load(_f)
-    awesio_validate(system_config, restrictive=False)
-
-    # Load config.yaml & geometry files
-    if config is None:
-        config = load_yaml(config_path)
-    if config_overrides:
-        config = {**config, **config_overrides}
-
-    case_folder = build_actuation_case_folder(config)
-    results_root = aerostructural_results_root(PROJECT_DIR, kite_name)
-    results_dir = (
-        Path(results_dir) if results_dir is not None else results_root / case_folder
-    )
-    struc_geometry = load_yaml(struc_geometry_path)
-    aero_geometry = load_yaml(aero_geometry_path)
-    results_dir = save_input_snapshot(
-        config=config,
-        results_dir=results_dir,
-    )
-
-    logging.info(f"config files saved in {results_dir}\n")
-
-    ###################
-    ### AERODYNAMIC ###
-    ###################
-    n_wing_struc_nodes = len(struc_geometry["wing_particles"]["data"])
-    n_struc_ribs = n_wing_struc_nodes / 2
-    n_panels_aero = (n_struc_ribs - 1) * config["aerodynamic"][
-        "n_aero_panels_per_struc_section"
-    ]
-    bridle_path = (
-        struc_geometry_path if config.get("is_with_aero_bridle", False) else None
-    )
-    body_aero, vsm_solver, vel_app, initial_polar_data = aerodynamic_vsm.initialize(
-        aero_geometry_path,
-        config,
-        n_panels_aero,
-        bridle_path=bridle_path,
-    )
-
-    ##################
-    ### STRUCTURAL ###
-    ##################
-    (
-        # node level
-        struc_nodes,
-        m_arr,
-        struc_node_le_indices,
-        struc_node_te_indices,
-        power_tape_index,
-        steering_tape_indices,
-        pulley_node_indices,
-        # element level
-        kite_connectivity_arr,
-        bridle_connectivity_arr,
-        bridle_diameter_arr,
-        l0_arr,
-        k_arr,
-        c_arr,
-        linktype_arr,
-        pulley_line_indices,
-        pulley_line_to_other_node_pair_dict,
-    ) = structural_geometry_io.main(
-        struc_geometry, config=config, system_config=system_config
-    )
-
-    #####################################################
-    ### rotating the initial geometry by some angle,
-    ### to enable the wind to be horizontal
-    #####################################################
-    struc_nodes = rotate_geometry(
-        struc_nodes,
-        **resolve_initial_geometry_rotation_kwargs(config),
-    )
-    struc_nodes = _resolve_starting_struc_nodes(
-        config=config,
-        project_dir=PROJECT_DIR,
-        kite_name=kite_name,
-        struc_nodes_default=struc_nodes,
-    )
-    # Also recover the final rest_lengths (element l0 values) from previous simulation if available
-    l0_arr = _resolve_starting_rest_lengths(
-        config=config,
-        project_dir=PROJECT_DIR,
-        kite_name=kite_name,
-        l0_arr_default=l0_arr,
-    )
-
-    # logging initial conditions
-    logging.info(f"\n\nINITIAL CONDITIONS, NODES \n")
-    for idx, (node_i, m_i) in enumerate(zip(struc_nodes, m_arr)):
-        logging.info(f"node_idx: {idx}: node: {node_i}, mass: {m_i}")
-
-    logging.info(f"\n\nINITIAL CONDITIONS, ELEMENTS \n")
-    for idx, conn in enumerate(kite_connectivity_arr):
-        logging.info(
-            f"conn_idx: {idx}: conn: {conn}, l0: {l0_arr[idx]}, k: {k_arr[idx]}, c: {c_arr[idx]}, linktype: {linktype_arr[idx]}"
-        )
-
-    psystem, pss_initial_conditions, pss_params, struc_nodes_initial = (
-        structural_wireframe.instantiate(
-            config,
-            struc_nodes,
-            m_arr,
-            kite_connectivity_arr,
-            l0_arr,
-            k_arr,
-            c_arr,
-            linktype_arr,
-            pulley_line_to_other_node_pair_dict,
-        )
-    )
-    if config["is_with_initial_structure_plot"]:
-        plot_3d_kite_structure(
-            struc_nodes,
-            kite_connectivity_arr,
-            power_tape_index,
-            k_arr=k_arr,
-            c_arr=c_arr,
-            linktype_arr=linktype_arr,
-            pulley_nodes=pulley_node_indices,
-        )
-
-    ##################
-    ### AERO2STRUC ###
-    ##################
-    aero2struc_mapping = (
-        BilinearAeroToStructuralLoadMapper()
-        .initialize(
-            body_aero.panels,
-            struc_nodes,
-            struc_node_le_indices,
-            struc_node_te_indices,
-        )
-        .panel_corner_map
-    )
-
-    #################
-    ### ACTUATION ###
-    #################
-    initial_length_power_tape = l0_arr[power_tape_index]
-    power_tape_extension_step = config["power_tape_extension_step"]
-    power_tape_final_extension = config["power_tape_final_extension"]
-    if power_tape_extension_step != 0:
-        n_power_tape_steps = int(power_tape_final_extension / power_tape_extension_step)
-    else:
-        n_power_tape_steps = 0
-    logging.info(f"Initial depower tape length: {l0_arr[power_tape_index]:.3f}m")
-    logging.info(
-        f"Desired depower tape length: {initial_length_power_tape + power_tape_final_extension:.3f}m"
-    )
-
-    initial_length_steering_left = l0_arr[steering_tape_indices[0]]
-    initial_length_steering_right = l0_arr[steering_tape_indices[1]]
-    steering_tape_extension_step = config["steering_tape_extension_step"]
-    steering_tape_final_extension = config["steering_tape_final_extension"]
-    logging.info(
-        f"Initial steering tape lengths: left={initial_length_steering_left:.3f}m, "
-        f"right={initial_length_steering_right:.3f}m"
-    )
-    logging.info(
-        f"Desired steering extension target: {steering_tape_final_extension:.3f}m "
-        f"with internal step {steering_tape_extension_step:.3f}m"
-    )
-
-    ########################################
-    # AWETRIM SYSTEM MODEL
-    ########################################
-    tether_struct = get_tether(system_config)["structure"]
-    # ``tether_diameter`` lets a caller analyse the deformation with the same
-    # tether it will use downstream; without it the deformation silently runs on
-    # system.yaml's diameter while the caller's trim uses another one, and the
-    # shape is then produced under loads that do not match the analysis.
-    _tether_d = (
-        float(tether_diameter)
-        if tether_diameter is not None
-        else tether_struct["diameter"]
-    )
-    _tether_rho = tether_struct.get("density", 970.0)
-    # Tether class from the config's ``tether.model`` (diameter/density still
-    # come from system.yaml). This only affects the trim when
-    # ``tether.include_in_trim`` is set -- the tetherless trim never reads
-    # system_model.tether, so the choice is inert otherwise.
-    _tether_cfg = config.get("tether", {}) or {}
-    _tether_model = str(_tether_cfg.get("model", "rigid_lumped")).lower()
-    if _tether_model == "williams":
-        from awetrim.system.williams_tether import WilliamsTether
-
-        tether = WilliamsTether(
-            diameter=_tether_d,
-            density=_tether_rho,
-            n_elements=int(_tether_cfg.get("n_elements", 10)),
-            elastic=bool(_tether_cfg.get("is_elastic", False)),
-            cf=float(_tether_cfg.get("cf", 0.01)),
-        )
-    else:
-        tether = RigidLumpedTether(diameter=_tether_d, density=_tether_rho)
-    logging.info(
-        "Tether model for the deformation: %s (d=%.4f m, rho=%.1f kg/m3), "
-        "include_in_trim=%s",
-        type(tether).__name__,
-        _tether_d,
-        _tether_rho,
-        bool(_tether_cfg.get("include_in_trim", False)),
-    )
-    mass_total = float(np.sum(m_arr))
-    print(f"Total structural mass (sum of particle masses): {mass_total:.3f} kg")
-    system_model = build_system_model(system_config_path, tether, m_arr, config)
-    # Report the tether the system model ACTUALLY ends up with. The factory
-    # inside build_system_model prints the tether it built from system.yaml and
-    # is then overwritten by ``tether`` -- so that earlier line is stale and
-    # reads as if rigid-lumped were in use even when it is not.
-    print(
-        f"  -> system model tether in use: {type(system_model.tether).__name__} "
-        f"(diameter={system_model.tether.diameter_tether:g}, "
-        f"in trim={bool(_tether_cfg.get('include_in_trim', False))})"
-    )
-
-    ########################################
-    ### AEROSTUCTURAL COUPLED SIMULATION ###
-    ########################################
-    tracking_data, meta = coupled_solver_qsm.main(
-        m_arr=m_arr,
-        struc_nodes=struc_nodes,
-        struc_nodes_initial=struc_nodes_initial,
-        system_model=system_model,
-        config=config,
-        ### ACTUATION
-        initial_length_power_tape=initial_length_power_tape,
-        n_power_tape_steps=n_power_tape_steps,
-        power_tape_final_extension=power_tape_final_extension,
-        power_tape_extension_step=power_tape_extension_step,
-        initial_length_steering_left=initial_length_steering_left,
-        initial_length_steering_right=initial_length_steering_right,
-        steering_tape_indices=steering_tape_indices,
-        steering_tape_final_extension=steering_tape_final_extension,
-        steering_tape_extension_step=steering_tape_extension_step,
-        ### CONNECTIVITY
-        kite_connectivity_arr=kite_connectivity_arr,
-        bridle_connectivity_arr=bridle_connectivity_arr,
-        pulley_line_indices=pulley_line_indices,
-        pulley_line_to_other_node_pair_dict=pulley_line_to_other_node_pair_dict,
-        ### STRUC --> AERO
-        struc_node_le_indices=struc_node_le_indices,
-        struc_node_te_indices=struc_node_te_indices,
-        ### AERO
-        body_aero=copy.deepcopy(body_aero),
-        vsm_solver=copy.deepcopy(vsm_solver),
-        vel_app=vel_app,
-        initial_polar_data=copy.deepcopy(initial_polar_data),
-        bridle_diameter_arr=bridle_diameter_arr,
-        # Keep the VSM bridle-line drag tracking the deforming/actuated bridle
-        # (the initial static bridle mis-trims roll on steered shapes).
-        bridle_line_specs=aerodynamic_vsm.parse_bridle_line_specs(
-            struc_geometry, config
-        ),
-        ### AERO --> STRUC
-        aero2struc_mapping=aero2struc_mapping,
-        power_tape_index=power_tape_index,
-        ### STRUC
-        psystem=psystem,
-    )
-
-    # Save results
-    h5_path = save_sim_output(tracking_data, meta, results_dir)
-    # The final coupled trim's converged circulation, as a plain .npy next to
-    # the geometry snapshot: snapshot re-solves seed their gamma loop with it
-    # (branch selection near stall) without having to open the h5.
-    gamma_final = np.asarray(meta.get("gamma_distribution", []), dtype=float)
-    if gamma_final.size:
-        np.save(Path(results_dir) / "gamma_distribution.npy", gamma_final)
-    final_nodes = np.asarray(tracking_data["positions"][meta["n_iter"] - 1])
-    save_geometry_snapshot(
-        config,
-        build_deformed_struc_geometry(struc_geometry, final_nodes),
-        build_deformed_aero_geometry(
-            aero_geometry, final_nodes, struc_node_le_indices, struc_node_te_indices
-        ),
-        results_dir,
-        system_yaml_path=system_config_path,
-    )
-
-    return {
-        "results_dir": results_dir,
-        "results_root": results_root,
-        "case_folder": case_folder,
-        "config": config,
-        "h5_path": h5_path,
-        "tracking_data": tracking_data,
-        "meta": meta,
-        "final_nodes": final_nodes,
-        "m_arr": m_arr,
-        "struc_geometry": struc_geometry,
-        "aero_geometry": aero_geometry,
-        "kite_connectivity_arr": kite_connectivity_arr,
-        "l0_arr": l0_arr,
-        "k_arr": k_arr,
-        "struc_node_le_indices": struc_node_le_indices,
-        "struc_node_te_indices": struc_node_te_indices,
-        "power_tape_index": power_tape_index,
-        "steering_tape_indices": steering_tape_indices,
-        "system_model": system_model,
-        "system_config_path": system_config_path,
-    }
+from awetrim.aerostructural.case import build_flight_case_folder
+from awetrim.aerostructural.results import aerostructural_results_root
+from awetrim.aerostructural.wireframe.driver import solve_deformation_reduced_fem
+
+# Kept importable from here: scripts written before the driver moved into the
+# package call run_simulation_PSM.solve_deformation (the photogrammetry PSM case).
+from awetrim.aerostructural.wireframe.driver import solve_deformation  # noqa: F401
+
+# ---------------------------------------------------------------------------
+# Inputs
+# ---------------------------------------------------------------------------
+KITE = "LEI-V3-KITE"  # a folder under data/ with a struc_geometry_FEM_full.yaml
+SYSTEM_FILE = "system.yaml"  # in data/<KITE>/: masses (KCU) and tether
+
+# Flight state. Angles are those of the course-aligned spherical frame: the
+# tether direction is set by elevation and azimuth, the flight direction on the
+# sphere by the course angle (90 deg = flying across the wind window).
+ELEVATION_DEG = 0.0  # beta, tether above the ground
+AZIMUTH_DEG = 0.0  # phi, tether away from the downwind direction
+COURSE_DEG = 90.0  # chi
+TETHER_LENGTH_M = 300.0  # r
+REEL_OUT_SPEED_MS = 1.5  # v_r, positive = reeling out
+# At the reference height of the kite's wind model. 4.2 m/s puts the LEI-V3 at
+# an apparent wind of about 16 m/s at the default state, the load range the
+# Billow tube law is calibrated on; keep it equal in both scripts to compare.
+WIND_SPEED_MS = 4.2
+WITH_GRAVITY = False
+
+# Actuation [m], relative to the tape lengths stored in the geometry. Stepped
+# in from the stored lengths, one converged state per step.
+DEPOWER_TAPE_EXTENSION_M = 0.0  # + lengthens the depower tape
+STEERING_TAPE_EXTENSION_M = 0.0  # half-difference: + shortens one steering tape, lengthens the other
+
+SHOW_RESULT = True  # print the trim table and open the 3-D viewer when done
+# ---------------------------------------------------------------------------
 
 
 def main():
-    args = _build_arg_parser().parse_args()
-
-    is_sweep_requested = (
-        args.steering_sweep_start is not None
-        or args.steering_sweep_end is not None
-        or args.steering_sweep_step is not None
-    )
-    if is_sweep_requested:
-        if (
-            args.steering_sweep_start is None
-            or args.steering_sweep_end is None
-            or args.steering_sweep_step is None
-        ):
-            raise ValueError(
-                "Provide all sweep args: --steering-sweep-start, --steering-sweep-end, --steering-sweep-step"
-            )
-        _run_steering_sweep(args)
-        return
-
-    overrides = {}
-    if args.steering_final_extension is not None:
-        overrides["steering_tape_final_extension"] = float(
-            args.steering_final_extension
-        )
-    deformation = solve_deformation(config_overrides=overrides or None)
-    config = deformation["config"]
-    results_root = deformation["results_root"]
-    results_dir = deformation["results_dir"]
-    case_folder = deformation["case_folder"]
-    h5_path = deformation["h5_path"]
-    power_tape_index = deformation["power_tape_index"]
-    steering_tape_indices = deformation["steering_tape_indices"]
-    meta = deformation["meta"]
-    struc_geometry = deformation["struc_geometry"]
-    kite_connectivity_arr = deformation["kite_connectivity_arr"]
-    k_arr = deformation["k_arr"]
-    # Tape rest lengths are actuated during the run, so ``l0_arr`` (the starting
-    # values) would over/under-state the tape tensions below. Prefer the rest
-    # lengths the particle system ends with; they share the connectivity order.
-    l0_arr = np.asarray(deformation["l0_arr"], dtype=float)
-    rest_lengths_final = np.asarray(meta.get("rest_lengths", []), dtype=float)
-    if rest_lengths_final.shape == l0_arr.shape:
-        l0_arr = rest_lengths_final
-
-    summary_csv_name = config.get("qsm_summary_csv_name", "qsm_summary.csv")
-    summary_csv_path = results_root / summary_csv_name
-    summary_row = _build_qsm_csv_row(
-        config=config,
-        results=meta,
-        case_folder=case_folder,
-        results_dir=results_dir,
-        power_tape_index=power_tape_index,
-        steering_tape_indices=steering_tape_indices,
-    )
-    _append_row_to_csv(summary_csv_path, summary_row)
-
-    # Load results
-    meta_data_dict, tracking_data = load_sim_output(h5_path)
-
-    # logging.info(f"meta_data: {meta_data_dict}")
-    # - here you could add functions to plot the tracking of f_int, f_ext and f_residual over the iterations
-    # - functions that make an animation of the kite going through the iterations
-    # - etc.
-    f_residual = tracking_data["f_int"] - tracking_data["f_ext"]
-
-    printing_rest_lengths(tracking_data, struc_geometry)
-
-    # --- Front/back bridle force distribution at KCU (node 0) ---
-    final_nodes = np.asarray(tracking_data["positions"][meta["n_iter"] - 1])
-    front_line_names = {"amain"}
-    back_line_names = {"Power Tape", "Steering Tape"}
-
-    bridle_set = {
-        tuple(sorted(c)): (float(l0_arr[i]), float(k_arr[i]))
-        for i, c in enumerate(kite_connectivity_arr)
-        if 0 in c
+    project_dir = Path(__file__).resolve().parents[2]
+    overrides = {
+        "angle_elevation_deg": ELEVATION_DEG,
+        "angle_azimuth_deg": AZIMUTH_DEG,
+        "angle_course_deg": COURSE_DEG,
+        "distance_radial": TETHER_LENGTH_M,
+        "speed_radial": REEL_OUT_SPEED_MS,
+        "wind_speed_wind_ref": WIND_SPEED_MS,
+        "is_with_gravity": WITH_GRAVITY,
+        "power_tape_final_extension": DEPOWER_TAPE_EXTENSION_M,
+        "steering_tape_final_extension": STEERING_TAPE_EXTENSION_M,
+        # The same aerodynamics in both scripts: 27 sections x 2 = 54 panels
+        # of the full geometry's mesh, and VSM's base circulation loop. With
+        # artificial viscosity on, the LEI-V3's stalled tips trap the Anderson
+        # loop (as_config's) in a post-stall limit cycle and the tip loads
+        # never converge. The Billow studies use base too.
+        "aerodynamic": {"n_aero_panels_per_struc_section": 2, "gamma_loop_type": "base"},
     }
-
-    F_front = np.zeros(3)
-    F_back = np.zeros(3)
-    T_front = 0.0
-    T_back = 0.0
-    per_line = []
-    for row in struc_geometry["bridle_connections"]["data"]:
-        name = row[0]
-        ci, cj = int(row[1]), int(row[2])
-        if 0 not in (ci, cj):
-            continue
-        l0, k = bridle_set[tuple(sorted((ci, cj)))]
-        other = cj if ci == 0 else ci
-        vec = final_nodes[other] - final_nodes[0]
-        length = float(np.linalg.norm(vec))
-        tension = max(0.0, k * (length - l0)) if length > 1e-12 else 0.0
-        F = tension * vec / length if length > 1e-12 else np.zeros(3)
-        per_line.append((name, ci, cj, tension, F))
-        if name in front_line_names:
-            F_front += F
-            T_front += tension
-        elif name in back_line_names:
-            F_back += F
-            T_back += tension
-
-    print("\n=== Bridle forces at KCU (node 0) ===")
-    print(f"{'line':14s} {'ci':>4s}->{'cj':<4s} {'|T| [N]':>10s}   F [N]")
-    for name, ci, cj, T, F in per_line:
-        print(
-            f"{name:14s} {ci:>4d}->{cj:<4d} {T:>10.2f}   [{F[0]:+8.2f}, {F[1]:+8.2f}, {F[2]:+8.2f}]"
-        )
-    print(
-        f"\nFront sum (A-side, amain):                |T|={T_front:.2f} N, F={F_front}"
+    results_dir = (
+        aerostructural_results_root(project_dir, KITE)
+        / "wireframe"
+        / build_flight_case_folder(overrides)
     )
-    print(f"Back  sum (Power Tape + Steering Tape):   |T|={T_back:.2f} N, F={F_back}")
-    print(f"Resultant at KCU:                         F={F_front + F_back}\n")
+    result = solve_deformation_reduced_fem(
+        config_overrides=overrides,
+        kite_name=KITE,
+        project_dir=project_dir,
+        results_dir=results_dir,
+        system_config_path=project_dir / "data" / KITE / SYSTEM_FILE,
+    )
+    print(f"\nCase written to {result['results_dir']}")
+    if SHOW_RESULT:
+        from plot_simulation import report
 
-    bridle_csv_path = results_dir / "kcu_bridle_forces.csv"
-    with bridle_csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(
-            ["line", "ci", "cj", "side", "tension_N", "Fx_N", "Fy_N", "Fz_N"]
-        )
-        for name, ci, cj, T, F in per_line:
-            side = (
-                "front"
-                if name in front_line_names
-                else ("back" if name in back_line_names else "other")
-            )
-            writer.writerow(
-                [
-                    name,
-                    ci,
-                    cj,
-                    side,
-                    f"{T:.6f}",
-                    f"{F[0]:.6f}",
-                    f"{F[1]:.6f}",
-                    f"{F[2]:.6f}",
-                ]
-            )
-        writer.writerow(
-            [
-                "FRONT_SUM",
-                "",
-                "",
-                "front",
-                f"{T_front:.6f}",
-                f"{F_front[0]:.6f}",
-                f"{F_front[1]:.6f}",
-                f"{F_front[2]:.6f}",
-            ]
-        )
-        writer.writerow(
-            [
-                "BACK_SUM",
-                "",
-                "",
-                "back",
-                f"{T_back:.6f}",
-                f"{F_back[0]:.6f}",
-                f"{F_back[1]:.6f}",
-                f"{F_back[2]:.6f}",
-            ]
-        )
-    print(f"Saved KCU bridle force distribution to {bridle_csv_path}")
+        report(result["results_dir"])
 
 
 if __name__ == "__main__":

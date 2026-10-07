@@ -932,6 +932,11 @@ def main(
         # structure carries it on (see _bridle_line_specs_for_vsm).
         struc_nodes=struc_nodes,
         bridle_line_specs=bridle_line_specs,
+        # The trim settings: tether in the trim (config["tether"]), the
+        # quasi_steady_trim block, KCU drag. Not passed before 2026-10-07, so
+        # every earlier Billow trim was TETHERLESS with the uncapped default
+        # trim whatever as_config said; the wireframe driver always passed it.
+        config=config,
     )
 
     logging.debug(
@@ -1180,6 +1185,7 @@ def main(
                     # nodes so the trim charges the drag the structure carries.
                     struc_nodes=struc_nodes,
                     bridle_line_specs=bridle_line_specs,
+                    config=config,
                 )
             )
             end_time_aero_model = time.time()

@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kite Case Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+:root {
+  --ground: #eef0f4; --viewport: #f7f8fa; --surface: #ffffff; --line: #d2d7e0;
+  --ink: #171b25; --ink-soft: #5b6478; --ink-faint: #8a93a6;
+  --accent: #2c497f; --accent-soft: #e3e9f5;
+  --canopy: #9fb6d8; --wingline: #8a93a6; --tube: #23293a;
+  --bridle: #1d7a5e; --pulley: #2c497f; --depower: #a4548a; --steering: #d55e00;
+  --kcu: #a4548a; --ghost: #b9c0cc;
+  --line-0: #eeb35f; --line-1: #e08a35; --line-2: #c8621c; --line-3: #9a430f; --line-4: #642508;
+  --line-slack: #8a93a6;
+  --shadow: 0 1px 2px rgba(23,27,37,.08), 0 8px 24px rgba(23,27,37,.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ground: #0e1118; --viewport: #141924; --surface: #1a1f2b; --line: #2b3241;
+    --ink: #e6e9f0; --ink-soft: #a3abbd; --ink-faint: #6f7889;
+    --accent: #7ba3e0; --accent-soft: #1e2534;
+    --canopy: #4e6a96; --wingline: #6f7889; --tube: #c9d0de;
+    --bridle: #3fbf93; --pulley: #7ba3e0; --depower: #d98ec0; --steering: #f08a3c;
+    --kcu: #d98ec0; --ghost: #3a4252;
+    --line-0: #8d5020; --line-1: #bb6a26; --line-2: #e3873a; --line-3: #f4ad62; --line-4: #ffd69c;
+    --line-slack: #6f7889;
+    --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+  }
+}
+:root[data-theme="dark"] {
+  --ground: #0e1118; --viewport: #141924; --surface: #1a1f2b; --line: #2b3241;
+  --ink: #e6e9f0; --ink-soft: #a3abbd; --ink-faint: #6f7889;
+  --accent: #7ba3e0; --accent-soft: #1e2534;
+  --canopy: #4e6a96; --wingline: #6f7889; --tube: #c9d0de;
+  --bridle: #3fbf93; --pulley: #7ba3e0; --depower: #d98ec0; --steering: #f08a3c;
+  --kcu: #d98ec0; --ghost: #3a4252;
+  --line-0: #8d5020; --line-1: #bb6a26; --line-2: #e3873a; --line-3: #f4ad62; --line-4: #ffd69c;
+  --line-slack: #6f7889;
+  --shadow: 0 1px 2px rgba(0,0,0,.4), 0 8px 24px rgba(0,0,0,.3);
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; height: 100vh; display: flex; flex-direction: column;
+  background: var(--ground); color: var(--ink);
+  font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 15px; line-height: 1.5; -webkit-font-smoothing: antialiased;
+}
+header {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px;
+  padding: 16px 22px 12px; border-bottom: 1px solid var(--line); background: var(--surface);
+}
+h1 { margin: 0; font-size: 1.05rem; font-weight: 600; letter-spacing: -.01em; }
+.sub { margin: 0; color: var(--ink-soft); font-size: .8rem; font-family: "IBM Plex Mono", ui-monospace, monospace; overflow-wrap: anywhere; }
+main { flex: 1; display: grid; grid-template-columns: 230px 1fr 340px; min-height: 0; }
+@media (max-width: 1100px) { body { height: auto; min-height: 100vh; } .viewport { height: 65vh; } }
+@media (max-width: 1100px) { main { grid-template-columns: 230px 1fr; } .stats { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); } }
+@media (max-width: 720px) { main { grid-template-columns: 1fr; } .rail { border-right: 0; border-bottom: 1px solid var(--line); } }
+.rail, .stats { background: var(--surface); padding: 16px; display: flex; flex-direction: column; gap: 18px; overflow-y: auto; }
+.rail { border-right: 1px solid var(--line); }
+.stats { border-left: 1px solid var(--line); }
+.group { display: flex; flex-direction: column; gap: 7px; }
+.group > h2 { margin: 0; font-size: .66rem; font-weight: 600; text-transform: uppercase; letter-spacing: .09em; color: var(--ink-faint); }
+.check { display: flex; align-items: center; gap: 8px; font-size: .82rem; color: var(--ink-soft); cursor: pointer; }
+.check input { accent-color: var(--accent); width: 15px; height: 15px; cursor: pointer; }
+.check:hover { color: var(--ink); }
+.legend { display: flex; flex-direction: column; gap: 5px; }
+.legend .row { display: grid; grid-template-columns: 14px 1fr; align-items: center; gap: 8px; font-size: .78rem; color: var(--ink-soft); }
+.legend .sw { width: 14px; height: 3px; border-radius: 2px; }
+.legend .sw.dash { height: 0; border-top: 2px dashed var(--line-slack); background: none; }
+.ramp { height: 10px; border-radius: 3px; }
+.ramp-labels { position: relative; display: block; height: 1.2em; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: .7rem; color: var(--ink-soft); }
+.ramp-labels span { position: absolute; top: 0; white-space: nowrap; }
+.legend-note { margin: 0; font-size: .72rem; color: var(--ink-faint); }
+button.ghost { appearance: none; font: inherit; font-size: .78rem; padding: 6px 10px; border-radius: 5px; border: 1px solid var(--line); background: transparent; color: var(--ink-soft); cursor: pointer; align-self: flex-start; }
+button.ghost:hover { border-color: var(--accent); color: var(--ink); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.viewport { position: relative; background: var(--viewport); min-height: 460px; }
+canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; position: absolute; inset: 0; }
+canvas:active { cursor: grabbing; }
+.hint { position: absolute; right: 14px; top: 12px; font-size: .72rem; color: var(--ink-faint); text-align: right; pointer-events: none; }
+.hint kbd { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: .68rem; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--ink-soft); }
+.tip { position: absolute; pointer-events: none; padding: 4px 8px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface); box-shadow: var(--shadow); color: var(--ink); font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: .74rem; white-space: nowrap; }
+.kpis { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.kpi { border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; }
+.kpi dt { margin: 0; font-size: .62rem; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-faint); }
+.kpi dd { margin: 0; font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; font-size: 1rem; color: var(--ink); }
+.kpi dd small { font-size: .7rem; color: var(--ink-soft); margin-left: 3px; }
+table { width: 100%; border-collapse: collapse; font-size: .78rem; }
+th { text-align: left; font-size: .66rem; font-weight: 600; text-transform: uppercase; letter-spacing: .09em; color: var(--ink-faint); padding: 12px 0 4px; }
+td { padding: 3px 0; border-bottom: 1px solid var(--line); color: var(--ink-soft); vertical-align: top; }
+td.v { text-align: right; font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; color: var(--ink); white-space: nowrap; padding-left: 10px; }
+td.u { color: var(--ink-faint); padding-left: 5px; white-space: nowrap; font-size: .72rem; }
+.bad { color: var(--steering) !important; font-weight: 600; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Kite case</h1>
+  <p class="sub" id="subtitle"></p>
+</header>
+<main>
+  <div class="rail">
+    <div class="group">
+      <h2>Shape</h2>
+      <label class="check"><input type="radio" name="shape" value="final" checked> Converged (loaded)</label>
+      <label class="check"><input type="radio" name="shape" value="initial"> Initial (before load)</label>
+      <label class="check"><input type="checkbox" id="ghost"> Overlay the other shape</label>
+    </div>
+    <div class="group">
+      <h2>Shade lines by</h2>
+      <label class="check"><input type="radio" name="shading" value="tension" checked> Tension</label>
+      <label class="check"><input type="radio" name="shading" value="kind"> Line type</label>
+      <div class="legend" id="legend"></div>
+    </div>
+    <div class="group">
+      <h2>Show</h2>
+      <label class="check"><input type="checkbox" id="showSurface" checked> Wing surface</label>
+      <label class="check"><input type="checkbox" id="showWing" checked> Wing structure</label>
+      <label class="check" id="tubesRow"><input type="checkbox" id="showTubes" checked> Inflated tubes</label>
+      <label class="check"><input type="checkbox" id="showBridle" checked> Bridle and tapes</label>
+    </div>
+    <div class="group">
+      <h2>View</h2>
+      <button class="ghost" id="front">Front</button>
+      <button class="ghost" id="side">Side</button>
+      <button class="ghost" id="reset">Reset camera</button>
+    </div>
+  </div>
+  <div class="viewport">
+    <canvas id="view"></canvas>
+    <div class="hint"><div>drag to orbit &middot; scroll to zoom</div><div><kbd>shift</kbd> + drag to pan &middot; hover a line</div></div>
+    <div class="tip" id="tip" hidden></div>
+  </div>
+  <div class="stats">
+    <dl class="kpis" id="kpis"></dl>
+    <table id="table"></table>
+  </div>
+</main>
+<script>
+const DATA = __DATA__;
+
+const KINDS = {
+  wing: { name: "wing structure", varName: "--wingline" },
+  bridle: { name: "bridle line", varName: "--bridle" },
+  pulley: { name: "pulley rope", varName: "--pulley" },
+  depower_tape: { name: "depower tape", varName: "--depower" },
+  steering_tape: { name: "steering tape", varName: "--steering" },
+};
+const LINE_STOPS = ["--line-0", "--line-1", "--line-2", "--line-3", "--line-4"];
+const SLACK_N = 1;
+
+const canvas = document.getElementById("view");
+const ctx = canvas.getContext("2d");
+const HOME = { yaw: -0.62, pitch: 0.28, zoom: 1, panX: 0, panY: 0 };
+const cam = { ...HOME };
+const view = { shape: "final", ghost: false, shading: "tension", surface: true, wing: true, tubes: true, bridle: true };
+
+function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+function rampColour(stops, t) {
+  const x = Math.min(1, Math.max(0, t)) * (stops.length - 1);
+  const k = Math.min(stops.length - 2, Math.floor(x)), f = x - k;
+  const rgb = (hex) => { const n = parseInt(hex.slice(1), 16); return [n >> 16 & 255, n >> 8 & 255, n & 255]; };
+  const a = rgb(stops[k]), b = rgb(stops[k + 1]);
+  return "#" + a.map((c, i) => Math.round(c + f * (b[i] - c)).toString(16).padStart(2, "0")).join("");
+}
+function shade(hex, amount) {
+  const n = parseInt(hex.slice(1), 16);
+  const mix = (c) => Math.round(Math.min(255, Math.max(0, c * amount)));
+  return `rgb(${mix(n >> 16 & 255)},${mix(n >> 8 & 255)},${mix(n & 255)})`;
+}
+function niceCeiling(v) {
+  const m = 10 ** Math.floor(Math.log10(v));
+  for (const s of [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10]) if (s * m >= v) return s * m;
+  return 10 * m;
+}
+const hanging = DATA.lines.filter((l) => l.kind !== "wing" && l.tension != null);
+const TENSION_TOP = niceCeiling(Math.max(10, ...hanging.map((l) => l.tension)));
+const tensionFraction = (t) => Math.min(1, Math.max(0, Math.log10(Math.max(t, 1)) / Math.log10(TENSION_TOP)));
+
+/* ---- camera: the frame is fixed on the converged shape so the two shapes
+   can be compared in place ------------------------------------------------ */
+function frameOf(points) {
+  const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
+  for (const p of points) for (let i = 0; i < 3; i++) { lo[i] = Math.min(lo[i], p[i]); hi[i] = Math.max(hi[i], p[i]); }
+  return { centre: [0, 1, 2].map((i) => 0.5 * (lo[i] + hi[i])), span: Math.max(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) };
+}
+const FRAME = frameOf(DATA.final);
+function makeProjector() {
+  const { centre, span } = FRAME;
+  const rect = canvas.getBoundingClientRect();
+  const w = rect.width, h = rect.height;
+  const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  const dist = span * 2.6;
+  const focal = Math.min(w, h) * 0.5 * cam.zoom * (dist / span);
+  const rotate = (v) => { const x = v[0] * cy - v[1] * sy, y0 = v[0] * sy + v[1] * cy, z = v[2]; return [x, y0 * cp - z * sp, y0 * sp + z * cp]; };
+  const project = (p) => {
+    const r = rotate([p[0] - centre[0], p[1] - centre[1], p[2] - centre[2]]);
+    const f = focal / Math.max(r[1] + dist, 1e-3);
+    return [w / 2 + r[0] * f + cam.panX, h / 2 - r[2] * f + cam.panY, r[1] + dist];
+  };
+  return { project, rotate, w, h };
+}
+
+/* ---- drawing --------------------------------------------------------- */
+let drawnLines = [];
+function lineStyle(line, colours, lineStops) {
+  if (view.shading === "kind" || line.tension == null) return { colour: colours[line.kind], width: line.kind === "wing" ? 0.8 : 1.3, dash: null };
+  if (line.kind === "wing") return { colour: colours.wing, width: 0.8, dash: null };
+  if (line.tension < SLACK_N) return { colour: colours.slack, width: 1.1, dash: [4, 3] };
+  const x = tensionFraction(line.tension);
+  return { colour: rampColour(lineStops, x), width: 1.1 + 2.0 * x, dash: null };
+}
+function draw() {
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  if (canvas.width !== Math.round(rect.width * dpr) || canvas.height !== Math.round(rect.height * dpr)) {
+    canvas.width = Math.round(rect.width * dpr); canvas.height = Math.round(rect.height * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, rect.width, rect.height);
+  const { project, rotate } = makeProjector();
+  const colours = {
+    canopy: cssVar("--canopy"), wing: cssVar("--wingline"), tube: cssVar("--tube"), kcu: cssVar("--kcu"),
+    slack: cssVar("--line-slack"), ghost: cssVar("--ghost"),
+  };
+  for (const [k, v] of Object.entries(KINDS)) colours[k] = cssVar(v.varName);
+  const lineStops = LINE_STOPS.map(cssVar);
+  const light = [0.32, -0.78, 0.54];
+
+  if (view.ghost) {
+    const other = (view.shape === "final" ? DATA.initial : DATA.final).map(project);
+    ctx.strokeStyle = colours.ghost; ctx.lineWidth = 0.8; ctx.setLineDash([]);
+    for (const l of DATA.lines) { ctx.beginPath(); ctx.moveTo(other[l.i][0], other[l.i][1]); ctx.lineTo(other[l.j][0], other[l.j][1]); ctx.stroke(); }
+    for (const e of DATA.tubes) { ctx.beginPath(); ctx.moveTo(other[e[0]][0], other[e[0]][1]); ctx.lineTo(other[e[1]][0], other[e[1]][1]); ctx.stroke(); }
+  }
+
+  const pos = view.shape === "final" ? DATA.final : DATA.initial;
+  const screen = pos.map(project);
+  const prims = [];
+  if (view.surface) {
+    for (const tri of DATA.triangles) {
+      const a = pos[tri[0]], b = pos[tri[1]], c = pos[tri[2]];
+      const u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+      let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+      const len = Math.hypot(...n) || 1;
+      n = rotate(n.map((x) => x / len));
+      const lambert = Math.abs(n[0] * light[0] + n[1] * light[1] + n[2] * light[2]);
+      prims.push({ kind: "tri", depth: (screen[tri[0]][2] + screen[tri[1]][2] + screen[tri[2]][2]) / 3,
+        pts: [screen[tri[0]], screen[tri[1]], screen[tri[2]]], fill: shade(colours.canopy, 0.62 + 0.55 * lambert) });
+    }
+  }
+  if (view.tubes && DATA.tubes.length) {
+    const dMax = Math.max(...DATA.tubeDiameter, 1e-6);
+    DATA.tubes.forEach((e, k) => prims.push({ kind: "line", depth: (screen[e[0]][2] + screen[e[1]][2]) / 2 - 0.02,
+      pts: [screen[e[0]], screen[e[1]]], colour: colours.tube, width: 1.6 + 6.4 * ((DATA.tubeDiameter[k] || dMax) / dMax), cap: "round" }));
+  }
+  DATA.lines.forEach((line) => {
+    if (line.kind === "wing" ? !view.wing : !view.bridle) return;
+    const s = lineStyle(line, colours, lineStops);
+    prims.push({ kind: "line", depth: (screen[line.i][2] + screen[line.j][2]) / 2,
+      pts: [screen[line.i], screen[line.j]], colour: s.colour, width: s.width, dash: s.dash, cap: "butt", line });
+  });
+  prims.sort((a, b) => b.depth - a.depth);
+  drawnLines = prims.filter((p) => p.line);
+  for (const p of prims) {
+    ctx.beginPath();
+    if (p.kind === "tri") {
+      ctx.moveTo(p.pts[0][0], p.pts[0][1]); ctx.lineTo(p.pts[1][0], p.pts[1][1]); ctx.lineTo(p.pts[2][0], p.pts[2][1]); ctx.closePath();
+      ctx.fillStyle = p.fill; ctx.fill(); ctx.strokeStyle = p.fill; ctx.lineWidth = 0.4; ctx.stroke();
+    } else {
+      ctx.moveTo(p.pts[0][0], p.pts[0][1]); ctx.lineTo(p.pts[1][0], p.pts[1][1]);
+      ctx.strokeStyle = p.colour; ctx.lineWidth = p.width; ctx.lineCap = p.cap; ctx.setLineDash(p.dash || []); ctx.stroke(); ctx.setLineDash([]);
+    }
+  }
+  for (const i of DATA.fixed) {
+    const s = screen[i];
+    ctx.beginPath(); ctx.arc(s[0], s[1], 5, 0, Math.PI * 2); ctx.fillStyle = colours.kcu; ctx.fill();
+  }
+}
+
+/* ---- interaction ----------------------------------------------------- */
+const tip = document.getElementById("tip");
+let dragging = null;
+function segmentDistance(x, y, a, b) {
+  const dx = b[0] - a[0], dy = b[1] - a[1];
+  const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / (dx * dx + dy * dy || 1)));
+  return Math.hypot(x - a[0] - t * dx, y - a[1] - t * dy);
+}
+function hover(e) {
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left, y = e.clientY - rect.top;
+  let nearest = null, best = 5;
+  for (const p of drawnLines) { const d = segmentDistance(x, y, p.pts[0], p.pts[1]); if (d <= best) { best = d; nearest = p; } }
+  if (!nearest) { tip.hidden = true; return; }
+  const l = nearest.line;
+  const what = l.name || KINDS[l.kind].name;
+  const value = l.tension == null ? "" : l.tension < SLACK_N ? " · slack" : ` · ${Math.round(l.tension)} N`;
+  tip.textContent = `${what}${value}`;
+  tip.hidden = false;
+  tip.style.left = `${Math.min(x + 14, rect.width - tip.offsetWidth - 8)}px`;
+  tip.style.top = `${Math.max(8, y - tip.offsetHeight - 10)}px`;
+}
+canvas.addEventListener("pointerdown", (e) => { dragging = { x: e.clientX, y: e.clientY, pan: e.shiftKey }; canvas.setPointerCapture(e.pointerId); });
+canvas.addEventListener("pointermove", (e) => {
+  if (!dragging) { hover(e); return; }
+  tip.hidden = true;
+  const dx = e.clientX - dragging.x, dy = e.clientY - dragging.y;
+  dragging.x = e.clientX; dragging.y = e.clientY;
+  if (dragging.pan) { cam.panX += dx; cam.panY += dy; }
+  else { cam.yaw += dx * 0.0072; cam.pitch = Math.max(-1.45, Math.min(1.45, cam.pitch + dy * 0.0072)); }
+  draw();
+});
+for (const type of ["pointerup", "pointercancel", "pointerleave"]) canvas.addEventListener(type, () => { dragging = null; if (type !== "pointerup") tip.hidden = true; });
+canvas.addEventListener("wheel", (e) => { e.preventDefault(); cam.zoom = Math.max(0.25, Math.min(8, cam.zoom * Math.exp(-e.deltaY * 0.0012))); draw(); }, { passive: false });
+const setCam = (c) => { Object.assign(cam, HOME, c); draw(); };
+document.getElementById("reset").addEventListener("click", () => setCam({}));
+document.getElementById("front").addEventListener("click", () => setCam({ yaw: -Math.PI / 2, pitch: 0.05 }));
+document.getElementById("side").addEventListener("click", () => setCam({ yaw: 0, pitch: 0.05 }));
+
+for (const [id, key] of [["ghost", "ghost"], ["showSurface", "surface"], ["showWing", "wing"], ["showTubes", "tubes"], ["showBridle", "bridle"]]) {
+  const input = document.getElementById(id);
+  input.checked = view[key];
+  input.addEventListener("change", () => { view[key] = input.checked; draw(); });
+}
+for (const name of ["shape", "shading"]) {
+  for (const radio of document.querySelectorAll(`input[name="${name}"]`)) {
+    radio.addEventListener("change", () => { if (radio.checked) { view[name] = radio.value; refresh(); } });
+  }
+}
+if (!DATA.tubes.length) document.getElementById("tubesRow").style.display = "none";
+
+/* ---- chrome ------------------------------------------------------------ */
+function decadeLabels(scale) {
+  const top = Math.log10(scale), out = [];
+  for (let k = 0; 10 ** k <= scale; k++) {
+    const f = k / top, shift = f < 0.05 ? 0 : f > 0.9 ? -100 : -50;
+    out.push(`<span style="left:${(100 * f).toFixed(1)}%;transform:translateX(${shift}%)">${10 ** k}</span>`);
+  }
+  return out.join("");
+}
+function refresh() {
+  const present = new Set(DATA.lines.map((l) => l.kind));
+  const legend = document.getElementById("legend");
+  const slack = hanging.filter((l) => l.tension < SLACK_N).length;
+  if (view.shading === "tension") {
+    legend.innerHTML = `
+      <div class="ramp" style="background:linear-gradient(to right, ${LINE_STOPS.map((v) => `var(${v})`).join(", ")})"></div>
+      <div class="ramp-labels">${decadeLabels(TENSION_TOP)}</div>
+      <p class="legend-note">Line tension, N, logarithmic.</p>
+      <div class="row"><span class="sw dash"></span><span>slack (${slack} of ${hanging.length})</span></div>`;
+  } else {
+    legend.innerHTML = Object.entries(KINDS).filter(([k]) => present.has(k))
+      .map(([, v]) => `<div class="row"><span class="sw" style="background:var(${v.varName})"></span><span>${v.name}</span></div>`).join("");
+  }
+  draw();
+}
+
+const backendName = { wireframe: "Wireframe (PSM)", billow: "Billow full model" }[DATA.backend] || DATA.backend;
+document.getElementById("title").textContent = `${DATA.kite} · ${backendName}`;
+document.getElementById("subtitle").textContent = DATA.title;
+document.title = `${DATA.kite} case`;
+
+const find = (label) => DATA.summary.find((r) => r.label === label);
+const kpis = [["Apparent wind", "Apparent wind speed"], ["Tether force", "Tether force at kite"],
+  ["L/D (VSM force)", "Lift-to-drag ratio (VSM force)"], ["Angle of attack", "Angle of attack"]];
+document.getElementById("kpis").innerHTML = kpis.map(([title, label]) => {
+  const r = find(label);
+  return r ? `<div class="kpi"><dt>${title}</dt><dd>${r.value}<small>${r.unit}</small></dd></div>` : "";
+}).join("");
+let html = "", group = null;
+for (const r of DATA.summary) {
+  if (r.group !== group) { html += `<tr><th colspan="3">${r.group}</th></tr>`; group = r.group; }
+  const bad = r.label === "Converged" && r.value !== "yes" ? " bad" : "";
+  html += `<tr><td>${r.label}</td><td class="v${bad}">${r.value}</td><td class="u">${r.unit}</td></tr>`;
+}
+document.getElementById("table").innerHTML = html;
+
+new ResizeObserver(() => draw()).observe(canvas);
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => draw());
+refresh();
+</script>
+</body>
+</html>

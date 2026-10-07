@@ -14,7 +14,7 @@ own force and moment. This script solves one VSM state on the Billow geometry
 and draws the difference.
 
 Usage (from project root):
-    python scripts/aerostructural/plot_chordwise_moment_matching.py
+    python scripts/aerostructural/studies/plot_chordwise_moment_matching.py
 """
 
 import copy
@@ -32,7 +32,7 @@ from awetrim.aerostructural.mapping import LinearStructuralToAeroMapper
 from awetrim.aerostructural.utils import calculate_cg, load_yaml, rotate_geometry
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.utils.system_config import get_tether
-from common import (
+from awetrim.aerostructural.case import (
     DEFAULT_KITE_NAME,
     build_system_model,
     resolve_initial_geometry_rotation_kwargs,
@@ -45,7 +45,7 @@ N_CHORDWISE = 10
 
 def solve_one_state():
     """One VSM trim on the relaxed Billow geometry; returns panels and results."""
-    project_dir = Path(__file__).resolve().parents[2]
+    project_dir = Path(__file__).resolve().parents[3]
     kite_name = DEFAULT_KITE_NAME
     config_path, aero_geometry_path, _ = resolve_kite_paths(project_dir, kite_name)
     struc_geometry_path = project_dir / "data" / kite_name / STRUC_GEOMETRY_FILENAME
@@ -313,7 +313,7 @@ def main():
     ax.legend(loc="best", fontsize=8)
 
     figure.tight_layout()
-    output = Path(__file__).resolve().parents[2] / "chordwise_moment_matching.png"
+    output = Path(__file__).resolve().parents[3] / "chordwise_moment_matching.png"
     figure.savefig(output, dpi=180)
     print(f"\nwritten to {output}")
     plt.show()

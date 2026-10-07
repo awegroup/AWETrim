@@ -38,8 +38,8 @@ the model itself is mirror-symmetric -- and positions alone cannot show that:
   mirror-equivariant: ``f_p = M f_i`` and ``m_p = -M m_i``.
 
 Usage (from project root):
-    python scripts/aerostructural/check_symmetric_equilibrium.py
-    python scripts/aerostructural/check_symmetric_equilibrium.py --scale 0.1
+    python scripts/aerostructural/studies/check_symmetric_equilibrium.py
+    python scripts/aerostructural/studies/check_symmetric_equilibrium.py --scale 0.1
 """
 
 import argparse
@@ -52,7 +52,7 @@ from awetrim.aerostructural.logging_config import *  # noqa: F401,F403
 from awetrim.aerostructural.billow import structural_billow as sb
 from billow import StructuralState
 from billow.symmetry import REFLECTION_Y, frame_mirror_mismatch
-from common import DEFAULT_KITE_NAME
+from awetrim.aerostructural.case import DEFAULT_KITE_NAME
 
 from check_mirror_asymmetry import decompose
 from check_structural_symmetry import symmetric_load
@@ -189,7 +189,7 @@ def main():
     parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
     args = parser.parse_args()
 
-    project = Path(__file__).resolve().parents[2]
+    project = Path(__file__).resolve().parents[3]
     settings = {"canopy_pattern": args.pattern, "canopy_refinement": args.refine}
     shared = build_once(project, args.kite, args.panels_per_section,
                         {"aerodynamic": {"gamma_loop_type": "base"}})

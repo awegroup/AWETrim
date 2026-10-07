@@ -28,8 +28,8 @@ Three placeholders are substituted:
     v_a u_s through the origin; ``gain_flight`` is the comparison's own.
 
 Usage (from project root):
-    python scripts/aerostructural/export_matched_sweep_data.py --output sweep.json
-    python scripts/aerostructural/build_matched_sweep_page.py \\
+    python scripts/aerostructural/studies/export_matched_sweep_data.py --output sweep.json
+    python scripts/aerostructural/studies/build_matched_sweep_page.py \\
         --data sweep.json \\
         --comparison scripts/personal/billow-paper/comparison.json \\
         --output matched_sweep.html

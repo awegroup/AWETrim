@@ -15,7 +15,7 @@
 medians and turn cloud); without it only the full-model curves are drawn.
 
 Usage (from project root):
-    python scripts/aerostructural/plot_matched_sweep_BILLOW.py --va 19
+    python scripts/aerostructural/studies/plot_matched_sweep_BILLOW.py --va 19
 """
 
 import argparse
@@ -29,7 +29,7 @@ from matplotlib.collections import LineCollection, PolyCollection
 from awetrim import plotting
 from awetrim.aerostructural.billow import structural_billow as sb
 from billow.elements.membrane import membrane_regimes
-from common import DEFAULT_KITE_NAME
+from awetrim.aerostructural.case import DEFAULT_KITE_NAME
 
 from check_mirror_asymmetry import final_positions
 from plot_billow_geometry import rebuild
@@ -234,7 +234,7 @@ def main():
                         help="no figure title, no 'paper's match' tags, and a PDF next to each PNG")
     args = parser.parse_args()
 
-    project = Path(__file__).resolve().parents[2]
+    project = Path(__file__).resolve().parents[3]
     root = project / "results" / args.kite / "aerostructural" / args.root
     out = Path(args.output_dir) if args.output_dir else root
     out.mkdir(parents=True, exist_ok=True)

@@ -794,6 +794,137 @@ def symmetric_equalities(structure: "BillowStructure"):
     ), partner
 
 
+def _bridle_elements(
+    connectivity, rest_lengths, stiffness, link_types, pulley_line_indices,
+    canopy_sections, strut_sections,
+):
+    """Split the reader's elements and build the cable and pulley sets.
+
+    Returns ``(grid, is_beam, is_canopy, is_cable, cable_elements, triplets,
+    arm_pairs, cables, pulleys)``. Shared by :func:`instantiate` and
+    :func:`relax_bridle_nodes`, so the relaxation another structural model
+    starts from is the one Billow starts from.
+    """
+    n_elements = len(connectivity)
+    grid = canopy_grid(canopy_sections, strut_sections)
+    edges = grid_edges(grid)
+
+    is_beam = link_types == "inflatable_beam"
+    triplets, arm_pairs = _pulley_triplets(connectivity, pulley_line_indices)
+    is_pulley_arm = np.zeros(n_elements, dtype=bool)
+    for first, second in arm_pairs:
+        is_pulley_arm[[first, second]] = True
+
+    pairs = [frozenset((int(a), int(b))) for a, b in connectivity]
+    is_canopy = np.array([pair in edges for pair in pairs]) & ~is_beam & ~is_pulley_arm
+    is_cable = ~(is_beam | is_pulley_arm | is_canopy)
+
+    # A bridle line that happened to join two grid nodes would be silently
+    # swallowed by the membrane, so check the split is unambiguous rather than
+    # trusting it.
+    on_grid = {int(node) for node in grid.ravel()}
+    swallowed = [
+        index
+        for index, pair in enumerate(pairs)
+        if is_cable[index] and set(pair) <= on_grid
+    ]
+    if swallowed:
+        raise RuntimeError(
+            f"{len(swallowed)} non-canopy elements join two canopy grid nodes "
+            f"without being grid edges (first: element {swallowed[0]}, nodes "
+            f"{sorted(pairs[swallowed[0]])}); the canopy split is ambiguous"
+        )
+
+    cable_elements = np.flatnonzero(is_cable)
+    cables = build_cable_elements(
+        connectivity[cable_elements],
+        rest_lengths[cable_elements],
+        stiffness[cable_elements],
+        name=CABLES,
+    )
+    # Billow's PulleyKernel takes the rest length of the WHOLE rope, and the
+    # reader stores that total on each arm (as kite_fem does, and unlike the PSS
+    # reader, which splits it across the two arms). Read it off the first arm.
+    first_arms = [first for first, _ in arm_pairs]
+    pulleys = build_pulley_elements(
+        np.asarray(triplets, dtype=int),
+        rest_lengths[first_arms],
+        stiffness[first_arms],
+        name=PULLEYS,
+    )
+    return (
+        grid, is_beam, is_canopy, is_cable, cable_elements, triplets, arm_pairs,
+        cables, pulleys,
+    )
+
+
+def relax_bridle_nodes(
+    config,
+    struc_geometry,
+    struc_nodes,
+    kite_connectivity_arr,
+    l0_arr,
+    k_arr,
+    linktype_arr,
+    pulley_line_indices,
+    canopy_sections,
+    strut_sections,
+) -> Array:
+    """The node positions :func:`instantiate` starts the Billow model from.
+
+    The same bridle relaxation, without building the tubes, the canopy or the
+    solver: for a structural model reduced from the same geometry (the
+    wireframe of ``wireframe.reduce_fem``), so both start from one shape.
+    Returns ``struc_nodes`` unchanged when ``relax_bridles`` is off.
+    """
+    settings = resolve_config(config.get("structural_billow"))
+    struc_nodes = np.asarray(struc_nodes, dtype=float)
+    if not settings["relax_bridles"]:
+        return struc_nodes.copy()
+    fixed_nodes = tuple(int(i) for i in struc_geometry.get("fixed_point_indices", [0]))
+    *_, cables, pulleys = _bridle_elements(
+        np.asarray(kite_connectivity_arr, dtype=int),
+        np.asarray(l0_arr, dtype=float),
+        np.asarray(k_arr, dtype=float),
+        np.asarray([str(t).lower() for t in linktype_arr]),
+        pulley_line_indices,
+        canopy_sections,
+        strut_sections,
+    )
+    grid = canopy_grid(canopy_sections, strut_sections)
+    relaxed, settled = relax_bridles(
+        struc_nodes,
+        cables,
+        pulleys,
+        grid,
+        kcu_node=int(fixed_nodes[0]),
+        pull_force=float(settings["relax_pull_force"]),
+        settle_force=float(settings["relax_settle_force"]),
+        move_limit=float(settings["relax_move_limit"]),
+    )
+    if not settled:
+        logger.warning("the bridle did not settle onto the held wing")
+    return relaxed
+
+
+def tube_axial_stiffness(diameters, pressure, config=None) -> Array:
+    """Axial stiffness ``EA`` [N] Billow gives inflatable tubes of ``diameters``.
+
+    The same law and the same derivation :func:`instantiate` uses for the
+    beams (fit at ``pressure``, scaled by ``tube_stiffness_factor``, ``EA``
+    from the fitted initial slope unless ``tube_axial_stiffness`` overrides
+    it), for a model that keeps only the tubes' axial stiffness.
+    """
+    settings = resolve_config((config or {}).get("structural_billow"))
+    diameters = np.atleast_1d(np.asarray(diameters, dtype=float))
+    laws = scale_tube_laws(
+        [InflatableTubeLaw.from_fit(float(d), float(pressure)) for d in diameters],
+        float(settings["tube_stiffness_factor"]),
+    )
+    axial, _shear = _tube_stiffnesses(laws, diameters, settings)
+    return np.asarray(axial, dtype=float)
+
+
 def instantiate(
     config,
     struc_geometry,
@@ -827,54 +958,12 @@ def instantiate(
     n_elements = len(connectivity)
 
     fixed_nodes = tuple(int(i) for i in struc_geometry.get("fixed_point_indices", [0]))
-    grid = canopy_grid(canopy_sections, strut_sections)
-    edges = grid_edges(grid)
-
-    is_beam = link_types == "inflatable_beam"
-    triplets, arm_pairs = _pulley_triplets(connectivity, pulley_line_indices)
-    is_pulley_arm = np.zeros(n_elements, dtype=bool)
-    for first, second in arm_pairs:
-        is_pulley_arm[[first, second]] = True
-
-    pairs = [frozenset((int(a), int(b))) for a, b in connectivity]
-    is_canopy = np.array([pair in edges for pair in pairs]) & ~is_beam & ~is_pulley_arm
-    is_cable = ~(is_beam | is_pulley_arm | is_canopy)
-
-    # A bridle line that happened to join two grid nodes would be silently
-    # swallowed by the membrane, so check the split is unambiguous rather than
-    # trusting it.
-    on_grid = {int(node) for node in grid.ravel()}
-    swallowed = [
-        index
-        for index, pair in enumerate(pairs)
-        if is_cable[index] and set(pair) <= on_grid
-    ]
-    if swallowed:
-        raise RuntimeError(
-            f"{len(swallowed)} non-canopy elements join two canopy grid nodes "
-            f"without being grid edges (first: element {swallowed[0]}, nodes "
-            f"{sorted(pairs[swallowed[0]])}); the canopy split is ambiguous"
-        )
-
-    # -- cables ------------------------------------------------------------
-    cable_elements = np.flatnonzero(is_cable)
-    cables = build_cable_elements(
-        connectivity[cable_elements],
-        rest_lengths[cable_elements],
-        stiffness[cable_elements],
-        name=CABLES,
-    )
-
-    # -- pulleys -----------------------------------------------------------
-    # Billow's PulleyKernel takes the rest length of the WHOLE rope, and the
-    # reader stores that total on each arm (as kite_fem does, and unlike the PSS
-    # reader, which splits it across the two arms). Read it off the first arm.
-    first_arms = [first for first, _ in arm_pairs]
-    pulleys = build_pulley_elements(
-        np.asarray(triplets, dtype=int),
-        rest_lengths[first_arms],
-        stiffness[first_arms],
-        name=PULLEYS,
+    (
+        grid, is_beam, is_canopy, is_cable, cable_elements, triplets, arm_pairs,
+        cables, pulleys,
+    ) = _bridle_elements(
+        connectivity, rest_lengths, stiffness, link_types, pulley_line_indices,
+        canopy_sections, strut_sections,
     )
 
     # -- bridle relaxation -------------------------------------------------

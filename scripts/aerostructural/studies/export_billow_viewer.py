@@ -11,7 +11,7 @@ The page is ``billow_viewer_template.html`` with the payload substituted for
 ``__DATA__``: a single self-contained HTML file.
 
 Usage (from project root):
-    python scripts/aerostructural/export_billow_viewer.py \\
+    python scripts/aerostructural/studies/export_billow_viewer.py \\
         --state cross_traction:1:"Coarse canopy" \\
         --state cross_x2_traction:2:"Canopy refined x2" \\
         --output billow_viewer.html
@@ -28,7 +28,7 @@ from awetrim.aerostructural.billow import structural_billow as sb
 from awetrim.aerostructural.utils import load_yaml
 from billow.elements import line_tensions
 from billow.elements.membrane import membrane_regimes
-from common import DEFAULT_KITE_NAME
+from awetrim.aerostructural.case import DEFAULT_KITE_NAME
 
 from check_mirror_asymmetry import decompose, final_positions, mirror_partners
 from plot_billow_geometry import rebuild
@@ -232,7 +232,7 @@ def main():
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
 
-    project = Path(__file__).resolve().parents[2]
+    project = Path(__file__).resolve().parents[3]
     root = project / "results" / args.kite / "aerostructural" / args.root
     states, shared = {}, None
     for index, spec in enumerate(args.state):

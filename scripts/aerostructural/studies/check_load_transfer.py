@@ -34,9 +34,9 @@ deforms, so the centre of pressure moves with it -- measured on x2, 17% of the
 moment about the KCU.
 
 Usage (from project root):
-    python scripts/aerostructural/check_load_transfer.py
-    python scripts/aerostructural/check_load_transfer.py --patterns cross --refine 3
-    python scripts/aerostructural/check_load_transfer.py --refine 2 \
+    python scripts/aerostructural/studies/check_load_transfer.py
+    python scripts/aerostructural/studies/check_load_transfer.py --patterns cross --refine 3
+    python scripts/aerostructural/studies/check_load_transfer.py --refine 2 \
         --from-result cross_x2_traction_fixed
 """
 
@@ -55,7 +55,7 @@ from awetrim.aerostructural.mapping import (
     LinearStructuralToAeroMapper,
 )
 from awetrim.aerostructural.utils import calculate_cg, rotate_geometry
-from common import (
+from awetrim.aerostructural.case import (
     DEFAULT_KITE_NAME,
     build_system_model,
     resolve_initial_geometry_rotation_kwargs,
@@ -65,7 +65,7 @@ from run_chain_depower_BILLOW import build_once
 
 
 def project_root():
-    return Path(__file__).resolve().parents[2]
+    return Path(__file__).resolve().parents[3]
 
 
 def resultants(points, forces, reference):
@@ -198,7 +198,7 @@ def main():
             / "billow_canopy_ab" / args.from_result
         )
 
-    project = Path(__file__).resolve().parents[2]
+    project = Path(__file__).resolve().parents[3]
     shared = build_once(project, args.kite, args.panels_per_section,
                         {"aerodynamic": {"gamma_loop_type": "base"}})
     shared["config"]["wind_speed_wind_ref"] = float(args.wind)

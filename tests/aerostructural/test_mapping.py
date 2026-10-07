@@ -98,3 +98,48 @@ def test_moment_preservation_report_contains_force_and_moment_errors():
 
     assert report["dF_norm"] == 0.0
     assert report["dM_norm"] == 0.0
+
+
+# --- SkinStructuralToAeroMapper ------------------------------------------------
+
+from awetrim.aerostructural.mapping import SkinStructuralToAeroMapper as _Skin
+
+
+def _skin_case():
+    """Three ribs (front/rear nodes) on a curved arc; aero points off the ribs."""
+    ribs_y = np.array([2.0, 0.0, -2.0])
+    nodes = [np.zeros(3)]
+    for y in ribs_y:
+        z = 8.0 - 0.1 * y**2
+        nodes += [np.array([0.0, y, z]), np.array([1.5, y, z - 0.2])]
+    nodes = np.asarray(nodes)
+    sections_y = np.linspace(2.2, -2.2, 7)
+    le = np.array([[-0.05, y, 8.0 - 0.1 * y**2 + 0.05] for y in sections_y])
+    te = np.array([[1.7, y, 7.75 - 0.1 * y**2] for y in sections_y])
+    return nodes, le, te
+
+
+def test_skin_reproduces_the_reference_edges():
+    nodes, le, te = _skin_case()
+    skin = _Skin().initialize(nodes, [1, 3, 5], [2, 4, 6], le, te, n_panels_per_section=1)
+    update = skin.map(nodes)
+    np.testing.assert_allclose(update.leading_edge_points, le, atol=1e-10)
+    np.testing.assert_allclose(update.trailing_edge_points, te, atol=1e-10)
+
+
+def test_skin_moves_rigidly_with_the_structure():
+    nodes, le, te = _skin_case()
+    skin = _Skin().initialize(nodes, [1, 3, 5], [2, 4, 6], le, te, n_panels_per_section=1)
+    angle = 0.3
+    rotation = np.array([[np.cos(angle), 0.0, np.sin(angle)], [0.0, 1.0, 0.0],
+                         [-np.sin(angle), 0.0, np.cos(angle)]])
+    shift = np.array([0.4, -0.1, 2.0])
+    update = skin.map(nodes @ rotation.T + shift)
+    np.testing.assert_allclose(update.leading_edge_points, le @ rotation.T + shift, atol=1e-9)
+    np.testing.assert_allclose(update.trailing_edge_points, te @ rotation.T + shift, atol=1e-9)
+
+
+def test_skin_subdivides_like_the_reference_mesh():
+    nodes, le, te = _skin_case()
+    skin = _Skin().initialize(nodes, [1, 3, 5], [2, 4, 6], le, te, n_panels_per_section=2)
+    assert skin.map(nodes).leading_edge_points.shape == (2 * (len(le) - 1) + 1, 3)

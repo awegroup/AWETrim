@@ -63,9 +63,15 @@ def _map_structural_edges_to_aero(
     struc_node_le_indices,
     struc_node_te_indices,
     n_aero_panels_per_struc_section,
+    mapper=None,
 ):
-    """Return aerodynamic leading/trailing-edge arrays from structural nodes."""
-    update = STRUCTURAL_TO_AERO_MAPPER.map(
+    """Return aerodynamic leading/trailing-edge arrays from structural nodes.
+
+    ``mapper`` replaces the default node-to-edge mapping, e.g. a
+    ``SkinStructuralToAeroMapper`` that flies a finer aerodynamic mesh than
+    the structure has ribs.
+    """
+    update = (mapper or STRUCTURAL_TO_AERO_MAPPER).map(
         struc_nodes,
         struc_node_le_indices,
         struc_node_te_indices,
@@ -84,7 +90,7 @@ def _bridle_node_pairs(bridle_line_specs, struc_nodes, body_aero):
     the structure is still at its built shape. On a converged one it does not:
     with 0.571 m of node movement on the LEI-V3 PSM geometry, 2 of 45 segments
     snap BOTH ends onto the same node -- zero length, NaN force, NaN loads --
-    and 8 of 45 pair differently. ``run_simulation_PSM``'s
+    and 8 of 45 pair differently. ``wireframe.driver.solve_deformation``'s
     ``starting_from_sim_subdir`` continuation starts exactly there.
 
     The geometric match stays as the fallback for a caller that passes no specs.
@@ -150,6 +156,13 @@ def forcing_symmetry(struc_nodes):
     return struc_nodes
 
 
+def _trim_results_summary(results_aero):
+    """The final trim's storable outputs; one implementation for both backends."""
+    from ..coupled.coupled_solver import _trim_results_summary as summary
+
+    return summary(results_aero)
+
+
 def main(
     m_arr=None,
     struc_nodes=None,
@@ -185,6 +198,10 @@ def main(
     # inside the VSM solve tracks the deforming structure instead of keeping
     # the initial geometry (update_from_points refreshes wings only).
     bridle_line_specs=None,
+    # Structure -> aero edge mapper; None = the rib LE/TE nodes ARE the
+    # aerodynamic edges (the PSM convention). A SkinStructuralToAeroMapper
+    # flies a finer aerodynamic mesh on the same ribs.
+    structural_to_aero=None,
     ### AERO --> STRUC
     aero2struc_mapping=None,
     power_tape_index=None,
@@ -878,6 +895,7 @@ def main(
         struc_node_le_indices,
         struc_node_te_indices,
         config["aerodynamic"]["n_aero_panels_per_struc_section"],
+        mapper=structural_to_aero,
     )
 
     cg = calculate_cg(struc_nodes=struc_nodes, m_arr=m_arr)
@@ -1236,6 +1254,7 @@ def main(
                 struc_node_le_indices,
                 struc_node_te_indices,
                 config["aerodynamic"]["n_aero_panels_per_struc_section"],
+                mapper=structural_to_aero,
             )
 
             cg = calculate_cg(struc_nodes=struc_nodes, m_arr=m_arr)
@@ -2255,8 +2274,14 @@ def main(
         # tangential/kite speed stored in ``va``; the frozen sweep reuses it.
         "Umag": float(results_aero.get("Umag", va)),
         "va": va,
+        # Wing-averaged SECTIONAL cl/cd (kept for stored-result compatibility);
+        # the kite's own coefficients are in trim_results["cl"/"cd"].
         "cl": float(cl),
         "cd": float(cd),
+        # The final trim's scalars and 3-vectors (total aero force, apparent
+        # wind, CL/CD on the VSM projected area, ...), the same block the
+        # Billow driver stores; read by awetrim.aerostructural.case_view.
+        "trim_results": _trim_results_summary(results_aero),
         "tether_force": float(tether_force),
         "rest_lengths": rest_lengths,
         # --- solver state, for a continuation to pick up where this left off --

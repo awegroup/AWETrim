@@ -22,8 +22,8 @@ deformation there (rigid motion from the built shape removed), which says how
 much the asymmetry matters locally.
 
 Usage (from project root):
-    python scripts/aerostructural/check_mirror_asymmetry.py cross_traction
-    python scripts/aerostructural/check_mirror_asymmetry.py cross cross_traction --pattern cross
+    python scripts/aerostructural/studies/check_mirror_asymmetry.py cross_traction
+    python scripts/aerostructural/studies/check_mirror_asymmetry.py cross cross_traction --pattern cross
 """
 
 import argparse
@@ -33,7 +33,7 @@ import h5py
 import numpy as np
 
 from awetrim.aerostructural.billow import structural_billow as sb
-from common import DEFAULT_KITE_NAME
+from awetrim.aerostructural.case import DEFAULT_KITE_NAME
 from plot_billow_geometry import rebuild
 
 MIRROR = np.array([1.0, -1.0, 1.0])
@@ -133,7 +133,7 @@ def main():
     parser.add_argument("--kite", default=DEFAULT_KITE_NAME)
     args = parser.parse_args()
 
-    project = Path(__file__).resolve().parents[2]
+    project = Path(__file__).resolve().parents[3]
     structure = rebuild(project, args.kite, args.panels_per_section,
                         {"canopy_pattern": args.pattern, "canopy_refinement": args.refine})
     built = structure.model.nodes.copy()
