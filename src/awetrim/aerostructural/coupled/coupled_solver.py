@@ -1481,13 +1481,17 @@ def main(
 
     # Angle between vectors (signed)
     dot = np.clip(np.dot(vec_chord_2d, vec_wind_2d), -1.0, 1.0)
-    cross = np.cross(vec_chord_2d, vec_wind_2d)
+    # z-component of the 2-D cross product, written out: np.cross on
+    # 2-element vectors is deprecated since NumPy 2.0.
+    cross = vec_chord_2d[0] * vec_wind_2d[1] - vec_chord_2d[1] * vec_wind_2d[0]
 
     angle = np.arctan2(cross, dot)
 
     print(f"alpha = {np.degrees(angle):.2f}° (va vs mid-span chord)")
     print(
-        f'alpha = {float(np.rad2deg(results_aero["alpha_at_ac"][mid_idx])):.2f}° (incl. induced velocity, from results_aero["alpha_at_ac"])'
+        # alpha_at_ac is one row per panel; flatten before indexing, since
+        # float() of a one-element array raises from NumPy 2.4 on.
+        f'alpha = {float(np.rad2deg(np.ravel(results_aero["alpha_at_ac"])[mid_idx])):.2f}° (incl. induced velocity, from results_aero["alpha_at_ac"])'
     )
 
     if config["structural_solver"] == "wireframe":
