@@ -18,6 +18,8 @@
 \usepackage{xurl}
 \usepackage[hidelinks]{hyperref}
 \usepackage{siunitx}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,angles,quotes,calc}
 \sisetup{range-phrase={--},range-units=single}
 
 \graphicspath{{figures/}}
@@ -88,20 +90,28 @@ The ROM is a point mass in the course reference frame whose wing is assumed to
 align instantaneously with the bridle resultant~\cite{cayon2026rom}. Its
 aerodynamic inputs are
 \begin{itemize}
-  \item the wing lift and drag coefficients $C_L$, $C_D$;
+  \item the wing lift and drag coefficients $C_L$, $C_D$, as functions of the
+        wing angle of attack $\alpha_w$ and the controls;
   \item the geometric bridle pitch $\theta_b$ that turns the bridle angle of
         attack $\alpha_b$ into the wing angle of attack,
         $\alpha_w=\alpha_b-\theta_b$ (paper Eqs.~1--2);
   \item the steering gain $k_{\phi,s}$ of the control-induced aerodynamic roll,
         $\phi_{a,w}=k_{\phi,s}\,u_s$ (paper Eq.~43).
 \end{itemize}
-The semi-empirical LEI-V3 ROM (\code{rom\_config\_semi\_empirical.yaml}) takes
-its polars from rigid-wing VSM and calibrates drag offsets and $\theta_b$ on
+The semi-empirical LEI-V3 ROM (\code{rom\_config\_semi\_empirical.yaml}) took
+its polars from rigid-wing VSM and calibrated drag offsets and $\theta_b$ on
 flight-identified states~\cite[Sect.~5.1]{cayon2026rom}. The aerostructural ROM
 (\code{rom\_config\_aerostructural.yaml}) is identified from simulations only:
 the VSM aerodynamics of the \emph{deformed} kite, coupled to the Billow
 structural model. It is the simulation-only reference against which flight
 data can then be used for a minimal correction.
+
+The note is written so that the identification can be repeated with another
+aerostructural tool: Sect.~\ref{sec:model} states the model,
+Sect.~\ref{sec:geometry} defines every angle as a formula on vectors any
+tool provides, Sect.~\ref{sec:data} lists what the simulations must deliver
+(converged trims \emph{and} angle-of-attack sweeps on their frozen shapes),
+and Sect.~\ref{sec:method} turns those into the ROM parameters.
 
 Scope and limits, stated once:
 \begin{itemize}
@@ -115,6 +125,7 @@ Scope and limits, stated once:
 
 %======================================================================
 \section{The model}
+\label{sec:model}
 
 \subsection{Inputs and conventions}
 \begin{itemize}
@@ -122,13 +133,17 @@ Scope and limits, stated once:
   \item $u_s$ is the \emph{standardised} steering of
         \code{awetrim.identification.controls}: $\SI{1.4}{\metre}\times u_s$ is the
         steering-tape half-difference (2019 KCU: $u_s=-\mathrm{kcu}/200$, full
-        deflection $\pm0.175$).
-  \item $\alpha$ is the angle of attack of the wing's centre-panel chord.
+        deflection $\pm0.175$); $u_s>0$ turns the kite to its right.
+  \item $\alpha\equiv\alpha_w$ is the angle of attack of the wing's
+        centre-panel chord (Sect.~\ref{sec:geometry}).
   \item $v_a$ is the apparent wind speed.
   \item All coefficients are referenced to $S=\SI{\refArea}{\square\metre}$, the
         EKF/flight area also used by the semi-empirical ROM; the ROM file states
-        it (\code{aerodynamics.reference\_area}).
+        it (\code{aerodynamics.reference\_area}). It is \emph{not} the projected
+        area of the geometry (\SI{17.21}{\square\metre}).
 \end{itemize}
+A tool with another actuation model replaces $u_p$ and $u_s$ by its own
+inputs; what has to be identified against them is the same.
 
 \subsection{Lift and drag}
 Both coefficients are linear combinations of plain monomials,
@@ -175,7 +190,276 @@ bridle resultant $\mathbf F_b$ (tether plus the KCU's weight, inertia and drag),
 so swapping the KCU changes $\mathbf F_b$ without re-identifying the wing.
 
 %======================================================================
-\section{Data}
+\section{Geometric definitions}
+\label{sec:geometry}
+Every angle the ROM needs is stated here as a formula on vectors, so that the
+parameters can be extracted from any tool's output without AWETrim.
+Fig.~\ref{fig:geometry} draws them. Vectors are in any common Cartesian frame.
+
+\paragraph{The two angles of attack.} They have different roles:
+\begin{itemize}
+  \item $\alpha_w$, the angle of the apparent wind to the \emph{centre-panel
+        chord}, is the independent variable of the polars. Every $C_L$, $C_D$
+        sample, from a trim or from an angle-of-attack sweep, is recorded
+        against $\alpha_w$, and the ROM evaluates its polynomials at
+        $\alpha_w$.
+  \item $\alpha_b$, the angle of the apparent wind to the \emph{bridle
+        resultant} $\mathbf F_b$, is what the point-mass ROM computes from its
+        own forces. It serves one purpose: the bridle pitch
+        $\theta_b=\alpha_b-\alpha_w$, the angle between the chord and the
+        bridle resultant at trim, set by the bridle geometry and the depower
+        setting, through which the ROM recovers $\alpha_w=\alpha_b-\theta_b$.
+\end{itemize}
+
+\paragraph{Symbols.}
+\begin{itemize}
+  \item $\mathbf v_a$: the apparent wind at the wing, the velocity of the air
+        relative to the kite (it flows from leading to trailing edge);
+        $\hat{\mathbf v}_a=\mathbf v_a/|\mathbf v_a|$.
+  \item $\mathbf e_r$: the unit radial direction, ground station to kite.
+  \item $\mathbf F_w$: the aerodynamic force on the wing \emph{and its bridle
+        lines}, without the KCU and the tether.
+  \item $\mathbf F_b$: the bridle resultant, the force the bridle lines carry
+        to the wing from the bridle point $B$. It is the tether force at $B$
+        plus the KCU's weight, inertia ($-m_\mathrm{KCU}\mathbf a$) and drag;
+        equivalently, from the wing's own balance with wing mass $m_w$,
+        $\mathbf F_b=-\bigl(\mathbf F_w+m_w(\mathbf g-\mathbf a)\bigr)$, which
+        for a gravity-off trim without acceleration is $-\mathbf F_w$.
+  \item $P_\mathrm{LE}$, $P_\mathrm{TE}$: the mid-span leading- and
+        trailing-edge points of the \emph{centre panel} (the panel spanning
+        the centreline, between the two innermost struts) of the
+        \emph{deformed} wing; $\mathbf s$ that panel's span direction, from
+        the left to the right strut.
+\end{itemize}
+
+\paragraph{Wing axes.} Aircraft FRD axes anchored to the centre panel:
+\begin{align}
+  \mathbf x_K&=\frac{P_\mathrm{LE}-P_\mathrm{TE}}{|P_\mathrm{LE}-P_\mathrm{TE}|} && \text{chord, forward},\nonumber\\
+  \mathbf z_K&=\frac{\mathbf x_K\times\mathbf s}{|\mathbf x_K\times\mathbf s|} && \text{down, toward the bridle},\\
+  \mathbf y_K&=\mathbf z_K\times\mathbf x_K && \text{right wing}.\nonumber
+\end{align}
+
+\paragraph{Wing angle of attack.} With $\mathbf u=-\mathbf v_a$ the kite's
+velocity through the air,
+\begin{equation}
+  \alpha_w=\operatorname{atan2}\bigl(\mathbf u\cdot\mathbf z_K,\ \mathbf u\cdot\mathbf x_K\bigr),
+  \label{eq:alpha-w}
+\end{equation}
+positive nose up.
+
+\paragraph{Lift and drag coefficients.}
+$D=\mathbf F_w\cdot\hat{\mathbf v}_a$, $L=\bigl|\mathbf F_w-D\,\hat{\mathbf v}_a\bigr|$
+(positive on the $-\mathbf z_K$ side), $C_{L,D}=\{L,D\}/(\tfrac12\rho v_a^2S)$
+with $S=\SI{\refArea}{\square\metre}$. The KCU drag is not in $C_D$.
+
+\paragraph{The apparent-wind frame.} The ROM takes the bridle angles in the
+frame of paper App.~D, built from $\mathbf v_a$ and $\mathbf e_r$ only:
+\begin{equation}
+  \mathbf e_{r'}=\frac{\mathbf e_r-(\mathbf e_r\cdot\hat{\mathbf v}_a)\hat{\mathbf v}_a}{|\cdot|}
+  \ \text{(zero-roll lift direction)},\qquad
+  \mathbf e_{p}=\frac{\mathbf v_a\times\mathbf e_r}{|\mathbf v_a\times\mathbf e_r|}
+  \ \text{(toward the left wing)}.
+\end{equation}
+($\mathbf e_p=-\mathbf e_{n'}$ of paper Eq.~D6; in a straight flight
+$\mathbf e_p\approx-\mathbf y_K$.)
+
+\paragraph{Bridle angle of attack and bridle pitch.} With
+$\mathbf P=-\mathbf F_b$, the pull of the wing on the bridle,
+\begin{equation}
+  \alpha_b=\operatorname{atan2}\bigl(\mathbf P\cdot\hat{\mathbf v}_a,\ \mathbf P\cdot\mathbf e_{r'}\bigr)
+  \quad\text{(paper Eq.~D11)},\qquad
+  \theta_b=\alpha_b-\alpha_w .
+  \label{eq:alpha-b}
+\end{equation}
+$\alpha_b$ is the angle by which the pull leans downstream from
+$\mathbf e_{r'}$; for a massless kite without KCU drag it is the glide angle,
+$\tan\alpha_b=C_D/C_L$, a useful check. In a symmetric trim ($\mathbf v_a$,
+$\mathbf e_r$ and $\mathbf F_b$ in the wing's symmetry plane) the bridle
+pitch follows from the trimmed geometry alone, independent of the inflow:
+\begin{equation}
+  \sin\theta_b=\mathbf x_K\cdot\hat{\mathbf F}_b ,
+\end{equation}
+the angle by which the centre chord's leading edge dips toward the bridle
+resultant from the perpendicular. $\theta_b>0$ (the LEI-V3 values) means the
+nose is pitched down relative to that perpendicular, so $\alpha_w<\alpha_b$.
+In the paper's terms $\theta_b=\theta_d+\lambda_b$ (Eq.~2); the ROM does not
+split it, it fits $\theta_b(u_p)$ directly. $\theta_b$ is always taken
+against the bridle resultant, never against the tether direction: the two
+differ by the KCU loads.
+
+\paragraph{Roll angles.} The roll of a force $\mathbf F$ about
+$\mathbf v_a$, zero along $\mathbf e_{r'}$ and positive toward the left wing,
+is
+\begin{equation}
+  \phi(\mathbf F)=\operatorname{atan2}\bigl(\mathbf F\cdot\mathbf e_p,\ \mathbf F\cdot\mathbf e_{r'}\bigr).
+  \label{eq:roll}
+\end{equation}
+The bridle roll is $\phi_{a,b}=\phi(\mathbf P)$, the total aerodynamic roll
+$\phi_a=\phi(\mathbf L)$ with $\mathbf L=\mathbf F_w-D\,\hat{\mathbf v}_a$,
+and the steering roll is their difference,
+$\phi_{a,w}=\phi_a-\phi_{a,b}=k_{\phi,s}u_s$ (paper Eqs.~22, D13--D14). A
+positive $u_s$ turns the kite to the right as seen from the kite; with
+$k_{\phi,s}<0$ it tilts the lift toward the right wing ($\phi_{a,w}<0$) and
+the course rate is $\dot\chi>0$. Note for readers of the paper: App.~D1
+describes a positive $\phi_a$ as a right-hand turn, but its Eqs.~D6--D9 (and
+the code) tilt the lift toward the left wing for $\phi_a>0$; this note
+follows the equations. Main-text Eq.~24 also has the opposite sign of the
+$\sin\phi_a$ terms to Eq.~D9; the code uses Eq.~D9.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[scale=0.93,>={Stealth[length=2.6mm]},
+  lab/.style={font=\small},vec/.style={->,thick}]
+  % ---------------- (a) side view ----------------
+  \begin{scope}
+    \def\aw{10}\def\ab{24}
+    \coordinate (O) at (0,0);
+    % references
+    \draw[densely dotted,gray] (-4.3,0) -- (2.2,0);
+    \draw[densely dotted,gray] (0,-0.2) -- (0,3.3) node[above,lab,black] {$\mathbf e_{r'}$};
+    \draw[dashed,gray] (180-\ab:4.3) -- (-\ab:1.9);
+    \node[lab,gray,anchor=west] at (-\ab:1.9) {$\perp\mathbf F_b$};
+    % chord (centre panel)
+    \draw[line width=1.6pt] (180-\aw:1.6) -- (-\aw:1.5);
+    \fill (180-\aw:1.6) circle (2.4pt);
+    \node[lab,anchor=north] at (180-\aw:1.45) {LE};
+    \node[lab,anchor=north] at (-\aw:1.35) {TE};
+    \draw[vec,blue!70!black] (180-\aw:1.7) -- (180-\aw:2.35);
+    \node[lab,blue!70!black,anchor=north] at (180-\aw:2.2) {$\mathbf x_K$};
+    \draw[densely dotted] (180-\aw:2.35) -- (180-\aw:4.3);
+    % apparent wind
+    \draw[vec] (-4.3,-1.3) -- (-2.9,-1.3) node[midway,below,lab] {$\mathbf v_a$};
+    % lift, drag, wing pull
+    \draw[vec,green!50!black] (O) -- (0,2.3) node[left,lab] {$L$};
+    \draw[vec,green!50!black] (O) -- (1.0,0) node[above,lab] {$D$};
+    \draw[vec,green!50!black,very thick] (O) -- (90-\ab:2.5)
+      node[right,lab] {$\mathbf P=-\mathbf F_b$};
+    % bridle and resultant
+    \draw[gray] (O) -- (270-\ab:3.6) coordinate (B);
+    \fill (B) circle (2pt) node[left,lab] {$B$};
+    \draw[vec,red!70!black,very thick] (O) -- (270-\ab:1.7)
+      node[right,lab] {$\mathbf F_b$};
+    % angles, drawn on the upstream side beyond the chord
+    \draw[->] (180:3.0) arc (180:180-\aw:3.0);
+    \node[lab,anchor=east] at (180-\aw/2:3.0) {$\alpha_w$};
+    \draw[->] (180:3.9) arc (180:180-\ab:3.9);
+    \node[lab,anchor=east] at (180-\ab/2:3.9) {$\alpha_b$};
+    \draw[<->,red!70!black] (180-\aw:3.45) arc (180-\aw:180-\ab:3.45);
+    \node[lab,red!70!black,anchor=west] at (180-\aw/2-\ab/2:3.5) {$\theta_b$};
+    \draw[->] (90:1.2) arc (90:90-\ab:1.2);
+    \node[lab] at (90-\ab/2:1.5) {$\alpha_b$};
+    \node[font=\bfseries\small] at (-4.4,3.3) {(a)};
+  \end{scope}
+  % ---------------- (b) view from behind ----------------
+  \begin{scope}[xshift=9.0cm,yshift=0.3cm]
+    \coordinate (O) at (0,0);
+    \draw[thick] (-2.3,-0.9) .. controls (-1.8,0.33) and (1.8,0.33) .. (2.3,-0.9);
+    \node[lab] at (-2.3,-1.2) {left wing};
+    \node[lab] at (2.3,-1.2) {right wing};
+    \draw[densely dotted,gray] (0,0) -- (0,3.0) node[above,lab,black] {$\mathbf e_{r'}$};
+    \draw[vec] (O) -- (-1.3,0) node[above,lab] {$\mathbf e_p$};
+    \draw[vec,green!50!black,very thick] (O) -- (90+14:2.6)
+      node[above left=-2pt,lab] {$\mathbf P=-\mathbf F_b$};
+    \draw[vec,green!50!black] (O) -- (90-22:2.6) node[above right=-2pt,lab] {$\mathbf L$};
+    \draw[->] (90:1.3) arc (90:104:1.3);
+    \node[lab,anchor=east] at (104:1.3) {$\phi_{a,b}$};
+    \draw[->] (104:2.0) arc (104:68:2.0);
+    \node[lab,anchor=south] at (94:2.05) {$\phi_{a,w}$};
+    \fill (O) circle (1.5pt);
+    \node[lab,align=center] at (0,-2.1) {viewed from behind,\\$\mathbf v_a$ into the page};
+    \node[font=\bfseries\small] at (-2.8,3.0) {(b)};
+  \end{scope}
+\end{tikzpicture}
+\caption{Geometric definitions (angles exaggerated). (a) Side view in the
+wing's symmetry plane: centre-panel chord with axis $\mathbf x_K$, apparent
+wind $\mathbf v_a$, the wing's lift and drag, the bridle resultant
+$\mathbf F_b$ acting on the wing from the bridle point $B$ and its reverse
+$\mathbf P$ (collinear with $\mathbf F_w$ for a massless kite). $\alpha_w$ is
+the chord angle from the oncoming flow, $\alpha_b$ the angle of the line
+perpendicular to $\mathbf F_b$ (equally, of $\mathbf P$ from
+$\mathbf e_{r'}$), and $\theta_b=\alpha_b-\alpha_w$ the bridle pitch fixed
+by the bridle geometry and depower setting. (b) Rear view about
+$\mathbf v_a$: the bridle roll $\phi_{a,b}$ of $\mathbf P$ and the steering
+roll $\phi_{a,w}$ of the lift relative to it, both measured positive toward
+the left wing; drawn for $u_s>0$ (right turn, $\phi_{a,w}<0$).}
+\label{fig:geometry}
+\end{figure}
+
+%======================================================================
+\section{Simulation data required}
+\label{sec:data}
+Two kinds of simulation are needed, and the second is not optional.
+
+\subsection{Converged trims}
+\label{sec:data-trims}
+A trim is a converged aerostructural equilibrium of the kite at a prescribed
+wind and control setting: structure and aerodynamics coupled to convergence,
+the forces and the moments about the bridle point balanced, the flight speed
+(and for a steered trim the course rate) solved for. Conditions: centre of
+the wind window, gravity off, the tether represented by its force at the
+bridle point only.
+
+\paragraph{Which trims.}
+\begin{itemize}
+  \item \textbf{Depower sweeps} at zero steering: the power tape across the
+        whole band, at several apparent wind speeds
+        ($v_a\approx13$--\SI{25}{\metre\per\second} here). They give
+        $\theta_b(u_p)$ and the depower and load terms of the polars.
+  \item \textbf{Steering sweeps} at the powered and the depowered setting,
+        from zero to full steering (one side suffices; left and right are
+        mirror images). They give $k_{\phi,s}$ and the steering terms.
+\end{itemize}
+
+\paragraph{What each trim must output.}
+\begin{center}
+\small
+\begin{tabular}{lp{0.62\textwidth}}
+\toprule
+Quantity & Definition \\
+\midrule
+$u_p$, $u_s$ & controls of the trim \\
+$\rho$, wind speed & air density, free-stream wind \\
+$\mathbf v_a$ & apparent wind at the wing reference point (air relative to kite) \\
+$\mathbf e_r$ & radial unit vector, ground station to kite \\
+$\mathbf F_w$ & aerodynamic force on wing and bridle lines, without KCU \\
+$\mathbf F_\mathrm{KCU}$ & KCU aerodynamic drag, separately \\
+$\mathbf F_t$ & tether force at the bridle point \\
+$m_w$, $m_\mathrm{KCU}$, $\mathbf a$ & wing and KCU mass, kite acceleration (or the inertial force), to build $\mathbf F_b$ \\
+$P_\mathrm{LE}$, $P_\mathrm{TE}$, $\mathbf s$ & centre-panel chord points and span direction of the \emph{deformed} wing \\
+$v_\tau$, $\dot\chi$ & trimmed tangential speed and course rate \\
+deformed shape & the full converged structural geometry, to be frozen for the sweeps of Sect.~\ref{sec:data-sweeps} \\
+convergence & flag and force/moment residuals \\
+\bottomrule
+\end{tabular}
+\end{center}
+From these, Sect.~\ref{sec:geometry} gives per trim $\alpha_w$, $C_L$,
+$C_D$, $\alpha_b$, $\theta_b$, $\phi_{a,b}$ and $\phi_{a,w}$.
+
+\subsection{Angle-of-attack sweeps on the frozen shapes}
+\label{sec:data-sweeps}
+Trims alone cannot identify the polars. Along a trimmed depower sweep
+$\alpha_w$ follows $u_p$ almost one to one (it moves by about
+\SI{1}{\degree} across the whole $v_a$ range), so a fit on trims cannot tell
+the polar slope from the depower effect. In flight, gravity and turning move
+$\alpha_w$ by several degrees around the trim value, and the ROM needs the
+polar there. Around every trim:
+\begin{enumerate}
+  \item freeze the converged deformed shape (no further structural solve);
+  \item keep $|\mathbf v_a|$, the sideslip and the body rates of the trim, and
+        rotate the inflow about $\mathbf y_K$ in steps of $\Delta\alpha_w$, here
+        from \SI{-6}{\degree} to \SI{+22}{\degree} about the trim, through
+        the stall;
+  \item solve the aerodynamics only at each step, without re-trimming (the
+        moment about the bridle point is not balanced; this is the polar of
+        that shape);
+  \item record per step $\alpha_w$ (Eq.~\ref{eq:alpha-w}), $\mathbf v_a$,
+        $\mathbf F_w$ and, separately, $\mathbf F_\mathrm{KCU}$.
+\end{enumerate}
+The $\Delta\alpha_w=0$ step must reproduce the trim's $C_L$ (here within
+\lensTolPct\,\%); a sweep that does not is discarded and its trim enters as a
+single sample (the lens check below).
+
+\subsection{The LEI-V3 data set}
 
 \paragraph{Coupled trims (anchors).}
 \nAnchorsAll{} converged coupled VSM + Billow-wireframe trims (VSM main at
@@ -185,13 +469,9 @@ for $v_a=13$--\SI{25}{\metre\per\second}, and steering sweeps at the reel-out
 and reel-in depower.
 
 \paragraph{Frozen-shape polars.}
-A trimmed chain ties $\alpha$ to $u_p$ almost one to one ($\alpha$ moves by
-about \SI{1}{\degree} across the whole $v_a$ range), so the trims alone cannot
-separate the polar slope from the depower effect. Around every anchor the
-deformed snapshot is frozen, re-trimmed, and the inflow angle of attack is
-stepped in the centre-panel body axes from \SI{-6}{\degree} to \SI{+22}{\degree}
-about the trim (\code{run\_center\_sweep\_alpha\_polar.py}), recording the wing
-force at each step.
+Each anchor's snapshot is frozen, re-trimmed with the aerodynamics alone as
+a consistency check, and swept as above
+(\code{run\_center\_sweep\_alpha\_polar.py}).
 
 \paragraph{Lens check.}
 A polar is used only if its frozen-shape re-trim reproduces the coupled trim:
@@ -207,7 +487,24 @@ Within the depower band and up to $\alpha=\SI{30}{\degree}$:
 
 %======================================================================
 \section{Identification method}
+\label{sec:method}
 
+\begin{center}
+\small
+\begin{tabular}{lll}
+\toprule
+Parameter & Data & Fit \\
+\midrule
+$\theta_0$, $\theta_1$ & unsteered trims & $\theta_b=\alpha_b-\alpha_w$, linear in $u_p$ \\
+$k_{\phi,s}$ & steered trims & $\phi_{a,w}$, linear in $u_s$ through the origin \\
+$\alpha_s$, $w$ & sweeps + trims & grid search on the $C_L$ cross-validation error \\
+$C_L$, $C_D$ terms & sweeps + trims & stepwise least squares in $(\alpha_w,u_p,u_s,v_a,\sigma)$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+LEI-V3 values for comparison: $\theta_b=\SI{\thetaPoweredDeg}{\degree}$ at
+$u_p=\SI{1.7}{\metre}$ and \SI{\thetaDepoweredDeg}{\degree} at
+\SI{2.1}{\metre}; $k_{\phi,s}=\rollGain$\,rad.
 \subsection{Bridle pitch}
 With gravity off, the coupled equilibrium is
 $\mathbf F_\mathrm{wing}+\mathbf F_\mathrm{KCU}+\mathbf F_t+\mathbf F_\mathrm{in}=0$,
@@ -322,10 +619,11 @@ of about $0.012$.
 $\theta_0=\thetaZero\pm\thetaZeroSE$\,rad and
 $\theta_1=\thetaSlope\pm\thetaSlopeSE$\,rad\,m$^{-1}$ (residual
 \SI{\thetaRMSdeg}{\degree} RMS): $\theta_b=\SI{\thetaPoweredDeg}{\degree}$ at
-\SI{1.7}{\metre} and \SI{\thetaDepoweredDeg}{\degree} at \SI{2.1}{\metre}. With the KCU
-drag inside $C_D$, the bridle resultant would lie along the tether and
-$\theta_b$ would be about \SI{2.5}{\degree} larger (Fig.~\ref{fig:theta}). The
-semi-empirical ROM, calibrated in that convention, has a 45\,\% steeper slope.
+\SI{1.7}{\metre} and \SI{\thetaDepoweredDeg}{\degree} at \SI{2.1}{\metre}.
+The semi-empirical ROM measured its pitch against the tether direction instead
+(KCU drag inside its $C_D$); that angle reads about \SI{2.5}{\degree} larger on
+the same trims (Fig.~\ref{fig:theta}) and is not the $\theta_b$ defined here.
+Its slope is 45\,\% steeper.
 
 \paragraph{Steering gain.}
 $k_{\phi,s}=\rollGain\pm\rollGainSE$\,rad per unit $u_s$ (residual
@@ -344,8 +642,9 @@ frozen-shape data, the aerostructural ROM and the semi-empirical ROM.}
 \begin{figure}[H]
 \centering
 \includegraphics[width=0.75\textwidth]{theta_b.pdf}
-\caption{Bridle pitch against power-tape length: coupled trims in both bridle
-conventions, the aerostructural relation and the semi-empirical one.}
+\caption{Bridle pitch against power-tape length: coupled trims measured
+against the bridle resultant ($\theta_b$) and against the tether direction,
+the aerostructural relation and the semi-empirical one.}
 \label{fig:theta}
 \end{figure}
 
