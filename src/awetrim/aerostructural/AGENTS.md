@@ -1160,12 +1160,20 @@ Both demo scripts and the Billow studies use VSM's `base` circulation loop:
 with artificial viscosity on, the LEI-V3's stalled tips trap Anderson
 (as_config's loop) in a post-stall limit cycle and the tip loads never converge.
 
-**Open (issue to be filed): unsteered Billow + tether-in-trim goes asymmetric.**
-At the demo state (window centre, v_w 4.2 m/s, no gravity, unactuated) the
-Williams-tether trim returns small non-zero roll/yaw/course-rate increments
-(~0.05-0.08 deg, -0.011 rad/s in the first iterations) where the tetherless
-trim returns exactly zero. The wireframe absorbs them (sideslip 1e-4 deg);
-Billow converges to a shape 170 mm left-right asymmetric at the centre
-trailing edge (LE 2 mm), which VSM's centre-chord sideslip reads as 3.1 deg.
-Tetherless, the same case is symmetric to 0.00 mm. Not pinned on purpose: see
-the issue before forcing symmetry in the trim.
+**Open issue: the centre-bay trailing edge of the Billow canopy loses its
+symmetric equilibrium at low load.** On the default (refinement 1) canopy the
+two trailing-edge nodes of the centre bay (28/30, sections 13/14, between
+struts 4 and 5) sit on a wrinkled edge with no spanwise tension (the TE
+shortens up to 4 % under load). At the window-centre state the symmetric
+equilibrium is stable at the tetherless load (2280 N, antisymmetric eigenvalue
++0.53 N/m), bistable at 0.95-0.90 of it (an asymmetric local minimum ~180 mm
+that a free solve can land on) and unstable at 0.875 (-4.7 N/m). Below that an
+unsteered case converges asymmetric, which VSM's centre-chord sideslip reads as
+~3 deg. The Williams tether is not the mechanism: it lowers the load below the
+threshold and seeds the mode with a 6e-5 N load imbalance. A 3 % pre-tensioned
+TE cable removes the instability; canopy refinement x2 converges symmetric.
+Until it is resolved, run unsteered Billow baselines well above the threshold
+-- the demo scripts use v_w 6 m/s (tether force > 4000 N) -- and check the
+converged shape's mirror symmetry. Do not force symmetry in the trim. The
+pre-loop load is not stored in tracking (f_ext[0] is zeros); to analyse a run's
+first structural solve, capture the load passed to run_billow.
