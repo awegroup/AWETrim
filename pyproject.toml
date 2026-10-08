@@ -50,7 +50,11 @@ dependencies = [
   "prompt_toolkit",
   "vplot3d @ git+https://github.com/rschmehl/vplot3d.git@main",
   "billow @ git+https://github.com/awegroup/Billow.git@main",
-  "VSM @ git+https://github.com/awegroup/Vortex-Step-Method.git@main",
+  # Pinned: VSM main after 2026-09-15 changed the panel force interface that
+  # aerodynamics/panel_kernels.py and trim_casadi.py mirror (the CasADi trim
+  # fails), and main briefly carried a SyntaxError (fixed on
+  # fix/solver-syntax-error). 8825a12 = last commit with the full test suite green.
+  "VSM @ git+https://github.com/awegroup/Vortex-Step-Method.git@8825a12136b7259bb37cf5a1222c739eaa9fbd5b",
   "awes-ekf @ git+https://github.com/ocayon/EKF-AWE.git@main",
   "awesIO @ git+https://github.com/awegroup/awesIO.git@d454992301e1790e069ff850eabf65526545d33c",
 ]

@@ -303,7 +303,7 @@ External dependencies referenced by `pyproject.toml` (VCS installs):
 
 | Package | Role | Install note |
 |---------|------|-------------|
-| `Vortex-Step-Method` | VSM aerodynamic solver | Installed from GitHub `@main` via `pyproject.toml` (https://github.com/awegroup/Vortex-Step-Method) |
+| `Vortex-Step-Method` | VSM aerodynamic solver | Installed from GitHub, **pinned to `8825a12`** in `pyproject.toml` (https://github.com/awegroup/Vortex-Step-Method). Later VSM changed the panel force interface (`compute_aerodynamic_quantities` returns 3 values, not 4) that `aerodynamics/panel_kernels.py` / `trim_casadi.py` mirror; unpin only together with adapting those (16 CasADi tests fail otherwise). An editable local VSM checkout on another branch silently overrides the pin |
 | `billow` | Minimum-energy structural solver, both fidelities | Installed from GitHub `@main` via `pyproject.toml` (https://github.com/awegroup/Billow). For local development: `pip install -e ../Billow` |
 | `awes-ekf` | Extended Kalman Filter for flight data | Installed from GitHub; repository used here: https://github.com/ocayon/EKF-AWE |
 | `awesIO` | IO helpers used by scripts | Installed from GitHub (https://github.com/awegroup/awesIO) |
