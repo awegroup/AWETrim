@@ -31,6 +31,7 @@ from awetrim.utils.defaults import (
     DEFAULT_WINCH_CONFIG,
 )
 import copy
+import warnings
 from awetrim.system.tether import RigidLinkTether
 from awetrim.system.williams_tether import WilliamsTether
 from awetrim.utils.reference_frames import (
@@ -1657,13 +1658,41 @@ class PhaseParameterized(TimeSeries):
         # pairs, C_phi[k+M/2] = 2 az_c - C_phi[k], C_beta[k+M/2] = C_beta[k];
         # the node rows pair node i with node i + N/2: v_r and u_p equal,
         # u_s opposite. Needs the periodic wrap (one closed period), even M
-        # and even N; a fixed (non-decision) shape must already be mirrored.
+        # and even N, and ``winch_mode: free_speed`` (with the force law v_r
+        # is tied to T by an equality, so the v_r rows duplicate what the
+        # mirrored T already implies -- degenerate rows); a fixed
+        # (non-decision) shape must already be mirrored. The mirror is
+        # PHYSICAL only about the downwind meridian az = 0 (the wind and the
+        # kite are symmetric about it); another ``mirror_azimuth`` is a
+        # geometric constraint only and is warned about.
+        #
+        # Known degeneracy (LICQ): every node bound is imposed on BOTH
+        # members of a mirrored pair, so wherever a bound is active (depower
+        # band, rate limits, height floor, turn radius, ...) it is active at
+        # i and at i + N/2 together, and those rows are linearly dependent
+        # once the mirror rows are added. IPOPT copes (regularization) but the
+        # multipliers of such pairs are not unique. The clean formulation is
+        # elimination: declare only the first half of the node controls and
+        # of the shape coefficients as variables and build the second half
+        # from them -- a known follow-up, not done here.
         mirror_symmetry = bool(sim_params.get("mirror_symmetry", False))
         mirror_azimuth = float(sim_params.get("mirror_azimuth", 0.0))
         if mirror_symmetry:
             if not periodic_wrap:
                 raise ValueError(
                     "sim_parameters.mirror_symmetry needs periodic_wrap"
+                )
+            if not free_speed:
+                raise ValueError(
+                    "sim_parameters.mirror_symmetry needs winch_mode: free_speed "
+                    "(the force law makes the v_r mirror rows degenerate)"
+                )
+            if mirror_azimuth != 0.0:
+                warnings.warn(
+                    f"sim_parameters.mirror_azimuth = {mirror_azimuth:g} rad: the "
+                    "mirror is physical only about the downwind meridian az = 0; "
+                    "this one is a geometric constraint only",
+                    stacklevel=2,
                 )
             if not isinstance(pattern, PeriodicBSpline):
                 raise ValueError(

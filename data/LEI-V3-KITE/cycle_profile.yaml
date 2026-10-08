@@ -91,7 +91,7 @@ uploop_eight:
                            # limit, identical for the eight and the
                            # --baseline-seed cycle (decided 2026-10-08). The
                            # flown 2019 cycle bottoms at ~44 m at r0 237 m; the
-                           # eight's sketch floor of 20 deg elevation is ~80 m.
+                           # eight's seed bottoms at ~21.4 deg, ~86 m at r0 236.7.
                            # The spline hull (C_beta) is left loose on purpose
   stall_margin_deg: 2      # alpha kept this far below the ROM's stall angle
   min_turn_radius: 25      # m, dense geometric turn-radius floor; the seed is

@@ -800,13 +800,15 @@ def test_mirror_symmetry_adds_the_half_period_rows(shape_decision):
 
 @pytest.mark.slow
 def test_mirror_symmetry_guards():
-    """Refuses a phase without the periodic wrap, an odd N or M, and a fixed
-    shape that is not mirror-symmetric."""
+    """Refuses a phase without the periodic wrap, an odd N or M, the force-law
+    winch, and a fixed shape that is not mirror-symmetric."""
     cases = (
         (dict(n_points=20, sim_overrides={"mirror_symmetry": True, "periodic_wrap": False}),
          "periodic_wrap"),
         (dict(n_points=21, sim_overrides={"mirror_symmetry": True}), "even n_points"),
         (dict(n_points=20, sim_overrides={"mirror_symmetry": True}, M=9), "even M"),
+        (dict(n_points=20, sim_overrides={"mirror_symmetry": True, "winch_mode": "force_law"}),
+         "free_speed"),
     )
     for kwargs, match in cases:
         phase, start, opti, params = _mirror_phase(**kwargs)
@@ -817,3 +819,61 @@ def test_mirror_symmetry_guards():
     phase.pattern_config_opti["path_parameters"]["C_beta"][0] += 0.05
     with pytest.raises(ValueError, match="not mirror-symmetric"):
         phase.opti_phase(start_state=start, opti=opti, opti_params=params)
+
+
+@pytest.mark.slow
+def test_mirror_symmetry_rows_vanish_exactly_on_a_mirrored_point():
+    """The mirror rows, as a Function of the decision variables, are zero at a
+    hand-built mirrored point (u_s opposite, v_r and u_p equal, C_phi pairs
+    mirrored about a NON-zero meridian, C_beta pairs equal) and non-zero when
+    any single pairing is broken: the u_s sign, the 2 az_c offset, or an
+    off-by-one pairing. A non-zero mirror_azimuth warns (only az = 0 is a
+    physical mirror)."""
+    import casadi as ca
+
+    n_points, az_c = 20, 0.1
+    phase, start, opti, params = _mirror_phase(
+        n_points,
+        {"mirror_symmetry": True, "mirror_azimuth": az_c},
+        shape_decision=True,
+    )
+    with pytest.warns(UserWarning, match="mirror_azimuth"):
+        opti, opti_vars, obj = phase.opti_phase(
+            start_state=start, opti=opti, opti_params=params
+        )
+    expr = obj["constraint_report"]["mirror_symmetry (scaled)"]["expr"]
+    inputs = [
+        opti_vars["input_steering"],
+        opti_vars["speed_radial"],
+        opti_vars["input_depower"],
+        params["C_phi"],
+        params["C_beta"],
+    ]
+    rows = ca.Function("mirror_rows", inputs, [expr])
+
+    h, M = n_points // 2, int(params["C_phi"].numel())
+    rng = np.random.default_rng(3)
+    u_s_half, v_r_half, u_p_half = (rng.normal(size=h) for _ in range(3))
+    c_phi_half, c_beta_half = rng.normal(size=M // 2), rng.normal(size=M // 2)
+    point = {
+        "u_s": np.r_[u_s_half, -u_s_half],
+        "v_r": np.r_[v_r_half, v_r_half],
+        "u_p": np.r_[u_p_half, u_p_half],
+        "C_phi": np.r_[c_phi_half, 2.0 * az_c - c_phi_half],
+        "C_beta": np.r_[c_beta_half, c_beta_half],
+    }
+
+    def residual(pt):
+        args = [pt[k] for k in ("u_s", "v_r", "u_p", "C_phi", "C_beta")]
+        return float(np.max(np.abs(np.asarray(rows(*args)))))
+
+    assert residual(point) < 1e-12
+    broken = {
+        "u_s sign": {**point, "u_s": np.r_[u_s_half, u_s_half]},
+        "2 az_c offset": {**point, "C_phi": np.r_[c_phi_half, -c_phi_half]},
+        "off-by-one pairing": {**point, "v_r": np.r_[v_r_half, np.roll(v_r_half, 1)]},
+        "u_p pair": {**point, "u_p": np.r_[u_p_half, u_p_half + 0.01]},
+        "C_beta pair": {**point, "C_beta": np.r_[c_beta_half, c_beta_half[::-1]]},
+    }
+    for what, pt in broken.items():
+        assert residual(pt) > 1e-3, what

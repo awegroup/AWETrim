@@ -89,9 +89,17 @@ src/awetrim/
                          C_phi[k+M/2] = 2 az_c - C_phi[k], C_beta[k+M/2] =
                          C_beta[k] for optimized shape coefficients, and
                          node pairs i / i+N/2 with v_r, u_p equal and u_s
-                         opposite; needs periodic_wrap, even M and N, and a
-                         fixed shape that is already mirrored; off = NLP
-                         unchanged)
+                         opposite; needs periodic_wrap, winch_mode
+                         free_speed (the force law makes the v_r rows
+                         degenerate), even M and N, and a fixed shape that
+                         is already mirrored; off = NLP unchanged. PHYSICAL
+                         only about the downwind meridian az = 0 (another
+                         mirror_azimuth warns). Known LICQ degeneracy: each
+                         active node bound is active at i and i+N/2
+                         together, so with the mirror rows those rows are
+                         dependent and their multipliers not unique; the
+                         clean fix is elimination (declare only the first
+                         half as variables) -- open follow-up)
   environment/       ✅  Wind (uniform / logarithmic / power_law / explog /
                          jet / tabulated). profile_laws.py is the ONLY place the
                          analytic formulas live (pure functions over an ``xp``

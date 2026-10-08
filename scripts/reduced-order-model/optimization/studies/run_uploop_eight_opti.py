@@ -17,8 +17,9 @@ Formulation (all in ``opti_phase``):
     decisions);
   * objective: mean cycle power; depower per node inside the ROM's identified
     band; alpha ``stall_margin_deg`` below the stall; a dense
-    ``min_turn_radius`` floor; the elevation floor through the spline hull
-    (``C_beta`` lower bound).
+    ``min_turn_radius`` floor; the height band z = r sin(beta)
+    (``min_height_m`` / ``max_height_m``, the node-wise ``height`` rows) as
+    the binding vertical limit -- the ``C_beta`` spline hull is loose.
 
 Seed: :func:`awetrim.kinematics.parametrized_patterns.slanted_eight_angles`
 fitted to a periodic B-spline (``make_slanted_eight_bspline_path_parameters``),
@@ -26,8 +27,9 @@ faired to the turn-radius floor, with the depower window centred on the
 high-lobe apex; the forward march with the kite's winch force law measures
 the cycle duration (-> ``n_points``) and reports feasibility. The optimizer
 then runs three warm-started stages: S0 fixes the path and frees ``r0``
-(closes the cycle), S1 frees the shape inside a tight box (3 re-centred
-passes), S2 polishes with a weak anchor.
+(closes the cycle), S1 frees the shape inside a tight box (re-centred
+passes while any step box is active, at most 6; every pass is saved), S2
+polishes with a weak anchor.
 
 Wind: NEVER the profile's top-level ``wind:``. The CLI flags
 (``--wind-law --wind-speed --wind-height --z0``) win over the
@@ -116,7 +118,8 @@ SHAPE_KEYS = tuple(SHAPE_DEFAULTS)
 # sane, must never bind). The binding vertical limit is the HEIGHT band of
 # the profile (min_height_m / max_height_m -> the node-wise ``height`` rows
 # of opti_phase, z = r sin(beta)), decided 2026-10-08: the flown 2019 cycle
-# bottoms at ~44 m at r0 237 m, the eight's sketch floor of 20 deg is ~80 m.
+# bottoms at ~44 m at r0 237 m; the eight's seed bottoms at ~21.4 deg, i.e.
+# ~86 m at r0 236.7 m (seed height report).
 C_PHI_BOUNDS = [-0.6, 0.8]
 C_BETA_BOUNDS = [0.05, 1.50]
 
@@ -145,8 +148,9 @@ SPEC = {"kind": "slanted", "az_center": 0.0, "topology_by": "elevation"}
 # Staged solve, warm-started stage to stage (see run_full_cycle_opti.STAGES
 # for the proximal trust region + backstop box rationale). Never "zero": the
 # seed closes through the wrap row and S0 already targets power.
-# r0 travels at most R0_STEP_M per pass (backstop box); S1 repeats while it
-# sits on that edge.
+# r0 travels at most R0_STEP_M per pass (backstop box). S1 re-centres and
+# repeats while ANY step box (r0 or a shape box) is active, at most
+# R0_MAX_PASSES passes.
 R0_STEP_M = 100.0
 R0_MAX_PASSES = 6
 STAGES = [
@@ -163,10 +167,10 @@ STAGES = [
         "params": ["C_phi", "C_beta", "r0"],
         "trust_region_weight": 0.05,
         "step_bounds": {"C_phi": 0.10, "C_beta": 0.10, "r0": R0_STEP_M},
-        # re-centred passes until r0 is off its step-box edge (the C boxes
-        # may still be active), at most R0_MAX_PASSES
+        # re-centred passes while any step box is active, at most
+        # R0_MAX_PASSES
         "repeat": R0_MAX_PASSES,
-        "repeat_until_r0_free": True,
+        "repeat_while_box_active": True,
         "warm_start": False,
     },
     {
@@ -269,7 +273,7 @@ def resolve_symmetric_shape(block, window, scale_lobes=1.0):
     return shape, window, float(cfg["az_center"])
 
 
-def uploop_limits_override(window, kite):
+def uploop_limits_override(window, kite, c_phi_bounds=None):
     """The ONE set of optimizer bound overrides of this formulation: the ROM
     depower band, the height band (``min_height_m`` / ``max_height_m``, the
     binding vertical limit), the loose spline hull (``C_BETA_BOUNDS``,
@@ -287,7 +291,13 @@ def uploop_limits_override(window, kite):
         "C_phi": [
             float(v)
             for v in (
-                C_PHI_BOUNDS_SYMMETRIC if SPEC["kind"] == "symmetric" else C_PHI_BOUNDS
+                c_phi_bounds
+                if c_phi_bounds is not None
+                else (
+                    C_PHI_BOUNDS_SYMMETRIC
+                    if SPEC["kind"] == "symmetric"
+                    else C_PHI_BOUNDS
+                )
             )
         ],
     }
@@ -421,6 +431,13 @@ def build_uploop_config(kite, shape, window, duration_s=None):
             "Symmetrized the seed spline (max coefficient change "
             f"{np.max(np.abs(np.r_[path['C_phi'], path['C_beta']] - before)):.2e} rad)"
         )
+        path, n_clipped = project_path_into_hull(path, opti_limits_override)
+        if n_clipped:
+            print(
+                f"[hull] WARN: the symmetrized seed had {n_clipped} control points "
+                "outside the hull; projected"
+            )
+        fpcc.enforce_curvature_limit(path, uploop_curvature_limit(window))
 
     winch = fpcc._winch_law_with_hardware_rating(kite["winch_law"])
     duration = float(kite["cycle_duration_s"] if duration_s is None else duration_s)
@@ -428,7 +445,8 @@ def build_uploop_config(kite, shape, window, duration_s=None):
         np.clip(np.ceil(duration * fpcc.NPOINTS_PER_SECOND), 50, fpcc.N_POINTS_MAX)
     )
     if symmetric:
-        n_points += n_points % 2  # node i pairs with node i + N/2
+        if n_points % 2:  # node i pairs with node i + N/2
+            n_points += 1 if n_points + 1 <= fpcc.N_POINTS_MAX else -1
     s_grid = np.linspace(0.0, 1.0, n_points + 1, endpoint=True)
     reelin_fraction = float(window["reelin_fraction"])
     if symmetric:
@@ -536,7 +554,10 @@ def _apply_uploop_formulation(reelout, window, kite):
     if min_turn_radius > 0.0:
         sim["min_turn_radius"] = min_turn_radius
     sim["radial_closure_weight"] = 0.0
-    sim["opti_limits_override"] = uploop_limits_override(window, kite)
+    # The normal cycle keeps the slanted C_phi box whatever --shape is.
+    sim["opti_limits_override"] = uploop_limits_override(
+        window, kite, c_phi_bounds=C_PHI_BOUNDS
+    )
     reelout["path_parameters"], n_clipped = hull_and_fair(
         reelout["path_parameters"],
         sim["opti_limits_override"],
@@ -594,7 +615,7 @@ def describe_topology(crossings, senses):
     return text
 
 
-def check_topology(path_parameters, reference, what):
+def check_topology(path_parameters, reference, what):  # returns the topology
     """Warn (never abort) when the path's crossings / lobe senses changed."""
     topo = path_topology(path_parameters)
     print(f"    {what}: {describe_topology(*topo)}")
@@ -712,7 +733,9 @@ def wrapped_cycle_metrics(series, path_parameters=None):
     The periodic wrap makes the seam interval (last node -> first node, of
     duration ``(s_period - s[-1] + s[0]) / s_dot[-1]``) part of the cycle,
     so energy, duration and power follow the NLP's own left-rule quadrature
-    over ALL N intervals (the generic metric stops at the last node), and the
+    over ALL N intervals, ``dt_i = (s_{i+1} - s_i) / s_dot_i`` (the generic
+    metric stops at the last node and the series' ``t`` is a right rule), and
+    the
     closure is the seam residual ``r[0] - r[-1] - v_r[-1] dt_seam`` (zero on
     a converged wrap; ``r[-1] - r[0]`` is one reel step off by design).
     ``path_parameters`` gives the period ``s_final - s_init`` (1 when absent,
@@ -725,11 +748,11 @@ def wrapped_cycle_metrics(series, path_parameters=None):
         m["height_min"], m["height_max"] = float(z.min()), float(z.max())
     if path_parameters is not None and "r0" in path_parameters:
         m["r0"] = float(path_parameters["r0"])
-    keys = {"s", "s_dot", "t", "tension_tether_ground", "speed_radial", "distance_radial"}
+    keys = {"s", "s_dot", "tension_tether_ground", "speed_radial", "distance_radial"}
     if not keys <= series.keys():
         return m
     n = min(len(series[k]) for k in keys)
-    s, sd, t = series["s"][:n], series["s_dot"][:n], series["t"][:n]
+    s, sd = series["s"][:n], series["s_dot"][:n]
     T, vr, r = (series[k][:n] for k in ("tension_tether_ground", "speed_radial", "distance_radial"))
     if n < 2:
         return m
@@ -738,7 +761,10 @@ def wrapped_cycle_metrics(series, path_parameters=None):
         period = float(path_parameters.get("s_final", 1.0)) - float(
             path_parameters.get("s_init", 0.0)
         )
-    dt = np.r_[np.diff(t), (period - s[-1] + s[0]) / max(sd[-1], 1e-9)]
+    # The NLP's own left rule, dt_i = (s_{i+1} - s_i) / s_dot_i over ALL N
+    # intervals (the seam ends at s_0 + period). The series' ``t`` is NOT
+    # used: series_from_optimizer_result rebuilds it with a right rule.
+    dt = (np.r_[s[1:], s[0] + period] - s) / np.maximum(sd, 1e-9)
     duration = float(np.sum(dt))
     m["energy"] = float(np.sum(T * vr * dt))
     m["duration"] = duration
@@ -760,9 +786,17 @@ def series_from_csv(path):
     return series
 
 
-def reference_columns(out_dir, tag):
+REFERENCE_LIMIT_KEYS = ("r0", "height", "C_beta", "input_depower", "angle_of_attack")
+
+
+def reference_columns(out_dir, tag, override=None):
     """(label, metrics) of earlier runs saved in ``out_dir`` (slanted S1/S2,
-    baseline S2), rebuilt from their YAML + CSV -- absent files are skipped."""
+    baseline S2), rebuilt from their YAML + CSV -- absent files are skipped.
+
+    Only the wind is in the filename. Every result YAML stores its own
+    ``sim_parameters.opti_limits_override``, so the shared limits
+    (``REFERENCE_LIMIT_KEYS``; C_phi differs between shapes by design) are
+    compared with ``override`` and a mismatch is printed."""
     from types import SimpleNamespace
 
     cols = []
@@ -785,6 +819,20 @@ def reference_columns(out_dir, tag):
         )
         m = wrapped_cycle_metrics(series, path["path_parameters"])
         m.update(hull_bounds_text(path["sim_parameters"]))
+        stored = path["sim_parameters"].get("opti_limits_override") or {}
+        for key in REFERENCE_LIMIT_KEYS if override is not None else ():
+            mine, theirs = override.get(key), stored.get(key)
+            if mine is None and theirs is None:
+                continue
+            if (
+                mine is None
+                or theirs is None
+                or not np.allclose(np.asarray(mine, float), np.asarray(theirs, float))
+            ):
+                print(
+                    f"** WARNING: {label} ({yaml_path.name}) was solved with "
+                    f"{key} = {theirs}, this run uses {mine} **"
+                )
         cols.append((label, m))
     return cols
 
@@ -1018,15 +1066,33 @@ def march_seed(reelout, kite, wind, run_plots=False):
     return cycle, phase
 
 
+def feasibility_window(window, landmarks):
+    """``artificial`` argument of ``fpcc._feasibility_report`` (it labels
+    violations by ONE reel-in window). The slanted eight has one window on
+    the high-lobe apex; the symmetric eight has two half a period apart, so
+    only the first (left-apex) window is passed and a note says so."""
+    reelin_fraction = float(window["reelin_fraction"])
+    if SPEC["kind"] == "symmetric":
+        print(
+            "[note] the feasibility report labels violations by ONE reel-in "
+            "window: the left-apex window is used, the mirrored right-apex "
+            "window (s + 0.5) is labelled 'figure eights'"
+        )
+        return {
+            "reelout_fraction": 1.0 - 0.5 * reelin_fraction,
+            "reelin_center": float(landmarks["s_lobe_apex"][0]),
+        }
+    return {
+        "reelout_fraction": 1.0 - reelin_fraction,
+        "reelin_center": float(landmarks["s_high_apex"]),
+    }
+
+
 def report_seed(phase, system_model, config, landmarks, window):
     """Feasibility report of the marched seed plus the eight's own checks."""
-    reelin_fraction = float(window["reelin_fraction"])
     ok = fpcc._feasibility_report(
         phase, system_model, config,
-        artificial={
-            "reelout_fraction": 1.0 - reelin_fraction,
-            "reelin_center": float(landmarks["s_high_apex"]),
-        },
+        artificial=feasibility_window(window, landmarks),
     )
     series = ccp.series_from_phase(phase)
     if SPEC["kind"] == "symmetric":
@@ -1070,6 +1136,9 @@ def optimize_cycle(
     seed_config = copy.deepcopy(cycle.pattern_config)
     result = None
     stage_metrics = []
+    # Last pass whose crossings and lobe senses still match the seed.
+    clean = None
+    topo = seed_topology
     for i, stage in enumerate(STAGES):
         step_bounds = dict(stage.get("step_bounds") or {})
         repeats = int(stage.get("repeat", 1))
@@ -1122,7 +1191,17 @@ def optimize_cycle(
                 f"duration {metrics.get('duration', float('nan')):.1f} s, "
                 f"r0 {float(cycle.pattern_config['path_parameters']['r0']):.1f} m"
             )
-            check_topology(cycle.pattern_config["path_parameters"], seed_topology, "pattern")
+            topo = check_topology(
+                cycle.pattern_config["path_parameters"], seed_topology, "pattern"
+            )
+            pass_label = f"S{i}" + (f" p{rep + 1}" if repeats > 1 else "")
+            pass_file = f"{prefix}_optimized_{tag}_stage{i}"
+            if repeats > 1:
+                pass_file += f"_pass{rep + 1}"
+                result.save_config_to_yaml(out_dir / f"{pass_file}.yaml")
+                result.save_trajectory_csv(out_dir / f"{pass_file}.csv")
+            if topo == seed_topology:
+                clean = (pass_label, metrics, f"{pass_file}.yaml")
             if SPEC["kind"] == "symmetric":
                 sym = symmetry_report(cycle.pattern_config["path_parameters"], series)
                 metrics.update(sym)
@@ -1131,7 +1210,7 @@ def optimize_cycle(
             box_active = rfco._step_box_active(before, after, step_bounds)
             if box_active:
                 print("    ** WARNING: backstop step box active at this optimum **")
-            if stage.get("repeat_until_r0_free") and "r0" in step_bounds:
+            if stage.get("repeat_while_box_active") and "r0" in step_bounds:
                 # Re-centre while ANY box is active (r0 or a shape box): r0
                 # alone leaving its edge would cut the shape's travel budget.
                 r0_on_edge = rfco._step_box_active(
@@ -1157,6 +1236,22 @@ def optimize_cycle(
             break
     if result is None:
         return None, stage_metrics
+    if clean is not None:
+        stage_metrics.append((f"last clean pass ({clean[0]})", clean[1]))
+    if topo != seed_topology:
+        if clean is None:
+            where = "no pass kept the seed topology"
+        else:
+            where = (
+                f"last pass with the seed topology: {clean[0]} "
+                f"({clean[1].get('avg_power', float('nan')) / 1e3:.2f} kW, "
+                f"{clean[1].get('steering_reversals', 'n/a')} reversals), "
+                f"saved as {clean[2]}"
+            )
+        print(
+            f"\n** FINAL TOPOLOGY DIFFERS FROM THE SEED: {describe_topology(*topo)} "
+            f"vs seed {describe_topology(*seed_topology)}; {where} **"
+        )
     result.save_config_to_yaml(out_dir / f"{prefix}_optimized_{tag}.yaml")
     result.save_trajectory_csv(out_dir / f"{prefix}_optimized_{tag}.csv")
     try:
@@ -1252,8 +1347,7 @@ def main(args):
         print("Seed march truncated: the shape is not trimmable at this wind.")
         fpcc._feasibility_report(
             phase, system_model, config,
-            artificial={"reelout_fraction": 1.0 - window["reelin_fraction"],
-                        "reelin_center": float(landmarks["s_high_apex"])},
+            artificial=feasibility_window(window, landmarks),
         )
         return 1
     print(f"Measured cycle duration {duration:.1f} s -> recalibrating n_points")
@@ -1311,6 +1405,8 @@ def main(args):
 
     baseline_clipped = 0
     footnote_baseline = None
+    # A symmetric run's baseline must not overwrite the slanted run's files.
+    b_prefix = "baseline" if SPEC["kind"] == "slanted" else "baseline_symmetric"
     if args.baseline_seed:
         print("\n=== Baseline: the classic multi-lobe seed on the same formulation ===")
         baseline = rfco.load_reelout_config(Path(kite["cycle_config_dir"]) / SEED_FILENAME)
@@ -1340,25 +1436,28 @@ def main(args):
             b_seed_path = copy.deepcopy(baseline["path_parameters"])
             b_result, b_stages = optimize_cycle(
                 b_cycle, b_phase, b_topology,
-                out_dir=out_dir, prefix="baseline", tag=tag, run_plots=args.plot,
+                out_dir=out_dir, prefix=b_prefix, tag=tag, run_plots=args.plot,
             )
             columns += [(f"baseline {label}", m) for label, m in b_stages]
             if b_result is not None:
                 save_summary(
                     b_cycle, b_result, b_seed_path, window,
                     title=f"baseline cycle -- {kite['name']}, {rfco.describe_wind(wind)}",
-                    save_path=out_dir / f"baseline_{tag}_summary.png",
+                    save_path=out_dir / f"{b_prefix}_{tag}_summary.png",
                 )
 
     footnotes = []
     if args.compare and SPEC["kind"] == "symmetric":
-        refs = reference_columns(out_dir, tag)
+        refs = reference_columns(
+            out_dir, tag, override=reelout["sim_parameters"]["opti_limits_override"]
+        )
         if refs:
             columns += refs
             footnotes.append(
-                "ref columns: the last saved height-band runs of the slanted eight "
-                "and the baseline (same wind and limits), rebuilt from their "
-                "YAML/CSV; IPOPT status not stored"
+                "ref columns: the last saved slanted-eight / baseline results with "
+                "this wind tag (only the wind is in the filename; their stored "
+                "r0 / height / C_beta / depower / AoA limits are checked against "
+                "this run's, any mismatch is printed above); IPOPT status not stored"
             )
     if args.baseline_seed and footnote_baseline:
         footnotes.append(footnote_baseline)
