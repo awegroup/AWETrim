@@ -2035,7 +2035,9 @@ def main(
 
     # Angle between vectors (signed)
     dot = np.clip(np.dot(vec_chord_2d, vec_wind_2d), -1.0, 1.0)
-    cross = np.cross(vec_chord_2d, vec_wind_2d)
+    # z-component of the 2-D cross product, written out: np.cross on
+    # 2-element vectors is deprecated since NumPy 2.0.
+    cross = vec_chord_2d[0] * vec_wind_2d[1] - vec_chord_2d[1] * vec_wind_2d[0]
 
     angle = np.arctan2(cross, dot)
     alpha_at_ac_mid = np.ravel(results_aero["alpha_at_ac"])[mid_idx]
