@@ -65,7 +65,33 @@ src/awetrim/
                          tubes and pressure). Converged on the LEI-V3
                          unactuated baseline
   kinematics/        ✅  course-frame kinematics, B-spline path patterns
+                         (+ the slanted up-loop figure eight of the
+                         single-period pumping cycle: slanted_eight_angles /
+                         slanted_eight_landmarks (NumPy, Gerono lobes scaled to
+                         the stated circles, s=0 at the low-lobe bottom),
+                         make_slanted_eight_bspline_path_parameters (smallest
+                         M under a metre of deviation; returns (dict, info)),
+                         count_self_crossings / eight_crossing_s /
+                         lobe_signed_areas (by="elevation" low/high or
+                         by="azimuth" left/right) as topology + sense checks;
+                         symmetrize_periodic_path: half a period of the
+                         uniform periodic spline is an index shift by M/2, so
+                         a mirrored path is a coefficient-pair condition)
   timeseries/        ✅  PhaseParameterized, ReeloutSimple, ReelinSimple, Cycle
+                         (opti_phase sim_parameters.periodic_wrap: the seam
+                         interval node N-1 -> node 0 of a one-period periodic
+                         spline gets the same continuity / rate / AoA rows,
+                         energy, time and regulariser term as the interior
+                         ones -- the closed cycle without close_radial_cycle,
+                         which it refuses to combine with; NLP byte-identical
+                         when off. sim_parameters.mirror_symmetry (+
+                         mirror_azimuth, default 0): half-period mirror rows
+                         C_phi[k+M/2] = 2 az_c - C_phi[k], C_beta[k+M/2] =
+                         C_beta[k] for optimized shape coefficients, and
+                         node pairs i / i+N/2 with v_r, u_p equal and u_s
+                         opposite; needs periodic_wrap, even M and N, and a
+                         fixed shape that is already mirrored; off = NLP
+                         unchanged)
   environment/       ✅  Wind (uniform / logarithmic / power_law / explog /
                          jet / tabulated). profile_laws.py is the ONLY place the
                          analytic formulas live (pure functions over an ``xp``
@@ -106,7 +132,9 @@ src/awetrim/
                          Launcher: scripts/server/run_reelout_server.py
   experimental/      ✅  EKF flight-data analysis pipeline (+ data_preprocessors/)
   plotting/          ✅  shared plotting helpers — see src/awetrim/plotting/AGENTS.md
-  utils/             ✅  fitting, defaults, reference frames
+  utils/             ✅  fitting, defaults, reference frames, control_metrics
+                         (steering-reversal count / pairs outside a deadband,
+                         seam pair counted on a periodic history)
   identification/    🟡  ROM aero-coefficient identification: tidy dataset
                          (aero_dataset.py, AS + EKF sources, shared schema),
                          BIC forward-stepwise polynomial fit with k-fold CV
@@ -138,6 +166,20 @@ quasi-steady solve)). The paper's semi-empirical ROM
 comparison in `docs/identification/`; it lives in git history (last at
 commit bad8a9b) and `config_paths.LEI_V3_ROM_SEMI_EMPIRICAL_CONFIG` keeps its
 path so the comparison scripts run on a checkout of it.
+
+Full-cycle optimisation scripts (`optimization/cycle/`): `fit_periodic_cycle_config.py`
++ `run_full_cycle_opti.py` (multi-lobe cycle, `close_radial_cycle`). Studies
+built on them live in `optimization/studies/` (see its README), e.g.
+`run_uploop_eight_opti.py` + `plot_uploop_eight_comparison.py` (ONE slanted up-loop figure eight per period: low lobe
++ crossings reel out, high arc reels in; `periodic_wrap`, `free_speed`, free
+period, staged S0 fixed path / S1 shape box / S2 polish; wind from the CLI or
+the profile's `uploop_eight.wind`, never the top-level `wind:`; `--shape
+symmetric` flies the level eight of `symmetric_eight:` instead, `--symmetric`
+adds `mirror_symmetry`; `--baseline-seed` puts the multi-lobe seed on the same
+formulation). The
+steering-reversal count (`awetrim.utils.control_metrics.count_steering_reversals`,
+deadband 0.02 standardised u_s, seam pair counted on a closed cycle) is a
+first-class cycle metric next to the mean power in `cycle_comparison_plots`.
 
 **ROM parameter names** (`aerodynamics.params`, read by `system/kite.py`):
 `angle_pitch_tether_0` + `slope_angle_pitch_tether_depower` give the bridle
@@ -331,7 +373,7 @@ Optional but recommended:
 
 - `flight_logs/` — raw flight CSVs for EKF and identification.
 - `cycle_configs/` — trajectory/pattern YAMLs for timeseries scripts (downloop, uploop, helix, etc.).
-- `cycle_profile.yaml` — inputs of the full-cycle scripts (`scripts/reduced-order-model/optimization/cycle/`, `--kite <folder>`): wind, winch force law and seed size (r0, duration prior, figure-eight/reel-in size), all required; see `cycle_kites.py` and the annotated LEI-V3 file. Data folders of kites whose data must stay private (e.g. `data/LEI-V9-KITE/`) are git-ignored; nothing kite-specific lives in code.
+- `cycle_profile.yaml` — inputs of the full-cycle scripts (`scripts/reduced-order-model/optimization/cycle/`, `--kite <folder>`): wind, winch force law and seed size (r0, duration prior, figure-eight/reel-in size), all required; see `cycle_kites.py` and the annotated LEI-V3 file. An optional `uploop_eight:` block (lobe centres/radii in rad, `sense`, depower window, the height band `min_height_m` / `max_height_m` (z = r sin β, the node-wise `height` rows — the binding vertical limit, shared with the `--baseline-seed` cycle; the C_beta hull stays loose), stall margin, turn-radius floor, `r0_max_m` (upper r0 bound; the tether length in system.yaml still caps r) and its OWN `wind`) feeds `run_uploop_eight_opti.py`; an optional `symmetric_eight:` block (az_center, az_offset, el_center, radius, sense; reelin/ramp fractions optional) is the level eight of its `--shape symmetric` (climbing at both sides, two reel-in windows, symmetric C_phi box; `--symmetric` adds the mirror rows). Data folders of kites whose data must stay private (e.g. `data/LEI-V9-KITE/`) are git-ignored; nothing kite-specific lives in code.
 
 Results layout (convention):
 

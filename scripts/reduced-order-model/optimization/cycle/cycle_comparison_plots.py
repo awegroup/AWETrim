@@ -34,6 +34,10 @@ from pathlib import Path
 import numpy as np
 
 from awetrim.kinematics.parametrized_patterns import PeriodicBSpline
+from awetrim.utils.control_metrics import (
+    STEERING_DEADBAND,
+    count_steering_reversals,
+)
 
 SEED_STYLE = {"color": "0.45", "linestyle": "--", "linewidth": 1.4}
 OPT_STYLE = {"color": "tab:blue", "linestyle": "-", "linewidth": 1.7}
@@ -179,6 +183,12 @@ def cycle_metrics(series):
     u_s = series.get("input_steering")
     if u_s is not None and len(u_s):
         m["steer_absmax"] = float(np.max(np.abs(u_s)))
+        m["steering_rms"] = float(np.sqrt(np.mean(np.square(u_s))))
+        # Lobe-to-lobe sign changes outside the deadband, seam included: a
+        # closed cycle is periodic, so the last -> first pair counts.
+        m["steering_reversals"] = count_steering_reversals(
+            u_s, deadband=STEERING_DEADBAND, periodic=True
+        )
     dep = series.get("input_depower")
     if dep is not None and len(dep):
         m["depower_min"] = float(np.min(dep))
@@ -222,10 +232,16 @@ def comparison_rows(seed_m, opt_m):
     add("cycle duration", "duration", ".1f", " s")
     add("reel-out time fraction", "reelout_time_fraction", ".2f")
     add("closure r_end - r0", "closure", "+.2f", " m")
+    if "closure_seam" in seed_m or "closure_seam" in opt_m:
+        # periodic wrap: r_end - r0 is one reel step off by design; the seam
+        # residual r[0] - r[-1] - v_r[-1] dt_seam is the closure that holds
+        add("closure (seam, wrap)", "closure_seam", "+.2f", " m")
     add_range("radius range", "r_min", "r_max", ".1f", " m")
     add("tension mean", "tension_mean", ".2f", " kN", scale=1e-3)
     add("tension max", "tension_max", ".2f", " kN", scale=1e-3)
     add("max |steering|", "steer_absmax", ".2f")
+    add("steering rms", "steering_rms", ".3f")
+    add("steering reversals", "steering_reversals", ".0f")
     add_range("depower range", "depower_min", "depower_max", ".2f", " m")
     return rows
 
@@ -555,6 +571,7 @@ def save_cycle_comparison_plots(
     tag="cycle",
     show=False,
     dpi=150,
+    metrics_fn=None,
 ):
     """Build and save the seed-vs-optimized comparison figures.
 
@@ -563,7 +580,10 @@ def save_cycle_comparison_plots(
     re-simulation involved. Passing ``optimized_phase`` (a re-simulated
     phase) overrides that source. Figures are written to ``out_dir`` and,
     unless ``show``, closed after saving (with ``show`` they stay open for
-    the caller's ``plt.show()``). Returns the list of written paths.
+    the caller's ``plt.show()``). ``metrics_fn`` (default
+    :func:`cycle_metrics`) builds the scalar metrics of each series -- a
+    periodic-wrap caller passes its closed-cycle variant, which adds the
+    seam-closure row. Returns the list of written paths.
     """
     import matplotlib.pyplot as plt
 
@@ -582,8 +602,9 @@ def save_cycle_comparison_plots(
     else:
         print("Comparison plots: no optimized series available; plotting seed only.")
 
-    seed_m = cycle_metrics(seed) if seed else {}
-    opt_m = cycle_metrics(opt) if opt else {}
+    metrics_fn = metrics_fn or cycle_metrics
+    seed_m = metrics_fn(seed) if seed else {}
+    opt_m = metrics_fn(opt) if opt else {}
     rows = comparison_rows(seed_m, opt_m)
     print_comparison(rows)
 

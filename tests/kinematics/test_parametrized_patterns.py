@@ -866,3 +866,216 @@ def test_design_reelin_spline_hits_peak_within_curvature_and_keeps_handover():
     )
     assert not rep2["engaged"] and not rep2["changed"]
     assert same["C_phi"] == designed["C_phi"]
+
+
+# --- slanted up-loop figure eight (single-lobe-pair pumping cycle) ----------
+
+
+_EIGHT = dict(
+    az_low=np.radians(-5.0),
+    el_low=np.radians(29.5),
+    radius_low=np.radians(7.5),
+    az_high=np.radians(20.0),
+    el_high=np.radians(45.0),
+    radius_high=np.radians(10.0),
+)
+
+
+def _eight_samples(n=721, **kwargs):
+    from awetrim.kinematics.parametrized_patterns import slanted_eight_angles
+
+    s = np.linspace(0.0, 1.0, n, endpoint=False)
+    az, el = slanted_eight_angles(s, **_EIGHT, **kwargs)
+    return s, az, el
+
+
+def test_slanted_eight_is_periodic_with_s_zero_at_the_low_lobe_bottom():
+    """Values and first derivatives match across the seam, and s = 0 is the
+    elevation minimum of the low lobe (steady reel-out, the seam position the
+    periodic cycle configs keep)."""
+    from awetrim.kinematics.parametrized_patterns import (
+        slanted_eight_angles,
+        slanted_eight_landmarks,
+    )
+
+    h = 1e-5
+    for s0 in (0.0, 1.0):
+        az_m, el_m = slanted_eight_angles(s0 - h, **_EIGHT)
+        az_p, el_p = slanted_eight_angles(s0 + h, **_EIGHT)
+        if s0 == 0.0:
+            d_az0, d_el0 = (az_p - az_m) / (2 * h), (el_p - el_m) / (2 * h)
+            az0, el0 = slanted_eight_angles(0.0, **_EIGHT)
+        else:
+            assert np.isclose((az_p - az_m) / (2 * h), d_az0, atol=1e-6)
+            assert np.isclose((el_p - el_m) / (2 * h), d_el0, atol=1e-6)
+            az1, el1 = slanted_eight_angles(1.0, **_EIGHT)
+            assert np.isclose(az1, az0) and np.isclose(el1, el0)
+
+    s, az, el = _eight_samples()
+    assert np.isclose(float(el0), el.min(), atol=1e-6)
+    assert abs(float(d_el0)) < 1e-3  # stationary in elevation at s = 0
+    landmarks = slanted_eight_landmarks(**_EIGHT)
+    assert landmarks["s_low_bottom"] == 0.0
+    assert not landmarks["high_lobe"](0.0)
+    assert landmarks["high_lobe"](landmarks["s_high_apex"])
+    assert np.isclose(el[int(round(landmarks["s_high_apex"] * s.size))], el.max(), atol=1e-3)
+
+
+def test_slanted_eight_lobes_reach_their_stated_circles():
+    """Each lobe spans (about) the circle its centre and radius describe: the
+    low lobe bottoms out near el_low - radius_low and stays within
+    az_low +- radius_low / cos(el); the high lobe peaks near
+    el_high + radius_high."""
+    from awetrim.kinematics.parametrized_patterns import slanted_eight_landmarks
+
+    s, az, el = _eight_samples()
+    high = slanted_eight_landmarks(**_EIGHT)["high_lobe"](s)
+    tol = np.radians(1.5)
+    assert np.isclose(el[~high].min(), _EIGHT["el_low"] - _EIGHT["radius_low"], atol=tol)
+    assert np.isclose(el[high].max(), _EIGHT["el_high"] + _EIGHT["radius_high"], atol=tol)
+    half_az_low = _EIGHT["radius_low"] / np.cos(_EIGHT["el_low"])
+    # the lower half of the lobe (away from the shared crossing, which sits
+    # between the lobe centres) stays inside the circle's azimuth span
+    core_low = ~high & (el < _EIGHT["el_low"])
+    tol_az = np.radians(2.0)
+    assert az[core_low].min() >= _EIGHT["az_low"] - half_az_low - tol_az
+    assert az[core_low].max() <= _EIGHT["az_low"] + half_az_low + tol_az
+
+
+@pytest.mark.parametrize("sense", [-1, +1])
+def test_slanted_eight_crosses_once_with_the_documented_lobe_senses(sense):
+    """One self-crossing; sense = -1 (default) flies the high lobe
+    anticlockwise and the low lobe clockwise (climbing on the outsides),
+    sense = +1 mirrors both."""
+    from awetrim.kinematics.parametrized_patterns import (
+        count_self_crossings,
+        eight_crossing_s,
+        lobe_signed_areas,
+    )
+
+    s, az, el = _eight_samples(sense=sense)
+    assert count_self_crossings(az, el) == 1
+    a_low, a_high = lobe_signed_areas(az, el, s, eight_crossing_s(az, el, s))
+    assert np.sign(a_low) == -np.sign(a_high)
+    if sense < 0:
+        assert a_high > 0 and a_low < 0
+    else:
+        assert a_high < 0 and a_low > 0
+
+
+def test_count_self_crossings_circle_and_lissajous():
+    from awetrim.kinematics.parametrized_patterns import count_self_crossings
+
+    t = np.linspace(0.0, 2.0 * np.pi, 361, endpoint=False)
+    assert count_self_crossings(np.cos(t), np.sin(t)) == 0
+    assert count_self_crossings(np.sin(t), np.sin(2.0 * t)) == 1
+
+
+def test_make_slanted_eight_bspline_path_parameters_are_pattern_ready():
+    from awetrim.kinematics.parametrized_patterns import (
+        make_slanted_eight_bspline_path_parameters,
+    )
+
+    r0 = 236.7
+    path_parameters, info = make_slanted_eight_bspline_path_parameters(r0, **_EIGHT)
+    M = info["M"]
+    assert path_parameters["M"] == M
+    assert len(path_parameters["C_phi"]) == M
+    assert len(path_parameters["C_beta"]) == M
+    assert path_parameters["downloops"] is True
+    assert info["converged"] and info["fit_error_m"] < 1.0
+
+    pattern = create_pattern_from_dict("spline_periodic", path_parameters)
+    assert pattern.M == M
+    s, az, el = _eight_samples(n=240)
+    az_fit = np.asarray(pattern.azimuth(r0, s)).ravel()
+    el_fit = np.asarray(pattern.elevation(r0, s)).ravel()
+    assert np.max(np.abs(az_fit - az)) * r0 < 1.0
+    assert np.max(np.abs(el_fit - el)) * r0 < 1.0
+
+
+def test_periodic_bspline_half_period_shift_is_an_index_shift():
+    """Uniform periodic knots: evaluating at s + 1/2 equals rolling the
+    coefficients by M/2 (exact for even M) -- the basis of the linear
+    mirror-symmetry rows in opti_phase."""
+    from awetrim.kinematics.parametrized_patterns import PeriodicBSpline
+
+    M = 12
+    rng = np.random.default_rng(0)
+    c = rng.normal(size=M)
+    s = np.linspace(0.0, 1.0, 97, endpoint=False)
+
+    def spline(coeffs):
+        return PeriodicBSpline(
+            M=M,
+            C_phi=coeffs.reshape((M, 1)),
+            C_beta=coeffs.reshape((M, 1)),
+            s_init=0.0,
+            s_final=1.0,
+        )
+
+    shifted = np.asarray(spline(c).azimuth(1.0, s + 0.5)).ravel()
+    rolled = np.asarray(spline(np.roll(c, -M // 2)).azimuth(1.0, s)).ravel()
+    assert np.allclose(shifted, rolled, atol=1e-12)
+
+
+def test_symmetrize_periodic_path_mirrors_under_half_period():
+    from awetrim.kinematics.parametrized_patterns import symmetrize_periodic_path
+
+    M = 10
+    rng = np.random.default_rng(1)
+    path = {
+        "M": M,
+        "C_phi": rng.normal(size=M).tolist(),
+        "C_beta": (0.5 + 0.1 * rng.normal(size=M)).tolist(),
+        "s_init": 0.0,
+        "s_final": 1.0,
+        "downloops": True,
+        "r0": 200.0,
+    }
+    sym = symmetrize_periodic_path(path, az_center=0.1)
+    c_phi, c_beta = np.asarray(sym["C_phi"]), np.asarray(sym["C_beta"])
+    assert np.allclose(c_phi[M // 2 :], 0.2 - c_phi[: M // 2], atol=1e-15)
+    assert np.array_equal(c_beta[M // 2 :], c_beta[: M // 2])
+    pat = create_pattern_from_dict("spline_periodic", sym)
+    s = np.linspace(0.0, 0.5, 40, endpoint=False)
+    az = np.asarray(pat.azimuth(1, s)).ravel()
+    el = np.asarray(pat.elevation(1, s)).ravel()
+    az2 = np.asarray(pat.azimuth(1, s + 0.5)).ravel()
+    el2 = np.asarray(pat.elevation(1, s + 0.5)).ravel()
+    assert np.allclose(az2, 0.2 - az) and np.allclose(el2, el)
+    odd = {**path, "M": 9, "C_phi": path["C_phi"][:9], "C_beta": path["C_beta"][:9]}
+    with pytest.raises(ValueError, match="even M"):
+        symmetrize_periodic_path(odd)
+
+
+def test_level_slanted_eight_is_mirror_symmetric_with_outer_climbs():
+    """Both lobe centres at one elevation (tilt 0), sense -1: the path repeats
+    mirrored about the centre meridian after half a period, the left lobe is
+    flown clockwise and the right anticlockwise (each climbed on its OUTER
+    side), and the two per-lobe apices sit half a period apart."""
+    from awetrim.kinematics.parametrized_patterns import (
+        eight_crossing_s,
+        lobe_signed_areas,
+        slanted_eight_angles,
+        slanted_eight_landmarks,
+    )
+
+    level = dict(
+        az_low=-np.radians(25.0),
+        el_low=np.radians(30.0),
+        radius_low=np.radians(10.0),
+        az_high=np.radians(25.0),
+        el_high=np.radians(30.0),
+        radius_high=np.radians(10.0),
+    )
+    s = np.linspace(0.0, 1.0, 720, endpoint=False)
+    az, el = slanted_eight_angles(s, **level)
+    az2, el2 = slanted_eight_angles(s + 0.5, **level)
+    assert np.allclose(az2, -az, atol=1e-9) and np.allclose(el2, el, atol=1e-9)
+    a_left, a_right = lobe_signed_areas(
+        az, el, s, eight_crossing_s(az, el, s), by="azimuth"
+    )
+    assert a_left < 0.0 < a_right
+    s_a, s_b = slanted_eight_landmarks(**level)["s_lobe_apex"]
+    assert abs(((s_b - s_a) % 1.0) - 0.5) < 2e-3

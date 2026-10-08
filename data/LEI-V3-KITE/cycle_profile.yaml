@@ -65,3 +65,58 @@ flight:
 #   m_per_second: 0.2      spline control points per second of flown cycle
 #                          (experimental fit only)
 #   min_turn_radius: 30.0  m, dense turn-radius floor in the NLP (off if absent)
+
+# Optional. The single slanted "up-loop" figure-eight cycle of
+# studies/run_uploop_eight_opti.py: ONE closed period = one eight whose low lobe (plus
+# the crossings) is the reel-out and whose high arc is the reel-in. Nothing
+# above is reused except the winch law and r0 (seed:); in particular the
+# top-level wind: is NOT inherited -- this block's wind (or the CLI
+# --wind-law/--wind-speed/--wind-height/--z0) is the profile the cycle is
+# solved in. Angles in rad (degrees in the comments).
+uploop_eight:
+  az_low: -0.0872665       # -5 deg   reel-out lobe centre, azimuth
+  el_low: 0.5148721        # 29.5 deg reel-out lobe centre, elevation
+  radius_low: 0.1308997    # 7.5 deg  reel-out lobe angular radius
+  az_high: 0.3490659       # 20 deg   reel-in lobe centre, azimuth
+  el_high: 0.7853982       # 45 deg   reel-in lobe centre, elevation
+  radius_high: 0.1745329   # 10 deg   reel-in lobe angular radius
+  sense: -1                # -1: each lobe climbs on its outside (up-loop),
+                           #     high lobe anticlockwise, low lobe clockwise;
+                           # +1: the mirrored sense
+  reelin_fraction: 0.25    # fraction of the period depowered (reel-in),
+                           # centred on the high-lobe apex
+  ramp_fraction: 0.4       # depower ramp width, fraction of the reel-in window
+  min_height_m: 40         # height band z = r sin(beta) [m], the node-wise
+  max_height_m: 400        # "height" rows of opti_phase: THE binding vertical
+                           # limit, identical for the eight and the
+                           # --baseline-seed cycle (decided 2026-10-08). The
+                           # flown 2019 cycle bottoms at ~44 m at r0 237 m; the
+                           # eight's sketch floor of 20 deg elevation is ~80 m.
+                           # The spline hull (C_beta) is left loose on purpose
+  stall_margin_deg: 2      # alpha kept this far below the ROM's stall angle
+  min_turn_radius: 25      # m, dense geometric turn-radius floor; the seed is
+                           # faired to it (stage 0 flies the fixed seed path)
+  r0_max_m: 1000           # m, upper bound of r0 (lower stays 180): lifted
+                           # 2026-10-08 to find the unconstrained r0 (the
+                           # DEFAULT 300 binds on both eights). The tether
+                           # length in system.yaml (415 m) still caps every
+                           # node radius
+  wind:                    # medium wind: 10 m/s at 100 m, logarithmic
+    model_type: logarithmic
+    speed_wind_ref: 10.0   # m/s
+    height_ref: 100.0      # m
+    z0: 0.03               # m
+
+# Optional. The LEVEL figure eight of studies/run_uploop_eight_opti.py --shape
+# symmetric: both lobe centres at one elevation, az_center -/+ az_offset;
+# sense -1 sweeps low across the middle and climbs each lobe on its OUTER
+# side, with one reel-in window per side-climb apex (reelin_fraction split
+# equally). Height band, wind, turn radius, stall margin and stages come from
+# uploop_eight above; only the C_phi box is made symmetric. Angles in rad.
+symmetric_eight:
+  az_center: 0.0           # 0 deg    mirror meridian (downwind)
+  az_offset: 0.4363323     # 25 deg   lobe centres at -/+ this azimuth
+  el_center: 0.5235988     # 30 deg   lobe-centre elevation (both)
+  radius: 0.1745329        # 10 deg   lobe angular radius (both)
+  sense: -1                # climb on the outer sides, low sweep in the middle
+  r0_max_m: 1000           # m, same lifted r0 bound as uploop_eight

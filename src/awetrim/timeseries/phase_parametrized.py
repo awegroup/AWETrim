@@ -1611,6 +1611,89 @@ class PhaseParameterized(TimeSeries):
 
         # Symbolic affine map: s_grid is MX because s1 is MX
         s_grid = s0 + (s1 - s0) * tau
+
+        # Periodic wrap (``sim_parameters["periodic_wrap"]``, default False):
+        # the phase is ONE closed period of a periodic spline, so node N-1's
+        # interval ends at node 0 and the seam gets the same rows every
+        # interior interval has -- radial continuity, the control slew-rate
+        # limits, the AoA bound -- plus its energy and time in the objective
+        # (the NLP is byte-identical with the flag off). With it, the cycle
+        # closes through the continuity row ``r[0] = r[N-1] + v_r[N-1] dt``
+        # instead of the one-sided ``close_radial_cycle`` pin, so the two are
+        # mutually exclusive. Needs a numeric s-span equal to the spline's
+        # period: on an open spline or a partial period the seam is not a
+        # physical interval.
+        periodic_wrap = bool(sim_params.get("periodic_wrap", False))
+        if periodic_wrap:
+            if bool(sim_params.get("close_radial_cycle", False)):
+                raise ValueError(
+                    "sim_parameters.periodic_wrap and close_radial_cycle are "
+                    "mutually exclusive: the wrap row already closes the radius"
+                )
+            if not isinstance(pattern, PeriodicBSpline):
+                raise ValueError(
+                    "sim_parameters.periodic_wrap needs a periodic spline "
+                    f"pattern, got {type(pattern).__name__}"
+                )
+            if isinstance(s0, ca.MX) or isinstance(s1, ca.MX):
+                raise ValueError(
+                    "sim_parameters.periodic_wrap needs numeric start_angle / "
+                    "end_angle (the phase must span exactly one period)"
+                )
+            period = float(pattern.s_final - pattern.s_init)
+            if abs(float(s1) - float(s0) - period) > 1e-9 * max(1.0, abs(period)):
+                raise ValueError(
+                    "sim_parameters.periodic_wrap needs end_angle - start_angle "
+                    f"== the spline period ({period:g}); got "
+                    f"{float(s1) - float(s0):g}"
+                )
+
+        # Mirror symmetry (``sim_parameters["mirror_symmetry"]``, default
+        # False; NLP unchanged when off): the closed cycle repeats MIRRORED
+        # about the meridian ``mirror_azimuth`` (default 0) after half a
+        # period. A uniform periodic cubic B-spline shifted by half a period
+        # is exactly its coefficient vector shifted by M/2 (knot coordinate
+        # x = u M moves by M/2), so the shape rows are linear coefficient
+        # pairs, C_phi[k+M/2] = 2 az_c - C_phi[k], C_beta[k+M/2] = C_beta[k];
+        # the node rows pair node i with node i + N/2: v_r and u_p equal,
+        # u_s opposite. Needs the periodic wrap (one closed period), even M
+        # and even N; a fixed (non-decision) shape must already be mirrored.
+        mirror_symmetry = bool(sim_params.get("mirror_symmetry", False))
+        mirror_azimuth = float(sim_params.get("mirror_azimuth", 0.0))
+        if mirror_symmetry:
+            if not periodic_wrap:
+                raise ValueError(
+                    "sim_parameters.mirror_symmetry needs periodic_wrap"
+                )
+            if not isinstance(pattern, PeriodicBSpline):
+                raise ValueError(
+                    "sim_parameters.mirror_symmetry needs a periodic spline "
+                    f"pattern, got {type(pattern).__name__}"
+                )
+            if int(pattern.M) % 2:
+                raise ValueError(
+                    f"sim_parameters.mirror_symmetry needs an even M, got {pattern.M}"
+                )
+            if int(sim_params["n_points"]) % 2:
+                raise ValueError(
+                    "sim_parameters.mirror_symmetry needs an even n_points, "
+                    f"got {int(sim_params['n_points'])}"
+                )
+            _h = int(pattern.M) // 2
+            for _name, _mirror in (
+                ("C_phi", lambda c: 2.0 * mirror_azimuth - c),
+                ("C_beta", lambda c: c),
+            ):
+                if _name in (opti_params or {}):
+                    continue  # decision variable: tied by rows below
+                _c = np.asarray(path_params[_name], dtype=float).ravel()
+                _gap = float(np.max(np.abs(_c[_h:] - _mirror(_c[:_h]))))
+                if _gap > 1e-5:
+                    raise ValueError(
+                        f"sim_parameters.mirror_symmetry: the fixed {_name} is "
+                        f"not mirror-symmetric (max pair defect {_gap:.3g}); "
+                        "build the seed with symmetrize_periodic_path"
+                    )
         winch_model = Winch(pattern_config=radial_params)
         km_copy = self.substitute_parametrized_kinematics(pattern)
         self.km_param = km_copy
@@ -2391,6 +2474,80 @@ class PhaseParameterized(TimeSeries):
                         )
                         _rep_sigma.append(dsigma_ik / _sigma_ref)
 
+        if periodic_wrap:
+            # Seam interval [s_grid[N-1], s_grid[N]] -> node 0: the same
+            # left-rule rows as the interior intervals (same v_r expression
+            # the interior rows use in either winch mode), appended to the
+            # same report groups so the seam shows up next to them.
+            i_last = N - 1
+            dt_w = (s_grid[N] - s_grid[i_last]) / opti_vars["s_dot"][i_last]
+            T_last = opti_vars["tension_tether_ground"][i_last]
+            r_cont_w = (
+                opti_vars["distance_radial"][0]
+                - opti_vars["distance_radial"][i_last]
+                - opti_vars["speed_radial"][i_last] * dt_w
+            ) / S["r"]
+            opti.subject_to(r_cont_w == 0)
+            _rep_continuity.append(r_cont_w)
+            for ctrl in node_controls:
+                u_ctrl = opti_vars[ctrl.name]
+                ctrl_rate = (u_ctrl[0] - u_ctrl[i_last]) / dt_w
+                opti.subject_to(ctrl_rate <= ctrl.rate_limit[1])
+                opti.subject_to(ctrl_rate >= ctrl.rate_limit[0])
+                _rep_rates[ctrl.name].append(ctrl_rate)
+            energy += T_last * opti_vars["speed_radial"][i_last] * dt_w
+            t_eff += dt_w
+            aoa_w_fn = (
+                _node_functions(_knot_of(s_grid[i_last]))[1]
+                if local_support
+                else aoa_eq
+            )
+            aoa_w = aoa_w_fn(
+                s_grid[i_last],
+                opti_vars["s_dot"][i_last],
+                opti_vars["input_steering"][i_last],
+                T_last,
+                opti_vars["speed_radial"][i_last],
+                opti_vars["distance_radial"][i_last],
+                *_node_syms(i_last),
+            )
+            if np.isfinite(limits["angle_of_attack"][1]):
+                opti.subject_to(aoa_w <= limits["angle_of_attack"][1])
+            if np.isfinite(limits["angle_of_attack"][0]):
+                opti.subject_to(aoa_w >= limits["angle_of_attack"][0])
+            _rep_aoa.append(aoa_w)
+
+        if mirror_symmetry:
+            # Linear equality rows of the half-period mirror (see the guard
+            # block above for the derivation and requirements).
+            _rep_mirror = []
+            _h = int(pattern.M) // 2
+            for _name, _sign, _offset in (
+                ("C_phi", -1.0, 2.0 * mirror_azimuth),
+                ("C_beta", 1.0, 0.0),
+            ):
+                _c = (opti_params or {}).get(_name)
+                if _c is None:
+                    continue
+                for k in range(_h):
+                    row = _c[k + _h] - (_offset + _sign * _c[k])
+                    opti.subject_to(row == 0)
+                    _rep_mirror.append(row)
+            half = N // 2
+            node_pairs = [("speed_radial", 1.0, S["vr"]), ("input_steering", -1.0, 1.0)]
+            if optimize_depower_profile:
+                node_pairs.append(("input_depower", 1.0, 1.0))
+            for _name, _sign, _scale in node_pairs:
+                u_ctrl = opti_vars[_name]
+                for i in range(half):
+                    row = (u_ctrl[i + half] - _sign * u_ctrl[i]) / _scale
+                    opti.subject_to(row == 0)
+                    _rep_mirror.append(row)
+            constraint_report["mirror_symmetry (scaled)"] = {
+                "expr": ca.vertcat(*_rep_mirror),
+                "equality": True,
+            }
+
         power = energy / (t_eff + 1e-12)
 
         # --- Control-smoothness regularizer (node-to-node change of the
@@ -2409,12 +2566,16 @@ class PhaseParameterized(TimeSeries):
             lims = limits.get(name)
             return float(lims[1] - lims[0]) if lims and lims[1] > lims[0] else fallback
 
-        n_int = max(N - 1, 1)
+        # Under the periodic wrap the seam step (node N-1 -> node 0) is one
+        # more interval, penalized like the others.
+        n_int = N if periodic_wrap else max(N - 1, 1)
         reg = 0
         for ctrl in node_controls:
-            reg = reg + ca.sumsqr(
-                ca.diff(opti_vars[ctrl.name]) / _bound_width(ctrl.name)
-            )
+            u_ctrl = opti_vars[ctrl.name]
+            width = _bound_width(ctrl.name)
+            reg = reg + ca.sumsqr(ca.diff(u_ctrl) / width)
+            if periodic_wrap:
+                reg = reg + ((u_ctrl[0] - u_ctrl[N - 1]) / width) ** 2
         reg = reg / n_int
 
         # --- Initials for optimization parameters

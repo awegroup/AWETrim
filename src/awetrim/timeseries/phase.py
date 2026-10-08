@@ -469,8 +469,15 @@ class Phase:
             dep_opt = np.asarray(solution.value(opti_vars["input_depower"])).ravel()
             # opti_vars hold N node values; the simulation s-grid has N+1 points.
             # The last grid point only feeds the (unrecorded) final step, so pad
-            # by repeating the last node to satisfy the length-(N+1) requirement.
-            profile = np.append(dep_opt, dep_opt[-1])
+            # by repeating the last node to satisfy the length-(N+1) requirement
+            # -- or, under the periodic wrap, with node 0: the last grid point
+            # IS the seam, where the closed cycle starts over.
+            wrap = bool(
+                self.pattern_config.get("sim_parameters", {}).get(
+                    "periodic_wrap", False
+                )
+            )
+            profile = np.append(dep_opt, dep_opt[0] if wrap else dep_opt[-1])
             self.pattern_config.setdefault("sim_parameters", {})[
                 "input_depower_profile"
             ] = profile

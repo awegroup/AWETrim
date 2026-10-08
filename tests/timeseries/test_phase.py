@@ -145,3 +145,47 @@ def test_trajectory_from_phase_trims_to_grid_and_rejects_truncated():
 
     assert ph._trajectory_from_phase(_FakeTS(7)) == {}  # truncated march
 
+
+
+def _mocked_profile_solve(monkeypatch, sim_parameters):
+    """Run ``run_simulation_opti`` with the NLP build and solve stubbed out,
+    returning the depower profile it persists for the given sim keys."""
+    n = 4
+    dep_opt = np.array([1.7, 1.9, 2.1, 1.8])
+    opti_vars = {
+        "s": np.linspace(0.0, 1.0, n + 1),
+        "s_dot": np.full(n, 2.0),
+        "input_steering": np.zeros(n),
+        "speed_radial": np.ones(n),
+        "distance_radial": np.full(n, 200.0),
+        "tension_tether_ground": np.full(n, 5.0e3),
+        "input_depower": dep_opt,
+    }
+    objective = {"energy": 1.0, "total_time": 1.0, "power_scale": 1.0}
+    phase = Phase(
+        system_model=None,
+        pattern_config={"sim_parameters": {"n_points": n, **sim_parameters}},
+    )
+    monkeypatch.setattr(
+        Phase,
+        "get_opti_components",
+        lambda self, **kw: (None, opti_vars, objective, {}),
+    )
+    monkeypatch.setattr(Phase, "run_opti", lambda self, *a, **kw: _FakeSolution())
+    result = phase.run_simulation_opti(optimization_params=[])
+    assert result is not None
+    return dep_opt, np.asarray(phase.pattern_config["sim_parameters"]["input_depower_profile"])
+
+
+def test_persisted_depower_profile_pads_with_last_node_by_default(monkeypatch):
+    dep_opt, profile = _mocked_profile_solve(monkeypatch, {})
+    assert profile.size == dep_opt.size + 1
+    assert np.allclose(profile[:-1], dep_opt)
+    assert profile[-1] == dep_opt[-1]
+
+
+def test_persisted_depower_profile_wraps_to_node_zero_under_periodic_wrap(monkeypatch):
+    dep_opt, profile = _mocked_profile_solve(monkeypatch, {"periodic_wrap": True})
+    assert profile.size == dep_opt.size + 1
+    assert np.allclose(profile[:-1], dep_opt)
+    assert profile[-1] == dep_opt[0]

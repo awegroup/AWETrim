@@ -32,9 +32,41 @@ three files in its folder.
                                   fit_periodic_cycle_config.ARTIFICIAL knob
                                   may be added to override its default
                        m_per_second, min_turn_radius, flight   optional
+                       uploop_eight  optional  inputs of
+                                  studies/run_uploop_eight_opti.py (the single
+                                  slanted figure-eight cycle; everything
+                                  else above still applies). Angles in rad:
+                                    az_low, el_low, radius_low    reel-out lobe
+                                    az_high, el_high, radius_high reel-in lobe
+                                    sense (-1 = up-loop, +1 mirrored)
+                                    reelin_fraction, ramp_fraction  depower
+                                      window (period fractions) centred on
+                                      the high-lobe apex
+                                    min_height_m, max_height_m  the height
+                                      band z = r sin(beta) (opti_phase
+                                      "height" rows) -- the binding vertical
+                                      limit, shared with --baseline-seed;
+                                      the spline hull stays loose
+                                    stall_margin_deg, min_turn_radius [m],
+                                    r0_max_m  upper bound of r0 (lower 180;
+                                      the tether length still caps r)
+                                    wind  the profile that cycle is solved
+                                      in (same keys as the top-level wind;
+                                      the top-level one is NEVER inherited,
+                                      the CLI wind flags override this one)
+                       symmetric_eight  optional  the level eight of
+                                  studies/run_uploop_eight_opti.py --shape symmetric
+                                  (rad): az_center, az_offset (lobe centres
+                                  at az_center -/+ az_offset), el_center,
+                                  radius, sense, and optionally
+                                  reelin_fraction / ramp_fraction (split
+                                  over the two side apices) and r0_max_m;
+                                  everything else
+                                  comes from uploop_eight
 
 The seed YAML is written to / read from ``<kite>/cycle_configs/`` and the
-optimizer's outputs go to ``results/<kite folder name>/optimization/full_cycle``.
+optimizer's outputs go to ``results/<kite folder name>/optimization/full_cycle``
+(``.../uploop_eight`` for the slanted-eight script).
 """
 
 from __future__ import annotations
@@ -71,7 +103,16 @@ REQUIRED_SEED = (
     "az_amp0",
     "beta_reelin_peak",
 )
-_SECTIONS = {"wind", "winch_law", "seed", "m_per_second", "min_turn_radius", "flight"}
+_SECTIONS = {
+    "wind",
+    "winch_law",
+    "seed",
+    "m_per_second",
+    "min_turn_radius",
+    "flight",
+    "uploop_eight",
+    "symmetric_eight",
+}
 
 
 def kite_dir(kite: str | Path | None = None) -> Path:
@@ -160,6 +201,8 @@ def resolve_kite(kite: str | Path | None = None) -> dict:
         "m_per_second": profile.get("m_per_second"),
         "min_turn_radius": profile.get("min_turn_radius"),
         "flight": flight,
+        "uploop_eight": dict(profile.get("uploop_eight") or {}),
+        "symmetric_eight": dict(profile.get("symmetric_eight") or {}),
     }
 
 

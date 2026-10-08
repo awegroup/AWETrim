@@ -2080,3 +2080,333 @@ def make_full_cycle_bspline_path_parameters(
         "s_final": 1.0,
         "downloops": bool(downloops),
     }
+
+
+# ---------------------------------------------------------------------------
+# Slanted "up-loop" figure eight: one closed period holding BOTH the reel-out
+# (low lobe + crossings) and the reel-in (high arc) -- a single-lobe-pair
+# pumping cycle whose reel-in is the upper lobe of the eight itself.
+# ---------------------------------------------------------------------------
+def _slanted_eight_raw(p, *, az_low, el_low, radius_low, az_high, el_high, radius_high):
+    """(az, el) of the Gerono eight at phase ``p`` (no s offset applied).
+
+    Local Gerono curve ``x = sin p``, ``y = sin p cos p`` (``sin p > 0`` is
+    the high lobe), each lobe scaled to the circle it stands for: along the
+    lobe axis from the centre crossing to the FAR edge of the circle
+    (``L = d/2 + R``, ``d`` the distance between the lobe centres), across it
+    to the circle's half-width (``Y = 2 R sin p cos p`` peaks at ``R``). Both
+    scales blend between the lobes with ``(1 + sin p) / 2`` so the curve stays
+    smooth through the crossing. Placed on the sphere: the local X axis points
+    from the low-lobe centre to the high-lobe centre (tilt ``theta`` measured
+    in the locally conformal ``(az cos el, el)`` chart), Y is X turned 90 deg
+    anticlockwise, and the eight is centred on the midpoint of the two lobe
+    centres. (A Gerono lobe scaled by ``R`` alone is ``R`` long and ``R/2``
+    wide, so it would never reach the stated circle.)
+    """
+    p = np.asarray(p, dtype=float)
+    sp, cp = np.sin(p), np.cos(p)
+    az_c = 0.5 * (az_low + az_high)
+    el_c = 0.5 * (el_low + el_high)
+    d_az = (az_high - az_low) * np.cos(el_c)
+    d_el = el_high - el_low
+    half_d = 0.5 * np.hypot(d_az, d_el)
+    blend = 0.5 * (1.0 + sp)
+    L = (half_d + radius_low) + (radius_high - radius_low) * blend
+    R = radius_low + (radius_high - radius_low) * blend
+    X = L * sp
+    Y = 2.0 * R * sp * cp
+    theta = np.arctan2(d_el, d_az)
+    el = el_c + X * np.sin(theta) + Y * np.cos(theta)
+    az = az_c + (X * np.cos(theta) - Y * np.sin(theta)) / np.cos(el)
+    return az, el
+
+
+def _slanted_eight_offset(sense, shape, n_dense=8192):
+    """Phase offset (in s) putting ``s = 0`` at the low-lobe bottom.
+
+    Dense sample over one period followed by a parabolic refinement through
+    the three samples around the elevation minimum, so the bottom is resolved
+    far below the sample spacing.
+    """
+    s = np.linspace(0.0, 1.0, int(n_dense), endpoint=False)
+    _, el = _slanted_eight_raw(sense * 2.0 * np.pi * s, **shape)
+    i = int(np.argmin(el))
+    e0, e1, e2 = el[i - 1], el[i], el[(i + 1) % el.size]
+    denom = e0 - 2.0 * e1 + e2
+    frac = 0.5 * (e0 - e2) / denom if abs(denom) > 1e-15 else 0.0
+    return (s[i] + frac / el.size) % 1.0
+
+
+def _slanted_eight_shape(shape):
+    return {
+        k: float(shape[k])
+        for k in (
+            "az_low",
+            "el_low",
+            "radius_low",
+            "az_high",
+            "el_high",
+            "radius_high",
+        )
+    }
+
+
+def slanted_eight_angles(
+    s,
+    *,
+    az_low,
+    el_low,
+    radius_low,
+    az_high,
+    el_high,
+    radius_high,
+    sense=-1,
+):
+    """(azimuth, elevation) [rad] of the slanted up-loop figure eight at ``s``.
+
+    One period ``s in [0, 1)`` is ONE closed pumping cycle: a Gerono eight
+    (``p = sense * 2 pi s``, ``x = sin p``, ``y = sin p cos p``) whose two
+    lobes carry different radii -- the LOW lobe (centre ``az_low``,
+    ``el_low``, angular radius ``radius_low``) is the reel-out figure and the
+    HIGH lobe (``az_high``, ``el_high``, ``radius_high``) is the reel-in arc
+    -- tilted so the crossing legs run from one lobe centre to the other.
+    ``s = 0`` is at the LOW-LOBE BOTTOM (steady reel-out), the seam position
+    the periodic full-cycle configs keep.
+
+    ``sense = +1`` flies (azimuth right, elevation up) the high lobe
+    clockwise and the low lobe anticlockwise, both centre crossings with a
+    positive local-Y velocity. The DEFAULT ``sense = -1`` is the up-loop
+    pattern: each lobe is flown CLIMBING ON ITS OUTSIDE (the turns go upward),
+    the high lobe anticlockwise and the low lobe clockwise; the outbound
+    crossing leg to the high lobe is shallow / near-horizontal and the return
+    leg to the low lobe is a steep descent.
+    """
+    shape = _slanted_eight_shape(locals())
+    sense = float(np.sign(sense)) or -1.0
+    offset = _slanted_eight_offset(sense, shape)
+    p = sense * 2.0 * np.pi * (np.asarray(s, dtype=float) + offset)
+    return _slanted_eight_raw(p, **shape)
+
+
+def slanted_eight_landmarks(n_dense=4096, sense=-1, **shape):
+    """``s`` of the eight's landmarks: ``s_low_bottom`` (0 by construction),
+    ``s_high_apex`` (max elevation, the depower-window centre) and
+    ``s_crossing`` (the two ``s`` at which the path passes the centre
+    crossing), ``s_lobe_apex`` (``(s, s)`` of the elevation maximum of the
+    low / high lobe -- with both lobe centres at one elevation, the "low" lobe
+    is the ``az_low`` one) plus ``high_lobe(s)`` -> bool mask (True on the
+    high lobe).
+    """
+    shape = _slanted_eight_shape(shape)
+    sense = float(np.sign(sense)) or -1.0
+    s = np.linspace(0.0, 1.0, int(n_dense), endpoint=False)
+    _, el = slanted_eight_angles(s, sense=sense, **shape)
+    offset = _slanted_eight_offset(sense, shape)
+
+    def high_lobe(s_v):
+        p = sense * 2.0 * np.pi * (np.asarray(s_v, dtype=float) + offset)
+        return np.sin(p) > 0.0
+
+    # Crossings are the raw phases p = 0 (mod pi): s = k/2 - offset.
+    crossings = sorted(((k * 0.5 - offset) % 1.0) for k in range(2))
+    high = high_lobe(s)
+    lobe_apex = tuple(
+        float(s[mask][int(np.argmax(el[mask]))]) for mask in (~high, high)
+    )
+    return {
+        "s_low_bottom": 0.0,
+        "s_high_apex": float(s[int(np.argmax(el))]),
+        "s_crossing": tuple(float(c) for c in crossings),
+        "s_lobe_apex": lobe_apex,
+        "high_lobe": high_lobe,
+    }
+
+
+def _great_circle_deviation(az_a, el_a, az_b, el_b):
+    """Angle [rad] between the unit-sphere points (az_a, el_a) and (az_b, el_b)."""
+    dot = np.sin(el_a) * np.sin(el_b) + np.cos(el_a) * np.cos(el_b) * np.cos(
+        az_a - az_b
+    )
+    return np.arccos(np.clip(dot, -1.0, 1.0))
+
+
+def make_slanted_eight_bspline_path_parameters(
+    r0,
+    *,
+    max_fit_error_m=1.0,
+    M_candidates=range(16, 41, 2),
+    n_fit=600,
+    precision=6,
+    **shape,
+):
+    """YAML-ready periodic path parameters of :func:`slanted_eight_angles`.
+
+    Fits a periodic cubic B-spline over ``s in [0, 1]`` for increasing ``M``
+    and keeps the SMALLEST one whose maximum great-circle deviation from the
+    analytic curve, at radius ``r0``, is below ``max_fit_error_m`` (the last
+    candidate is kept, flagged ``converged: False``, when none fits).
+    Returns ``(path_parameters, info)``: the dict has the same shape as
+    :func:`make_full_cycle_bspline_path_parameters` (``downloops: True``,
+    pattern-ready, no extra keys -- ``create_pattern_from_dict`` forwards
+    every key) and ``info`` carries ``M``, ``fit_error_m`` and ``converged``.
+    """
+    s_samples = np.linspace(0.0, 1.0, int(n_fit), endpoint=False)
+    az_target, el_target = slanted_eight_angles(s_samples, **shape)
+
+    def _rounded(coefficients):
+        values = np.round(coefficients.full().flatten(), precision)
+        values[np.isclose(values, 0.0)] = 0.0
+        return values.tolist()
+
+    best = None
+    for M in M_candidates:
+        pattern, C_phi, C_beta = fit_bspline_pattern_to_trajectory(
+            spline_type="periodic",
+            M=int(M),
+            s_init=0.0,
+            s_final=1.0,
+            az_target=az_target,
+            el_target=el_target,
+            s_samples=s_samples,
+            downloops=True,
+        )
+        az_fit = np.asarray(pattern.azimuth(float(r0), s_samples)).ravel()
+        el_fit = np.asarray(pattern.elevation(float(r0), s_samples)).ravel()
+        err = float(
+            np.max(_great_circle_deviation(az_fit, el_fit, az_target, el_target))
+            * float(r0)
+        )
+        best = (int(M), C_phi, C_beta, err)
+        if err < float(max_fit_error_m):
+            break
+    M, C_phi, C_beta, err = best
+    path_parameters = {
+        "r0": float(r0),
+        "M": int(M),
+        "C_phi": _rounded(C_phi),
+        "C_beta": _rounded(C_beta),
+        "s_init": 0.0,
+        "s_final": 1.0,
+        "downloops": True,
+    }
+    info = {
+        "M": int(M),
+        "fit_error_m": err,
+        "converged": err < float(max_fit_error_m),
+    }
+    return path_parameters, info
+
+
+def _closed_polyline_crossings(phi, beta):
+    """Pairs ``(i, j, t_i, t_j)`` of non-adjacent segments of the closed
+    polyline through the samples that intersect; ``t`` is the fractional
+    position along each segment (half-open ``[0, 1)`` so a crossing exactly
+    on a vertex counts once)."""
+    x = np.asarray(phi, dtype=float).ravel()
+    y = np.asarray(beta, dtype=float).ravel()
+    n = x.size
+    if n < 4:
+        return []
+    x2, y2 = np.roll(x, -1), np.roll(y, -1)
+    dx, dy = x2 - x, y2 - y
+    i, j = np.triu_indices(n, k=2)
+    # the (0, n-1) pair shares the seam vertex: adjacent on the closed loop
+    keep = ~((i == 0) & (j == n - 1))
+    i, j = i[keep], j[keep]
+    denom = dx[i] * dy[j] - dy[i] * dx[j]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rx, ry = x[j] - x[i], y[j] - y[i]
+        t_i = (rx * dy[j] - ry * dx[j]) / denom
+        t_j = (rx * dy[i] - ry * dx[i]) / denom
+    hit = (
+        (np.abs(denom) > 1e-15)
+        & (t_i >= 0.0)
+        & (t_i < 1.0)
+        & (t_j >= 0.0)
+        & (t_j < 1.0)
+    )
+    return [
+        (int(a), int(b), float(ta), float(tb))
+        for a, b, ta, tb in zip(i[hit], j[hit], t_i[hit], t_j[hit])
+    ]
+
+
+def count_self_crossings(phi, beta):
+    """Number of self-intersections of the closed (azimuth, elevation) path.
+
+    Segment-pair intersections over the closed polyline through the samples,
+    adjacent segments ignored: 1 for a figure eight, 0 for a circle or a
+    helix lobe. The topology check of the single-lobe-pair cycle (an
+    optimizer pass that merges or untangles the eight changes it).
+    """
+    return len(_closed_polyline_crossings(phi, beta))
+
+
+def eight_crossing_s(phi, beta, s):
+    """``(s_a, s_b)`` at which a figure-eight path crosses itself, interpolated
+    between the samples (``s`` uniform over one period, no endpoint). Raises
+    ``ValueError`` unless the path has exactly one crossing."""
+    hits = _closed_polyline_crossings(phi, beta)
+    if len(hits) != 1:
+        raise ValueError(f"expected one self-crossing, found {len(hits)}")
+    s = np.asarray(s, dtype=float).ravel()
+    ds = float(s[1] - s[0]) if s.size > 1 else 0.0
+    i, j, t_i, t_j = hits[0]
+    return (float(s[i] + t_i * ds), float(s[j] + t_j * ds))
+
+
+def lobe_signed_areas(phi, beta, s, s_split, by="elevation"):
+    """``(A_low, A_high)`` signed shoelace areas [rad^2] of the two lobes of a
+    figure eight in the (azimuth, elevation) plane -- positive = anticlockwise
+    with azimuth to the right and elevation up.
+
+    ``s_split = (s_a, s_b)`` are the ``s`` of the crossing (see
+    :func:`eight_crossing_s`): samples with ``s_a <= s < s_b`` form one lobe,
+    the rest the other; "low" is the lobe with the lower mean elevation
+    (``by="elevation"``), or -- for a level, side-by-side eight --
+    ``by="azimuth"`` returns ``(A_left, A_right)`` by mean azimuth. Each lobe
+    starts and ends at the crossing, so it is a closed polygon.
+    """
+    if by not in ("elevation", "azimuth"):
+        raise ValueError(f"by must be 'elevation' or 'azimuth', got {by!r}")
+    phi = np.asarray(phi, dtype=float).ravel()
+    beta = np.asarray(beta, dtype=float).ravel()
+    s = np.asarray(s, dtype=float).ravel()
+    s_a, s_b = sorted(float(v) for v in s_split)
+    inside = (s >= s_a) & (s < s_b)
+
+    def _area(mask):
+        x, y = phi[mask], beta[mask]
+        return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+    key = beta if by == "elevation" else phi
+    lobes = [(float(np.mean(key[m])), _area(m)) for m in (inside, ~inside)]
+    lobes.sort(key=lambda item: item[0])
+    return lobes[0][1], lobes[1][1]
+
+
+def symmetrize_periodic_path(path_parameters, az_center=0.0):
+    """Mirror-symmetric copy of a periodic-spline path (even ``M``).
+
+    Half a period of a uniform periodic cubic B-spline is exactly an index
+    shift by ``M/2`` (knot coordinate ``x = u M`` moves by ``M/2``), so the
+    path is mirrored about the meridian ``az_center`` under ``s -> s + 1/2``
+    iff ``C_phi[k + M/2] = 2 az_center - C_phi[k]`` and
+    ``C_beta[k + M/2] = C_beta[k]``. Returns the nearest such path (average
+    of each coefficient pair); the second half is written as the exact
+    mirror of the first, so the equality rows of
+    ``sim_parameters.mirror_symmetry`` hold to rounding.
+    """
+    M = int(path_parameters["M"])
+    if M % 2:
+        raise ValueError(f"mirror symmetry needs an even M, got {M}")
+    h = M // 2
+    c_phi = np.asarray(path_parameters["C_phi"], dtype=float).ravel()
+    c_beta = np.asarray(path_parameters["C_beta"], dtype=float).ravel()
+    c = float(az_center)
+    phi_a = 0.5 * ((c_phi[:h] - c) - (c_phi[h:] - c)) + c
+    beta_a = 0.5 * (c_beta[:h] + c_beta[h:])
+    out = dict(path_parameters)
+    out["C_phi"] = np.r_[phi_a, 2.0 * c - phi_a].tolist()
+    out["C_beta"] = np.r_[beta_a, beta_a].tolist()
+    return out
