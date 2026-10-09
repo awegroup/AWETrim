@@ -27,12 +27,20 @@ from awetrim import plotting
 from awetrim.aerostructural.results import aerostructural_results_root
 from awetrim.aerostructural.case import DEFAULT_KITE_NAME
 
+def _parse_cell(key, value):
+    """One CSV cell: direction stays text, converged is a bool, the rest are floats."""
+    if key == "direction":
+        return value
+    if key == "converged":
+        return value == "True"
+    return float(value)
+
 
 def read_chains(csv_path):
     """Rows grouped by wind speed, each sorted by depower input."""
     with Path(csv_path).open(newline="", encoding="utf-8") as handle:
         rows = [
-            {k: (v if k == "direction" else float(v)) for k, v in row.items()}
+            {k: _parse_cell(k, v) for k, v in row.items()}
             for row in csv.DictReader(handle)
         ]
     winds = sorted({row["wind_speed"] for row in rows})
