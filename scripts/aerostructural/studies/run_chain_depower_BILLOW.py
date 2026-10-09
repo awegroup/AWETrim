@@ -46,6 +46,7 @@ from awetrim.utils.system_config import get_tether
 from awetrim.aerostructural.case import (
     DEFAULT_KITE_NAME,
     build_system_model,
+    build_tether,
     resolve_initial_geometry_rotation_kwargs,
     resolve_kite_paths,
 )
@@ -120,10 +121,7 @@ def build_once(project_dir, kite_name, panels_per_section, overrides=None,
         vsm_solver=vsm_solver,
         vel_app=vel_app,
         polars=polars,
-        tether=RigidLumpedTether(
-            diameter=tether_struct["diameter"],
-            density=tether_struct.get("density", 970.0),
-        ),
+        tether=build_tether(config, system_config),
     )
 
 
