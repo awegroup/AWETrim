@@ -19,6 +19,46 @@ import numpy as np
 from awetrim.utils.defaults import DEFAULT_WINCH_CONFIG
 
 
+def drivetrain_loss_power(
+    speed_radial,
+    friction_coulomb,
+    friction_viscous,
+    speed_smoothing=0.05,
+    xp=np,
+    tension=0.0,
+    load_fraction=0.0,
+):
+    """Power lost to winch drivetrain friction [W], >= 0 in both reel directions.
+
+    Tether-referred friction force F_c sign(v) + c_v v times the reel speed:
+    ``P_loss = F_c v tanh(v / eps) + c_v v^2``. An optional load-proportional
+    part ``load_fraction * tension`` (pulley bearings and rope bending, belt,
+    gear mesh: a fixed fraction of the transmitted force) adds to F_c, so
+    ``P_loss = (F_c + k T) v tanh(v / eps) + c_v v^2``. The tanh smooths sign(v), so
+    the Coulomb loss F_c |v| has no kink at v = 0, where v_r crosses twice per
+    cycle and IPOPT needs second derivatives. It under-counts F_c |v| only for
+    |v| < ~2 eps, by at most 0.28 F_c eps (1.7 W for F_c = 122 N at
+    |v| = 0.04 m/s). Same role as smooth_sign in WinchModels.jl /
+    SymbolicAWEModels.jl. The drive power is then
+    ``T v - P_loss``: the generator gets less than the tether delivers on
+    reel-out, the motor supplies more than the tether absorbs on reel-in.
+
+    Args:
+        speed_radial: reel speed v_r [m/s], positive = reel-out.
+        friction_coulomb: F_c [N] (system.yaml drums[0].friction_coulomb).
+        friction_viscous: c_v [N s/m] (drums[0].friction_viscous).
+        speed_smoothing: eps [m/s] of the tanh sign.
+        xp: math namespace, ``numpy`` or ``casadi``.
+        tension: tether tension T [N] at the ground station (>= 0); only used
+            with ``load_fraction``.
+        load_fraction: k [-], load-proportional loss as a fraction of T
+            (drums[0].friction_load_fraction).
+    """
+    v = speed_radial
+    force = friction_coulomb + load_fraction * tension
+    return force * v * xp.tanh(v / speed_smoothing) + friction_viscous * v**2
+
+
 class Winch:
     def __init__(self, pattern_config, config=DEFAULT_WINCH_CONFIG):
         self.max_tether_length = config["max_tether_length"]

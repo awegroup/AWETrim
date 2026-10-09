@@ -388,3 +388,48 @@ class TestRadialEquationErrors:
         winch = Winch(pattern_config={"reeling_strategy": "magic"})
         with pytest.raises(ValueError, match="Unknown reeling_strategy"):
             winch.radial_equation(speed_radial=3.0, tension_tether_ground=4000.0)
+
+
+# ============================================================================
+# drivetrain_loss_power (tether-referred friction, numpy / casadi kernel)
+# ============================================================================
+
+
+class TestDrivetrainLossPower:
+    def test_numpy_and_casadi_agree_and_loss_is_even_in_v(self):
+        from awetrim.system.winch import drivetrain_loss_power
+
+        v = np.array([-8.0, -1.0, -0.01, 0.0, 0.01, 1.0, 3.5])
+        p_np = drivetrain_loss_power(v, 122.0, 30.7)
+        vs = ca.MX.sym("v")
+        f = ca.Function("p", [vs], [drivetrain_loss_power(vs, 122.0, 30.7, xp=ca)])
+        p_ca = np.array([float(f(x)) for x in v])
+        np.testing.assert_allclose(p_ca, p_np, rtol=1e-12)
+        assert p_np[3] == 0.0 and np.all(p_np >= 0.0)
+        # a loss in both directions: P(-v) == P(v)
+        np.testing.assert_allclose(drivetrain_loss_power(-v, 122.0, 30.7), p_np)
+
+    def test_far_from_zero_it_is_coulomb_plus_viscous(self):
+        from awetrim.system.winch import drivetrain_loss_power
+
+        # tanh(3 / 0.05) = 1 to machine precision
+        assert drivetrain_loss_power(3.0, 122.0, 30.7) == pytest.approx(122.0 * 3 + 30.7 * 9)
+
+    def test_load_fraction_adds_k_T_to_the_coulomb_force(self):
+        from awetrim.system.winch import drivetrain_loss_power
+
+        # (F_c + k T) |v| + c_v v^2, in both reel directions; default k = 0
+        p = drivetrain_loss_power(-3.0, 122.0, 30.7, tension=2000.0, load_fraction=0.05)
+        assert p == pytest.approx((122.0 + 100.0) * 3 + 30.7 * 9)
+        assert drivetrain_loss_power(3.0, 122.0, 30.7, tension=2000.0) == pytest.approx(
+            drivetrain_loss_power(3.0, 122.0, 30.7)
+        )
+
+    def test_casadi_expression_is_smooth_at_zero(self):
+        from awetrim.system.winch import drivetrain_loss_power
+
+        vs = ca.MX.sym("v")
+        dp = ca.Function("dp", [vs], [ca.gradient(drivetrain_loss_power(vs, 122.0, 30.7, xp=ca), vs)])
+        # derivative continuous through v = 0 (no |v| kink): ~2 F_c v / eps -> 0;
+        # an |v| term would jump by 2 F_c = 488 W/(m/s)
+        assert abs(float(dp(1e-9)) - float(dp(-1e-9))) < 1e-3

@@ -16,6 +16,11 @@ src/awetrim/
   system/            ✅  Wing, Kite, SystemModel, Winch, Tether variants
                          (rigid/flexible link, rigid/flexible lumped,
                           Williams discretised distributed-mass)
+                         + winch.drivetrain_loss_power: drivetrain friction
+                         (F_c + k T) v tanh(v/eps) + c_v v^2 (tether-referred,
+                         Fechner 2016 / OpenSourceAWE law; optional
+                         load-proportional k T via tension= / load_fraction=;
+                         GS1 values; see docs/winch/)
   aerodynamics/      ✅  VSM quasi-steady trim + KCU bluff-body drag
                          (kcu_drag.py, single-sourced, on by default in the
                           aerostructural path via is_with_kcu_drag)
@@ -78,6 +83,17 @@ src/awetrim/
                          uniform periodic spline is an index shift by M/2, so
                          a mirrored path is a coefficient-pair condition)
   timeseries/        ✅  PhaseParameterized, ReeloutSimple, ReelinSimple, Cycle
+                         (opti_phase sim_parameters.winch_friction: True ->
+                         (F_c, c_v) from system.yaml drums[0], or a pair /
+                         {coulomb, viscous}; the energy integrand becomes the
+                         drive power T v - drivetrain_loss_power(v) in the
+                         interior and seam rows; no rows added; off = NLP
+                         unchanged. sim_parameters.drivetrain_load_fraction:
+                         True -> k from drums[0].friction_load_fraction, or a
+                         float; adds k T |v| to the loss, independent of
+                         winch_friction. run_uploop_eight_opti.py
+                         --winch-friction (_friction outputs) / --drive-losses
+                         (both terms, shaft-power objective, _drive outputs))
                          (opti_phase sim_parameters.periodic_wrap: the seam
                          interval node N-1 -> node 0 of a one-period periodic
                          spline gets the same continuity / rate / AoA rows,
@@ -370,7 +386,7 @@ Notes
 
 Each kite under `data/<kite_name>/` should include at minimum the following files and folders so scripts and tools can locate inputs automatically:
 
-- `system.yaml` — hardware and system-level configuration (kite mass, KCU, tether properties, winch, mass/inertia). This is the primary source for `SystemModel` properties. **KCU mass is the single source of truth here** (`components.kite.control_system.structure.mass`); both the structural KCU node mass and the QSM `mass_kcu` are resolved from it. **The winch drive envelope is the single source of truth here too** (`components.ground_station.drums[0]`: `min_tether_speed` / `max_tether_speed` / `max_winch_acceleration` / `max_tether_force`); `factory._extract_hardware_limits` maps it onto the optimizer's `speed_radial` bounds and the `winch_acceleration` slew limit, so cycle configs must not restate it.
+- `system.yaml` — hardware and system-level configuration (kite mass, KCU, tether properties, winch, mass/inertia). This is the primary source for `SystemModel` properties. **KCU mass is the single source of truth here** (`components.kite.control_system.structure.mass`); both the structural KCU node mass and the QSM `mass_kcu` are resolved from it. **The winch drive envelope is the single source of truth here too** (`components.ground_station.drums[0]`: `min_tether_speed` / `max_tether_speed` / `max_winch_acceleration` / `max_tether_force`, plus the tether-referred drivetrain friction `friction_coulomb` [N] / `friction_viscous` [N s/m] -> `limits["winch_friction"]`, used only with `sim_parameters.winch_friction`, and the load-proportional fraction `friction_load_fraction` -> `limits["drivetrain_load_fraction"]`, used only with `sim_parameters.drivetrain_load_fraction`); `factory._extract_hardware_limits` maps it onto the optimizer's `speed_radial` bounds and the `winch_acceleration` slew limit, so cycle configs must not restate it.
 - `struc_geometry.yaml` — structural geometry describing wing nodes, LE/TE positions, bridle nodes and connectivity, spring/rest-length definitions, pulley info. A `bridle_lines` row may carry an optional `w` (flat-tape width [m]); `d` then stays the AREA-equivalent diameter used for mass and EA, while the drag uses the projected width (`awetrim.aerodynamics.line_drag`). Does **not** carry `kcu_mass` (deprecated; ignored with a warning if present — set it in `system.yaml`).
 - `aero_geometry.yaml` — VSM aerodynamic geometry describing wing sections, paneling, and references to airfoil polars; may reference a subfolder with airfoil `.dat` or polar CSVs.
 - `as_config.yaml` (or `aerostructural_configs/config.yaml`) — aerostructural solver settings (time-step, tolerances, actuation options, initialisation flags).

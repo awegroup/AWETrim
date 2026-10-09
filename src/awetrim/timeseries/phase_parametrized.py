@@ -40,7 +40,7 @@ from awetrim.utils.reference_frames import (
 )
 from awetrim import State
 from awetrim.system.kite import Kite
-from awetrim.system.winch import Winch
+from awetrim.system.winch import Winch, drivetrain_loss_power
 from dataclasses import dataclass
 import logging
 
@@ -1413,6 +1413,8 @@ class PhaseParameterized(TimeSeries):
             if key == "_max_tether_length":
                 lb = limits.get("distance_radial", (0.0, value))[0]
                 limits["distance_radial"] = (lb, float(value))
+            elif np.ndim(value) == 0:
+                limits[key] = float(value)  # scalar limits (drivetrain_load_fraction)
             else:
                 limits[key] = tuple(value)
         return limits
@@ -1604,6 +1606,58 @@ class PhaseParameterized(TimeSeries):
             )
         else:
             print("NLP winch mode: force_law (tension-curve equality per node)")
+
+        # Drivetrain friction in the objective (``sim_parameters["winch_friction"]``,
+        # default off -> NLP unchanged): the energy integrand becomes the DRIVE
+        # power T v - P_loss(v) (winch.drivetrain_loss_power) instead of the
+        # tether power T v. ``True`` takes (F_c, c_v) from system.yaml
+        # (drums[0].friction_coulomb / friction_viscous via limits); a
+        # (F_c, c_v) pair or {"coulomb", "viscous"} dict overrides it.
+        winch_friction = sim_params.get("winch_friction", False)
+        if winch_friction is True:
+            if "winch_friction" not in limits:
+                raise ValueError(
+                    "sim_parameters.winch_friction is True but the system config has "
+                    "no drums[0].friction_coulomb / friction_viscous"
+                )
+            winch_friction = tuple(limits["winch_friction"])
+        elif isinstance(winch_friction, dict):
+            winch_friction = (
+                float(winch_friction["coulomb"]),
+                float(winch_friction["viscous"]),
+            )
+        elif winch_friction:
+            winch_friction = tuple(float(x) for x in winch_friction)
+        if winch_friction:
+            print(
+                f"NLP objective: drive power T v - P_loss(v), friction "
+                f"{winch_friction[0]:.0f} N + {winch_friction[1]:.1f} N s/m |v|"
+            )
+        # Load-proportional drivetrain loss (``sim_parameters
+        # ["drivetrain_load_fraction"]``, default off): k T |v| more in the
+        # loss, k a fraction of the tension (pulleys, belt, gear mesh). ``True``
+        # takes k from system.yaml (drums[0].friction_load_fraction); a float
+        # overrides it. Independent of winch_friction.
+        load_fraction = sim_params.get("drivetrain_load_fraction", False)
+        if load_fraction is True:
+            if "drivetrain_load_fraction" not in limits:
+                raise ValueError(
+                    "sim_parameters.drivetrain_load_fraction is True but the system "
+                    "config has no drums[0].friction_load_fraction"
+                )
+            load_fraction = float(limits["drivetrain_load_fraction"])
+        load_fraction = float(load_fraction or 0.0)
+        if load_fraction:
+            print(f"NLP objective: load-proportional drivetrain loss {load_fraction:.4f} T |v|")
+        friction_pair = tuple(winch_friction) if winch_friction else (0.0, 0.0)
+
+        def _stage_power(T, v_r):
+            """Objective integrand: tether power, minus drivetrain losses when on."""
+            if not winch_friction and not load_fraction:
+                return T * v_r
+            return T * v_r - drivetrain_loss_power(
+                v_r, *friction_pair, xp=ca, tension=T, load_fraction=load_fraction
+            )
 
         tau = ca.DM(np.linspace(0, 1, N + 1))  # numeric grid (DM column vector)
 
@@ -2440,8 +2494,9 @@ class PhaseParameterized(TimeSeries):
                     opti.subject_to(ctrl_rate <= ctrl.rate_limit[1])
                     opti.subject_to(ctrl_rate >= ctrl.rate_limit[0])
                     _rep_rates[ctrl.name].append(ctrl_rate)
-                # Accumulate energy and time: power_i = T_i * v_r_i
-                energy += T_i * opti_vars["speed_radial"][i] * dt_i
+                # Accumulate energy and time: power_i = T_i * v_r_i (minus the
+                # drivetrain friction when sim_parameters.winch_friction is on)
+                energy += _stage_power(T_i, opti_vars["speed_radial"][i]) * dt_i
                 t_eff += dt_i
 
                 # LImit angle of attack
@@ -2524,7 +2579,7 @@ class PhaseParameterized(TimeSeries):
                 opti.subject_to(ctrl_rate <= ctrl.rate_limit[1])
                 opti.subject_to(ctrl_rate >= ctrl.rate_limit[0])
                 _rep_rates[ctrl.name].append(ctrl_rate)
-            energy += T_last * opti_vars["speed_radial"][i_last] * dt_w
+            energy += _stage_power(T_last, opti_vars["speed_radial"][i_last]) * dt_w
             t_eff += dt_w
             aoa_w_fn = (
                 _node_functions(_knot_of(s_grid[i_last]))[1]

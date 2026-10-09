@@ -133,9 +133,25 @@ components:
       max_tether_speed: 3.5         # m/s (max reel-out speed)
       max_winch_acceleration: 4.0   # m/s²
       drum_diameter: 0.323          # m (0.1615 m radius)
-      # Not modelled by the quasi-steady winch (a force law T(v_r, l_dp) with no
-      # drum dynamics), so deliberately not stored here: total drive inertia
-      # 0.408 kg m², Coulomb friction 244 N, viscous friction 61.2 N s/m.
+      # Drivetrain friction, tether-referred: the cold-day tow test of the
+      # TU Delft GS1 ground station (Fechner 2016 PhD thesis Tab. 4.1:
+      # tau_s 3.18 N m, c_f 0.799 N m s/m motor-side -> 122 N + 30.7 N s/m at
+      # the tether with n/r = 6.2/0.1615). Same values as the OpenSourceAWE
+      # defaults (KiteUtils settings.yaml) and the same law as WinchModels.jl /
+      # SymbolicAWEModels coulomb_viscous_friction. Mapped to
+      # limits["winch_friction"]; subtracted from the optimizer's energy
+      # objective only when sim_parameters["winch_friction"] is set
+      # (awetrim.system.winch.drivetrain_loss_power). Physics and caveats:
+      # docs/winch/drivetrain_physics.pdf.
+      friction_coulomb: 122.0       # N
+      friction_viscous: 30.7        # N s/m
+      # Load-proportional drivetrain loss as a fraction of the tension: GS1
+      # bottom-up mid estimate (3 pulleys, drum, belt, gear mesh; range
+      # 0.028-0.079) from scripts/identification/estimate_drivetrain_losses.py.
+      # Charged only with sim_parameters["drivetrain_load_fraction"].
+      friction_load_fraction: 0.0535
+      # Not modelled (quasi-steady winch, no drum dynamics): total drive
+      # inertia 0.408 kg m² (gearbox side unconfirmed).
     gearboxes:
     - name: LEI-V3 Gearbox
       type: planetary

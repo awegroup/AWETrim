@@ -1296,6 +1296,28 @@ def save_summary(cycle, result, seed_path, window, *, title, save_path):
     )
 
 
+
+def _loss_suffix(args) -> str:
+    """Output-name suffix of the objective variant (none = tether power)."""
+    if getattr(args, "drive_losses", False):
+        return "_drive"
+    return "_friction" if args.winch_friction else ""
+
+
+def _loss_label(args) -> str:
+    if getattr(args, "drive_losses", False):
+        return " + drive losses"
+    return " + winch friction" if args.winch_friction else ""
+
+
+def _apply_drive_losses(sim_parameters: dict, args) -> None:
+    """Switch the objective from tether power to drive (shaft) power."""
+    if args.winch_friction or getattr(args, "drive_losses", False):
+        sim_parameters["winch_friction"] = True
+    if getattr(args, "drive_losses", False):
+        sim_parameters["drivetrain_load_fraction"] = True
+
+
 def main(args):
     kite = fpcc.configure_kite(args.kite)
     block = dict(kite.get("uploop_eight") or {})
@@ -1319,6 +1341,7 @@ def main(args):
         prefix = "symmetric_eight" + ("_mirror" if args.symmetric else "")
     else:
         prefix = "uploop_eight"
+    prefix += _loss_suffix(args)
     tag = wind_tag(wind)
     out_dir = Path("results") / kite["name"] / "optimization" / "uploop_eight"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -1353,6 +1376,7 @@ def main(args):
     print(f"Measured cycle duration {duration:.1f} s -> recalibrating n_points")
     config, landmarks = build_uploop_config(kite, shape, window, duration_s=duration)
     reelout = config["reelout"]
+    _apply_drive_losses(reelout["sim_parameters"], args)
     # The optimizer updates the path IN PLACE (shared nested dict): keep the
     # seed shape for the summary figure.
     seed_path = copy.deepcopy(reelout["path_parameters"])
@@ -1386,17 +1410,22 @@ def main(args):
         print_metrics_table(columns)
         return 0 if ok else 1
 
-    result, stage_metrics = optimize_cycle(
-        cycle, phase, seed_topology,
-        out_dir=out_dir, prefix=prefix, tag=tag, run_plots=args.plot,
-    )
+    if args.baseline_from_optimum:
+        # the continuation run is about the baseline; the eight keeps its files
+        print("\n--baseline-from-optimum: the eight is not re-optimised")
+        result, stage_metrics = None, []
+    else:
+        result, stage_metrics = optimize_cycle(
+            cycle, phase, seed_topology,
+            out_dir=out_dir, prefix=prefix, tag=tag, run_plots=args.plot,
+        )
     columns += stage_metrics
     if result is not None:
         label = {
             "uploop_eight": "up-loop eight",
             "symmetric_eight": "symmetric eight (free)",
             "symmetric_eight_mirror": "symmetric eight (mirror rows)",
-        }[prefix]
+        }[prefix.removesuffix(_loss_suffix(args)) if _loss_suffix(args) else prefix] + _loss_label(args)
         save_summary(
             cycle, result, seed_path, window,
             title=f"{label} -- {kite['name']}, {rfco.describe_wind(wind)}",
@@ -1407,11 +1436,29 @@ def main(args):
     footnote_baseline = None
     # A symmetric run's baseline must not overwrite the slanted run's files.
     b_prefix = "baseline" if SPEC["kind"] == "slanted" else "baseline_symmetric"
+    b_root = b_prefix
+    b_prefix += _loss_suffix(args)
     if args.baseline_seed:
         print("\n=== Baseline: the classic multi-lobe seed on the same formulation ===")
         baseline = rfco.load_reelout_config(Path(kite["cycle_config_dir"]) / SEED_FILENAME)
+        if args.baseline_from_optimum:
+            # Continuation: start from the stored tether-power optimum, so a
+            # changed objective (drive losses) moves that optimum instead of
+            # re-searching from the seed into another local optimum.
+            opt_path = out_dir / f"{b_root}_optimized_{tag}.yaml"
+            if not opt_path.exists():
+                raise FileNotFoundError(
+                    f"--baseline-from-optimum needs {opt_path} (run without a loss flag first)"
+                )
+            baseline = rfco.load_reelout_config(opt_path)
+            b_prefix += "_warm"
+            print(f"Baseline seeded from the stored optimum {opt_path.name}")
         try:
-            baseline, baseline_clipped = apply_uploop_formulation(baseline, window, kite)
+            if not args.baseline_from_optimum:
+                # a stored optimum is already on the formulation; re-fairing
+                # its (turn-radius-limited) path would fail the seed curvature cap
+                baseline, baseline_clipped = apply_uploop_formulation(baseline, window, kite)
+            _apply_drive_losses(baseline["sim_parameters"], args)
         except ValueError as exc:
             # The hull projection / fairing could not produce a seed that
             # honours both the hull and the turn-radius floor: report, keep
@@ -1519,6 +1566,23 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--scale-lobes", type=float, default=1.0, help="scale both lobe radii"
+    )
+    parser.add_argument(
+        "--winch-friction", action="store_true",
+        help="maximise the DRIVE power T v - P_loss(v) with the drum friction of "
+        "system.yaml (sim_parameters.winch_friction); outputs get a _friction suffix",
+    )
+    parser.add_argument(
+        "--drive-losses", action="store_true",
+        help="maximise the SHAFT power: T v minus the drum friction AND the "
+        "load-proportional drivetrain loss of system.yaml (winch_friction + "
+        "drivetrain_load_fraction); outputs get a _drive suffix",
+    )
+    parser.add_argument(
+        "--baseline-from-optimum", action="store_true",
+        help="with --baseline-seed: start the baseline from its stored "
+        "tether-power optimum instead of the seed (objective continuation); "
+        "outputs get a further _warm suffix",
     )
     args = parser.parse_args()
     code = main(args)
