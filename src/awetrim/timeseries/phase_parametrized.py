@@ -20,6 +20,7 @@ from awetrim import SystemModel
 from awetrim.kinematics.parametrized_patterns import (
     PeriodicBSpline,
     create_pattern_from_dict,
+    symmetrize_periodic_coefficients,
 )
 from awetrim.kinematics.Kinematics import ParametrizedKinematics
 import casadi as ca
@@ -2131,6 +2132,153 @@ class PhaseParameterized(TimeSeries):
                         "violated by the fixed pattern and C_phi is not optimized"
                     )
 
+        # --- Elevation-span ceiling
+        # The mirror of the azimuth floor above: ONE smooth row caps how TALL
+        # the figure is -- the mean square of the elevation's deviation from
+        # its own mean must be <= b^2/2. A figure-eight or helix of elevation
+        # half-span B satisfies that with B <= b. Where ``elevation_max`` (a
+        # C_beta coefficient bound) only caps where the path may SIT, this
+        # caps its SPAN, which is what the curvature margin actually reads:
+        # lifting the floor with the ceiling fixed squeezes the figure into a
+        # narrower band and concentrates curvature at the lobe shoulders.
+        # Off by default: the NLP is unchanged when the key is absent or 0.
+        max_elevation_amplitude = float(
+            sim_params.get("max_elevation_amplitude") or 0.0
+        )
+        if max_elevation_amplitude < 0.0:
+            raise ValueError(
+                f"max_elevation_amplitude must be >= 0, got "
+                f"{max_elevation_amplitude}"
+            )
+        if max_elevation_amplitude > 0.0:
+            elevation_nodes = pattern.elevation(
+                opti_vars["distance_radial"], s_grid[:-1]
+            )  # N entries
+            el_dev = elevation_nodes - ca.sum1(elevation_nodes) / (
+                elevation_nodes.numel()
+            )
+            el_ms = ca.sumsqr(el_dev) / el_dev.numel()
+            el_amplitude_row = 2.0 * el_ms - max_elevation_amplitude**2
+            # (``ca.depends_on(expr, opti.x)`` is False for Opti variables --
+            # opti.x is a view, not the symbols -- so test for free symbols.)
+            if isinstance(el_amplitude_row, ca.MX) and ca.symvar(el_amplitude_row):
+                opti.subject_to(el_amplitude_row <= 0.0)
+                _report_ineq(
+                    "elevation_amplitude (rms*sqrt2)",
+                    ca.sqrt(2.0 * el_ms + 1e-12),
+                    (0.0, max_elevation_amplitude),
+                    "rad",
+                )
+                print(
+                    "Elevation amplitude ceiling: "
+                    f"{np.degrees(max_elevation_amplitude):.1f} deg"
+                )
+            else:
+                # C_beta is not an optimization parameter: the pattern's
+                # elevation is fixed, so the ceiling is a plain check on the
+                # given shape.
+                value = (
+                    float(ca.evalf(el_amplitude_row))
+                    if isinstance(el_amplitude_row, ca.MX)
+                    else float(el_amplitude_row)
+                )
+                if value > 0.0:
+                    raise ValueError(
+                        "max_elevation_amplitude "
+                        f"({np.degrees(max_elevation_amplitude):.1f} deg) is "
+                        "violated by the fixed pattern and C_beta is not "
+                        "optimized"
+                    )
+
+        # --- Climb-angle ceiling
+        # ``sim_parameters["max_climb_angle"]`` [rad] caps how steeply the path
+        # may CLIMB in the azimuth/elevation plane: wherever the elevation
+        # rises along the flight direction (s increases with time, s_dot > 0),
+        # d(elevation) <= tan(gamma) * |d(azimuth)|. Descending is free, so
+        # the vertical dives at the sides of a figure-eight stay allowed. A
+        # kite cannot follow a path that rises much steeper than 45 deg: it
+        # loses speed and force on the climb. Written smooth, without abs or
+        # a branch, as
+        #     max(d_el, 0)^2 - tan(gamma)^2 * d_az^2 <= 0,
+        # whose max(., 0)^2 has a continuous derivative. The slopes are
+        # central differences of the spline on ``turn_radius_subsamples``
+        # points per node interval (both are linear in the coefficients), the
+        # rows scaled by the typical slope so they stay O(1). Plain
+        # azimuth/elevation slope, no cos(elevation) factor on the azimuth.
+        # Off by default: the NLP is unchanged when the key is absent or 0.
+        max_climb_angle = float(sim_params.get("max_climb_angle") or 0.0)
+        if not 0.0 <= max_climb_angle < 0.5 * np.pi:
+            raise ValueError(
+                f"max_climb_angle must be in [0, pi/2), got {max_climb_angle}"
+            )
+        if max_climb_angle > 0.0:
+            tan2 = float(np.tan(max_climb_angle)) ** 2
+            # s_grid may be symbolic (an optimized s range): slice, no numpy.
+            ds_nodes = s_grid[1:] - s_grid[:-1]  # N entries
+            h = 0.01 * ds_nodes
+            # Typical slope of the pattern per unit s (angular path length /
+            # s-span) on the numeric start pattern, as for ``_sigma_ref``.
+            try:
+                _pat0 = create_pattern_from_dict(
+                    self.pattern_config["pattern_type"],
+                    self.pattern_config["path_parameters"],
+                )
+                _s0 = float(self.pattern_config["sim_parameters"]["start_angle"])
+                _s1 = float(self.pattern_config["sim_parameters"]["end_angle"])
+                _ss = np.linspace(_s0, _s1, 400)
+                _r0 = float(self.pattern_config["path_parameters"].get("r0", 1.0))
+                _ph = np.asarray(_pat0.azimuth(_r0, _ss)).ravel()
+                _be = np.asarray(_pat0.elevation(_r0, _ss)).ravel()
+                _slope_ref = float(
+                    max(
+                        np.sum(np.hypot(np.diff(_ph), np.diff(_be)))
+                        / max(_s1 - _s0, 1e-9),
+                        1e-3,
+                    )
+                )
+            except Exception:
+                _slope_ref = 1.0
+            climb_rows = []
+            for k in range(turn_radius_subsamples):
+                s_k = s_grid[:-1] + (k / turn_radius_subsamples) * ds_nodes
+                r_nodes = opti_vars["distance_radial"]
+                d_az = (
+                    pattern.azimuth(r_nodes, s_k + h) - pattern.azimuth(r_nodes, s_k - h)
+                ) / (2.0 * h)
+                d_el = (
+                    pattern.elevation(r_nodes, s_k + h)
+                    - pattern.elevation(r_nodes, s_k - h)
+                ) / (2.0 * h)
+                climb_rows.append(
+                    (ca.fmax(d_el, 0.0) ** 2 - tan2 * d_az**2) / _slope_ref**2
+                )
+            climb_row = ca.vertcat(*climb_rows)
+            if isinstance(climb_row, ca.MX) and ca.symvar(climb_row):
+                opti.subject_to(climb_row <= 0.0)
+                _report_ineq("climb_angle_row", climb_row, (-np.inf, 0.0), "-")
+                print(
+                    "Climb-angle ceiling: "
+                    f"{np.degrees(max_climb_angle):.1f} deg on "
+                    f"{turn_radius_subsamples} sample(s) per node interval"
+                )
+            else:
+                # The pattern is fixed: the ceiling is a plain check on it.
+                value = float(
+                    np.max(
+                        np.asarray(
+                            ca.evalf(climb_row)
+                            if isinstance(climb_row, ca.MX)
+                            else ca.DM(climb_row)
+                        )
+                    )
+                )
+                if value > 1e-9:
+                    raise ValueError(
+                        "max_climb_angle "
+                        f"({np.degrees(max_climb_angle):.1f} deg) is violated "
+                        "by the fixed pattern and C_phi/C_beta are not optimized"
+                    )
+
         # Constraint init and end azimuth
         # azimuth = pattern.azimuth(opti_vars["distance_radial"], s_grid[:-1])
         # opti.subject_to(azimuth[0] == 0)
@@ -2279,14 +2427,23 @@ class PhaseParameterized(TimeSeries):
                 opti.subject_to(T_i / S["T"] <= _free_tf_hi / S["T"])
                 _rep_tension.append(T_i)
             else:
-                # The winch force law ties the tension to the reel speed.
-                T_model = winch_model.tension_curve(
-                    opti_vars["speed_radial"][i], input_depower=node_depower
+                # The winch force law ties the tension to the reel speed:
+                # T_i - T(v_r), or its blend with the speed form near v_sat
+                # (Winch.radial_equation), same zero set, in newtons.
+                law_residual = winch_model.radial_equation(
+                    speed_radial=opti_vars["speed_radial"][i],
+                    tension_tether_ground=T_i,
+                    input_depower=node_depower,
                 )
 
                 # Scale the tether law residual
-                opti.subject_to((T_i - T_model) / S["T"] == 0)
-                _rep_tension.append((T_i - T_model) / S["T"])
+                opti.subject_to(law_residual / S["T"] == 0)
+                _rep_tension.append(law_residual / S["T"])
+                if winch_model.uses_speed_law():
+                    # The speed form is flat at v_sat, so it no longer caps
+                    # the force by itself the way T(v) <= max_tether_force did.
+                    _tf_hi = float(radial_params["max_tether_force"])
+                    opti.subject_to(T_i / S["T"] <= _tf_hi / S["T"])
 
             # Residual equations (scaled)
             res_i = residual_i_fn(
@@ -2447,6 +2604,42 @@ class PhaseParameterized(TimeSeries):
                 opti.subject_to(mx <= ub)
             else:
                 continue
+
+        # --- Mirror symmetry of the figure-eight
+        # Nothing in the physics prefers one side (symmetric kite, wind and
+        # gravity), but the power objective barely reads the lobe balance, so
+        # the multi-modal solve settles on lopsided figures. Under
+        # ``symmetric_pattern`` the path is pinned to its mirror image half a
+        # period later: C_phi[k + M/2] = -C_phi[k], C_beta[k + M/2] = C_beta[k]
+        # (exact for a uniform periodic spline with even M; see
+        # ``symmetrize_periodic_coefficients``). Linear rows, and the warm
+        # start is projected onto them so IPOPT starts feasible. Off by
+        # default: the NLP is unchanged when the key is absent or False.
+        if bool(sim_params.get("symmetric_pattern", False)):
+            if not isinstance(pattern, PeriodicBSpline):
+                raise ValueError("symmetric_pattern needs a periodic spline pattern")
+            path_params = self.pattern_config["path_parameters"]
+            C_phi0, C_beta0 = symmetrize_periodic_coefficients(
+                path_params["C_phi"], path_params["C_beta"]
+            )
+            h = C_phi0.size // 2
+            for var, sign, projected in (
+                ("C_phi", -1.0, C_phi0),
+                ("C_beta", 1.0, C_beta0),
+            ):
+                mx = opti_params.get(var)
+                if mx is not None:
+                    opti.subject_to(mx[h:] - sign * mx[:h] == 0)
+                    opti.set_initial(mx, projected)
+                else:
+                    # Fixed coordinate: the given shape must already comply.
+                    given = np.asarray(path_params[var], dtype=float).ravel()
+                    if np.max(np.abs(given - projected)) > 1e-9:
+                        raise ValueError(
+                            f"symmetric_pattern is violated by the fixed "
+                            f"pattern and {var} is not optimized"
+                        )
+            print(f"Symmetric pattern: {2 * h} mirror rows on C_phi/C_beta (M = {2 * h})")
 
         # Hard per-solve trust region on the optimized parameters:
         # ``sim_parameters["param_step_bound"]`` maps parameter name -> max

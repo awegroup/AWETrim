@@ -518,8 +518,12 @@ class ReeloutSession:
         these bound the whole path; a missing side falls back to
         ``DEFAULT_OPTI_LIMITS``. ``azimuth_amplitude_min`` becomes
         ``sim_parameters["min_azimuth_amplitude"]`` [rad], the one-row
-        amplitude floor in ``PhaseParameterized.opti_phase``. Other override
-        entries (e.g. ``speed_radial`` from the winch params) are untouched.
+        amplitude floor in ``PhaseParameterized.opti_phase``; ``symmetric``
+        becomes ``sim_parameters["symmetric_pattern"]``, its mirror-symmetry
+        rows; ``climb_angle_max`` [deg] becomes
+        ``sim_parameters["max_climb_angle"]`` [rad], the climb-angle ceiling
+        rows. Other override entries (e.g. ``speed_radial`` from the winch
+        params) are untouched.
         """
         if limits is None:
             return
@@ -557,14 +561,37 @@ class ReeloutSession:
         else:
             sim_parameters.pop("min_azimuth_amplitude", None)
 
-    def pattern_limits(self) -> Optional[Dict[str, float]]:
+        el_amplitude = limits.get("elevation_amplitude_max")
+        if el_amplitude:
+            if float(el_amplitude) < 0.0:
+                raise ValueError("elevation_amplitude_max must be >= 0")
+            sim_parameters["max_elevation_amplitude"] = float(
+                np.radians(el_amplitude)
+            )
+        else:
+            sim_parameters.pop("max_elevation_amplitude", None)
+
+        if limits.get("symmetric"):
+            sim_parameters["symmetric_pattern"] = True
+        else:
+            sim_parameters.pop("symmetric_pattern", None)
+
+        climb = limits.get("climb_angle_max")
+        if climb:
+            if not 0.0 < float(climb) < 90.0:
+                raise ValueError("climb_angle_max must be in (0, 90)")
+            sim_parameters["max_climb_angle"] = float(np.radians(climb))
+        else:
+            sim_parameters.pop("max_climb_angle", None)
+
+    def pattern_limits(self) -> Optional[Dict[str, Any]]:
         """The pattern limits in force, as the degree-valued struct
         (None when none of them is set -- optimizer defaults apply)."""
         if self.phase is None:
             return None
         sim_parameters = self.phase.pattern_config.get("sim_parameters", {})
         override = sim_parameters.get("opti_limits_override") or {}
-        out: Dict[str, float] = {}
+        out: Dict[str, Any] = {}
         if "C_phi" in override:
             out["azimuth_max"] = float(np.degrees(abs(override["C_phi"][1])))
         if "C_beta" in override:
@@ -574,6 +601,14 @@ class ReeloutSession:
         amplitude = sim_parameters.get("min_azimuth_amplitude")
         if amplitude:
             out["azimuth_amplitude_min"] = float(np.degrees(amplitude))
+        el_amplitude = sim_parameters.get("max_elevation_amplitude")
+        if el_amplitude:
+            out["elevation_amplitude_max"] = float(np.degrees(el_amplitude))
+        if sim_parameters.get("symmetric_pattern"):
+            out["symmetric"] = True
+        climb = sim_parameters.get("max_climb_angle")
+        if climb:
+            out["climb_angle_max"] = float(np.degrees(climb))
         return out or None
 
     @staticmethod
@@ -600,6 +635,11 @@ class ReeloutSession:
         ``DEFAULT_OPTI_LIMITS["slope_winch_ro"]``, so the box always contains
         the seed no matter which gain the client flies. Returns whether the
         caller must add the slope to ``optimization_params``.
+
+        ``use_awe_trim`` (0..1, default 0) blends this quadratic law with a
+        reel-in-capable one below f_min -- see ``WinchParams.use_awe_trim``
+        and ``Winch.tension_curve``. Independent of ``mode``, which is still
+        rejected below unless it is "reelout".
         """
         if winch["mode"] != "reelout":
             raise ValueError(
@@ -619,12 +659,42 @@ class ReeloutSession:
                 "softminus": True,
             }
         )
+        # A client that inverts this curve to command a reel-out speed has to use
+        # the SAME corner sharpness, so honour what it sends before falling back to
+        # the historical default. Set explicitly rather than by setdefault: the
+        # cycle config may already carry a value, and the request is the authority.
+        for key in ("softplus_beta", "softminus_beta", "v_reel_in", "reel_in_beta"):
+            value = winch.get(key)
+            if value is not None:
+                radial_parameters[key] = float(value)
         radial_parameters.setdefault("softplus_beta", 1e-3)
         radial_parameters.setdefault("softminus_beta", 1e-3)
+        radial_parameters["use_awe_trim"] = float(winch.get("use_awe_trim", 0.0))
+        winch_mode = winch.get("winch_mode")
+        if winch_mode is not None:
+            if winch_mode not in ("force_law", "free_speed"):
+                raise ValueError(
+                    f"winch_mode must be 'force_law' or 'free_speed', got "
+                    f"{winch_mode!r}"
+                )
+            sim_parameters["winch_mode"] = str(winch_mode)
         v_max = winch.get("v_max")
         if v_max is None and winch.get("p_max") is not None:
             v_max = float(winch["p_max"]) / float(winch["f_max"])
         override = dict(sim_parameters.get("opti_limits_override") or {})
+        # The reel-speed box deliberately keeps the full -10 lower bound. Flooring
+        # it at v_reel_in was tried on 2026-08-29 to remove the region where the
+        # reel-in law is flat at zero (dT/dv_r = 0, so the per-node tension equality
+        # loses rank there) and MEASURED WORSE: it left the wall at use_awe_trim
+        # 0.875 and turned 0.75, which converged cold, into an IPOPT failure.
+        # Soft reel-speed clamp at v_max, see Winch._undo_v_sat_clamp.
+        v_sat_beta = winch.get("v_sat_beta")
+        if v_max is not None and v_sat_beta is not None:
+            radial_parameters["v_sat"] = float(v_max)
+            radial_parameters["v_sat_beta"] = float(v_sat_beta)
+        else:
+            radial_parameters.pop("v_sat", None)
+            radial_parameters.pop("v_sat_beta", None)
         if v_max is not None:
             override["speed_radial"] = [
                 DEFAULT_OPTI_LIMITS["speed_radial"][0],

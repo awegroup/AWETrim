@@ -206,6 +206,84 @@ class WinchParams(BaseModel):
         "defaults to a factor 2 either side of k_v. Ignored unless "
         "optimize_k_v is true.",
     )
+    # Corner sharpness of the two soft saturations applied to the tension curve.
+    # Carried on the wire so a client that INVERTS this curve to command a reel-out
+    # speed cannot silently drift from the curve the path was planned against: the
+    # two sides used to agree only because both happened to say 1e-3.
+    softplus_beta: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Corner sharpness of the UPPER force limit [1/N]; larger is "
+        "sharper, and the transition spans a tension band of order 1/beta. "
+        "Unset keeps the server default (1e-3).",
+    )
+    softminus_beta: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Corner sharpness of the LOWER force limit [1/N]; larger is "
+        "sharper. NO LONGER APPLIED for a quadratic law with f_min > 0, which "
+        "uses the reel-in line below f_min instead -- softminus's effective "
+        "floor is softplus(beta*f_min)/beta, which cannot fall below "
+        "log(2)/beta (693 N at 1e-3) whatever f_min is asked for, and that is "
+        "above the whole force range a low-wind run reaches.",
+    )
+    # Reel-in-capable law, mirroring WinchControllers.jl's calc_vro_soft under
+    # soft_lfc (Winch.tension_curve computes force from speed; that one
+    # inverts it). Below f_min the law is a straight line through (0, f_min)
+    # and (v_reel_in, 0), handed to the quadratic law above by a smooth
+    # maximum. Applied to every quadratic request with f_min > 0, replacing
+    # softminus. Independent of `mode`: it makes the tension curve itself
+    # valid for a momentary negative speed_radial within whichever phase is
+    # being optimized, not a reel-in trajectory phase in its own right
+    # (mode = "reelin" is still rejected server-side).
+    use_awe_trim: float = Field(
+        default=0.0,
+        ge=0.0,
+        le=1.0,
+        description="Blend in [0, 1] between the two winch curves: 0 (default) "
+        "is the reel-in law described above, 1 is the plain quadratic under "
+        "softminus that it replaced, and values between mix the two forces "
+        "linearly. The endpoints differ most at zero reel speed, where the "
+        "reel-in law holds f_min and softminus holds softplus(beta*f_min)/beta.",
+    )
+    winch_mode: Optional[str] = Field(
+        default=None,
+        description="'force_law' (default) ties the tension to the reel speed "
+        "through the curve above, as a per-node equality. 'free_speed' drops "
+        "that equality: the reel speed becomes a direct, acceleration-limited "
+        "control and the winch only bounds the tension to [f_min, f_max]. Use "
+        "it when the force law's flat regions (dT/dv_r ~ 0) stall the solve -- "
+        "but note the reply is then the best path for ANY winch inside that "
+        "force band, not for the k_v law you sent, so its predicted power is an "
+        "upper bound rather than a prediction of your controller.",
+    )
+    v_reel_in: Optional[float] = Field(
+        default=None,
+        lt=0,
+        description="Reel-in law: reel-in speed [m/s] at zero force. "
+        "Unset keeps the server default (-2.0). Must be negative.",
+    )
+    reel_in_beta: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Reel-in law: sharpness of the smooth handover "
+        "between the reel-in line and the quadratic law [s/m]. Unset keeps "
+        "the server default (20.0). Unlike softminus_beta above, this has no "
+        "matching sharpness requirement against f_min/k_v -- the forward "
+        "law's quadratic term has zero, not infinite, slope at its own "
+        "zero, so soft_max stays well-behaved for any positive value.",
+    )
+    # Mirrors WinchControllers.jl's soft v_sat clamp (_clamp_v_sat in
+    # calc_vro_soft): the commanded speed is soft_min(v_raw, v_max, beta), so
+    # the controller's curve rises vertically to f_max AT v_max. Without it the
+    # tension curve simply ends at the v_max speed bound, well below f_max.
+    v_sat_beta: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Corner sharpness of the soft reel-speed clamp at v_max "
+        "[s/m]; larger is sharper. Requires v_max or p_max. Unset keeps the "
+        "plain law, cut off by the v_max speed bound (a hard clamp).",
+    )
 
     @model_validator(mode="after")
     def _check_forces(self):
@@ -213,6 +291,8 @@ class WinchParams(BaseModel):
             raise ValueError("f_max must be greater than f_min")
         if self.v_max is not None and self.p_max is not None:
             raise ValueError("give either v_max or p_max, not both")
+        if self.v_sat_beta is not None and self.reel_speed_limit() is None:
+            raise ValueError("v_sat_beta requires v_max or p_max")
         if self.k_v_bounds is not None:
             lo, hi = self.k_v_bounds
             if lo <= 0 or hi <= 0:
@@ -337,6 +417,35 @@ class PatternLimits(BaseModel):
         "(one smooth constraint: mean over the path of azimuth^2 >= value^2/2, "
         "which a figure-eight or helix of half-width A satisfies with A >= "
         "value). Guards the degenerate zero-width collapse. 0/omitted = off.",
+    )
+    elevation_amplitude_max: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=90,
+        description="The figure's elevation half-span stays <= this [deg] "
+        "(one smooth constraint: mean over the path of "
+        "(elevation - mean)^2 <= value^2/2, which a figure-eight or helix of "
+        "half-span B satisfies with B <= value). Caps how TALL the pattern is "
+        "where ``elevation_max`` only caps where it may sit. 0/omitted = off.",
+    )
+    symmetric: Optional[bool] = Field(
+        default=None,
+        description="True = the figure-eight is mirror-symmetric about "
+        "azimuth 0: half a period later the kite is at the mirrored point "
+        "(M/2 linear equality rows on the spline coefficients, so M must be "
+        "even). Removes the lopsided optima of the multi-modal solve. "
+        "false/omitted = off.",
+    )
+    climb_angle_max: Optional[float] = Field(
+        default=None,
+        ge=0,
+        lt=90,
+        description="Wherever the path CLIMBS (elevation rising along the "
+        "flight direction), its slope in the azimuth/elevation plane stays "
+        "<= this [deg]: d(elevation) <= tan(value) * |d(azimuth)|, plain "
+        "angles, no cos(elevation) factor. Descending is free, so the "
+        "vertical dives at the sides stay allowed. One smooth row per "
+        "turn-radius sample. 0/omitted = off.",
     )
 
     @model_validator(mode="after")

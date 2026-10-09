@@ -364,6 +364,53 @@ def test_winch_params_map_to_quadratic_force_law(patched_session):
         sess.init(config)
 
 
+def test_winch_use_awe_trim_defaults_to_zero_and_is_threaded_through(patched_session):
+    sess, config = patched_session
+    config["winch_params"] = {
+        "mode": "reelout", "k_v": 0.02,
+        "f_min": 1000.0, "f_max": 8400.0,
+    }
+    sess.init(config)
+    radial = sess.phase.pattern_config["radial_parameters"]
+    assert radial["use_awe_trim"] == 0.0
+    assert "v_reel_in" not in radial
+    assert "reel_in_beta" not in radial
+
+    config["winch_params"] = {
+        "mode": "reelout", "k_v": 0.02,
+        "f_min": 1000.0, "f_max": 8400.0,
+        "use_awe_trim": 1.0, "v_reel_in": -3.0, "reel_in_beta": 15.0,
+    }
+    sess.init(config)
+    radial2 = sess.phase.pattern_config["radial_parameters"]
+    assert radial2["use_awe_trim"] == pytest.approx(1.0)
+    assert radial2["v_reel_in"] == pytest.approx(-3.0)
+    assert radial2["reel_in_beta"] == pytest.approx(15.0)
+
+    # use_awe_trim doesn't relax the reelout-only restriction on mode itself.
+    config["winch_params"]["mode"] = "reelin"
+    with pytest.raises(ValueError, match="reelout"):
+        sess.init(config)
+
+
+def test_winch_v_sat_beta_is_threaded_through(patched_session):
+    sess, config = patched_session
+    config["winch_params"] = {
+        "mode": "reelout", "k_v": 0.0408,
+        "f_min": 350.0, "f_max": 7900.0, "v_max": 3.5,
+    }
+    sess.init(config)
+    radial = sess.phase.pattern_config["radial_parameters"]
+    assert "v_sat" not in radial
+    assert "v_sat_beta" not in radial
+
+    config["winch_params"]["v_sat_beta"] = 10.0
+    sess.init(config)
+    radial2 = sess.phase.pattern_config["radial_parameters"]
+    assert radial2["v_sat"] == pytest.approx(3.5)
+    assert radial2["v_sat_beta"] == pytest.approx(10.0)
+
+
 def test_optimize_k_v_off_by_default(patched_session):
     """The winch gain stays a constant unless the client asks for it."""
     sess, config = patched_session
@@ -764,6 +811,16 @@ def test_apply_pattern_limits_maps_degrees_onto_coefficient_bounds():
     assert override["C_beta"][0] == pytest.approx(0.01)  # default lower side
     assert override["C_beta"][1] == pytest.approx(np.radians(45.0))
     assert sim["min_azimuth_amplitude"] == pytest.approx(np.radians(5.0))
+    assert "symmetric_pattern" not in sim
+    ReeloutSession._apply_pattern_limits(sim, {"symmetric": True})
+    assert sim["symmetric_pattern"] is True
+    assert "min_azimuth_amplitude" not in sim  # replaced as a whole
+    assert "max_climb_angle" not in sim
+    ReeloutSession._apply_pattern_limits(sim, {"climb_angle_max": 45.0})
+    assert sim["max_climb_angle"] == pytest.approx(np.radians(45.0))
+    assert "symmetric_pattern" not in sim  # replaced as a whole
+    with pytest.raises(ValueError, match="climb_angle_max"):
+        ReeloutSession._apply_pattern_limits(sim, {"climb_angle_max": 90.0})
     # {} clears the pattern limits but not the winch entry
     ReeloutSession._apply_pattern_limits(sim, {})
     assert sim == {"opti_limits_override": {"speed_radial": [-10.0, 5.0]}}
@@ -796,6 +853,39 @@ def test_pattern_limits_round_trip_init_step_and_replies(patched_session):
 
     phase.results.append(_fake_result())
     phase.release.set()
+    reply = sess.step_blocking(pattern_limits={"symmetric": True})
+    assert reply["pattern_limits"] == {"symmetric": True}
+    assert sess.phase.pattern_config["sim_parameters"]["symmetric_pattern"] is True
+
+    phase.results.append(_fake_result())
+    phase.release.set()
+    reply = sess.step_blocking(pattern_limits={"climb_angle_max": 45.0})
+    assert reply["pattern_limits"] == {"climb_angle_max": pytest.approx(45.0)}
+    assert sess.phase.pattern_config["sim_parameters"]["max_climb_angle"] == pytest.approx(
+        np.radians(45.0)
+    )
+
+    phase.results.append(_fake_result())
+    phase.release.set()
     reply = sess.step_blocking(pattern_limits={})  # cleared
     assert reply["pattern_limits"] is None
     assert "min_azimuth_amplitude" not in sess.phase.pattern_config["sim_parameters"]
+    assert "symmetric_pattern" not in sess.phase.pattern_config["sim_parameters"]
+
+
+def test_winch_mode_defaults_to_unset_and_is_threaded_through(patched_session):
+    sess, config = patched_session
+    base = {"mode": "reelout", "k_v": 0.02, "f_min": 1000.0, "f_max": 8400.0}
+
+    config["winch_params"] = dict(base)
+    sess.init(config)
+    # Unset leaves the cycle config's own value, so force_law stays the default.
+    assert "winch_mode" not in sess.phase.pattern_config["sim_parameters"]
+
+    config["winch_params"] = dict(base, winch_mode="free_speed")
+    sess.init(config)
+    assert sess.phase.pattern_config["sim_parameters"]["winch_mode"] == "free_speed"
+
+    config["winch_params"] = dict(base, winch_mode="nonsense")
+    with pytest.raises(ValueError, match="winch_mode"):
+        sess.init(config)

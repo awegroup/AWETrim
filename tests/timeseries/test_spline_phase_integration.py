@@ -614,3 +614,112 @@ def test_min_turn_radius_adds_dense_rows_and_diagnostics():
         _build(min_azimuth_amplitude=np.radians(89.0))
     with pytest.raises(ValueError, match="min_azimuth_amplitude"):
         _build(min_azimuth_amplitude=-0.1)
+
+
+@pytest.mark.slow
+def test_symmetric_pattern_adds_mirror_rows_and_projects_warm_start():
+    """``sim_parameters["symmetric_pattern"]`` adds M linear rows (M/2 per
+    coordinate) when C_phi/C_beta are optimized and seeds them with the
+    symmetric projection of the warm start; with a fixed pattern it is only a
+    check on the given shape."""
+    import casadi as ca
+
+    from awetrim.timeseries.phase_parametrized import PhaseParameterized
+
+    n_points = 20
+    system_model = _v3_system_model()
+    start_state = {
+        "t": 0.0, "s": _S_INIT, "s_dot": 3.0, "input_steering": 0.0,
+        "tension_tether_ground": 8.4e4, "speed_radial": 0.0, "distance_radial": _R0,
+    }
+
+    def _build(optimize, lopsided=False, **sim_overrides):
+        config = _reelout_config("lissajous", n_points=n_points)
+        config["sim_parameters"]["input_depower"] = 1.6
+        config["sim_parameters"].update(sim_overrides)
+        if lopsided:  # shift the figure 2 deg to one side
+            config["path_parameters"]["C_phi"] = [
+                c + np.radians(2.0) for c in config["path_parameters"]["C_phi"]
+            ]
+        phase = PhaseParameterized(system_model, quasi_steady=True, pattern_config=config)
+        opti = ca.Opti()
+        params = {}
+        if optimize:
+            phase.pattern_config_opti = copy.deepcopy(config)
+            for var in ("C_phi", "C_beta"):
+                params[var] = opti.variable(len(config["path_parameters"][var]))
+                phase.pattern_config_opti["path_parameters"][var] = params[var]
+        opti, _, _ = phase.opti_phase(start_state=start_state, opti=opti, opti_params=params)
+        return opti, params
+
+    opti_off, _ = _build(True, lopsided=True)
+    opti_on, params = _build(True, lopsided=True, symmetric_pattern=True)
+    assert opti_on.g.numel() - opti_off.g.numel() == _M
+    c_phi = np.ravel(opti_on.debug.value(params["C_phi"], opti_on.initial()))
+    c_beta = np.ravel(opti_on.debug.value(params["C_beta"], opti_on.initial()))
+    h = _M // 2
+    np.testing.assert_allclose(c_phi[h:], -c_phi[:h], atol=1e-12)
+    np.testing.assert_allclose(c_beta[h:], c_beta[:h], atol=1e-12)
+
+    # fixed pattern: the Lissajous fit is symmetric -> no rows; lopsided -> error
+    opti_fixed_off, _ = _build(False)
+    opti_fixed_on, _ = _build(False, symmetric_pattern=True)
+    assert opti_fixed_on.g.numel() == opti_fixed_off.g.numel()
+    with pytest.raises(ValueError, match="symmetric_pattern"):
+        _build(False, lopsided=True, symmetric_pattern=True)
+
+
+@pytest.mark.slow
+def test_max_climb_angle_adds_rows_per_sample():
+    """``sim_parameters["max_climb_angle"]`` (the PatternLimits climb-angle
+    ceiling) adds one smooth row per turn-radius sample (default 4 per node
+    interval) when C_phi/C_beta are optimized and reports them; with a fixed
+    pattern it is only a check on the given shape; out-of-range values are
+    rejected."""
+    import casadi as ca
+
+    from awetrim.timeseries.phase_parametrized import PhaseParameterized
+
+    n_points = 20
+    system_model = _v3_system_model()
+    start_state = {
+        "t": 0.0, "s": _S_INIT, "s_dot": 3.0, "input_steering": 0.0,
+        "tension_tether_ground": 8.4e4, "speed_radial": 0.0, "distance_radial": _R0,
+    }
+
+    def _build(optimize, **sim_overrides):
+        config = _reelout_config("lissajous", n_points=n_points)
+        config["sim_parameters"]["input_depower"] = 1.6
+        config["sim_parameters"].update(sim_overrides)
+        phase = PhaseParameterized(system_model, quasi_steady=True, pattern_config=config)
+        opti = ca.Opti()
+        params = {}
+        if optimize:
+            phase.pattern_config_opti = copy.deepcopy(config)
+            for var in ("C_phi", "C_beta"):
+                params[var] = opti.variable(len(config["path_parameters"][var]))
+                phase.pattern_config_opti["path_parameters"][var] = params[var]
+        opti, _, objective_dict = phase.opti_phase(
+            start_state=start_state, opti=opti, opti_params=params
+        )
+        return opti, objective_dict
+
+    opti_off, od_off = _build(True)
+    opti_on, od_on = _build(True, max_climb_angle=np.radians(45.0))
+    opti_k1, _ = _build(True, max_climb_angle=np.radians(45.0), turn_radius_subsamples=1)
+    assert opti_on.g.numel() - opti_off.g.numel() == 4 * n_points
+    assert opti_k1.g.numel() - opti_off.g.numel() == n_points
+    assert "climb_angle_row" not in od_off["constraint_report"]
+    row = od_on["constraint_report"]["climb_angle_row"]
+    assert row["expr"].numel() == 4 * n_points
+    assert row["lb"] == float("-inf") and row["ub"] == 0.0
+
+    # fixed pattern: a ceiling the Lissajous fit keeps adds no row; one it
+    # breaks (it climbs somewhere, so 1 deg) is an error
+    opti_fixed_off, _ = _build(False)
+    opti_fixed_on, _ = _build(False, max_climb_angle=np.radians(89.0))
+    assert opti_fixed_on.g.numel() == opti_fixed_off.g.numel()
+    with pytest.raises(ValueError, match="max_climb_angle"):
+        _build(False, max_climb_angle=np.radians(1.0))
+    with pytest.raises(ValueError, match="max_climb_angle"):
+        _build(True, max_climb_angle=-0.1)

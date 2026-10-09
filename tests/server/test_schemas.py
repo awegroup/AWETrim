@@ -129,6 +129,17 @@ def test_winch_params_take_v_max_or_p_max_not_both():
         WinchParams(**base, v_max=8.0, p_max=38000.0)
 
 
+def test_winch_params_v_sat_beta_needs_a_speed_limit():
+    from awetrim.server.schemas import WinchParams
+
+    base = dict(mode="reelout", k_v=0.0408, f_min=350.0, f_max=7900.0)
+    assert WinchParams(**base, v_max=3.5, v_sat_beta=10.0).v_sat_beta == 10.0
+    with pytest.raises(ValidationError):
+        WinchParams(**base, v_sat_beta=10.0)
+    with pytest.raises(ValidationError):
+        WinchParams(**base, v_max=3.5, v_sat_beta=0.0)
+
+
 def test_winch_k_v_optimization_is_opt_in_and_bracket_is_validated():
     from awetrim.server.schemas import WinchParams
 
@@ -141,6 +152,30 @@ def test_winch_k_v_optimization_is_opt_in_and_bracket_is_validated():
     for bad in ([0.05, 0.08], [0.01, 0.03], [0.08, 0.02], [-0.01, 0.08], [0.04]):
         with pytest.raises(ValidationError):
             WinchParams(**base, optimize_k_v=True, k_v_bounds=bad)
+
+
+def test_winch_use_awe_trim_defaults_and_is_validated():
+    from awetrim.server.schemas import WinchParams
+
+    base = dict(mode="reelout", k_v=0.0408, f_min=350.0, f_max=8000.0)
+    default = WinchParams(**base)
+    assert default.use_awe_trim == 0.0
+    assert default.v_reel_in is None
+    assert default.reel_in_beta is None
+
+    req = WinchParams(**base, use_awe_trim=1.0, v_reel_in=-2.0, reel_in_beta=20.0)
+    assert req.use_awe_trim == 1.0
+    assert req.v_reel_in == pytest.approx(-2.0)
+    assert req.reel_in_beta == pytest.approx(20.0)
+
+    with pytest.raises(ValidationError):
+        WinchParams(**base, use_awe_trim=1.5)
+    with pytest.raises(ValidationError):
+        WinchParams(**base, use_awe_trim=-0.1)
+    with pytest.raises(ValidationError):
+        WinchParams(**base, v_reel_in=0.5)  # must be negative
+    with pytest.raises(ValidationError):
+        WinchParams(**base, reel_in_beta=-1.0)  # must be positive
 
 
 def test_min_turn_radius_is_optional_and_non_negative():
@@ -178,6 +213,8 @@ def test_pattern_limits_struct_validates_and_is_optional():
     assert StepRequest().pattern_limits is None
     lim = PatternLimits(azimuth_max=35.0, elevation_max=45.0, azimuth_amplitude_min=5.0)
     assert lim.elevation_min is None
+    assert lim.symmetric is None
+    assert PatternLimits(symmetric=True).symmetric is True
     req = InitRequest(**_init_kwargs(pattern_limits=lim.model_dump()))
     assert req.pattern_limits.azimuth_max == pytest.approx(35.0)
     # {} on /step is a valid "clear" request and survives as an (empty) struct
