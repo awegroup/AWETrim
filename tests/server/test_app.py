@@ -439,3 +439,47 @@ def test_pattern_limits_round_trip_through_init_and_step(client):
     assert client.post(
         "/step", json={"pattern_limits": {"elevation_min": 40, "elevation_max": 30}}
     ).status_code == 422
+
+
+def test_aero_forces_on_the_lei_v3_rom():
+    """/aero_forces is stateless: no /init, the real LEI-V3 system and ROM."""
+    client = TestClient(create_app())
+    reply = client.post(
+        "/aero_forces",
+        json={"input_depower": 1.58, "speed_apparent_wind": 15.3},
+    )
+    assert reply.status_code == 200, reply.text
+    body = reply.json()
+    assert body["trimmed"]
+    assert body["lift"] > body["drag"] > 0.0
+    # 1.58 m is below the flight-corrected ROM's band, inside the simulation one's
+    assert body["input_depower_validity"][0] > 1.58
+    assert not body["within_validity"]
+    assert body["rom_config"].endswith("flight_corrected.yaml")
+
+    fixed = client.post(
+        "/aero_forces",
+        json={
+            "input_depower": 1.58,
+            "speed_apparent_wind": 15.3,
+            "angle_of_attack": body["angle_of_attack"],
+            "rom_config_path": "rom_config_aerostructural.yaml",
+        },
+    ).json()
+    assert not fixed["trimmed"]
+    assert fixed["angle_of_attack"] == pytest.approx(body["angle_of_attack"])
+    assert fixed["within_validity"]
+    assert fixed["rom_config"].endswith("rom_config_aerostructural.yaml")
+
+
+def test_aero_forces_rejects_a_missing_rom():
+    client = TestClient(create_app())
+    reply = client.post(
+        "/aero_forces",
+        json={
+            "input_depower": 1.6,
+            "speed_apparent_wind": 10.0,
+            "rom_config_path": "no_such_rom.yaml",
+        },
+    )
+    assert reply.status_code == 400

@@ -153,23 +153,43 @@ class Wing:
         return self.aerodynamic_force_coefficients_for(self)
 
     def aerodynamic_force_coefficients_for(self, model):
-
-        aero_input = self.aero_input
-
-        # Define symbolic variables
-        variables = {
-            "alpha": self.angle_of_attack_for(model),
-            "u_s": model.input_steering,
-            "u_p": model.input_depower,
-        }
-        # Also support derived variables
-        variables["alpha_squared"] = variables["alpha"] ** 2
         # Apparent wind speed [m/s]: the load level of an aeroelastic
         # (deforming) wing, whose polar shifts with dynamic pressure. Built
         # only when a term uses it, so rigid-wing ROMs keep their graph.
-        if _uses_variable(aero_input.get("coefficients", {}), "v_a"):
+        speed_apparent_wind = None
+        if _uses_variable(self.aero_input.get("coefficients", {}), "v_a"):
             vec_va = model.velocity_apparent_wind
-            variables["v_a"] = ca.sqrt(ca.mtimes(vec_va.T, vec_va) + 1e-10)
+            speed_apparent_wind = ca.sqrt(ca.mtimes(vec_va.T, vec_va) + 1e-10)
+        return self.aerodynamic_force_coefficients_at(
+            self.angle_of_attack_for(model),
+            model.input_depower,
+            model.input_steering,
+            speed_apparent_wind,
+        )
+
+    def aerodynamic_force_coefficients_at(
+        self, alpha, input_depower, input_steering=0.0, speed_apparent_wind=None
+    ):
+        """ROM coefficients ``(C_L, C_D)`` at an explicit state.
+
+        ``alpha`` is the wing angle of attack [rad], ``input_depower`` u_p,
+        ``input_steering`` u_s and ``speed_apparent_wind`` v_a [m/s] (needed
+        only by a ROM with ``v_a`` terms). Symbolic or numeric; the one place
+        the coefficient terms are evaluated.
+        """
+        aero_input = self.aero_input
+
+        variables = {
+            "alpha": alpha,
+            "u_s": input_steering,
+            "u_p": input_depower,
+        }
+        # Also support derived variables
+        variables["alpha_squared"] = variables["alpha"] ** 2
+        if _uses_variable(aero_input.get("coefficients", {}), "v_a"):
+            if speed_apparent_wind is None:
+                raise ValueError("ROM 'v_a' terms need the apparent wind speed")
+            variables["v_a"] = speed_apparent_wind
         if _uses_variable(aero_input.get("coefficients", {}), "stall"):
             missing = [k for k in ("angle_of_attack_stall", "width_stall")
                        if k not in self.aero_params]
@@ -190,7 +210,7 @@ class Wing:
             C_D = C_L0**2 / (ca.pi * e * AR) + CD0
             # Decompose the wing lift into lift/side components when rolled;
             # both must come from the unrotated C_L0, not the rotated C_L.
-            roll = model.input_steering * self.k_steering
+            roll = variables["u_s"] * self.k_steering
             C_L = C_L0 * ca.cos(roll)
             C_S = C_L0 * ca.sin(roll)
             return C_L, C_D, C_S

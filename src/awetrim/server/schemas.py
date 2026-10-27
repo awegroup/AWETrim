@@ -720,3 +720,79 @@ class TrajectoryResponse(BaseModel):
     optimized_parameters: dict
     timeseries: Optional[Dict[str, List[Optional[float]]]] = None
     energy_metrics: Optional[dict] = None
+
+
+# ---------------------------------------------------------------------------
+# /aero_forces — ROM lift and drag at one state (stateless)
+# ---------------------------------------------------------------------------
+class AeroForcesRequest(BaseModel):
+    """One ROM evaluation at a power tape and apparent wind speed.
+
+    Independent of the optimization session: the kite comes from the system
+    and ROM files named here, not from ``/init``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    input_depower: float = Field(
+        description="Power-tape length l_dp (u_p) [m]"
+    )
+    speed_apparent_wind: float = Field(
+        gt=0, description="Apparent wind speed v_a [m/s]"
+    )
+    angle_of_attack: Optional[float] = Field(
+        default=None,
+        description="Wing angle of attack [DEGREES]; omitted = the ROM's "
+        "gravity-free trim at this tape (the centre-window state the ROM was "
+        "identified on)",
+    )
+    input_steering: float = Field(
+        default=0.0,
+        description="Standardised steering u_s; enters only the coefficients",
+    )
+    rho: Optional[float] = Field(
+        default=None, gt=0, description="Air density [kg/m^3]; default the kite's"
+    )
+    system_config_path: Optional[str] = None
+    rom_config_path: Optional[str] = Field(
+        default=None,
+        description="ROM to evaluate instead of the system file's default; "
+        "resolved as in /init",
+    )
+
+
+class AeroForcesReply(BaseModel):
+    """ROM forces [N] and coefficients; angles in DEGREES.
+
+    Lift is perpendicular to the apparent wind, drag along it. ``lift``/
+    ``drag`` are the wing's (bridle lines included); ``*_kcu`` the KCU's when
+    the ROM keeps it out of C_D (else zero); ``*_total`` their sums.
+    """
+
+    angle_of_attack: float
+    angle_pitch_bridle: Optional[float] = None
+    angle_pitch_tether: Optional[float] = None
+    trimmed: bool
+    lift_coefficient: float
+    drag_coefficient: float
+    lift: float
+    drag: float
+    lift_kcu: float
+    drag_kcu: float
+    lift_total: float
+    drag_total: float
+    reference_area: float
+    rho: float
+    kcu_drag_in_coefficients: bool
+    rom_config: Optional[str] = Field(
+        default=None, description="The ROM file evaluated"
+    )
+    input_depower_validity: Optional[List[float]] = Field(
+        default=None, description="The ROM's validity band of u_p [m]"
+    )
+    angle_of_attack_validity: Optional[List[float]] = Field(
+        default=None, description="The ROM's validity band of alpha [deg]"
+    )
+    within_validity: bool = Field(
+        description="u_p and alpha both inside the ROM's stated bands"
+    )
