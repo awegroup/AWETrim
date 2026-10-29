@@ -12,10 +12,10 @@ keywords:
   - Aerostructural Simulation
   - Trajectory Optimisation
   - Vortex Step Method
-  - Particle System Simulator
+  - Structural Simulation
   - Reduced-Order Modelling
-version: 0.1.0
+version: 1.0.0
 license: Apache-2.0
 url: "https://github.com/awegroup/AWETrim"
-date-released: "2026-05-08"
+date-released: "2026-10-29"
 doi: ""  # TODO: add Zenodo or equivalent DOI after first release

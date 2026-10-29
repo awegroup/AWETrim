@@ -46,7 +46,7 @@ import pytest
 
 pytest.importorskip("VSM", reason="Vortex-Step-Method not installed")
 
-from awetrim.aerodynamics.vsm_quasi_steady import DEFAULT_AXES, _default_vsm_solver
+from awetrim.aerodynamics.vsm_quasi_steady import DEFAULT_AXES, default_vsm_solver
 from awetrim.aerostructural.aerodynamic_vsm import run_frozen_geometry_alpha_sweep
 from awetrim.identification.aero_dataset import aerodynamic_roll
 
@@ -65,13 +65,13 @@ AOA0_DEG = 6.0
 
 
 def _load_aero_scripts_common():
-    """Import scripts/aerodynamics/common.py under a unique name (no path clash).
+    """Import examples/1_aerodynamics/common.py under a unique name (no path clash).
 
-    Both scripts/aerodynamics/common.py and scripts/aerostructural/common.py are
+    Both examples/1_aerodynamics/common.py and examples/2_aerostructural/common.py are
     called ``common``; load this one under a distinct module name so it does not
     collide with the one used by the PSS slow test.
     """
-    path = REPO_ROOT / "scripts" / "aerodynamics" / "common.py"
+    path = REPO_ROOT / "examples" / "1_aerodynamics" / "common.py"
     spec = importlib.util.spec_from_file_location("aerodynamics_scripts_common", path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -89,7 +89,7 @@ def body_and_solver():
         body, _props = common.build_body(args)
     except Exception as exc:  # pragma: no cover - environment-dependent
         pytest.skip(f"could not build VSM body: {exc}")
-    solver = _default_vsm_solver(np.zeros(3))
+    solver = default_vsm_solver(np.zeros(3))
     return body, solver
 
 
@@ -108,6 +108,8 @@ def _anchor_reference(body, solver, *, umag, aoa_deg, beta_deg, rate):
     must use this ``aoa_deg``, not a re-derived freestream angle.
     """
     axes = DEFAULT_AXES
+    # rates_in_body_frame=True: the axis is given in world components (matches
+    # the trim solvers and run_frozen_geometry_alpha_sweep).
     body.va_initialize(
         Umag=umag,
         angle_of_attack=aoa_deg,
@@ -115,7 +117,7 @@ def _anchor_reference(body, solver, *, umag, aoa_deg, beta_deg, rate):
         body_rates=rate,
         body_axis=-axes.radial,
         reference_point=np.zeros(3),
-        rates_in_body_frame=False,
+        rates_in_body_frame=True,
     )
     res = solver.solve(body)
     # Freestream apparent wind, the aerodynamic-roll reference (matches the sweep).

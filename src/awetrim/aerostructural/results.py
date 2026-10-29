@@ -38,6 +38,7 @@ SWEEP_CSV_FIELDNAMES: list[str] = [
     "results_dir",
     "is_with_gravity",
     "is_with_aero_bridle",
+    "is_with_kcu_drag",
     "angle_elevation_deg",
     "angle_azimuth_deg",
     "angle_course_deg",
@@ -133,32 +134,99 @@ def save_input_snapshot(
 
 
 def build_deformed_struc_geometry(
-    struc_geometry: dict[str, Any],
+    structure,
     struc_nodes: np.ndarray,
-) -> dict[str, Any]:
-    """Return a copy of struc_geometry with node positions replaced by deformed values.
+    bridle_rest_lengths: np.ndarray | None = None,
+):
+    """The deformed snapshot of ``structure``: its nodes moved to ``struc_nodes``.
 
-    Node indices in the YAML are used directly as row indices into struc_nodes,
-    matching the ordering established by structural_geometry_io.main().
+    ``structure`` is the run's geometry: an awesIO ``Structure`` (the full
+    model, or a wireframe) or the wireframe's PSM-format dict, which is
+    translated to awesIO first (``awesio_structure.wireframe_to_awesio``).
+    Point ``i`` takes row ``i`` of ``struc_nodes``; rows past the structure's
+    points (nodes a backend adds, e.g. Billow's canopy refinement) are left
+    out. Returns a new ``Structure``; the input is not modified.
+
+    ``bridle_rest_lengths`` are the LIVE rest lengths of the bridle elements
+    (the readers' element order: ``Structure.bridle`` connection by
+    connection, a pulley as two arms). Without them every rest length is the
+    INPUT geometry's, so a snapshot written after a tape actuation recorded the
+    tape as it was before the step while its nodes are the solved shape after
+    it. See :func:`_live_segment_rest_lengths`.
     """
-    sg = copy.deepcopy(struc_geometry)
+    from awetrim.aerostructural.coupled.awesio_structure import (
+        Structure,
+        wireframe_to_awesio,
+    )
 
-    # KCU attachment point (node 0)
-    if "bridle_point_node" in sg:
-        sg["bridle_point_node"] = struc_nodes[0].tolist()
+    if not isinstance(structure, Structure):
+        structure = Structure(wireframe_to_awesio(structure))
+    struc_nodes = np.asarray(struc_nodes, dtype=float)
+    deformed = structure.with_positions(struc_nodes[: len(structure.positions)])
+    if bridle_rest_lengths is None:
+        return deformed
+    return deformed.with_rest_lengths(
+        _live_segment_rest_lengths(structure, np.asarray(bridle_rest_lengths, dtype=float))
+    )
 
-    # Wing particles
-    for row in sg["wing_particles"]["data"]:
-        nid = int(row[0])
-        row[1], row[2], row[3] = float(struc_nodes[nid, 0]), float(struc_nodes[nid, 1]), float(struc_nodes[nid, 2])
 
-    # Bridle particles (if present)
-    if "bridle_particles" in sg:
-        for row in sg["bridle_particles"]["data"]:
-            nid = int(row[0])
-            row[1], row[2], row[3] = float(struc_nodes[nid, 0]), float(struc_nodes[nid, 1]), float(struc_nodes[nid, 2])
+def _live_segment_rest_lengths(structure, rest_lengths: np.ndarray) -> dict[str, float]:
+    """``{segment name: live rest length}`` of the bridle's straight lines.
 
-    return sg
+    Every awesIO segment has its own rest length, so the two steering tapes of
+    a steered state (one line name) simply get theirs. Pulley ropes keep the
+    input's: they are never actuated, and the backends report their arms
+    differently (the wireframe splits the rope between the arms, Billow gives
+    each arm the whole rope). ``NaN`` (an element the backend does not have)
+    also keeps the input's.
+    """
+    bridle = structure.bridle
+    n_elements = sum(len(element["nodes"]) - 1 for element in bridle)
+    if len(rest_lengths) != n_elements:
+        raise ValueError(
+            f"{len(rest_lengths)} bridle rest lengths for {n_elements} bridle elements"
+        )
+    live = {}
+    element_index = 0
+    for element in bridle:
+        if len(element["nodes"]) == 2 and np.isfinite(rest_lengths[element_index]):
+            live[element["segments"][0]] = float(rest_lengths[element_index])
+        element_index += len(element["nodes"]) - 1
+    return live
+
+
+def _normalised_span(points: np.ndarray) -> np.ndarray:
+    """Cumulative chord length along a polyline, normalised to [0, 1].
+
+    Arc length rather than the raw spanwise coordinate, so a swept or anhedral
+    wing resamples where the material is rather than where its shadow is, and a
+    tip that folds back does not fold the parameter with it.
+    """
+    steps = np.linalg.norm(np.diff(points, axis=0), axis=1)
+    total = float(steps.sum())
+    if total <= 0.0:
+        raise ValueError("edge polyline has zero length")
+    return np.concatenate([[0.0], np.cumsum(steps)]) / total
+
+
+def _resample_edges_onto_sections(
+    le_points: np.ndarray, te_points: np.ndarray, sections
+) -> tuple[np.ndarray, np.ndarray]:
+    """Deformed LE/TE evaluated at the aero file's own spanwise stations.
+
+    Both meshes are parameterised by normalised arc length along their own
+    leading edge and the deformed edges are sampled at the aero stations, so the
+    two need not be commensurate. Exact wherever they are: a station that
+    coincides with a structural node picks that node up unchanged.
+    """
+    reference_le = np.array([[float(row[1]), float(row[2]), float(row[3])]
+                             for row in sections])
+    target = _normalised_span(reference_le)
+    source = _normalised_span(le_points)
+    resample = lambda points: np.column_stack(
+        [np.interp(target, source, points[:, axis]) for axis in range(3)]
+    )
+    return resample(le_points), resample(te_points)
 
 
 def build_deformed_aero_geometry(
@@ -169,10 +237,17 @@ def build_deformed_aero_geometry(
 ) -> dict[str, Any]:
     """Return a copy of aero_geometry with LE/TE positions replaced by deformed values.
 
-    When the aero mesh is finer than the structural mesh, the same linear
-    interpolation used by LinearStructuralToAeroMapper is applied to subdivide
-    each structural section into the correct number of aero panels.  The
-    airfoil_id column is preserved unchanged.
+    When the aero mesh is a whole-number refinement of the structural mesh, the
+    same linear interpolation used by LinearStructuralToAeroMapper subdivides
+    each structural section into the correct number of aero panels.
+
+    The two meshes need not be commensurate, though. The aero YAML's section
+    count is an input description -- it sets the airfoil polars -- while the
+    planform VSM actually flies is rebuilt from the structural nodes every
+    coupled iteration, so a file may perfectly well carry 37 sections against
+    28 structural ones (the LEI-V3 pairing). In that case the deformed edges are
+    resampled onto the aero file's own spanwise stations, which preserves both
+    the section count and the airfoil_id column.
     """
     from awetrim.aerostructural.mapping import interpolate_points
 
@@ -181,19 +256,26 @@ def build_deformed_aero_geometry(
     n_aero = len(sections)
     n_struc = len(le_indices)
 
-    if n_aero == n_struc:
-        n_panels_per_section = 1
-    else:
-        n_sections = n_struc - 1
-        if n_sections == 0 or (n_aero - 1) % n_sections != 0:
-            raise ValueError(
-                f"Cannot infer panels-per-section from {n_aero} aero sections "
-                f"and {n_struc} structural LE nodes."
-            )
-        n_panels_per_section = (n_aero - 1) // n_sections
+    if n_struc < 2:
+        raise ValueError(
+            f"need at least two structural LE nodes to rebuild a planform, got {n_struc}"
+        )
 
-    deformed_le = interpolate_points(struc_nodes[le_indices], n_panels_per_section)
-    deformed_te = interpolate_points(struc_nodes[te_indices], n_panels_per_section)
+    n_sections = n_struc - 1
+    if n_aero == n_struc:
+        commensurate, n_panels_per_section = True, 1
+    elif (n_aero - 1) % n_sections == 0:
+        commensurate, n_panels_per_section = True, (n_aero - 1) // n_sections
+    else:
+        commensurate = False
+
+    if commensurate:
+        deformed_le = interpolate_points(struc_nodes[le_indices], n_panels_per_section)
+        deformed_te = interpolate_points(struc_nodes[te_indices], n_panels_per_section)
+    else:
+        deformed_le, deformed_te = _resample_edges_onto_sections(
+            struc_nodes[le_indices], struc_nodes[te_indices], sections
+        )
 
     for i, row in enumerate(sections):
         le, te = deformed_le[i], deformed_te[i]
@@ -204,12 +286,16 @@ def build_deformed_aero_geometry(
 
 def save_geometry_snapshot(
     config: dict[str, Any],
-    struc_geometry_deformed: dict[str, Any],
+    struc_geometry_deformed,
     aero_geometry_deformed: dict[str, Any],
     results_dir: Path,
     system_yaml_path: Path | str | None = None,
 ) -> None:
     """Save deformed geometry YAMLs when is_save_geometry_snapshots is True.
+
+    ``struc_geometry_deformed`` is the ``Structure`` of
+    :func:`build_deformed_struc_geometry`, written as awesIO to
+    ``case.SNAPSHOT_STRUC_GEOMETRY_FILENAME``.
 
     When ``system_yaml_path`` is given, also emit a ``system.yaml`` into
     ``results_dir`` whose mass, centre of gravity and inertia tensor are
@@ -219,10 +305,11 @@ def save_geometry_snapshot(
     """
     if not bool(config.get(SAVE_GEOMETRY_SNAPSHOTS_KEY, False)):
         return
+    from awetrim.aerostructural.case import SNAPSHOT_STRUC_GEOMETRY_FILENAME
+
     results_dir = Path(results_dir)
-    struc_path = results_dir / "struc_geometry.yaml"
-    with struc_path.open("w", encoding="utf-8") as f:
-        yaml.dump(struc_geometry_deformed, f, sort_keys=False)
+    struc_path = results_dir / SNAPSHOT_STRUC_GEOMETRY_FILENAME
+    struc_geometry_deformed.write(struc_path)
     with (results_dir / "aero_geometry.yaml").open("w", encoding="utf-8") as f:
         yaml.dump(aero_geometry_deformed, f, sort_keys=False)
 
@@ -286,6 +373,11 @@ def build_sweep_csv_row(
         ),
         "is_with_aero_bridle": bool(
             config.get("is_with_aero_bridle", config_defaults["is_with_aero_bridle"])
+        ),
+        "is_with_kcu_drag": bool(
+            config.get(
+                "is_with_kcu_drag", config_defaults.get("is_with_kcu_drag", True)
+            )
         ),
         "angle_elevation_deg": float(
             config.get("angle_elevation_deg", config_defaults["angle_elevation_deg"])

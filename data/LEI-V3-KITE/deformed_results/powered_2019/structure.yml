@@ -1,0 +1,224 @@
+metadata:
+  name: LEI-V3-KITE powered_2019 (deformed wireframe)
+  description: Deformed wireframe snapshot of the LEI-V3 2019 reference state.
+  note: Converted from the PSM-format struc_geometry.yaml snapshot.
+  awesIO_version: 0.1.0
+  schema: structure_schema.yml
+  n_points: 38
+  connectivity_sha: dbc8f01bb8c8a5e6a33799326bdbecb51c3befcddeb4b5781fc65ad7b87ff670
+materials:
+  headers: [name, law, parameters]
+  units: ['-', '-', '-']
+  data:
+  - [dyneema, linear, {density: 1499.0, youngs_modulus: 109000000000.0}]
+  - [wireframe_member, linear, {density: 0.0, youngs_modulus: 0.0}]
+points:
+  headers: [name, fixed, body, pos_ENU, extra_mass]
+  units: ['-', '-', '-', m, kg]
+  data:
+  - ['0', true, null, [0.0, 0.0, 0.0], 0.0]
+  - ['1', false, null, [-0.6722385936475453, 4.232458831233022, 8.768314694547048], 0.4852749932060443]
+  - ['2', false, null, [0.3176832201024203, 4.245018954256321, 8.63004170857249], 0.7484582801281707]
+  - ['3', false, null, [-1.2450269210380491, 3.8866835300645253, 9.249101989048663], 0.49913067783975323]
+  - ['4', false, null, [0.27707627269094925, 3.8492164429609064, 9.41379051707083], 0.33909032264555117]
+  - ['5', false, null, [-1.5851100545690886, 3.0909056622573, 10.251455677049913], 0.6896642166792475]
+  - ['6', false, null, [0.39845618732937327, 3.0257294276129922, 10.437633876829594], 0.4669101591928018]
+  - ['7', false, null, [-1.819124564674669, 1.9274830868204484, 10.850672575333036], 0.7591487278705907]
+  - ['8', false, null, [0.3844473348484488, 1.8987398404300153, 11.111950882942082], 0.5311034980081266]
+  - ['9', false, null, [-1.928749579040031, 0.6244739427977748, 11.064804833088067], 0.780035722957005]
+  - ['10', false, null, [0.37200858234769485, 0.6214825895425837, 11.413446745545642], 0.5570193378767716]
+  - ['11', false, null, [-1.9274410821445909, -0.7062632971785757, 11.060175353770639], 0.7800357231618493]
+  - ['12', false, null, [0.3732658927632619, -0.7011770069188719, 11.409102502457715], 0.5570193377663848]
+  - ['13', false, null, [-1.8152139026899718, -2.0075039232126475, 10.836825818816699], 0.7591487317130268]
+  - ['14', false, null, [0.3883044673948266, -1.9761479071412544, 11.098198233473063], 0.5311034957916326]
+  - ['15', false, null, [-1.5788900555116168, -3.1662014816923922, 10.229409011188897], 0.6896642581890431]
+  - ['16', false, null, [0.40457467077625153, -3.0981220053434333, 10.415620622587772], 0.46691016966837207]
+  - ['17', false, null, [-1.2373547641907232, -3.954205863580301, 9.221420423039612], 0.49913088329563743]
+  - ['18', false, null, [0.2847253534926225, -3.9143012140745888, 9.385763778513823], 0.33909024698949725]
+  - ['19', false, null, [-0.6639410616016448, -4.295033978008786, 8.737854563034974], 0.4852769392895512]
+  - ['20', false, null, [0.3259759386094945, -4.30462741803169, 8.599307920459873], 0.6654178913713161]
+  - ['21', false, null, [-1.209844632710331, -1.104957571496257, 7.376804984209636], 0.0]
+  - ['22', false, null, [-0.5638625871164342, -0.8685981548999943, 3.767657333036418], 0.0]
+  - ['23', false, null, [-1.21182383650258, 1.0506608028628535, 7.3843827570671285], 0.0]
+  - ['24', false, null, [-0.5653256797247339, 0.8410821511704378, 3.7736736874561894], 0.0]
+  - ['25', false, null, [-0.991801151647364, -2.203431808118596, 6.824409207970918], 0.0]
+  - ['26', false, null, [-0.995886708738782, 2.1533986741232733, 6.839787846445367], 0.0]
+  - ['27', false, null, [0.28218528742818616, -1.0719914295756445, 7.015372104992962], 0.0]
+  - ['28', false, null, [0.2802531860958321, 1.0244918567465102, 7.02256344098967], 0.0]
+  - ['29', false, null, [0.2709010863838198, -1.7999679653468785, 6.5319903412968285], 0.0]
+  - ['30', false, null, [0.2675729749079066, 1.755888352735243, 6.544553359139556], 0.0]
+  - ['31', false, null, [0.20783916494958915, -0.918207558884553, 4.685196204131969], 0.0]
+  - ['32', false, null, [0.20619596033006884, 0.8876106672653833, 4.691321254920067], 0.0]
+  - ['33', false, null, [0.18695919876464098, -0.7750682370672444, 4.0918622142368495], 0.033]
+  - ['34', false, null, [0.18558452893013536, 0.7487447719833973, 4.096962345145782], 0.033]
+  - ['35', false, null, [0.08999298039830882, 0.2962311473941705, 1.5701754364815512], 0.0]
+  - ['36', false, null, [0.09052319190533203, -0.3058945378489085, 1.5682897926312092], 0.0]
+  - ['37', false, null, [0.098566127702229, -0.005818560685609866, 1.9383699677643567], 0.0]
+segments:
+  headers: [name, points, rest_length, diameter, material, line, linktype, tape_width, stiffness, damping, mass]
+  units: ['-', '-', m, m, '-', '-', '-', m, N/m, N*s/m, kg]
+  data:
+  - [strut_1, ['1', '2'], 0.999577, 0.0, wireframe_member, null, default, null, 130779.21756465816, 0.0, 0.32951227284891055]
+  - [strut_2, ['3', '4'], 1.531813, 0.0, wireframe_member, null, default, null, 57182.630588855216, 0.0, 0.0]
+  - [strut_3, ['5', '6'], 1.99394, 0.0, wireframe_member, null, default, null, 58600.7746780406, 0.0, 0.0]
+  - [strut_4, ['7', '8'], 2.219829, 0.0, wireframe_member, null, default, null, 62997.862496868496, 0.0, 0.1336778500066681]
+  - [strut_5, ['9', '10'], 2.327805, 0.0, wireframe_member, null, default, null, 62262.30883390953, 0.0, 0.0]
+  - [strut_6, ['11', '12'], 2.327805, 0.0, wireframe_member, null, default, null, 62262.30883390953, 0.0, 9.445755033372719e-11]
+  - [strut_7, ['13', '14'], 2.219829, 0.0, wireframe_member, null, default, null, 62997.862496868496, 0.0, 0.1336777996472442]
+  - [strut_8, ['15', '16'], 1.99394, 0.0, wireframe_member, null, default, null, 58600.7746780406, 0.0, 0.0]
+  - [strut_9, ['17', '18'], 1.531813, 0.0, wireframe_member, null, default, null, 57182.630588855216, 0.0, 0.0]
+  - [strut_10, ['19', '20'], 0.999577, 0.0, wireframe_member, null, default, null, 130779.21756465816, 0.0, 0.2464737003757326]
+  - [le_1, ['1', '3'], 0.823587, 0.0, wireframe_member, null, default, null, 183971.09213250555, 0.0, 0.0]
+  - [te_1, ['2', '4'], 0.8789, 0.0, wireframe_member, null, noncompressive, null, 354982.31576568144, 0.0, 0.10314293172792445]
+  - [dia_1a, ['1', '4'], 1.210114, 0.0, wireframe_member, null, noncompressive, null, 128858.60874773467, 0.0, 0.5750377135631779]
+  - [dia_1b, ['2', '3'], 1.722184, 0.0, wireframe_member, null, noncompressive, null, 260987.67034047944, 0.0, 0.9982613556795065]
+  - [le_2, ['3', '5'], 1.323306, 0.0, wireframe_member, null, default, null, 140204.11844344728, 0.0, 0.0]
+  - [te_2, ['4', '6'], 1.31927, 0.0, wireframe_member, null, noncompressive, null, 329385.94337419, 0.0, 0.0]
+  - [dia_2a, ['3', '6'], 2.203625, 0.0, wireframe_member, null, noncompressive, null, 197651.22697681322, 0.0, 0.0]
+  - [dia_2b, ['4', '5'], 2.178107, 0.0, wireframe_member, null, noncompressive, null, 193100.0407049842, 0.0, 0.0]
+  - [le_3, ['5', '7'], 1.327631, 0.0, wireframe_member, null, default, null, 156870.17433764043, 0.0, 1.379328433358495]
+  - [te_3, ['6', '8'], 1.312996, 0.0, wireframe_member, null, noncompressive, null, 395543.4417256464, 0.0, 0.9285291460095852]
+  - [dia_3a, ['5', '8'], 2.457808, 0.0, wireframe_member, null, noncompressive, null, 205883.4936739149, 0.0, 0.0]
+  - [dia_3b, ['6', '7'], 2.509586, 0.0, wireframe_member, null, noncompressive, null, 214649.52191846853, 0.0, 0.005291172376018363]
+  - [le_4, ['7', '9'], 1.323177, 0.0, wireframe_member, null, default, null, 168476.34836517673, 0.0, 0.0]
+  - [te_4, ['8', '10'], 1.311985, 0.0, wireframe_member, null, noncompressive, null, 427211.99000627955, 0.0, 0.0]
+  - [dia_4a, ['7', '10'], 2.612162, 0.0, wireframe_member, null, noncompressive, null, 215929.07029424346, 0.0, 0.0]
+  - [dia_4b, ['8', '9'], 2.642586, 0.0, wireframe_member, null, noncompressive, null, 220988.13952359118, 0.0, 0.0]
+  - [le_5, ['9', '11'], 1.328433, 0.0, wireframe_member, null, default, null, 171686.456750968, 0.0, 1.56007144591401]
+  - [te_5, ['10', '12'], 1.322148, 0.0, wireframe_member, null, noncompressive, null, 433993.6504517172, 0.0, 1.114038675438312]
+  - [dia_5a, ['9', '12'], 2.678631, 0.0, wireframe_member, null, noncompressive, null, 220501.44965854863, 0.0, 0.0]
+  - [dia_5b, ['10', '11'], 2.678631, 0.0, wireframe_member, null, noncompressive, null, 220501.44965854863, 0.0, 3.152312073917068e-10]
+  - [le_6, ['11', '13'], 1.323177, 0.0, wireframe_member, null, default, null, 168476.34836517673, 0.0, 0.0]
+  - [te_6, ['12', '14'], 1.311985, 0.0, wireframe_member, null, noncompressive, null, 427211.99000627955, 0.0, 0.0]
+  - [dia_6a, ['11', '14'], 2.642586, 0.0, wireframe_member, null, noncompressive, null, 220988.13952359118, 0.0, 0.0]
+  - [dia_6b, ['12', '13'], 2.612162, 0.0, wireframe_member, null, noncompressive, null, 215929.07029424346, 0.0, 0.0]
+  - [le_7, ['13', '15'], 1.327631, 0.0, wireframe_member, null, default, null, 156870.17433764043, 0.0, 1.3793285163780862]
+  - [te_7, ['14', '16'], 1.312996, 0.0, wireframe_member, null, noncompressive, null, 395543.4417256464, 0.0, 0.928529191936021]
+  - [dia_7a, ['13', '16'], 2.509586, 0.0, wireframe_member, null, noncompressive, null, 214649.52191846853, 0.0, 0.005291147400723169]
+  - [dia_7b, ['14', '15'], 2.457808, 0.0, wireframe_member, null, noncompressive, null, 205883.4936739149, 0.0, 0.0]
+  - [le_8, ['15', '17'], 1.323306, 0.0, wireframe_member, null, default, null, 140204.11844344728, 0.0, 0.0]
+  - [te_8, ['16', '18'], 1.31927, 0.0, wireframe_member, null, noncompressive, null, 329385.94337419, 0.0, 0.0]
+  - [dia_8a, ['15', '18'], 2.178107, 0.0, wireframe_member, null, noncompressive, null, 193100.0407049842, 0.0, 0.0]
+  - [dia_8b, ['16', '17'], 2.203625, 0.0, wireframe_member, null, noncompressive, null, 197651.22697681322, 0.0, 0.0]
+  - [le_9, ['17', '19'], 0.823587, 0.0, wireframe_member, null, default, null, 183971.09213250552, 0.0, 0.0]
+  - [te_9, ['18', '20'], 0.8789, 0.0, wireframe_member, null, noncompressive, null, 354982.3157656813, 0.0, 0.02010031577562482]
+  - [dia_9a, ['17', '20'], 1.722184, 0.0, wireframe_member, null, noncompressive, null, 260987.67034047944, 0.0, 0.9982617665912749]
+  - [dia_9b, ['18', '19'], 1.210114, 0.0, wireframe_member, null, noncompressive, null, 128858.60874773467, 0.0, 0.6580801782033697]
+  - [AI_0, ['21', '22'], 3.67, 0.003, dyneema, AI, noncompressive, null, null, null, null]
+  - [AI_1, ['23', '24'], 3.67, 0.003, dyneema, AI, noncompressive, null, null, null, null]
+  - [AII_2, ['25', '22'], 3.36, 0.003, dyneema, AII, noncompressive, null, null, null, null]
+  - [AII_3, ['26', '24'], 3.36, 0.003, dyneema, AII, noncompressive, null, null, null, null]
+  - [br_1_4, ['12', '27'], 4.407, 0.002, dyneema, br_1, noncompressive, null, null, null, null]
+  - [br_1_5, ['10', '28'], 4.407, 0.002, dyneema, br_1, noncompressive, null, null, null, null]
+  - [br_2_6, ['14', '27'], 4.18, 0.002, dyneema, br_2, noncompressive, null, null, null, null]
+  - [br_2_7, ['8', '28'], 4.18, 0.002, dyneema, br_2, noncompressive, null, null, null, null]
+  - [br_3_8, ['16', '29'], 4.094, 0.002, dyneema, br_3, noncompressive, null, null, null, null]
+  - [br_3_9, ['6', '30'], 4.094, 0.002, dyneema, br_3, noncompressive, null, null, null, null]
+  - [br_4_10, ['18', '29'], 3.55, 0.002, dyneema, br_4, noncompressive, null, null, null, null]
+  - [br_4_11, ['4', '30'], 3.55, 0.002, dyneema, br_4, noncompressive, null, null, null, null]
+  - [Br_I_12, ['27', '31'], 2.333, 0.002, dyneema, Br_I, noncompressive, null, null, null, null]
+  - [Br_I_13, ['28', '32'], 2.333, 0.002, dyneema, Br_I, noncompressive, null, null, null, null]
+  - [Br_II_14, ['29', '31'], 2.045, 0.002, dyneema, Br_II, noncompressive, null, null, null, null]
+  - [Br_II_15, ['30', '32'], 2.045, 0.002, dyneema, Br_II, noncompressive, null, null, null, null]
+  - [Br_main_1_16, ['31', '33'], 0.61, 0.003, dyneema, Br_main_1, noncompressive, null, null, null, null]
+  - [Br_main_1_17, ['32', '34'], 0.61, 0.003, dyneema, Br_main_1, noncompressive, null, null, null, null]
+  - [a5_equiv_18_a, ['22', '19'], 6.037516958318073, 0.005, dyneema, a5_equiv, pulley, null, null, null, null]
+  - [a5_equiv_18_b, ['19', '33'], 5.890483041681928, 0.005, dyneema, a5_equiv, pulley, null, null, null, null]
+  - [a5_equiv_19_a, ['24', '1'], 6.03800919148222, 0.005, dyneema, a5_equiv, pulley, null, null, null, null]
+  - [a5_equiv_19_b, ['1', '34'], 5.889990808517782, 0.005, dyneema, a5_equiv, pulley, null, null, null, null]
+  - [A_main_20, ['22', '0'], 3.903, 0.004, dyneema, A_main, noncompressive, null, null, null, null]
+  - [A_main_21, ['24', '0'], 3.903, 0.004, dyneema, A_main, noncompressive, null, null, null, null]
+  - [br_5_equiv_22_a, ['34', '2'], 5.72600529461946, 0.002, dyneema, br_5_equiv, pulley, null, null, null, null]
+  - [br_5_equiv_22_b, ['2', '35'], 8.09199470538054, 0.002, dyneema, br_5_equiv, pulley, null, null, null, null]
+  - [br_5_equiv_23_a, ['33', '20'], 5.726361862933343, 0.002, dyneema, br_5_equiv, pulley, null, null, null, null]
+  - [br_5_equiv_23_b, ['20', '36'], 8.091638137066655, 0.002, dyneema, br_5_equiv, pulley, null, null, null, null]
+  - [M_24_a, ['37', '34'], 2.2878142374705597, 0.005, dyneema, M, pulley, null, null, null, null]
+  - [M_24_b, ['34', '35'], 2.56818576252944, 0.005, dyneema, M, pulley, null, null, null, null]
+  - [M_25_a, ['37', '33'], 2.2879525278569375, 0.005, dyneema, M, pulley, null, null, null, null]
+  - [M_25_b, ['33', '36'], 2.5680474721430624, 0.005, dyneema, M, pulley, null, null, null, null]
+  - [steering_tape_26, ['35', '0'], 1.6, 0.004787307, dyneema, steering_tape, noncompressive, 0.012, null, null, null]
+  - [depower_tape_27, ['37', '0'], 1.94, 0.004787307, dyneema, depower_tape, noncompressive, 0.012, null, null, null]
+  - [steering_tape_28, ['36', '0'], 1.6, 0.004787307, dyneema, steering_tape, noncompressive, 0.012, null, null, null]
+  - [A1_equiv_29, ['11', '21'], 3.768688, 0.002, dyneema, A1_equiv, noncompressive, null, null, null, null]
+  - [A2_equiv_30, ['13', '21'], 3.622255, 0.002, dyneema, A2_equiv, noncompressive, null, null, null, null]
+  - [A3_equiv_31, ['15', '25'], 3.582617, 0.002, dyneema, A3_equiv, noncompressive, null, null, null, null]
+  - [A1_equiv_32, ['9', '23'], 3.768688, 0.002, dyneema, A1_equiv, noncompressive, null, null, null, null]
+  - [A2_equiv_33, ['7', '23'], 3.622255, 0.002, dyneema, A2_equiv, noncompressive, null, null, null, null]
+  - [A3_equiv_34, ['5', '26'], 3.582617, 0.002, dyneema, A3_equiv, noncompressive, null, null, null, null]
+  - [A4_equiv_35, ['17', '25'], 2.976248, 0.002, dyneema, A4_equiv, noncompressive, null, null, null, null]
+  - [A4_equiv_36, ['3', '26'], 2.976248, 0.002, dyneema, A4_equiv, noncompressive, null, null, null, null]
+spanwise_stations:
+  headers: [name, wing, points]
+  units: ['-', '-', '-']
+  data:
+  - [rib_1, wing, ['1', '2']]
+  - [rib_2, wing, ['3', '4']]
+  - [rib_3, wing, ['5', '6']]
+  - [rib_4, wing, ['7', '8']]
+  - [rib_5, wing, ['9', '10']]
+  - [rib_6, wing, ['11', '12']]
+  - [rib_7, wing, ['13', '14']]
+  - [rib_8, wing, ['15', '16']]
+  - [rib_9, wing, ['17', '18']]
+  - [rib_10, wing, ['19', '20']]
+pulleys:
+  headers: [name, segments]
+  units: ['-', '-']
+  data:
+  - [a5_equiv_18, [a5_equiv_18_a, a5_equiv_18_b]]
+  - [a5_equiv_19, [a5_equiv_19_a, a5_equiv_19_b]]
+  - [br_5_equiv_22, [br_5_equiv_22_a, br_5_equiv_22_b]]
+  - [br_5_equiv_23, [br_5_equiv_23_a, br_5_equiv_23_b]]
+  - [M_24, [M_24_a, M_24_b]]
+  - [M_25, [M_25_a, M_25_b]]
+wings:
+  headers: [name, pos_ENU, Q_KA2ENU]
+  units: ['-', m, '-']
+  data:
+  - [wing, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]]
+awetrim:
+  kcu_point: '0'
+  pulley_mass: 0.033
+  reduction:
+    source: struc_geometry_FEM_full (wireframe.reduce_fem)
+    wing_mass: 11.496633613640375
+    bridle_mass: 1.9458656002685297
+    original_node_ids:
+      0: 0
+      1: 3
+      2: 120
+      3: 103
+      4: 121
+      5: 96
+      6: 122
+      7: 92
+      8: 123
+      9: 91
+      10: 124
+      11: 57
+      12: 90
+      13: 58
+      14: 89
+      15: 62
+      16: 88
+      17: 69
+      18: 87
+      19: 53
+      20: 86
+      21: 68
+      22: 70
+      23: 102
+      24: 104
+      25: 72
+      26: 106
+      27: 83
+      28: 117
+      29: 82
+      30: 116
+      31: 81
+      32: 115
+      33: 79
+      34: 113
+      35: 126
+      36: 127
+      37: 125

@@ -1,0 +1,12 @@
+\begin{tabular}{lrrrr}
+\toprule
+Samples & $n$ & RMSE $C_L$ & RMSE $C_D$ & $R^2$ ($C_L$ / $C_D$) \\
+\midrule
+all & 4882 & $0.0201$ & $0.00458$ & 0.9958 / 0.9978 \\
+$\alpha<13^\circ$ (operating) & 2915 & $0.0125$ & $0.00307$ & 0.9983 / 0.9906 \\
+$13^\circ\le\alpha<19^\circ$ (stall) & 960 & $0.0381$ & $0.00759$ & 0.8212 / 0.9457 \\
+$\alpha\ge19^\circ$ (post-stall) & 1007 & $0.0112$ & $0.00441$ & 0.7349 / 0.9818 \\
+\midrule
+\multicolumn{2}{l}{Grouped 5-fold CV RMSE} & $0.0202$ & $0.00462$ & \\
+\bottomrule
+\end{tabular}

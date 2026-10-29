@@ -18,6 +18,28 @@ import casadi as ca
 import numpy as np
 from awetrim.utils.defaults import DEFAULT_WINCH_CONFIG
 
+# Floor on v_sat - speed_radial in the inverse soft v_sat clamp [m/s], see
+# Winch._undo_v_sat_clamp.
+V_SAT_GAP_MIN = 1e-6
+# Floor on the argument of the inverse softplus, and on the unsaturated tension
+# under the square root [N], in Winch.speed_law: both diverge (log(0), infinite
+# slope of sqrt at 0) at the edges of the law's range.
+SP_INV_Y_MIN = 1e-12
+SPEED_LAW_T_MIN = 1.0
+# Where Winch.radial_equation hands over from the force form to the speed form,
+# as fractions of [min_tether_force, max_tether_force]: centre and width.
+# Measured 2026-09-23 on the Cabauw 150 m startup request: at 0.5 the 4 m/s
+# solve fails in IPOPT; 0.75 and 0.85 both converge at 3, 4, 5, 7 and 10 m/s,
+# 0.85 landing 5 % lower at 7 m/s (25.3 instead of 26.8 kW). 0.85 by choice.
+SPEED_LAW_BLEND_CENTER = 0.85
+SPEED_LAW_BLEND_WIDTH = 0.1
+
+
+def _sp_inv(y):
+    """Inverse of the softplus ``ln(1 + e^x)``, i.e. ``ln(e^y - 1)``, floored."""
+    y = ca.fmax(y, SP_INV_Y_MIN)
+    return y + ca.log(-ca.expm1(-y))
+
 
 class Winch:
     def __init__(self, pattern_config, config=DEFAULT_WINCH_CONFIG):
@@ -40,6 +62,31 @@ class Winch:
         - softplus / softminus: optional boolean flags
         - softplus_beta / softminus_beta: optional sharpness parameters
 
+        Reel-in-capable law ("quadratic" with ``min_tether_force > 0``, which
+        is every force-limited reel-out request): instead of softminus, the
+        law below ``min_tether_force`` is a straight line through
+        ``(offset, min_tether_force)`` and ``(offset + v_reel_in, 0)``, handed
+        over to the plain quadratic reel-out law by a smooth maximum
+        (sharpness ``reel_in_beta``, default 20) once the quadratic law grows
+        past the line. ``v_reel_in`` (< 0, default -2.0) is the reel-in speed
+        at zero force. Mirrors WinchControllers.jl's ``calc_vro_soft`` under
+        ``soft_lfc``, in the forward direction (this method computes force
+        from speed; that one inverts it).
+
+        use_awe_trim (float in [0, 1], default 0, "quadratic" only) blends
+        that law with the softminus-floored one it replaced: 0 (the default)
+        is the reel-in law above, 1 is the plain quadratic under softminus,
+        and values between mix the two forces linearly. The endpoints differ
+        most at zero speed, where the reel-in law holds ``min_tether_force``
+        while softminus holds ``sp(beta*min_tether_force)/beta`` — 883 N for
+        a 350 N ``min_tether_force`` at beta 1e-3, and never below
+        ``log(2)/beta`` whatever ``min_tether_force`` is asked for.
+
+        The reel-in law needs no softminus smoothing of its own corner: the
+        forward quadratic has zero (not infinite) slope at its own zero, so
+        the smooth maximum stays well conditioned for any
+        ``reel_in_beta > 0``.
+
         Depower-dependent offset (the key to flying a full pumping cycle as a
         single phase): the winch's zero-force reeling speed ``offset`` is shifted
         by ``winch_offset_depower_gain * (input_depower - winch_depower_ref)``.
@@ -56,6 +103,14 @@ class Winch:
         model = self.pattern_config.get("force_model", "quadratic")
         max_tf = self.pattern_config.get("max_tether_force", None)
         min_tf = self.pattern_config.get("min_tether_force", 0)
+        use_awe_trim = self.pattern_config.get("use_awe_trim", 0.0)
+        if use_awe_trim and model != "quadratic":
+            raise ValueError(
+                "use_awe_trim requires force_model 'quadratic', got "
+                f"'{model}'"
+            )
+        if not (0.0 <= use_awe_trim <= 1.0):
+            raise ValueError(f"use_awe_trim must be in [0, 1], got {use_awe_trim}")
 
         if max_tf is None:
             if model != "custom_spline":
@@ -69,30 +124,9 @@ class Winch:
                 )
 
         if model in ["linear", "quadratic"]:
-            # Find offset and slope with winch prefix in pattern_config
-            offset = None
-            slope = None
-            for key in self.pattern_config:
-                if key.startswith("offset_winch_"):
-                    offset = self.pattern_config[key]
-                elif key.startswith("slope_winch_"):
-                    slope = self.pattern_config[key]
+            slope, offset = self._slope_offset(model, input_depower)
 
-            if slope is None:
-                raise ValueError(
-                    f"No slope_winch_* parameter found in pattern_config (required for {model} force model)"
-                )
-
-            # Use found offset or default to 0
-            offset = 0 if offset is None else offset
-
-            # Depower-dependent shift of the zero-force reeling speed. Lets one
-            # force law cover reel-out and reel-in within a single phase (see
-            # docstring). gain < 0 -> reel-in as l_dp grows.
-            gain = self.pattern_config.get("winch_offset_depower_gain", None)
-            if gain is not None and input_depower is not None:
-                dep_ref = self.pattern_config.get("winch_depower_ref", 0.0)
-                offset = offset + gain * (input_depower - dep_ref)
+            speed_radial = self._undo_v_sat_clamp(speed_radial)
 
             if model == "linear":
                 T = slope * (speed_radial - offset)
@@ -117,19 +151,158 @@ class Winch:
         else:
             raise ValueError(f"Unknown force_model '{model}' in pattern_config")
 
-        # Optional smoothing limits
-        if self.pattern_config.get("softplus", False):
+        def softplus_cap(expr):
+            if not self.pattern_config.get("softplus", False):
+                return expr
             beta = self.pattern_config.get(
                 "softplus_beta", DEFAULT_WINCH_CONFIG.get("sharpness_beta", 1e-3)
             )
-            T = T - (1 / beta) * ca.log(1 + ca.exp(beta * (T - max_tf)))
-        if self.pattern_config.get("softminus", False):
+            return expr - (1 / beta) * ca.log(1 + ca.exp(beta * (expr - max_tf)))
+
+        def softminus_floor(expr):
+            if not self.pattern_config.get("softminus", False):
+                return expr
             beta = self.pattern_config.get(
                 "softminus_beta", DEFAULT_WINCH_CONFIG.get("sharpness_beta", 1e-3)
             )
-            T = T + (1 / beta) * ca.log(1 + ca.exp(beta * (min_tf - T)))
+            return expr + (1 / beta) * ca.log(1 + ca.exp(beta * (min_tf - expr)))
 
-        return T
+        # A zero min_tether_force leaves no reel-in line to build (its two
+        # defining points collapse), so that case keeps the plain law.
+        if model == "quadratic" and min_tf:
+            v_reel_in = self.pattern_config.get("v_reel_in", -2.0)
+            if v_reel_in >= 0:
+                raise ValueError(
+                    f"the reel-in law requires v_reel_in < 0, got {v_reel_in}"
+                )
+            reel_in_beta = self.pattern_config.get("reel_in_beta", 20.0)
+            m = -v_reel_in / min_tf
+            line = min_tf + (speed_radial - offset) / m
+            v_eff = ca.fmax(speed_radial - offset, 0)
+            quad_ro = slope * v_eff * v_eff
+            gap = ca.fabs(line - quad_ro)
+            T_reel_in = (
+                ca.fmax(line, quad_ro)
+                + ca.log(1 + ca.exp(-reel_in_beta * gap)) / reel_in_beta
+            )
+            T_reel_in = ca.fmax(softplus_cap(T_reel_in), 0)
+            if not use_awe_trim:
+                return T_reel_in
+            return (1 - use_awe_trim) * T_reel_in + use_awe_trim * softminus_floor(
+                softplus_cap(T)
+            )
+
+        return softminus_floor(softplus_cap(T))
+
+    def _slope_offset(self, model, input_depower=None):
+        """``slope_winch_*`` and ``offset_winch_*`` of a linear/quadratic law."""
+        # Find offset and slope with winch prefix in pattern_config
+        offset = None
+        slope = None
+        for key in self.pattern_config:
+            if key.startswith("offset_winch_"):
+                offset = self.pattern_config[key]
+            elif key.startswith("slope_winch_"):
+                slope = self.pattern_config[key]
+
+        if slope is None:
+            raise ValueError(
+                f"No slope_winch_* parameter found in pattern_config (required for {model} force model)"
+            )
+
+        # Use found offset or default to 0
+        offset = 0 if offset is None else offset
+
+        # Depower-dependent shift of the zero-force reeling speed. Lets one
+        # force law cover reel-out and reel-in within a single phase (see
+        # tension_curve's docstring). gain < 0 -> reel-in as l_dp grows.
+        gain = self.pattern_config.get("winch_offset_depower_gain", None)
+        if gain is not None and input_depower is not None:
+            dep_ref = self.pattern_config.get("winch_depower_ref", 0.0)
+            offset = offset + gain * (input_depower - dep_ref)
+        return slope, offset
+
+    def uses_speed_law(self):
+        """Whether :meth:`radial_equation` blends in :meth:`speed_law`.
+
+        Only for the case that law is the exact inverse of
+        :meth:`tension_curve`: a quadratic law under the soft v_sat clamp
+        (``v_sat`` and ``v_sat_beta`` set) with ``use_awe_trim == 1``, i.e. the
+        plain quadratic under softplus/softminus. The reel-in blend below 1 has
+        no closed-form inverse.
+        """
+        pc = self.pattern_config
+        return (
+            pc.get("reeling_strategy") == "force"
+            and pc.get("force_model", "quadratic") == "quadratic"
+            and pc.get("v_sat") is not None
+            and pc.get("v_sat_beta") is not None
+            and float(pc.get("use_awe_trim", 0.0)) == 1.0
+            and bool(pc.get("min_tether_force"))
+        )
+
+    def speed_law(self, tension, input_depower=None):
+        """The winch controller's own law: reel speed as a function of force.
+
+        The exact inverse of :meth:`tension_curve` on its reel-out branch
+        (speed >= offset) when :meth:`uses_speed_law` holds — the law
+        WinchControllers.jl's ``calc_vro_soft`` evaluates at runtime. The two
+        soft saturations are undone in the reverse of the order they are
+        applied (softminus first, then softplus), then the soft v_sat clamp is
+        applied. Near ``v_sat`` this curve is FLAT in force where
+        :meth:`tension_curve` is vertical in speed.
+
+        Guarded so it stays finite for any tension: below the softminus floor
+        the speed bottoms out just above ``offset`` (at the tension
+        ``SPEED_LAW_T_MIN``), and at or above
+        ``max_tether_force`` it is ``v_sat`` (minus the clamp's own rounding).
+        """
+        pc = self.pattern_config
+        slope, offset = self._slope_offset("quadratic", input_depower)
+        max_tf = pc["max_tether_force"]
+        min_tf = pc["min_tether_force"]
+        t = tension
+        if pc.get("softminus", False):
+            beta = pc.get("softminus_beta", DEFAULT_WINCH_CONFIG.get("sharpness_beta", 1e-3))
+            t = min_tf + _sp_inv(beta * (t - min_tf)) / beta
+        if pc.get("softplus", False):
+            beta = pc.get("softplus_beta", DEFAULT_WINCH_CONFIG.get("sharpness_beta", 1e-3))
+            t = max_tf - _sp_inv(beta * (max_tf - t)) / beta
+        v_raw = offset + ca.sqrt(ca.fmax(t, SPEED_LAW_T_MIN) / slope)
+        v_sat = pc["v_sat"]
+        beta = pc["v_sat_beta"]
+        # soft_min(v_raw, v_sat, beta), as WinchControllers.jl's _clamp_v_sat
+        return ca.fmin(v_raw, v_sat) - ca.log1p(ca.exp(-beta * ca.fabs(v_raw - v_sat))) / beta
+
+    def _undo_v_sat_clamp(self, speed_radial):
+        """Reel speed the law would ask for WITHOUT the soft v_sat clamp.
+
+        WinchControllers.jl's ``calc_vro_soft`` soft-clamps the speed its
+        tension-curve inverse commands: ``v = soft_min(v_raw, v_sat, beta)``
+        (``_clamp_v_sat``, ``beta = v_sat_beta``). That soft minimum is a
+        log-sum-exp, ``exp(-beta*v) = exp(-beta*v_raw) + exp(-beta*v_sat)``,
+        so it inverts in closed form:
+
+            v_raw = v - log(1 - exp(-beta*(v_sat - v))) / beta
+
+        Feeding ``v_raw`` to the force law makes the tension rise steeply
+        towards ``max_tether_force`` as the speed approaches ``v_sat``, the
+        vertical end of the controller's curve, instead of stopping short of it
+        at the ``speed_radial`` bound. Identity unless ``pattern_config``
+        carries both ``v_sat`` and ``v_sat_beta``.
+
+        ``v_raw`` diverges AT ``v_sat``, which is also the upper speed bound, so
+        the gap is floored at ``V_SAT_GAP_MIN``: there ``v_raw`` exceeds ``v``
+        by ``-log(beta*V_SAT_GAP_MIN)/beta`` (1.15 m/s at beta = 10), enough
+        for the softplus cap to sit within a few newtons of max_tether_force,
+        while the result stays finite for IPOPT.
+        """
+        v_sat = self.pattern_config.get("v_sat", None)
+        beta = self.pattern_config.get("v_sat_beta", None)
+        if v_sat is None or beta is None:
+            return speed_radial
+        gap = ca.fmax(v_sat - speed_radial, V_SAT_GAP_MIN)
+        return speed_radial - ca.log(-ca.expm1(-beta * gap)) / beta
 
     def radial_equation(
         self, speed_radial=None, tension_tether_ground=None, input_depower=None
@@ -143,7 +316,21 @@ class Winch:
                 :meth:`tension_curve` so the force law's offset can depend on the
                 depower setting (see that method).
         Returns:
-            radial_equation: Algebraic equation for radial dynamics
+            radial_equation: Algebraic equation for radial dynamics, in newtons
+
+        When :meth:`uses_speed_law` holds, the residual blends the force form
+        ``F - T(v)`` with the speed form ``K * (V(F) - v)`` (``V`` =
+        :meth:`speed_law`, ``K = max_tether_force / v_sat`` to give it force
+        units), by a weight ``w(F)`` rising from 0 to 1 around
+        ``SPEED_LAW_BLEND_CENTER`` of ``[min_tether_force, max_tether_force]``. On the reel-out branch both
+        forms are zero exactly on the curve and have the same sign off it, so
+        the blend has the SAME zero set as the plain force form — only its
+        conditioning changes. Each form is used where it is well conditioned:
+        the force form at low force, where ``V`` has the infinite slope of a
+        square root at the floor, and the speed form near ``v_sat``, where the
+        soft v_sat clamp makes ``T(v)`` nearly vertical and ``V(F)`` is flat
+        instead. The pure force form with the clamp failed a 7 m/s startup
+        solve in IPOPT that converged without the clamp.
         """
 
         if self.pattern_config["reeling_strategy"] == "force":
@@ -156,6 +343,20 @@ class Winch:
                 speed_radial, input_depower=input_depower
             )
             radial_force_law = tension_tether_ground - tension_curve_val
+            if self.uses_speed_law():
+                pc = self.pattern_config
+                max_tf = pc["max_tether_force"]
+                min_tf = pc["min_tether_force"]
+                k = max_tf / pc["v_sat"]
+                f_mid = min_tf + SPEED_LAW_BLEND_CENTER * (max_tf - min_tf)
+                width = SPEED_LAW_BLEND_WIDTH * (max_tf - min_tf)
+                # logistic weight, written with tanh to stay finite far out
+                w = 0.5 * (1 + ca.tanh((tension_tether_ground - f_mid) / (2 * width)))
+                speed_form = k * (
+                    self.speed_law(tension_tether_ground, input_depower=input_depower)
+                    - speed_radial
+                )
+                radial_force_law = w * speed_form + (1 - w) * radial_force_law
         elif self.pattern_config["reeling_strategy"] == "constant":
             radial_force_law = speed_radial - self.pattern_config["reeling_speed"]
         else:

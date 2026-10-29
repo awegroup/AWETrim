@@ -265,6 +265,23 @@ class WingSections:
         return float(chords[self._tip_index] / chords[self._centre_index])
 
     @property
+    def sweep_angle_deg(self) -> float:
+        """Quarter-chord sweepback angle of the tip QC vs the centre QC [deg].
+
+        Measured in the streamwise/spanwise (x-y) plane as
+        ``arctan(dx / dy)`` between the centre and tip quarter-chord points,
+        where ``dx`` is the aft (``+x``) shift of the tip. ``0`` for an
+        unswept wing; positive when the tips sit aft of the centre.
+        """
+        qc = self.quarter_chord
+        c, t = self._centre_index, self._tip_index
+        dy = abs(qc[t, 1] - qc[c, 1])
+        dx = qc[t, 0] - qc[c, 0]
+        if dy < 1e-12:
+            return 0.0
+        return float(np.degrees(np.arctan2(dx, dy)))
+
+    @property
     def tip_twist_deg(self) -> float:
         """Geometric twist of the tip chord vs the root chord [deg].
 
@@ -300,6 +317,7 @@ class WingSections:
             "anhedral_angle_deg": self.anhedral_angle_deg,
             "taper_ratio": self.taper_ratio,
             "tip_twist_deg": self.tip_twist_deg,
+            "sweep_angle_deg": self.sweep_angle_deg,
         }
 
 
@@ -316,6 +334,7 @@ def morph_wing(
     anhedral_scale: float = 1.0,
     taper_ratio: float = 1.0,
     twist_deg: float = 0.0,
+    sweep_deg: float = 0.0,
 ) -> WingSections:
     """Return a QC-anchored morph of ``sections``.
 
@@ -334,10 +353,15 @@ def morph_wing(
     - ``twist_deg``     adds a linear washout: each chord is rotated about the
       spanwise y-axis through its quarter chord, from ``0`` at the centre to
       ``twist_deg`` at the tips. Lengths (and thus area/AR) are unchanged.
+    - ``sweep_deg``     adds quarter-chord sweepback: each QC point is shifted
+      aft (``+x``) by ``|dy| * tan(sweep_deg)`` where ``dy`` is its spanwise
+      offset from the centre, from ``0`` at the centre to the tips. The shift is
+      purely streamwise, so the y-z arc length (and thus ``flat_span``, ``area``
+      and aspect ratio) is unchanged — sweep is decoupled from taper and twist.
 
     With ``anhedral_scale = 1`` and ``chord_scale = 1 / span_scale`` the flat
-    area is preserved and the aspect ratio scales by ``span_scale**2``. Taper and
-    twist are decoupled from aspect ratio and anhedral.
+    area is preserved and the aspect ratio scales by ``span_scale**2``. Taper,
+    twist and sweep are decoupled from aspect ratio and anhedral.
     """
     qc = sections.quarter_chord
     chord_vectors = sections.chord_vectors
@@ -349,6 +373,10 @@ def morph_wing(
     )
     new_qc = qc_centre + (qc - qc_centre) * scale
     new_chord_vectors = chord_vectors * chord_scale
+
+    if sweep_deg != 0.0:
+        dy = np.abs(new_qc[:, 1] - new_qc[c, 1])
+        new_qc[:, 0] = new_qc[:, 0] + dy * np.tan(np.deg2rad(sweep_deg))
 
     eta = _spanwise_fraction(new_qc, c)  # 0 at centre, 1 at the tips
     if taper_ratio != 1.0:
@@ -452,6 +480,100 @@ def morph_wing_to(
         current = morph_wing(current, taper_ratio=taper_ratio, twist_deg=twist_deg)
 
     return current
+
+
+# ----------------------------------------------------------------------
+# Parametric swept-wing constructor
+# ----------------------------------------------------------------------
+
+
+def build_swept_wing(
+    *,
+    span: float,
+    root_chord: float,
+    taper_ratio: float = 1.0,
+    sweep_deg: float = 0.0,
+    anhedral_deg: float = 0.0,
+    twist_deg: float = 0.0,
+    n_sections_semi: int = 10,
+    airfoil_id: int = 1,
+    wing_airfoils: Optional[Dict[str, Any]] = None,
+) -> WingSections:
+    """Construct a clean, symmetric swept-wing planform from scalar design DOFs.
+
+    Unlike :func:`morph_wing` (which deforms an existing planform), this builds a
+    :class:`WingSections` directly from the design vector used by the AWES design
+    tool, so it does not depend on any baseline geometry. Sections run tip ->
+    centre -> tip; the chord lies along ``+x`` (LE forward, TE aft) and the
+    quarter chord is the anchor for sweep/anhedral/twist.
+
+    Parameters
+    ----------
+    span:
+        Projected tip-to-tip span in ``y`` [m] (the ``dihedral``/anhedral droop
+        is added on top in ``z``; ``projected_span`` equals this value).
+    root_chord:
+        Centre-section chord [m].
+    taper_ratio:
+        Tip/root chord ratio ``c_tip / c_root`` (``1.0`` = rectangular).
+    sweep_deg:
+        Quarter-chord sweepback [deg]; tips shift aft by
+        ``|y| * tan(sweep_deg)``.
+    anhedral_deg:
+        Straight-line tip droop [deg]; ``z = -|y| * tan(anhedral_deg)`` so the
+        tips sit below the centre (matches :attr:`WingSections.anhedral_angle_deg`).
+    twist_deg:
+        Linear geometric washout at the tip [deg], ``0`` at the centre.
+    n_sections_semi:
+        Number of sections per semi-span including the centre; the full wing has
+        ``2 * n_sections_semi - 1`` sections.
+    airfoil_id:
+        Airfoil identifier assigned to every section (single-airfoil wing).
+    wing_airfoils:
+        Optional verbatim ``wing_airfoils`` block (profiles/polars) carried onto
+        the result so it round-trips to ``aero_geometry.yaml``.
+
+    Returns
+    -------
+    WingSections
+        The QC-anchored planform, ready for ``to_aero_geometry`` / VSM.
+    """
+    if span <= 0.0 or root_chord <= 0.0:
+        raise ValueError("span and root_chord must be positive.")
+    if taper_ratio <= 0.0:
+        raise ValueError("taper_ratio must be positive.")
+    if n_sections_semi < 2:
+        raise ValueError("n_sections_semi must be at least 2.")
+
+    semi = float(span) / 2.0
+    # Spanwise stations: +tip -> centre -> -tip (no duplicated centre).
+    y_semi = np.linspace(semi, 0.0, n_sections_semi)
+    ys = np.concatenate([y_semi, -y_semi[-2::-1]])
+
+    eta = np.abs(ys) / semi  # 0 at centre, 1 at the tips
+    chords = float(root_chord) * (1.0 + (taper_ratio - 1.0) * eta)
+
+    qc = np.zeros((ys.size, 3), dtype=float)
+    qc[:, 0] = np.abs(ys) * np.tan(np.deg2rad(sweep_deg))
+    qc[:, 1] = ys
+    qc[:, 2] = -np.abs(ys) * np.tan(np.deg2rad(anhedral_deg))
+
+    # Base chord vectors along +x, then apply linear washout about the y axis.
+    chord_vectors = np.zeros((ys.size, 3), dtype=float)
+    chord_vectors[:, 0] = chords
+    if twist_deg != 0.0:
+        chord_vectors = _rotate_about_y(chord_vectors, np.deg2rad(twist_deg) * eta)
+
+    le = qc - _QC_FRACTION * chord_vectors
+    te = le + chord_vectors
+    airfoil_ids = np.full(ys.size, int(airfoil_id), dtype=int)
+
+    return WingSections(
+        airfoil_ids=airfoil_ids,
+        le=le,
+        te=te,
+        airfoils=_deepcopy_yaml(wing_airfoils) if wing_airfoils is not None else None,
+    )
 
 
 # ----------------------------------------------------------------------

@@ -24,10 +24,28 @@ DATA_DIR = REPO_ROOT / "data"
 LEI_V3_DATA_DIR = DATA_DIR / "LEI-V3-KITE"
 # Primary system config in awesIO format (physical system parameters)
 LEI_V3_SYSTEM_CONFIG = LEI_V3_DATA_DIR / "system.yaml"
-# As-flown system (KCU 22.75 kg) used by validation; system.yaml is the
-# optimization config (KCU 8.4 kg).
-LEI_V3_SYSTEM_FLOWN_CONFIG = LEI_V3_DATA_DIR / "system_flown.yaml"
-LEI_V3_ROM_AERO_CONFIG = LEI_V3_DATA_DIR / "rom_config.yaml"
+# As-flown systems, one per flight campaign, used by validation; system.yaml is
+# the optimization config (KCU 8.4 kg).
+#   2019-10-08: KCU 22.75 kg, 10 mm tether
+#   2025-10-09: KCU 23.3 kg, 13.5 mm tether
+LEI_V3_SYSTEM_FLOWN_2019_CONFIG = LEI_V3_DATA_DIR / "system_flown_2019.yaml"
+LEI_V3_SYSTEM_FLOWN_2025_CONFIG = LEI_V3_DATA_DIR / "system_flown_2025.yaml"
+# Unqualified alias, kept for callers that predate the per-flight split; it is
+# the 2019 hardware, which every existing validation script assumed.
+LEI_V3_SYSTEM_FLOWN_CONFIG = LEI_V3_SYSTEM_FLOWN_2019_CONFIG
+# The LEI-V3 reduced-order models (system.yaml names the one in use):
+# identified from aerostructural simulations only (the default since
+# 2026-10-29), and its 2019 flight correction. (The WES paper's semi-empirical
+# ROM is in git history: git show bad8a9b:data/LEI-V3-KITE/rom_config_semi_empirical.yaml.)
+LEI_V3_ROM_AEROSTRUCTURAL_CONFIG = LEI_V3_DATA_DIR / "rom_config_aerostructural.yaml"
+# theta_b, dC_D(u_p, u_s) and the roll-gain scale fitted to 2019 flight on
+# the aerostructural ROM (examples/5_flight_data/identify_rom_flight_correction.py
+# + the output-error refinement).
+LEI_V3_ROM_AEROSTRUCTURAL_FLIGHT_CONFIG = (
+    LEI_V3_DATA_DIR / "rom_config_aerostructural_flight_corrected.yaml"
+)
+# Unqualified alias, kept for callers that predate the split: the default ROM.
+LEI_V3_ROM_AERO_CONFIG = LEI_V3_ROM_AEROSTRUCTURAL_CONFIG
 LEI_V3_CYCLE_CONFIG_DIR = LEI_V3_DATA_DIR / "cycle_configs"
 LEI_V3_DOWNLOOP_SPLINE_CONFIG = LEI_V3_CYCLE_CONFIG_DIR / "downloop_spline.yaml"
 LEI_V3_UPLOOP_SPLINE_CONFIG = LEI_V3_CYCLE_CONFIG_DIR / "uploop_spline.yaml"

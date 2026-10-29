@@ -35,11 +35,24 @@ from awetrim.utils.defaults import DEFAULT_RADIAL_PARAMETERS, DEFAULT_OPTI_LIMIT
 START_STATE = {
     "t": 0,
     "s": 0,
-    "s_dot": 2,
+    "s_dot": 0.1,
     "input_steering": 0,
-    "tension_tether_ground": 8.4e4,  # Initial guess for tension (N)
+    "tension_tether_ground": 8.4e3,  # Initial guess for tension (N)
     "speed_radial": 0,  # Positive for reel-out
 }
+
+# Floor of the smoothness term at the initial point in ``relative_reg_weight``:
+# a perfectly smooth warm start must not ask for an unbounded weight.
+REG_FLOOR = 1e-6
+
+
+def relative_reg_weight(opti, objective, reg, fraction):
+    """Weight that makes ``weight * reg`` equal ``fraction`` of ``|objective|``,
+    both evaluated at the NLP's initial point (sim_parameters.reg_fraction)."""
+    at_start = opti.initial() + opti.value_parameters()
+    objective0 = abs(float(opti.value(objective, at_start)))
+    reg0 = max(float(opti.value(reg, at_start)), REG_FLOOR)
+    return fraction * objective0 / reg0
 
 
 @dataclass
@@ -58,6 +71,11 @@ class SimulationResult:
     # solve failed or the values could not be evaluated. Keys are the per-node
     # state/control names; each value is a length-``n_points`` numpy array.
     optimized_trajectory: Dict[str, np.ndarray] = field(default_factory=dict)
+    # Tightest physical turn radius r/|kappa| [m] of the optimized path, from
+    # the NLP's own sub-sampled curvature expression (``opti_phase``
+    # ``turn_radius_min``); None when it could not be evaluated. The per-node
+    # values are the ``turn_radius`` column of ``optimized_trajectory``.
+    turn_radius_min: Optional[float] = None
 
     def save_trajectory_csv(self, output_path: Union[str, Path]) -> None:
         """Save the optimizer's own per-node trajectory to a CSV file.
@@ -275,11 +293,17 @@ class Phase:
             pattern_config=self.pattern_config,
             pattern_config_opti=pattern_config_opti,
         )
-        # Previous NLP optimum, if any: exact pass-to-pass warm start for
-        # staged solves. opti_phase validates the grid per variable and falls
-        # back to the forward simulation where absent or mismatched.
+        # Stored warm-start trajectory, if any: the previous NLP optimum
+        # (exact pass-to-pass warm start for staged solves) or a forward
+        # simulation the caller flagged with ``run_simulation(...,
+        # seed_warm_start=True)``. opti_phase validates the grid per variable,
+        # skips its own forward march when every seed is covered, and falls
+        # back to the march where absent or mismatched.
         self._phase.warm_start_trajectory = getattr(
             self, "_warm_start_trajectory", None
+        )
+        self._phase.warm_start_is_optimum = (
+            getattr(self, "_warm_start_source", None) == "optimum"
         )
         self._opti, self._opti_vars, self._objective = self._phase.opti_phase(
             start_state=start_state,
@@ -417,9 +441,20 @@ class Phase:
         # ridge the bare optimum is non-unique, so any solver-path change moves
         # the result; this term selects the smoothest equal-power trajectory,
         # pinning a unique, reproducible optimum. Weight is tunable per problem.
-        reg_weight = float(
-            self.pattern_config.get("sim_parameters", {}).get("reg_weight", 0.0)
-        )
+        sim_params = self.pattern_config.get("sim_parameters", {})
+        reg_weight = float(sim_params.get("reg_weight", 0.0))
+        reg_fraction = float(sim_params.get("reg_fraction", 0.0))
+        if not reg_weight and reg_fraction and objective_dict.get("reg") is not None:
+            # Relative weight: the term is ``reg_fraction`` of the objective
+            # at the NLP's initial point, so one setting carries over between
+            # kites and winds (a fixed weight is only right for one problem).
+            reg_weight = relative_reg_weight(
+                opti, total_objective, objective_dict["reg"], reg_fraction
+            )
+            print(
+                f"Smoothness regularizer: weight {reg_weight:.3g} "
+                f"({reg_fraction:g} of the initial objective)"
+            )
         if reg_weight and objective_dict.get("reg") is not None:
             total_objective = total_objective + reg_weight * objective_dict["reg"]
 
@@ -441,6 +476,10 @@ class Phase:
             total_objective = total_objective + self._trust_region_penalty(
                 self._opti_params, trust_region_weight
             )
+        # Proximal anchor on the per-node depower profile
+        # (sim_parameters.depower_anchor_weight; None when off).
+        if objective_dict.get("depower_anchor") is not None:
+            total_objective = total_objective + objective_dict["depower_anchor"]
 
         solution = self.run_opti(
             opti, total_objective, warm_start=warm_start, max_iter=max_iter
@@ -458,8 +497,15 @@ class Phase:
             dep_opt = np.asarray(solution.value(opti_vars["input_depower"])).ravel()
             # opti_vars hold N node values; the simulation s-grid has N+1 points.
             # The last grid point only feeds the (unrecorded) final step, so pad
-            # by repeating the last node to satisfy the length-(N+1) requirement.
-            profile = np.append(dep_opt, dep_opt[-1])
+            # by repeating the last node to satisfy the length-(N+1) requirement
+            # -- or, under the periodic wrap, with node 0: the last grid point
+            # IS the seam, where the closed cycle starts over.
+            wrap = bool(
+                self.pattern_config.get("sim_parameters", {}).get(
+                    "periodic_wrap", False
+                )
+            )
+            profile = np.append(dep_opt, dep_opt[0] if wrap else dep_opt[-1])
             self.pattern_config.setdefault("sim_parameters", {})[
                 "input_depower_profile"
             ] = profile
@@ -473,11 +519,35 @@ class Phase:
         self._update_start_state_from_solution(solution, opti_vars)
 
         optimized_trajectory = self._extract_optimized_trajectory(solution, opti_vars)
+        # Path-geometry diagnostics from the NLP's own expressions: the per-node
+        # physical turn radius r/|kappa| [m] as an extra trajectory column and
+        # the tightest radius over the sub-sampled path. Best-effort, like the
+        # trajectory extraction itself; ``turn_radius_min`` is None if unavailable.
+        turn_radius_min: Optional[float] = None
+        if optimized_trajectory:
+            n_points = len(optimized_trajectory.get("s", []))
+            expr = objective_dict.get("turn_radius")
+            if expr is not None:
+                try:
+                    values = np.asarray(solution.value(expr), dtype=float).ravel()
+                    optimized_trajectory["turn_radius"] = (
+                        values[:n_points] if n_points else values
+                    )
+                except Exception:
+                    pass
+            try:
+                turn_radius_min = float(
+                    solution.value(objective_dict["turn_radius_min"])
+                )
+            except Exception:
+                turn_radius_min = None
         if optimized_trajectory:
             # Seed the next staged solve from this optimum (see
-            # initialize_phase): exact warm start, and no force-law
-            # re-simulation failure between passes in free_speed winch mode.
+            # initialize_phase): exact warm start, no warm-start forward
+            # march, and no force-law re-simulation failure between passes in
+            # free_speed winch mode.
             self._warm_start_trajectory = optimized_trajectory
+            self._warm_start_source = "optimum"
 
         return SimulationResult(
             solution=solution,
@@ -487,6 +557,7 @@ class Phase:
             optimized_trajectory=optimized_trajectory,
             energy_objective=objective_dict.get("energy", 0.0),
             total_time=objective_dict.get("total_time", 0.0),
+            turn_radius_min=turn_radius_min,
         )
 
     def _param_reference(self, name: str) -> Any:
@@ -590,7 +661,13 @@ class Phase:
                 lb, ub = spec["lb"] * scale, spec["ub"] * scale
                 vmin = float(values.min()) * scale
                 vmax = float(values.max()) * scale
-                tol = 1e-2 * (ub - lb)
+                # One-sided rows (e.g. turn_radius >= R_min, ub = inf): size the
+                # binding tolerance on the finite bound instead of the width.
+                tol = (
+                    1e-2 * (ub - lb)
+                    if np.isfinite(ub - lb)
+                    else 1e-2 * max(abs(lb) if np.isfinite(lb) else abs(ub), 1.0)
+                )
                 binding = [
                     tag
                     for tag, hit in (("lb", vmin <= lb + tol), ("ub", vmax >= ub - tol))
@@ -754,11 +831,24 @@ class Phase:
         elif warm_start_init_point is not None:
             ipopt_options["warm_start_init_point"] = warm_start_init_point
 
-        # SX expansion (expand=True) compiles the MX graph to scalar SX, a large
-        # per-evaluation speedup for the multi-variable ROM aero Jacobian (the
-        # bulk of the wall-time). It is unsupported when the NLP graph contains an
-        # interpolant/external (tabulated wind, custom_spline winch), so fall back
-        # to MX in that case. Toggle via sim_parameters["expand_nlp"].
+        # SX expansion (expand=True) compiles the WHOLE MX graph to scalar SX.
+        # The per-node Functions are SX-expanded once inside opti_phase
+        # (sim_parameters["expand_node_functions"], default on) and, when a
+        # periodic spline's coefficients are optimized, built per knot
+        # interval with LOCAL SUPPORT (each node couples to its 4+4 control
+        # points only). That is what keeps either mode cheap: before it, every
+        # node inlined the M+4-term spline, and the whole-graph expansion grew
+        # to ~24 MB/node (~9 GB and minutes of construction at ~400 nodes --
+        # paging on a 16 GB machine) with a Jacobian 6x DENSER than local
+        # support gives. Measured with local support, full cycle N=376, one
+        # stage pass: expand=True builds in ~15 s, 1.4 GB (~3.7 MB/node),
+        # 0.17 s/iteration; expand=False (MX outer graph calling the SX node
+        # functions) builds in ~20 s, 0.83 GB, 0.32 s/iteration. So True is
+        # the default (fastest per iteration); pick False when memory-bound
+        # (~40% less, flat in the per-node graph). Whole-graph expansion is
+        # unsupported when the graph contains an interpolant/external
+        # (tabulated wind, custom_spline winch): fall back to MX in that
+        # case. Toggle via sim_parameters["expand_nlp"].
         expand_nlp = bool(sim_parameters.get("expand_nlp", True))
 
         # Route simple variable box bounds (steering / depower / s_dot /
@@ -958,6 +1048,45 @@ class Phase:
         except Exception as plot_exc:
             print(f"(failed-iterate plot unavailable: {plot_exc})")
 
+    # Per-node histories a forward simulation must provide to seed the NLP
+    # without its own warm-start march (see PhaseParameterized.opti_phase);
+    # ``t`` feeds the free_speed v_r rate-limit clip, ``angle_course`` the
+    # printed course-angle check.
+    _WARM_START_SEED_KEYS = (
+        "s",
+        "s_dot",
+        "input_steering",
+        "speed_radial",
+        "distance_radial",
+        "tension_tether_ground",
+        "input_depower",
+        "t",
+        "angle_course",
+    )
+
+    def _trajectory_from_phase(self, phase_ts: Any) -> Dict[str, np.ndarray]:
+        """Per-node seed histories from a forward simulation, on the NLP grid.
+
+        Returns length-``n_points`` arrays (the march records the final grid
+        point too; it only feeds the unrecorded last step) or an empty dict
+        when the march was truncated (a failed node) -- a padded seed is
+        worse than letting the NLP re-march and pad itself.
+        """
+        try:
+            n_points = int(self.pattern_config["sim_parameters"]["n_points"])
+        except (KeyError, TypeError, ValueError):
+            return {}
+        trajectory: Dict[str, np.ndarray] = {}
+        for key in self._WARM_START_SEED_KEYS:
+            try:
+                values = np.asarray(phase_ts.return_variable(key), dtype=float).ravel()
+            except Exception:
+                continue
+            if values.size < n_points:
+                return {}
+            trajectory[key] = values[:n_points]
+        return trajectory
+
     def run_simulation(
         self,
         *,
@@ -966,6 +1095,7 @@ class Phase:
         phase_sim: bool = True,
         start_state: Optional[Dict[str, Any]] = None,
         return_start_state: bool = False,
+        seed_warm_start: bool = False,
     ) -> None:
         """Execute the reel-out simulation.
 
@@ -981,6 +1111,14 @@ class Phase:
                 simulation ended.
             return_final_state: When True, also return a compact final_state
                 dictionary suitable for warm-starting subsequent runs.
+            seed_warm_start: When True, keep this simulation's per-node
+                trajectory as the warm start of the next ``run_simulation_opti``
+                so the NLP does not re-run the identical forward march (the
+                baseline-then-optimize pattern). Opt-in: the seed is only valid
+                while the config / start state / wind stay as simulated, which
+                the caller knows and this method cannot. Replaces any stored
+                previous optimum. Ignored (with a note) when the march was
+                truncated at a failed node.
         """
 
         # self.system_model.input_depower = self.depower
@@ -992,6 +1130,16 @@ class Phase:
             phase_sym=phase_sim,
             start_state=start_state,
         )
+        if seed_warm_start:
+            trajectory = self._trajectory_from_phase(phase)
+            if trajectory:
+                self._warm_start_trajectory = trajectory
+                self._warm_start_source = "simulation"
+            else:
+                print(
+                    "seed_warm_start: forward simulation did not cover the full "
+                    "grid; the optimizer will run its own warm-start march."
+                )
 
         if run_plots:
             if axes is not None:

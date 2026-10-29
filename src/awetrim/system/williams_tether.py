@@ -265,6 +265,8 @@ class WilliamsTether(Tether):
 
         omega = ca.reshape(omega, 3, 1)
         rho = env.rho if env is not None else 1.225
+        # Height-dependent density, evaluated per node, when env has one.
+        rho_at_height = getattr(env, "air_density_at_height", None)
         g = env.g if env is not None else 9.81
         wind = env.wind if env is not None else None
 
@@ -348,8 +350,9 @@ class WilliamsTether(Tether):
             vwn = u_wind * ca.vertcat(1, 0, 0)
             van = vwn - v_n
 
+            rho_n = rho if rho_at_height is None else rho_at_height(positions[n, 2])
             drag_n, lift_n, theta = self._segment_aero_force(
-                van, ej, rho, l_unstrained
+                van, ej, rho_n, l_unstrained
             )
 
             velocities_apparent_wind[n, :] = ca.norm_2(van)

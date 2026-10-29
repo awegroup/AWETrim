@@ -143,6 +143,18 @@ def cubic_B3_np(t):
     return (tp(t + 2) - 4 * tp(t + 1) + 6 * tp(t) - 4 * tp(t - 1) + tp(t - 2)) / 6.0
 
 
+def cubic_B3_np_d1(t):
+    """First derivative of :func:`cubic_B3_np` (truncated-power form)."""
+    tp = lambda x: np.maximum(x, 0.0) ** 2
+    return (tp(t + 2) - 4 * tp(t + 1) + 6 * tp(t) - 4 * tp(t - 1) + tp(t - 2)) / 2.0
+
+
+def cubic_B3_np_d2(t):
+    """Second derivative of :func:`cubic_B3_np` (truncated-power form)."""
+    tp = lambda x: np.maximum(x, 0.0)
+    return tp(t + 2) - 4 * tp(t + 1) + 6 * tp(t) - 4 * tp(t - 1) + tp(t - 2)
+
+
 def open_uniform_knots(M, p=3):
     """Open-uniform (clamped) knot vector on [0,1] for M control points, degree p."""
     if M < p + 1:
@@ -270,7 +282,61 @@ def periodic_bspline_basis_matrix(u_grid, M):
     return B
 
 
-def build_periodic_cubic_bspline_function(M, dim=1, name="per_bspline"):
+def periodic_bspline_basis_matrices(u_grid, M):
+    """Value, first- and second-derivative basis matrices ``(B0, B1, B2)``.
+
+    Same assembly as :func:`periodic_bspline_basis_matrix` with the analytic
+    kernel derivatives; derivatives are with respect to ``u`` (chain factor
+    ``M`` per order, since the kernel argument is ``u * M - i``). So
+    ``B1 @ C`` and ``B2 @ C`` are exact ``d/du`` and ``d^2/du^2`` of the
+    spline -- no finite differences.
+    """
+    u_grid = np.asarray(u_grid).ravel()
+    u_grid = u_grid - np.floor(u_grid)
+    x = u_grid * M
+
+    mats = [np.zeros((u_grid.size, M)) for _ in range(3)]
+    kernels = (cubic_B3_np, cubic_B3_np_d1, cubic_B3_np_d2)
+    for i in range(-2, M + 2):
+        idx = i % M
+        t = x - i
+        for order, (mat, kernel) in enumerate(zip(mats, kernels)):
+            mat[:, idx] += float(M) ** order * kernel(t)
+
+    return tuple(mats)
+
+
+def symmetrize_periodic_coefficients(C_phi, C_beta):
+    """Project periodic-spline coefficients onto the symmetric figure-eight.
+
+    A figure-eight is mirror-symmetric about ``azimuth = 0`` when half a
+    period later the kite is at the mirrored point:
+    ``az(u + 1/2) = -az(u)`` and ``el(u + 1/2) = el(u)``. On a uniform
+    periodic spline with an EVEN number ``M`` of coefficients, a shift of
+    ``u`` by 1/2 is a shift of the coefficient index by ``M/2``, so the
+    symmetry is exactly ``C_phi[k + M/2] = -C_phi[k]`` and
+    ``C_beta[k + M/2] = C_beta[k]``. This returns the nearest (least-squares)
+    coefficients that satisfy it, as numpy arrays of the input size; it is the
+    warm start ``PhaseParameterized.opti_phase`` uses under
+    ``sim_parameters["symmetric_pattern"]``. Raises ``ValueError`` for odd M.
+    """
+    C_phi = np.asarray(C_phi, dtype=float).ravel()
+    C_beta = np.asarray(C_beta, dtype=float).ravel()
+    M = C_phi.size
+    if M % 2 != 0 or C_beta.size != M:
+        raise ValueError(
+            f"a symmetric pattern needs an even number of spline coefficients, "
+            f"got M = {M} (C_beta: {C_beta.size})"
+        )
+    h = M // 2
+    phi_half = 0.5 * (C_phi[:h] - C_phi[h:])
+    beta_half = 0.5 * (C_beta[:h] + C_beta[h:])
+    return np.concatenate([phi_half, -phi_half]), np.concatenate([beta_half, beta_half])
+
+
+def build_periodic_cubic_bspline_function(
+    M, dim=1, name="per_bspline", support_interval=None
+):
     """
     Build a CasADi function S = spline(C, u) for a uniform periodic cubic B-spline.
 
@@ -278,6 +344,16 @@ def build_periodic_cubic_bspline_function(M, dim=1, name="per_bspline"):
     - dim: output dimension (1 for scalar, 2 for [phi,beta] etc.)
     - C: (M, dim)
     - u: scalar in [0,1] (you map s -> u outside)
+    - support_interval: None for the full periodic sum (valid for any u); an
+      integer k in [0, M) to keep ONLY the four basis terms that can be
+      non-zero on knot interval ``u*M in [k, k+1]`` (coefficients
+      ``C[(k-1..k+2) mod M]``). The truncated function is exact on that
+      closed interval (the dropped terms are identically zero there, with
+      zero derivatives) and WRONG elsewhere -- its point is structural
+      sparsity: a symbolic-``u`` graph then depends on 4 coefficients
+      instead of all M, so per-node NLP functions built from it keep the
+      sparse Jacobian that whole-graph SX expansion gets from constant
+      folding (see ``PhaseParameterized.opti_phase``).
 
     Returns:
       spline_fun(C, u) -> S (1, dim)
@@ -289,8 +365,17 @@ def build_periodic_cubic_bspline_function(M, dim=1, name="per_bspline"):
 
     S = ca.MX.zeros(1, dim)
 
-    # Sum from i=-2..M+1; wrap coefficient index with python int modulo
-    for i in range(-2, M + 2):
+    if support_interval is None:
+        # Sum from i=-2..M+1; wrap coefficient index with python int modulo
+        terms = range(-2, M + 2)
+    else:
+        k = int(support_interval)
+        if not 0 <= k < M:
+            raise ValueError(f"support_interval must be in [0, {M}), got {k}")
+        # B3(x - i) != 0 only for |x - i| < 2: on x in [k, k+1] that is
+        # i in {k-1, k, k+1, k+2}.
+        terms = range(k - 1, k + 3)
+    for i in terms:
         idx = i % M  # integer, safe for MX indexing
         t = x - i
         w = cubic_cardinal_B3(t)  # scalar
@@ -301,7 +386,17 @@ def build_periodic_cubic_bspline_function(M, dim=1, name="per_bspline"):
 
 class PeriodicBSpline(ParametrizedPatterns):
 
-    def __init__(self, M, C_phi, C_beta, s_init, s_final, r0=None, downloops=True):
+    def __init__(
+        self,
+        M,
+        C_phi,
+        C_beta,
+        s_init,
+        s_final,
+        r0=None,
+        downloops=True,
+        support_interval=None,
+    ):
         super().__init__(
             M=M, C_phi=C_phi, C_beta=C_beta, s_init=s_init, s_final=s_final, r0=r0
         )
@@ -309,13 +404,60 @@ class PeriodicBSpline(ParametrizedPatterns):
         self.s_init = float(s_init)
         self.s_final = float(s_final)
         self.omega = 1.0 if downloops else -1.0
+        # None: full periodic spline. int k: truncated to the four basis terms
+        # of knot interval k -- exact only for s inside that interval, see
+        # ``build_periodic_cubic_bspline_function`` / ``local_support``.
+        self.support_interval = (
+            None if support_interval is None else int(support_interval)
+        )
 
         self.spline = build_periodic_cubic_bspline_function(
-            self.M, dim=1, name=f"periodic_bspline_{self.M}"
+            self.M,
+            dim=1,
+            name=(
+                f"periodic_bspline_{self.M}"
+                if self.support_interval is None
+                else f"periodic_bspline_{self.M}_k{self.support_interval}"
+            ),
+            support_interval=self.support_interval,
         )
 
         self.C_phi = C_phi
         self.C_beta = C_beta
+
+    def local_support(self, k):
+        """Copy of this spline restricted (structurally) to knot interval ``k``.
+
+        Same coefficients and parametrisation; only the four basis terms that
+        are non-zero on ``u*M in [k, k+1]`` are kept, so a symbolic-``s``
+        expression built from it depends on 4 control points per coordinate
+        instead of M. Exact on that interval only -- evaluate it at ``s``
+        with ``knot_interval(s) == k``.
+        """
+        return PeriodicBSpline(
+            M=self.M,
+            C_phi=self.C_phi,
+            C_beta=self.C_beta,
+            s_init=self.s_init,
+            s_final=self.s_final,
+            r0=getattr(self, "r0", None),
+            downloops=self.omega > 0,
+            support_interval=k,
+        )
+
+    def knot_interval(self, s):
+        """Knot interval index k in [0, M) of numeric ``s`` (scalar or array).
+
+        Uses the same ``s -> u`` mapping (direction + wrap into [0, 1)) as
+        the evaluation, so the truncated spline ``local_support(k)`` is exact
+        at ``s`` (including ``s`` exactly on a knot, where both neighbouring
+        truncations agree).
+        """
+        s_arr = np.asarray(s, dtype=float)
+        u = self.omega * (s_arr - self.s_init) / (self.s_final - self.s_init)
+        u = u - np.floor(u)
+        k = np.clip(np.floor(u * self.M).astype(int), 0, self.M - 1)
+        return int(k) if np.ndim(s_arr) == 0 else k
 
     def _u(self, s):
         u = self.omega * (s - self.s_init) / (self.s_final - self.s_init)
@@ -482,6 +624,449 @@ def fit_bspline_pattern_to_trajectory(
     return pattern, C_phi, C_beta
 
 
+def _spherical_path_cross_speed(phi, beta, dphi, dbeta, ddphi, ddbeta, xp):
+    """``(|q' x q''|^2, |q'|^2, |q''|^2)`` of the unit-sphere path.
+
+    ``q = [cos(phi) cos(beta), sin(phi) cos(beta), sin(beta)]`` with all
+    derivatives taken in the path parameter (chain rule through the given
+    angle derivatives). Unit-sphere curvature is
+    ``sqrt(cross2) / speed2**1.5``; divide by the radius for 1/m; ``accel2``
+    is the smoothing/bending energy density used by the reel-in design. Pure
+    elementwise math over the ``xp`` namespace (numpy for sampling, casadi
+    inside the fairing/design NLPs) so the formula exists exactly once.
+    """
+    sphi, cphi = xp.sin(phi), xp.cos(phi)
+    sbeta, cbeta = xp.sin(beta), xp.cos(beta)
+    qux = -sphi * cbeta * dphi - cphi * sbeta * dbeta
+    quy = cphi * cbeta * dphi - sphi * sbeta * dbeta
+    quz = cbeta * dbeta
+    quux = (
+        -sphi * cbeta * ddphi
+        - cphi * sbeta * ddbeta
+        - cphi * cbeta * dphi**2
+        + 2.0 * sphi * sbeta * dphi * dbeta
+        - cphi * cbeta * dbeta**2
+    )
+    quuy = (
+        cphi * cbeta * ddphi
+        - sphi * sbeta * ddbeta
+        - sphi * cbeta * dphi**2
+        - 2.0 * cphi * sbeta * dphi * dbeta
+        - sphi * cbeta * dbeta**2
+    )
+    quuz = cbeta * ddbeta - sbeta * dbeta**2
+    cx = quy * quuz - quz * quuy
+    cy = quz * quux - qux * quuz
+    cz = qux * quuy - quy * quux
+    cross2 = cx**2 + cy**2 + cz**2
+    speed2 = qux**2 + quy**2 + quz**2
+    accel2 = quux**2 + quuy**2 + quuz**2
+    return cross2, speed2, accel2
+
+
+def fair_periodic_spline_to_curvature_limit(
+    path_parameters,
+    curvature_limit,
+    n_samples=1000,
+    margin=0.97,
+    support_pad=1,
+    max_rounds=5,
+    max_move=0.2,
+    precision=6,
+):
+    """Locally move periodic-spline control points until the curvature fits.
+
+    The parametric description that generated the spline is NOT touched:
+    wherever the sampled physical curvature exceeds ``curvature_limit``
+    (1/m), the control points whose basis support covers the violation (plus
+    ``support_pad`` neighbours per side) are freed and moved by the SMALLEST
+    amount (min sum of squared moves, IPOPT) that brings the analytic
+    curvature under ``margin * curvature_limit`` at every sample the freed
+    points influence. All other control points -- and therefore the path
+    everywhere else -- are bit-identical. If a round cannot reach the limit
+    the freed neighbourhood is widened and it retries (``max_rounds``).
+
+    Two guards keep the solver honest:
+
+    * ``max_move`` (rad) is a TRUST REGION: every freed control point stays
+      within this box around its ORIGINAL value (cumulative across rounds).
+      Without it, a badly violating seed (e.g. a reel-in peak whose top
+      U-turn is 10x over the limit) lets IPOPT wander from the infeasible
+      start into a curvature-feasible but wildly deformed basin -- giant
+      sweeping loops that pass the limit while destroying the path. The box
+      makes that basin infeasible, forcing the small local rounding; it also
+      bounds the path deviation (basis partition of unity: the path moves
+      less than ``max_move`` anywhere). If no fix exists within the box the
+      fairing reports ``converged=False`` instead of inventing a new path.
+    * a parametrization-speed floor at every constrained sample (a quarter
+      of its pre-round minimum): without it the solver can satisfy the
+      curvature bound by stalling the parametrization between samples (a
+      forming cusp -- pointwise curvature looks fine, the flown path is
+      not). For the floor to bite, everything (detection, constraints and
+      the verdict) is sampled at ``4 * n_samples`` -- dense relative to the
+      knot spacing (tens of samples per knot interval), so ``|q'|`` cannot
+      dip to zero between two constrained samples: its between-sample
+      change is bounded by ``|q''| * du``, far below the floor at that
+      density.
+
+    Returns ``(new_path_parameters, report)``; the input dict is not
+    modified. ``report`` keys: ``max_before`` / ``max_after`` (1/m),
+    ``s_at_max_before``, ``max_path_move`` (rad, largest great-circle
+    displacement of any sample), ``touched`` (sorted control-point indices
+    moved; empty when the path already fits), ``changed``, ``converged``,
+    ``rounds``. Curvature is unsigned, so the traversal sense
+    (``downloops``) is irrelevant and samples are taken directly in the
+    periodic ``u in [0, 1)``.
+    """
+    pp = dict(path_parameters)
+    M = int(pp["M"])
+    r0 = float(pp["r0"])
+    limit = float(curvature_limit)
+    C_phi = np.asarray(pp["C_phi"], dtype=float).ravel().copy()
+    C_beta = np.asarray(pp["C_beta"], dtype=float).ravel().copy()
+    if C_phi.size != M or C_beta.size != M:
+        raise ValueError("C_phi/C_beta must have M entries each")
+
+    # ONE grid for detection, constraints and the verdict, dense relative to
+    # the knot spacing (~4 * n_samples / M samples per interval): between two
+    # adjacent samples ``|q'|`` can change by at most ~``|q''| * du``, far
+    # below the speed floor at this density, so no cusp fits in between.
+    u = np.linspace(0.0, 1.0, 4 * int(n_samples), endpoint=False)
+    B0, B1, B2 = periodic_bspline_basis_matrices(u, M)
+    # kappa_unit bound: physical 1/m limit times the radius.
+    k_lim_unit = limit * r0
+    k_target_unit = float(margin) * k_lim_unit
+
+    def cross_speed(cp, cb):
+        return _spherical_path_cross_speed(
+            B0 @ cp, B0 @ cb, B1 @ cp, B1 @ cb, B2 @ cp, B2 @ cb, np
+        )
+
+    def kappa_unit(cp, cb):
+        cross2, speed2, _ = cross_speed(cp, cb)
+        return np.sqrt(cross2) / np.maximum(speed2, 1e-30) ** 1.5
+
+    kap0 = kappa_unit(C_phi, C_beta)
+    i0 = int(np.argmax(kap0))
+    report = {
+        "max_before": float(kap0[i0] / r0),
+        "s_at_max_before": float(u[i0]),
+        "max_after": float(kap0[i0] / r0),
+        "touched": [],
+        "changed": False,
+        "converged": bool(kap0[i0] <= k_lim_unit),
+        "rounds": 0,
+    }
+    report["max_path_move"] = 0.0
+    if not limit or report["converged"]:
+        return pp, report
+
+    C_phi_orig = C_phi.copy()
+    C_beta_orig = C_beta.copy()
+    touched = set()
+    for round_ in range(1, int(max_rounds) + 1):
+        kap = kappa_unit(C_phi, C_beta)
+        if kap.max() <= k_lim_unit:
+            break
+        # Control points supporting any violating sample, padded (the pad
+        # grows with the round so an infeasible neighbourhood widens).
+        pad = int(support_pad) + (round_ - 1)
+        sel = set()
+        for k in np.flatnonzero(kap > k_target_unit):
+            base = int(np.floor(u[k] * M))
+            sel.update(
+                (base + j) % M for j in range(-1 - pad, 3 + pad)
+            )
+        sel = sorted(sel)
+        # Constrain every sample the freed points influence (elsewhere the
+        # curve, and thus its curvature, cannot change).
+        rows = np.flatnonzero(np.abs(B0[:, sel]).sum(axis=1) > 1e-12)
+        # Anti-cusp floor: the NLP must not stall the parametrization to
+        # satisfy the curvature bound between samples.
+        _, speed2_now, _ = cross_speed(C_phi, C_beta)
+        smin2 = 0.25 * float(speed2_now[rows].min())
+
+        d_phi = ca.MX.sym("d_phi", len(sel))
+        d_beta = ca.MX.sym("d_beta", len(sel))
+        # Spline values at the constrained samples split into the constant
+        # part (numpy, all M coefficients) plus the delta of the freed ones
+        # -- the NLP graph only carries (n_rows x n_sel) matrices, not
+        # (n_rows x M), which is what keeps this solve fast.
+        angle_terms = []
+        for mat in (B0, B1, B2):
+            sub = ca.DM(mat[np.ix_(rows, sel)])
+            angle_terms.append(ca.DM(mat[rows] @ C_phi) + sub @ d_phi)
+            angle_terms.append(ca.DM(mat[rows] @ C_beta) + sub @ d_beta)
+        cross2, speed2, _ = _spherical_path_cross_speed(
+            angle_terms[0], angle_terms[1], angle_terms[2],
+            angle_terms[3], angle_terms[4], angle_terms[5], ca,
+        )
+        # kappa <= target, squared to stay smooth, and NORMALIZED to O(1)
+        # per row: the raw form ``cross2 - k^2 speed2^3`` spans many orders
+        # of magnitude across samples (speed2 varies ~100x), which wrecks
+        # IPOPT's scaling and costs hundreds of iterations. Division is safe:
+        # the floor constraint keeps speed2 away from zero.
+        g = ca.vertcat(
+            cross2 / (speed2**3 * k_target_unit**2) - 1.0,
+            1.0 - speed2 / smin2,
+        )
+        x = ca.vertcat(d_phi, d_beta)
+        solver = ca.nlpsol(
+            "fair",
+            "ipopt",
+            {"x": x, "f": ca.dot(x, x), "g": g},
+            {
+                "ipopt.print_level": 0,
+                "print_time": 0,
+                "ipopt.sb": "yes",
+                "ipopt.max_iter": 300,
+                "ipopt.tol": 1e-6,
+                "ipopt.acceptable_tol": 1e-4,
+            },
+        )
+        # Trust region: the CUMULATIVE move of every freed point stays
+        # within max_move of its original value.
+        lbx = np.concatenate(
+            [
+                (C_phi_orig[sel] - float(max_move)) - C_phi[sel],
+                (C_beta_orig[sel] - float(max_move)) - C_beta[sel],
+            ]
+        )
+        ubx = np.concatenate(
+            [
+                (C_phi_orig[sel] + float(max_move)) - C_phi[sel],
+                (C_beta_orig[sel] + float(max_move)) - C_beta[sel],
+            ]
+        )
+        sol = solver(
+            x0=np.zeros(2 * len(sel)),
+            lbx=lbx,
+            ubx=ubx,
+            ubg=np.zeros(2 * rows.size),
+        )
+        moves = np.asarray(sol["x"]).ravel()
+        new_phi, new_beta = C_phi.copy(), C_beta.copy()
+        new_phi[sel] += moves[: len(sel)]
+        new_beta[sel] += moves[len(sel):]
+        report["rounds"] = round_
+        # Accept only an actual improvement (a failed solve returns its last
+        # iterate); otherwise retry with a wider freed neighbourhood.
+        if kappa_unit(new_phi, new_beta).max() < kap.max():
+            C_phi, C_beta = new_phi, new_beta
+            touched.update(sel)
+
+    C_phi = np.round(C_phi, int(precision))
+    C_beta = np.round(C_beta, int(precision))
+    kap = kappa_unit(C_phi, C_beta)
+    report["max_after"] = float(kap.max() / r0)
+    report["touched"] = sorted(touched)
+    report["changed"] = bool(touched)
+    report["converged"] = bool(kap.max() <= k_lim_unit)
+
+    def unit_q(cp, cb):
+        phi, beta = B0 @ cp, B0 @ cb
+        return np.column_stack(
+            (np.cos(phi) * np.cos(beta), np.sin(phi) * np.cos(beta),
+             np.sin(beta))
+        )
+
+    dots = np.sum(unit_q(C_phi, C_beta) * unit_q(C_phi_orig, C_beta_orig), axis=1)
+    report["max_path_move"] = float(np.arccos(np.clip(dots, -1.0, 1.0)).max())
+    pp["C_phi"] = C_phi.tolist()
+    pp["C_beta"] = C_beta.tolist()
+    return pp, report
+
+
+def design_reelin_spline(
+    path_parameters,
+    curvature_limit,
+    reelin_center,
+    reelout_fraction,
+    peak_elevation=None,
+    n_samples=1000,
+    margin=0.97,
+    max_move=0.5,
+    w_peak=100.0,
+    w_track=0.1,
+    w_tension=1.0,
+    precision=6,
+):
+    """DESIGN the reel-in of a periodic full-cycle spline under a curvature cap.
+
+    The parametric reel-in description is treated as a SKETCH only: when the
+    fitted spline violates ``curvature_limit`` (1/m), every control point
+    whose basis support lies inside the reel-in window becomes a design
+    variable of one IPOPT problem that CREATES the reel-in between the two
+    handover states --
+
+    * the exit and entry states (position AND heading where the figures
+      stop/resume) are exactly preserved: the window-edge control points
+      stay frozen, and C2 continuity is automatic because it is the same
+      periodic basis;
+    * curvature <= ``margin * curvature_limit`` is a HARD constraint at
+      every influenced sample (dense grid, ``4 * n_samples``), together
+      with the anti-cusp parametrization-speed floor of
+      :func:`fair_periodic_spline_to_curvature_limit`;
+    * the objective is a spline-in-tension energy: bending ``sum |q''|^2``
+      plus ``w_tension`` times the Dirichlet term ``sum |q'|^2`` (both
+      normalized by the sketch's values -- the tension keeps the curve taut,
+      without it the minimum-bending way around a too-sharp corner is an
+      outward teardrop loop), plus a pull of the elevation at the sketch's
+      apex sample toward ``peak_elevation`` (the knob is a TARGET to hit,
+      never overridden), plus a weak tracking of the sketch that anchors the
+      topology (which side, crossing vs tangential) without fighting the
+      curvature bound.
+
+    A spline already within the limit is returned unchanged (the sketch is
+    the design). Returns ``(new_path_parameters, report)`` with keys
+    ``engaged``, ``max_before`` / ``max_after`` (1/m), ``peak_target`` /
+    ``peak_achieved`` (rad, NaN when no target), ``freed`` (control-point
+    indices), ``changed``, ``converged``, ``max_path_move`` (rad). When the
+    single solve cannot reach the limit the best improvement is kept and
+    ``converged`` is False -- run the fairing (or reconsider the geometry)
+    afterwards.
+    """
+    pp = dict(path_parameters)
+    M = int(pp["M"])
+    r0 = float(pp["r0"])
+    limit = float(curvature_limit)
+    C_phi = np.asarray(pp["C_phi"], dtype=float).ravel().copy()
+    C_beta = np.asarray(pp["C_beta"], dtype=float).ravel().copy()
+
+    u = np.linspace(0.0, 1.0, 4 * int(n_samples), endpoint=False)
+    B0, B1, B2 = periodic_bspline_basis_matrices(u, M)
+    k_lim_unit = limit * r0
+    k_target_unit = float(margin) * k_lim_unit
+
+    def cross_speed(cp, cb):
+        return _spherical_path_cross_speed(
+            B0 @ cp, B0 @ cb, B1 @ cp, B1 @ cb, B2 @ cp, B2 @ cb, np
+        )
+
+    def kappa_unit(cp, cb):
+        cross2, speed2, _ = cross_speed(cp, cb)
+        return np.sqrt(cross2) / np.maximum(speed2, 1e-30) ** 1.5
+
+    kap0 = kappa_unit(C_phi, C_beta)
+    i0 = int(np.argmax(kap0))
+    report = {
+        "engaged": False,
+        "max_before": float(kap0[i0] / r0),
+        "max_after": float(kap0[i0] / r0),
+        "s_at_max_before": float(u[i0]),
+        "peak_target": float(peak_elevation) if peak_elevation else float("nan"),
+        "peak_achieved": float("nan"),
+        "freed": [],
+        "changed": False,
+        "converged": bool(kap0[i0] <= k_lim_unit),
+        "max_path_move": 0.0,
+        "solver_status": None,
+    }
+    if not limit or report["converged"]:
+        return pp, report
+
+    # Control points whose FULL support [(j-2)/M, (j+2)/M] sits inside the
+    # reel-in window: freeing only those leaves the window-edge (handover)
+    # states and everything outside bit-identical.
+    c = float(reelin_center) % 1.0
+    h = 0.5 * (1.0 - float(reelout_fraction))
+    sel = [
+        j
+        for j in range(M)
+        if abs((j / M - c + 0.5) % 1.0 - 0.5) <= h - 2.0 / M
+    ]
+    if not sel:
+        return pp, report
+    report["engaged"] = True
+    rows = np.flatnonzero(np.abs(B0[:, sel]).sum(axis=1) > 1e-12)
+
+    cross2_0, speed2_0, accel2_0 = cross_speed(C_phi, C_beta)
+    smin2 = 0.25 * float(speed2_0[rows].min())
+    e_bend0 = float(accel2_0[rows].sum())
+    # Anchor the peak at the sketch's apex sample (robust for both the
+    # tangential and the crossing topology).
+    i_peak = int(rows[np.argmax((B0 @ C_beta)[rows])])
+
+    d_phi = ca.MX.sym("d_phi", len(sel))
+    d_beta = ca.MX.sym("d_beta", len(sel))
+    terms = []
+    for mat in (B0, B1, B2):
+        sub = ca.DM(mat[np.ix_(rows, sel)])
+        terms.append(ca.DM(mat[rows] @ C_phi) + sub @ d_phi)
+        terms.append(ca.DM(mat[rows] @ C_beta) + sub @ d_beta)
+    cross2, speed2, accel2 = _spherical_path_cross_speed(
+        terms[0], terms[1], terms[2], terms[3], terms[4], terms[5], ca
+    )
+
+    f = ca.sum1(accel2) / e_bend0 + float(w_tension) * ca.sum1(speed2) / float(
+        speed2_0[rows].sum()
+    )
+    if peak_elevation:
+        k_peak = int(np.searchsorted(rows, i_peak))
+        f = f + float(w_peak) * (terms[1][k_peak] - float(peak_elevation)) ** 2
+    f = f + float(w_track) * (
+        ca.sumsqr(terms[0] - ca.DM(B0[rows] @ C_phi))
+        + ca.sumsqr(terms[1] - ca.DM(B0[rows] @ C_beta))
+    ) / (len(rows) * 0.1**2)
+    g = ca.vertcat(
+        cross2 / (speed2**3 * k_target_unit**2) - 1.0,
+        1.0 - speed2 / smin2,
+    )
+    solver = ca.nlpsol(
+        "design_reelin",
+        "ipopt",
+        {"x": ca.vertcat(d_phi, d_beta), "f": f, "g": g},
+        {
+            "ipopt.print_level": 0,
+            "print_time": 0,
+            "ipopt.sb": "yes",
+            "ipopt.max_iter": 300,
+            "ipopt.tol": 1e-6,
+            "ipopt.acceptable_tol": 1e-4,
+        },
+    )
+    sol = solver(
+        x0=np.zeros(2 * len(sel)),
+        lbx=-float(max_move),
+        ubx=float(max_move),
+        ubg=np.zeros(2 * rows.size),
+    )
+    moves = np.asarray(sol["x"]).ravel()
+    new_phi, new_beta = C_phi.copy(), C_beta.copy()
+    new_phi[sel] += moves[: len(sel)]
+    new_beta[sel] += moves[len(sel):]
+    # Keep the design only if IPOPT converged AND it improved the worst
+    # curvature. A failed solve returns its last iterate, which can lower the
+    # curvature while tangling the reel-in (extra loops, the path moved by
+    # max_move); the sketch plus the caller's fairing is the safer fallback.
+    report["solver_status"] = solver.stats()["return_status"]
+    if solver.stats()["success"] and kappa_unit(new_phi, new_beta).max() < kap0.max():
+        C_phi_new = np.round(new_phi, int(precision))
+        C_beta_new = np.round(new_beta, int(precision))
+    else:
+        C_phi_new, C_beta_new = C_phi, C_beta
+
+    kap = kappa_unit(C_phi_new, C_beta_new)
+    report["max_after"] = float(kap.max() / r0)
+    report["changed"] = bool(np.any(C_phi_new != C_phi) or np.any(C_beta_new != C_beta))
+    report["converged"] = bool(kap.max() <= k_lim_unit)
+    report["freed"] = list(sel)
+    report["peak_achieved"] = float((B0 @ C_beta_new)[rows].max())
+
+    def unit_q(cp, cb):
+        phi, beta = B0 @ cp, B0 @ cb
+        return np.column_stack(
+            (np.cos(phi) * np.cos(beta), np.sin(phi) * np.cos(beta),
+             np.sin(beta))
+        )
+
+    dots = np.sum(unit_q(C_phi_new, C_beta_new) * unit_q(C_phi, C_beta), axis=1)
+    report["max_path_move"] = float(np.arccos(np.clip(dots, -1.0, 1.0)).max())
+    pp["C_phi"] = C_phi_new.tolist()
+    pp["C_beta"] = C_beta_new.tolist()
+    return pp, report
+
+
 def named_curve_angles(
     s,
     curve_type="lissajous",
@@ -630,21 +1215,352 @@ def _smoothstep(edge0, edge1, x):
     return t * t * (3.0 - 2.0 * t)
 
 
-def reelin_bump(s, reelout_fraction=0.7, ramp_fraction=0.25):
-    """Smooth 0->1->0 indicator for the reel-in window, centred at ``s = 0.5``.
+def reelin_bump(s, reelout_fraction=0.7, ramp_fraction=0.25, reelin_center=0.5):
+    """Smooth 0->1->0 indicator for the reel-in window, centred at ``reelin_center``.
 
-    Returns ~1 inside the reel-in band ``[0.5 - h, 0.5 + h]`` (``h = (1 - f)/2``)
-    and 0 in the reel-out, with smoothstep edges. Centring the reel-in at
-    mid-period keeps ``s = 0`` (and ``s = 1``) in steady, full-amplitude reel-out
-    so a forward trim started there is well posed. Shared by the path generator
-    and the synthetic depower profile so both switch at the same place.
+    Returns ~1 inside the reel-in band ``[c - h, c + h]`` (``c = reelin_center``,
+    ``h = (1 - f)/2``) and 0 in the reel-out, with smoothstep edges. The window
+    is evaluated on the circular offset from ``c``, so it wraps across the
+    periodic seam and ANY centre is valid (taken mod 1): the default
+    ``c = 0.5`` keeps ``s = 0`` (and ``s = 1``) in steady, full-amplitude
+    reel-out so a forward trim started there is well posed; ``c = h`` starts
+    the reel-in exactly at ``s = 0``, ``c = 1 - h`` ends it there, and
+    ``c = 0`` puts ``s = 0`` at the top (middle) of the reel-in. Shared by the
+    path generator and the synthetic depower profile so both switch at the
+    same place.
     """
     s = np.asarray(s, dtype=float).ravel()
     f = float(reelout_fraction)
+    c = float(reelin_center)
     h = 0.5 * (1.0 - f)
     r = max(ramp_fraction * (1.0 - f), 1e-6)
-    lo, hi = 0.5 - h, 0.5 + h
-    return _smoothstep(lo, lo + r, s) * (1.0 - _smoothstep(hi - r, hi, s))
+    # Circular offset from the window centre, in [-0.5, 0.5): the window wraps
+    # across the seam, and h < 0.5 guarantees the bump is 0 (with zero slope)
+    # at the antipode, keeping the curve exactly periodic and C1.
+    d = (s - c + 0.5) % 1.0 - 0.5
+    return _smoothstep(-h, -h + r, d) * (1.0 - _smoothstep(h - r, h, d))
+
+
+# ``bow_shape="lobe"`` handover: the figure still advances this much phase
+# (rad) while the window fades it out / back in -- the freeze happens over the
+# first ``2 * LOBE_HANDOVER_PHASE / (rate * ramp)`` of the ramp, so the
+# peel-off and landing always span the same small fraction of a figure (~1/12)
+# regardless of loop count or ramp width. Smaller = sharper handover bend.
+LOBE_HANDOVER_PHASE = 0.5
+# Fraction of each elevation ramp the "lobe" bow overlaps (1 - this is how far
+# up the climb it stays on the meridian): the bow runs from
+# ``ramp * (1 - overlap)`` to ``1 - ramp * (1 - overlap)`` in window units, so
+# it carries path speed across the flat plateau edges; 0.5 reproduces the
+# mid-ramp start of the "descent" bow, smaller concentrates the crossing (and
+# rounds the plateau corners: more azimuth speed where the elevation stalls).
+LOBE_BOW_OVERLAP = 0.3
+
+
+def _pinned_handover_edges(
+    psi_entry, psi_exit, bow_shape, lobe_handover_phase=LOBE_HANDOVER_PHASE
+):
+    """Reel-in window EDGE phases and their fractional figure ``gap``.
+
+    For ``bow_shape="lobe"`` the knobs are the FROZEN phases and the window
+    edges sit ``lobe_handover_phase`` outside them (the figure keeps advancing
+    that much while it fades out / back in); the other shapes pin the edges
+    directly. ``gap`` is the (entry - exit) phase difference as a fraction of
+    a figure -- the fractional part every achievable reel-out figure count
+    carries.
+    """
+    if bow_shape == "lobe":
+        psi_in_edge = float(psi_entry) - float(lobe_handover_phase)
+        psi_out_edge = float(psi_exit) + float(lobe_handover_phase)
+    else:
+        psi_in_edge, psi_out_edge = float(psi_entry), float(psi_exit)
+    gap = ((psi_in_edge - psi_out_edge) / (2.0 * np.pi)) % 1.0
+    return psi_in_edge, psi_out_edge, gap
+
+
+# ``bow_shape="dubins"`` reel-in: default turn radius (m) of the arcs.
+DUBINS_TURN_RADIUS_M = 60.0
+# Largest fraction of the reel-in window at each end over which the path
+# speed eases from the figure speed to the window's constant middle speed
+# (shortened automatically when the reel-in is short, so it never stalls).
+DUBINS_SPEED_BLEND = 0.15
+# Reel-in geometry by its inputs: the radius/apex scan costs ~1 min and the
+# seed generator rebuilds the same shape while it fits the depower depth.
+_DUBINS_REELIN_CACHE = {}
+
+
+def _sphere_frame(azimuth, elevation, tangent):
+    """Orthonormal frame [q, t, q x t] (columns) at a point of the unit sphere.
+
+    ``q`` is the radial unit vector in the same convention as the path
+    curvature checks (x downwind, z up); ``tangent`` is any vector along the
+    heading and is projected onto the tangent plane.
+    """
+    q = np.array(
+        [
+            np.cos(azimuth) * np.cos(elevation),
+            np.sin(azimuth) * np.cos(elevation),
+            np.sin(elevation),
+        ]
+    )
+    t = np.asarray(tangent, dtype=float)
+    t = t - q * float(q @ t)
+    t = t / np.linalg.norm(t)
+    return np.column_stack((q, t, np.cross(q, t)))
+
+
+def _geodesic_step(k, sigma):
+    """Body-frame rotation after arc length ``sigma`` at geodesic curvature ``k``.
+
+    On the unit sphere the frame F = [q, t, b] obeys dq = t, dt = -q + k b,
+    db = -k t per unit arc length, i.e. F(sigma) = F0 expm(sigma A) with A the
+    skew generator of the axis (k, 0, 1) -- a rotation, evaluated in closed
+    form (Rodrigues). k > 0 turns toward b = q x t (left, seen from outside
+    the sphere).
+    """
+    rate = np.hypot(k, 1.0)
+    a = np.array([k, 0.0, 1.0]) / rate
+    K = np.array([[0.0, -a[2], a[1]], [a[2], 0.0, -a[0]], [-a[1], a[0], 0.0]])
+    th = sigma * rate
+    return np.eye(3) + np.sin(th) * K + (1.0 - np.cos(th)) * (K @ K)
+
+
+def _dubins_sphere_leg(F0, F1, k):
+    """Shortest arc-straight-arc (CSC) path between two sphere frames.
+
+    Each arc turns at unit-sphere geodesic curvature ``k`` (left or right),
+    the middle piece is a great circle. The three lengths are found by a
+    multi-start least-squares shooting on the exact motion. Returns every
+    converged type (LSL, RSR, LSR, RSL; the shortest solution of each) as
+    ``[(curvature, length), ...]`` piece lists, shortest first -- empty when
+    none joins the frames.
+    """
+    from scipy.optimize import least_squares
+
+    def residual(x, turns):
+        F = F0
+        for kk, ln in zip(turns, x):
+            F = F @ _geodesic_step(kk, ln)
+        return np.concatenate((F[:, 0] - F1[:, 0], F[:, 1] - F1[:, 1]))
+
+    chord = float(np.arccos(np.clip(F0[:, 0] @ F1[:, 0], -1.0, 1.0)))
+    full_turn = 2.0 * np.pi / k
+    found = []
+    for s1 in (1.0, -1.0):
+        for s2 in (1.0, -1.0):
+            turns = (s1 * k, 0.0, s2 * k)
+            best = None
+            for a in (0.02, 0.2, 0.5):
+                for c in (0.02, 0.2, 0.5):
+                    x0 = [a * full_turn, max(chord, 1e-3), c * full_turn]
+                    sol = least_squares(
+                        residual,
+                        x0,
+                        args=(turns,),
+                        bounds=([0.0, 0.0, 0.0], [full_turn, np.inf, full_turn]),
+                        xtol=1e-12,
+                        ftol=1e-12,
+                        gtol=1e-12,
+                    )
+                    if np.max(np.abs(sol.fun)) > 1e-7:
+                        continue
+                    total = float(np.sum(sol.x))
+                    if best is None or total < best[0]:
+                        best = (total, list(zip(turns, sol.x)))
+            if best is not None:
+                found.append(best)
+    return [pieces for _, pieces in sorted(found, key=lambda b: b[0])]
+
+
+def _sample_sphere_path(F0, pieces, sigma):
+    """Unit-sphere positions at arc lengths ``sigma`` along ``pieces``."""
+    sigma = np.asarray(sigma, dtype=float)
+    out = np.empty((sigma.size, 3))
+    F_start, s_start = F0, 0.0
+    ends = np.cumsum([ln for _, ln in pieces])
+    ends[-1] = np.inf  # round-off past the end stays on the last piece
+    for (k, ln), s_end in zip(pieces, ends):
+        for i in np.flatnonzero((sigma >= s_start) & (sigma <= s_end)):
+            out[i] = (F_start @ _geodesic_step(k, sigma[i] - s_start))[:, 0]
+        F_start = F_start @ _geodesic_step(k, ln)
+        s_start = s_start + ln
+    return out
+
+
+def dubins_full_cycle_angles(
+    s,
+    n_halves,
+    r0,
+    reelout_fraction=0.7,
+    beta0=0.35,
+    beta_amp0=0.12,
+    az_amp0=0.3,
+    beta_reelin_peak=1.1,
+    turn_radius=DUBINS_TURN_RADIUS_M,
+    min_turn_radius=None,
+    reelin_center=0.5,
+    downloops=True,
+):
+    """Synthetic full cycle whose reel-in is DESIGNED, not faded out.
+
+    The reel-out flies ``n_halves`` visible half figure-eights of the plain
+    figure ``az = A sin(w psi)``, ``beta = beta0 + B sin(2 psi)``: it starts
+    by landing on the left-lobe extreme heading down (``psi = 3 pi / 2``),
+    flies the lower half of that lobe, then ``n_halves`` lobes, and peels off
+    at the next centre crossing, which climbs (``psi = 2 pi + n_halves pi``)
+    -- unless that crossing heads toward the landing side (odd counts): then
+    it peels off the top of the last lobe, heading outward (the last lobe is
+    flown only up to its top).
+    The reel-in joins that peel-off state (position AND heading) to a level
+    apex at ``beta_reelin_peak`` heading toward the landing side, and on to
+    the landing state; each leg is the shortest arc-straight-arc path on the
+    sphere whose arcs turn at radius ``turn_radius`` (m, at ``r0``) -- a
+    Dubins path: bounded curvature by construction, no fade-out wiggle, no
+    hook. The apex azimuth is not a knob: it is scanned and the shortest
+    whole reel-in kept (a prescribed azimuth near the climb admits only
+    paths with a full extra loop, and at high elevation a sideways metre is
+    a lot of azimuth). Candidates that rise above the apex or wrap behind
+    the ground station are rejected. Radii from ``turn_radius`` down to
+    ``min_turn_radius`` (default half of it, steps x0.85) are tried and the
+    reel-in with the least total turning kept, the larger radius on a tie --
+    so a tighter radius is used only where it saves a detour loop.
+
+    Parametrization: ``u = (s - c - h) mod 1`` is 0 at the landing, the
+    reel-out spans ``u in [0, f]`` at a uniform figure phase rate, the
+    reel-in ``[f, 1]`` -- the same window as :func:`reelin_bump`, so the
+    synthetic depower switches in step. The reel-in path speed eases from
+    the figure speed at each end to a constant middle speed that covers the
+    path length, so the curve is C1 in ``s`` and fits the periodic spline
+    without ringing.
+    """
+    s = np.asarray(s, dtype=float).ravel()
+    omega = 1.0 if downloops else -1.0
+    f = float(reelout_fraction)
+    c = float(reelin_center)
+    h = 0.5 * (1.0 - f)
+    u = (s - c - h) % 1.0
+
+    def figure(psi):
+        az = az_amp0 * np.sin(omega * psi)
+        el = beta0 + beta_amp0 * np.sin(2.0 * psi)
+        d_az = omega * az_amp0 * np.cos(omega * psi)
+        d_el = 2.0 * beta_amp0 * np.cos(2.0 * psi)
+        return az, el, d_az, d_el
+
+    psi_land = 1.5 * np.pi
+    psi_peel = 2.0 * np.pi + int(n_halves) * np.pi
+    if np.sign(figure(psi_peel)[2]) == np.sign(figure(psi_land)[0]):
+        # This crossing heads toward the landing side: there is no room to
+        # climb, turn over the top and come back down on that same side
+        # (the shortest bounded-curvature way is a dive below the figures).
+        # Peel off the TOP of the last lobe instead, heading outward, AWAY
+        # from the landing side -- climb out, over the top, down the other
+        # side, like the even counts (and the flown cycle).
+        psi_peel -= 0.75 * np.pi
+    rate = (psi_peel - psi_land) / f
+
+    def frame_and_speed(psi):
+        az, el, d_az, d_el = figure(psi)
+        e_az = np.array([-np.sin(az), np.cos(az), 0.0])
+        e_el = np.array(
+            [-np.cos(az) * np.sin(el), -np.sin(az) * np.sin(el), np.cos(el)]
+        )
+        dq = d_az * np.cos(el) * e_az + d_el * e_el  # dq/dpsi
+        return _sphere_frame(az, el, dq), float(np.linalg.norm(dq)) * rate
+
+    F_peel, v_peel = frame_and_speed(psi_peel)
+    F_land, v_land = frame_and_speed(psi_land)
+    az_land = figure(psi_land)[0]
+    beta_apex = float(beta_reelin_peak)
+    toward = np.sign(az_land) or 1.0
+
+    def stays_below_apex(candidate):
+        # The apex must be the top and the reel-in must stay in front of the
+        # ground station: a path that is short only because it cuts over the
+        # zenith (azimuth wrapping) is not a reel-in.
+        total = sum(ln for _, ln in candidate)
+        q = _sample_sphere_path(F_peel, candidate, np.linspace(0.0, total, 200))
+        return (
+            np.arcsin(np.clip(q[:, 2], -1.0, 1.0)).max() <= beta_apex + 0.02
+            and q[:, 0].min() > 0.0
+        )
+
+    def shortest_reelin(radius):
+        k = float(r0) / float(radius)  # unit-sphere geodesic curvature
+        best = None
+        for az_apex in np.linspace(-1.2, 1.2, 25) * abs(az_land):
+            e_az = toward * np.array([-np.sin(az_apex), np.cos(az_apex), 0.0])
+            F_apex = _sphere_frame(az_apex, beta_apex, e_az)
+            ups = _dubins_sphere_leg(F_peel, F_apex, k)
+            downs = _dubins_sphere_leg(F_apex, F_land, k) if ups else []
+            for up in ups:
+                for down in downs:
+                    total = float(sum(ln for _, ln in up + down))
+                    if best is not None and total >= best[0]:
+                        continue
+                    if stays_below_apex(up + down):
+                        best = (total, up + down)
+        return None if best is None else best[1]
+
+    # Radii from ``turn_radius`` down to the floor; keep the reel-in with the
+    # least total turning (a detour loop -- flying round the outside of a
+    # lobe because a direct climb needs a tighter turn -- costs a full
+    # extra turn), the larger radius on a tie.
+    floor = float(min_turn_radius or 0.5 * turn_radius)
+    key = tuple(
+        round(float(v), 9)
+        for v in (psi_peel, r0, beta0, beta_amp0, az_amp0, beta_apex,
+                  turn_radius, floor, omega)
+    )
+    pieces = _DUBINS_REELIN_CACHE.get(key)
+    if pieces is None:
+        radii = [float(turn_radius)]
+        while radii[-1] > floor:
+            radii.append(max(0.85 * radii[-1], floor))
+        least_turning = np.inf
+        for radius in radii:
+            candidate = shortest_reelin(radius)
+            if candidate is None:
+                continue
+            turning = sum(abs(kk) * ln for kk, ln in candidate)
+            if turning < least_turning - 0.1:
+                pieces, least_turning = candidate, turning
+        if pieces is not None:
+            _DUBINS_REELIN_CACHE[key] = pieces
+    if pieces is None:
+        raise ValueError(
+            "no Dubins reel-in joins the peel-off, apex and landing states "
+            f"with a turn radius >= {floor:g} m; lower beta_reelin_peak or "
+            "widen the figures"
+        )
+    length = float(sum(ln for _, ln in pieces))
+
+    azimuth = np.empty_like(s)
+    elevation = np.empty_like(s)
+    out = u <= f
+    az, el, _, _ = figure(psi_land + rate * u[out])
+    azimuth[out], elevation[out] = az, el
+
+    # Path speed (unit sphere per unit u) across the window: the figure speed
+    # at each end, eased over ``blend`` of the window to a constant middle
+    # speed that makes the window cover exactly the path length.
+    w = 1.0 - f
+    blend = min(DUBINS_SPEED_BLEND, (length / w) / (v_peel + v_land))
+    v_mid = (length / w - 0.5 * blend * (v_peel + v_land)) / (1.0 - blend)
+    xi_fine = np.linspace(0.0, 1.0, 4001)
+    speed = (
+        v_mid
+        + (v_peel - v_mid) * (1.0 - _smoothstep(0.0, blend, xi_fine))
+        + (v_land - v_mid) * _smoothstep(1.0 - blend, 1.0, xi_fine)
+    )
+    sigma_fine = np.concatenate(
+        ([0.0], np.cumsum(0.5 * (speed[1:] + speed[:-1]) * np.diff(xi_fine)))
+    )
+    sigma_fine *= length / sigma_fine[-1]
+    xi = (u[~out] - f) / w
+    q = _sample_sphere_path(F_peel, pieces, np.interp(xi, xi_fine, sigma_fine))
+    azimuth[~out] = np.arctan2(q[:, 1], q[:, 0])
+    elevation[~out] = np.arcsin(np.clip(q[:, 2], -1.0, 1.0))
+    return azimuth, elevation
 
 
 def full_cycle_angles(
@@ -656,23 +1572,35 @@ def full_cycle_angles(
     az_amp0=0.3,
     beta_reelin_peak=1.1,
     az_reelin_amp=0.25,
+    az_reelin_through=0.0,
+    reelin_cross_pos=0.7,
     ramp_fraction=0.4,
+    reelin_center=0.5,
     psi0=0.0,
+    psi_entry=None,
+    psi_exit=None,
+    bow_shape="sym",
     downloops=True,
+    lobe_handover_phase=LOBE_HANDOVER_PHASE,
+    n_halves=None,
+    r0=None,
+    reelin_turn_radius=DUBINS_TURN_RADIUS_M,
+    reelin_min_turn_radius=None,
 ):
     """Azimuth/elevation samples for a *synthetic full pumping cycle*.
 
     One period ``s in [0, 1)`` is a whole cycle. The figure-eight phase advances
     *continuously* over the entire period (``psi = 2*pi*n_loops*s``) so the curve
     is exactly periodic and smooth (C1) at the ``s = 0`` boundary, with full path
-    speed there. The reel-in is a window centred at ``s = 0.5``: inside it the
+    speed there. The reel-in is a window centred at ``reelin_center`` (default
+    ``s = 0.5``): inside it the
     figure amplitude is faded to zero and the elevation is lifted along a smooth
     arc to ``beta_reelin_peak``. To avoid a cusp at the top of the climb (the kite
     going straight up and back down the same azimuth line), the reel-in also bows
     in azimuth -- to one side on the way up and the other on the way down
     (``az_reelin_amp * sin(2*pi*xi)``) -- tracing a smooth open loop instead of
     retracing. Outside the window the kite flies figure-eights at base elevation
-    ``beta0``. Centring the reel-in at mid-period leaves ``s = 0`` in steady
+    ``beta0``. The default mid-period centring leaves ``s = 0`` in steady
     reel-out, a far more trim-feasible start than a fit to noisy flight data.
 
     Unlike :func:`named_curve_angles` (reel-out-only figure-eights), this spans
@@ -682,9 +1610,14 @@ def full_cycle_angles(
     ----------
     s : array-like
         Path parameter samples in ``[0, 1)``.
-    n_loops : int
+    n_loops : float
         Figure-eights over the whole period (roughly ``reelout_fraction * n_loops``
-        are visible; the rest fall inside the suppressed reel-in window).
+        are visible; the rest fall inside the suppressed reel-in window). With
+        BOTH handover phases pinned this is only the snap target and may be
+        non-integer -- use :func:`full_cycle_n_loops_for_half_figures` to
+        derive it (and the parity-matching ``psi_entry``) from the number of
+        half-figures the reel-out should show. With a free phase it must be an
+        integer for exact periodicity.
     reelout_fraction : float
         Fraction of the period spent reeling out (the rest is reel-in).
     beta0, beta_amp0, az_amp0 : float
@@ -695,45 +1628,404 @@ def full_cycle_angles(
     az_reelin_amp : float
         Azimuth excursion (rad) of the reel-in bow that breaks the up/down
         retrace. 0 reproduces the straight-up (cusped) reel-in.
+    az_reelin_through : float
+        ``bow_shape="lobe"`` only (raises otherwise when nonzero): signed
+        azimuth (rad) the "cross" reel-in descends along. After the middle
+        climb the kite leans out to this side near the top, comes DOWN
+        parked on that azimuth, then crosses ``az = 0`` low (see
+        ``reelin_cross_pos``) to reach the ``az_reelin_amp`` side -- the way
+        to loop over the top on one side and still land tangentially on the
+        other. 0 (default) is the "smooth" shape: the top goes directly to
+        the ``az_reelin_amp`` side, nothing crosses. Sign = azimuth side
+        (with ``downloops``), magnitude ~ ``|az_reelin_amp|``.
+    reelin_cross_pos : float
+        "Cross" shape only (``az_reelin_through`` nonzero): where on the
+        descent the ``az = 0`` crossing is centred, as a fraction of the
+        exit ramp -- 0 = right after the top, 1 = down at figure height
+        (default 0.7). The crossing band is +-0.12 of the window around it,
+        capped so the tangential landing keeps its final stretch.
     ramp_fraction : float
         Smoothstep edge width of the reel-in window (fraction of its span).
         Larger -> gentler reel-in (a single smooth hump, no flat top); ``>= 0.5``
         removes the plateau entirely.
+    reelin_center : float
+        Centre of the reel-in window in ``s`` (any value, taken mod 1: the
+        window wraps across the periodic seam). The default 0.5 keeps
+        ``s = 0`` (the periodic seam and the natural forward-trim start) in
+        steady reel-out; with ``h = (1 - reelout_fraction)/2``, ``h`` starts
+        the reel-in exactly at ``s = 0``, ``1 - h`` ends it there (so
+        ``s = 0`` is the reel-out start), and 0 puts ``s = 0`` at the top
+        (middle) of the reel-in. Off-centre windows move the seam toward or
+        into the reel-in -- expect a harder trim start (see
+        :func:`reelin_bump`).
     psi0 : float
         Constant figure-phase offset (rad). Shifts where in a figure-eight the
         reel-in window fades the oscillation out: the phase at the window edges
         sets how sharp the reel-out/reel-in handover is (a fade near a lobe
         extremum can leave a near-cusp), so ``psi0`` is the lever that keeps
         the handover smooth for ANY ``n_loops``. A constant offset preserves
-        exact periodicity and C1 continuity at ``s = 0``.
+        exact periodicity and C1 continuity at ``s = 0``. Ignored when the
+        handover phases below are pinned.
+    psi_entry, psi_exit : float or None
+        Figure phase (rad) PINNED at the reel-in window edges: ``psi_entry``
+        is the phase where the fade begins (figures -> reel-in handover) and
+        ``psi_exit`` the phase where the figures resume. With ``downloops``
+        the centre crossings climb, so ``psi_entry = 0`` exits the figure at
+        azimuth 0 heading up (toward zenith) and ``psi_exit = pi`` re-enters
+        at azimuth 0 heading the other way -- the first lobe after reel-in is
+        on the OTHER side. Pinning one edge re-anchors the uniform phase
+        (``psi0`` is ignored); pinning both decouples the edges: the reel-out
+        gets the figure count nearest ``n_loops * reelout_fraction`` whose
+        fractional part matches the requested phase gap (opposite-side
+        re-entry <=> half-integer figures per reel-out), and the residual
+        phase correction is hidden inside the window plateau where the figure
+        amplitude is exactly zero -- which requires ``ramp_fraction < 0.5``
+        (raises ``ValueError`` otherwise). Default ``None`` keeps the legacy
+        ``psi0`` behaviour.
+    bow_shape : str
+        Reel-in azimuth-bow profile. ``"sym"`` (default) is the legacy
+        antisymmetric bow ``sin(2*pi*xi)`` (out one side climbing, out the
+        other descending, crossing zero at the top). ``"descent"`` is
+        one-sided: the climb starts on the zero-azimuth meridian, the bow
+        rises from mid-entry-ramp, the kite crosses the flat top moving
+        sideways (the elevation plateau carries no path speed, so the
+        azimuth must -- a bow that stays zero through the climb would stall
+        the parametrization into an unflyable cusp), peaks at mid-exit-ramp
+        and returns for the figure re-entry. ``"lobe"`` flies the reel-in
+        as ONE giant lobe of the figure, which is what the full-cycle
+        optimiser converges to: the figure PHASE FREEZES as the window
+        fades in (it advances only ``LOBE_HANDOVER_PHASE`` more rad, over
+        the start of the entry ramp, then holds through the window and
+        resumes over the end of the exit ramp), so the figure term dies as a
+        fading constant offset instead of wiggling on -- the climb peels off
+        the last centre crossing and runs STRAIGHT (in azimuth/elevation) to
+        the top of the zero meridian; a one-sided bow starting
+        ``LOBE_BOW_OVERLAP`` of a ramp before the plateau carries the kite
+        across the top; and the bow does NOT return -- the descent comes down
+        on the ``az_reelin_amp`` side, where the window fade hands it over
+        to the resuming figure term. For this shape ``psi_entry`` /
+        ``psi_exit`` are the FROZEN phases: ``psi_entry`` is the figure
+        point the climb peels off from (with ``downloops``, ``pi - 0.3`` =
+        the climbing crossing a bit before azimuth 0, heading up toward the
+        left lobe) and ``psi_exit`` the figure point the descent lands on
+        (``3*pi/2`` = the left-lobe extreme heading down -- the descent is
+        vertical there when ``|az_reelin_amp| == az_amp0`` -- then the kite
+        flies the lower half of that lobe into the next crossing). The
+        landing is ALWAYS on a side of the figure going down: choose
+        ``az_reelin_amp`` on the ``psi_exit`` side so the descent lands
+        tangentially on that lobe -- the reel-in replaces its top half, and
+        the phase gap ties the re-entry side to the visible half-lobe
+        PARITY: odd counts re-enter on the side OPPOSITE the peel-off lobe
+        (e.g. leave after a right-lobe pass, land on the left lobe), even
+        counts on the SAME side (see
+        :func:`full_cycle_visible_half_figures`). Per count the ONE free
+        geometric choice is ``az_reelin_through``: 0 = "smooth" (top loop
+        straight to the landing side, no crossing); nonzero = "cross" (lean
+        out to that side near the top, descend parked on it, cross
+        ``az = 0`` low at ``reelin_cross_pos`` to reach the landing
+        azimuth). The fade begins ``LOBE_HANDOVER_PHASE``
+        before ``psi_entry`` and the figure is fully back that much after
+        ``psi_exit``; the reel-out figure count is set as for the other
+        shapes, from those edge phases. Requires both phases pinned (raises
+        ``ValueError`` otherwise); the residual is hidden in the plateau. The
+        sign of ``az_reelin_amp`` picks the side in all three shapes.
     downloops : bool
         Traversal sense (flips the azimuth direction).
+    n_halves, r0, reelin_turn_radius, reelin_min_turn_radius
+        ``bow_shape="dubins"`` only: the reel-in is designed as Dubins paths
+        on the sphere instead of fading the figure out -- see
+        :func:`dubins_full_cycle_angles` (the phase/bow/ramp knobs above do
+        not apply to its path).
+    lobe_handover_phase : float
+        ``bow_shape="lobe"`` only: the phase budget (rad) the figure still
+        advances while the window fades it out / back in (default
+        ``LOBE_HANDOVER_PHASE``). The freeze spans ``2 * budget / rate`` of
+        the entry ramp, and the figure rate grows with the loop count -- so
+        at HIGH loop counts a fixed budget completes ever earlier in the
+        ramp, where the climb speed is still near zero, and the peel-off
+        bend sharpens (curvature ~ rate). Enlarging the budget stretches the
+        freeze back over the ramp and removes that spike. The visible lobe
+        count between peel-off and landing is budget-INDEPENDENT (the fade
+        flies the budget phase; the window edges sit that much outside the
+        frozen phases), provided the snapped reel-out figure integer is
+        unchanged -- vary the budget by less than pi/2 around the value used
+        to derive ``n_loops``.
     """
+    if bow_shape == "dubins":
+        if n_halves is None or r0 is None:
+            raise ValueError("bow_shape='dubins' needs n_halves and r0")
+        return dubins_full_cycle_angles(
+            s,
+            n_halves=n_halves,
+            r0=r0,
+            reelout_fraction=reelout_fraction,
+            beta0=beta0,
+            beta_amp0=beta_amp0,
+            az_amp0=az_amp0,
+            beta_reelin_peak=beta_reelin_peak,
+            turn_radius=reelin_turn_radius,
+            min_turn_radius=reelin_min_turn_radius,
+            reelin_center=reelin_center,
+            downloops=downloops,
+        )
     s = np.asarray(s, dtype=float).ravel()
     omega = 1.0 if downloops else -1.0
     f = float(reelout_fraction)
+    if bow_shape not in ("sym", "descent", "lobe"):
+        raise ValueError(
+            "bow_shape must be 'sym', 'descent', 'lobe' or 'dubins', "
+            f"got {bow_shape!r}"
+        )
+    if bow_shape == "lobe" and (psi_entry is None or psi_exit is None):
+        raise ValueError(
+            "bow_shape='lobe' freezes the figure phase through the reel-in and "
+            "needs BOTH handover phases pinned (psi_entry and psi_exit)"
+        )
+    if az_reelin_through and bow_shape != "lobe":
+        raise ValueError(
+            "az_reelin_through (the through-side bulge) only exists for "
+            f"bow_shape='lobe', got {bow_shape!r}"
+        )
 
-    ri = reelin_bump(s, reelout_fraction=f, ramp_fraction=ramp_fraction)
+    c = float(reelin_center)
+    ri = reelin_bump(
+        s, reelout_fraction=f, ramp_fraction=ramp_fraction, reelin_center=c
+    )
     window = 1.0 - ri  # figure amplitude: full in reel-out, 0 in reel-in
 
-    # Continuous over the period -> periodic & C1 (psi0 shifts the phase only).
-    psi = 2.0 * np.pi * n_loops * s + float(psi0)
-
-    # Position within the reel-in band [0.5 - h, 0.5 + h] (0 at entry, 1 at exit).
+    # Position within the reel-in band (0 at entry, 1 at exit), via the same
+    # circular offset as reelin_bump so the band wraps across the seam.
     h = 0.5 * (1.0 - f)
-    lo, hi = 0.5 - h, 0.5 + h
-    xi = np.clip((s - lo) / max(hi - lo, 1e-9), 0.0, 1.0)
-    # Bow to +az while climbing (xi < 0.5), to -az while descending (xi > 0.5);
-    # gated by ``ri`` so it is zero (with zero slope) outside the reel-in.
-    az_bow = ri * az_reelin_amp * np.sin(omega * 2.0 * np.pi * xi)
+    d = (s - c + 0.5) % 1.0 - 0.5
+    xi = np.clip((d + h) / max(2.0 * h, 1e-9), 0.0, 1.0)
 
-    azimuth = window * az_amp0 * np.sin(omega * psi) + az_bow
+    if psi_entry is None and psi_exit is None:
+        # Continuous over the period -> periodic & C1 (psi0 shifts phase only).
+        psi = 2.0 * np.pi * n_loops * s + float(psi0)
+    elif psi_entry is not None and psi_exit is not None:
+        # Both handover phases pinned. ``u`` is the circular path coordinate
+        # anchored at the window EXIT (u = 0 where the figures resume): the
+        # reel-out spans u in [0, f], the window u in [f, 1]. The reel-out
+        # phase advance must end at psi_entry, so its figure count n_ro is
+        # the value nearest the legacy visible count ``n_loops * f`` whose
+        # fractional part equals the requested (entry - exit) phase gap.
+        r_s = float(ramp_fraction) * (1.0 - f)
+        if 1.0 - r_s <= f + r_s:
+            raise ValueError(
+                "pinning psi_entry AND psi_exit needs a reel-in plateau to "
+                "absorb the phase correction: ramp_fraction must be < 0.5 "
+                f"(got {float(ramp_fraction):g})"
+            )
+        psi_in_edge, psi_out_edge, gap = _pinned_handover_edges(
+            psi_entry, psi_exit, bow_shape, lobe_handover_phase
+        )
+        n_ro = np.floor(n_loops * f - gap + 0.5) + gap
+        if n_ro <= 0.0:
+            n_ro = gap if gap > 0.0 else 1.0
+        rate = 2.0 * np.pi * n_ro / f
+        u = (d - h) % 1.0
+        if bow_shape == "lobe":
+            # Frozen phase: over the first ``rho`` of the entry ramp the
+            # figure rate fades ``rate -> 0`` with a smoothstep (advancing
+            # exactly LOBE_HANDOVER_PHASE, rho < 1), then psi HOLDS at
+            # psi_entry through the rest of the window and resumes over the
+            # last ``rho`` of the exit ramp -- the figure term
+            # ``(1 - ri) * F(psi)`` dies as a fading constant offset instead
+            # of wiggling on while the amplitude fades. Closed-form integrals
+            # of the smoothstep keep this exact for unsorted ``s``. (If the
+            # ramp is too short to hold the budget, rho caps at 1 and the
+            # frozen phase drifts a little from the knob; periodicity is
+            # still exact via dcorr.)
+            rho = min(
+                1.0, 2.0 * float(lobe_handover_phase) / max(rate * r_s, 1e-12)
+            )
+            l_f = rho * r_s
+            t_in = np.clip((u - f) / l_f, 0.0, 1.0)
+            t_out = np.clip((u - (1.0 - l_f)) / l_f, 0.0, 1.0)
+            adv = (
+                np.minimum(u, f)
+                + l_f * (t_in - t_in**3 + 0.5 * t_in**4)
+                + l_f * (t_out**3 - 0.5 * t_out**4)
+            )
+            # Residual (centred in (-pi, pi]) so u = 1 lands EXACTLY on the
+            # exit-edge phase, hidden in the plateau where the amplitude is
+            # exactly zero -- the freeze makes the jump invisible.
+            dcorr = -(((rate * (f + l_f)) + np.pi) % (2.0 * np.pi) - np.pi)
+            psi = (
+                psi_out_edge
+                + rate * adv
+                + dcorr * _smoothstep(f + r_s, 1.0 - r_s, u)
+            )
+        else:
+            # Residual to make sin(psi) exactly periodic at the u = 0/1 wrap
+            # (total advance = 2*pi * integer), swallowed by a smoothstep
+            # strictly inside the plateau where the figure amplitude is
+            # EXACTLY zero -- it never shows in the path, and the rate
+            # matches across the seam.
+            dcorr = 2.0 * np.pi * (np.round(n_ro / f) - n_ro / f)
+            psi = (
+                float(psi_exit)
+                + rate * u
+                + dcorr * _smoothstep(f + r_s, 1.0 - r_s, u)
+            )
+    else:
+        # One edge pinned: re-anchor the uniform phase so it hits the target
+        # at that window edge (the legacy psi0 is replaced, not added).
+        s_anchor = (c - h) % 1.0 if psi_exit is None else (c + h) % 1.0
+        target = float(psi_entry if psi_exit is None else psi_exit)
+        psi = 2.0 * np.pi * n_loops * (s - s_anchor) + target
+
+    if bow_shape == "sym":
+        # Bow to +az while climbing (xi < 0.5), to -az while descending
+        # (xi > 0.5); gated by ``ri`` so it is zero outside the reel-in.
+        bow = np.sin(omega * 2.0 * np.pi * xi)
+    elif bow_shape == "descent":
+        # One-sided bow: climb the zero meridian, drift out as the arc tops
+        # out, cross the top moving SIDEWAYS, return during the descent. The
+        # rise must begin at mid-entry-ramp (while the elevation still moves)
+        # and peak at mid-exit-ramp: wherever the elevation plateau is flat
+        # the azimuth must carry the path speed, or the parametrization
+        # stalls (zero speed -> a cusp the trim cannot fly). Smoothstep up to
+        # the peak and back keeps it C1 with zero slope at the window edges.
+        edge = 0.5 * min(float(ramp_fraction), 0.5)
+        bow = omega * (
+            _smoothstep(edge, 1.0 - edge, xi)
+            * (1.0 - _smoothstep(1.0 - edge, 1.0, xi))
+        )
+    else:  # "lobe"
+        # One-sided bow that does NOT return: climb the zero meridian, drift
+        # out over the last LOBE_BOW_OVERLAP of the entry ramp (so it carries
+        # the path speed where the elevation plateau is flat), cross, and
+        # stay out through the descent -- ``ri`` fades the bow and the figure
+        # term (frozen at ``psi_exit``, the lobe extreme on the same side)
+        # takes over, so the descent lands tangentially on the lobe instead
+        # of swinging back to the meridian.
+        edge = min(float(ramp_fraction), 0.5) * (1.0 - LOBE_BOW_OVERLAP)
+        bow = omega * _smoothstep(edge, 1.0 - edge, xi)
+
+    fig_az = window * az_amp0 * np.sin(omega * psi)
+    if bow_shape == "lobe" and az_reelin_through:
+        # "Cross" reel-in: climb the middle, lean out to the
+        # ``az_reelin_through`` side near the top (S1), descend PARKED on
+        # that azimuth (the returning figure term is compensated inside the
+        # park so the kite comes down the side, not diagonally), then cross
+        # az = 0 LOW -- centred at ``reelin_cross_pos`` of the exit ramp --
+        # over S2, which crossfades the azimuth into ``fig + ri * amp``:
+        # the plain lobe's tangential-landing blend, untouched from there.
+        ramp = min(float(ramp_fraction), 0.5)
+        pos = float(np.clip(reelin_cross_pos, 0.0, 1.0))
+        x_mid = (1.0 - ramp) + ramp * pos
+        x_cs = max(x_mid - 0.12, 0.5)
+        x_ce = min(x_mid + 0.12, 0.97)
+        # The lean-out must span the whole elevation plateau (ri flat over
+        # (ramp, 1 - ramp)): wherever the elevation is flat the azimuth has
+        # to carry the path speed, or the parametrization stalls (cusp).
+        s_out = _smoothstep(edge, max(0.4, 1.0 - ramp), xi)
+        s_cross = _smoothstep(x_cs, x_ce, xi)
+        park = s_out * (1.0 - s_cross)
+        az_bow = park * (omega * float(az_reelin_through) - fig_az) + (
+            s_cross * ri * az_reelin_amp * omega
+        )
+    else:
+        az_bow = ri * az_reelin_amp * bow
+
+    azimuth = fig_az + az_bow
     elevation = (
         beta0
         + (beta_reelin_peak - beta0) * ri
         + window * beta_amp0 * np.sin(2.0 * psi)
     )
     return azimuth, elevation
+
+
+def full_cycle_visible_half_figures(
+    n_loops,
+    reelout_fraction=0.7,
+    psi_entry=None,
+    psi_exit=None,
+    bow_shape="sym",
+    lobe_handover_phase=LOBE_HANDOVER_PHASE,
+):
+    """Half figure-eights (lobes) VISIBLE during reel-out, as a float.
+
+    Replicates the pinned-phase snap of :func:`full_cycle_angles` (the
+    reel-out flies ``n_ro = k + gap`` figures, ``k`` the integer that puts it
+    nearest ``n_loops * reelout_fraction``) and returns ``2 * n_ro``; round
+    it for the count you see. Its PARITY tells which re-entry side the
+    tangential lobe descent (``az_reelin_amp`` on the ``psi_exit`` side)
+    naturally gives: odd = opposite the peel-off lobe, even = same (see
+    ``bow_shape="lobe"`` in :func:`full_cycle_angles`). With a free handover
+    phase there is no snap and the visible count is simply
+    ``2 * n_loops * reelout_fraction``.
+    """
+    f = float(reelout_fraction)
+    if psi_entry is None or psi_exit is None:
+        return 2.0 * float(n_loops) * f
+    _, _, gap = _pinned_handover_edges(
+        psi_entry, psi_exit, bow_shape, lobe_handover_phase
+    )
+    n_ro = np.floor(float(n_loops) * f - gap + 0.5) + gap
+    if n_ro <= 0.0:  # mirror full_cycle_angles' degenerate fallback
+        n_ro = gap if gap > 0.0 else 1.0
+    return 2.0 * float(n_ro)
+
+
+def full_cycle_n_loops_for_half_figures(
+    n_halves,
+    reelout_fraction=0.7,
+    psi_entry=None,
+    psi_exit=None,
+    bow_shape="sym",
+    lobe_handover_phase=LOBE_HANDOVER_PHASE,
+):
+    """``(n_loops, psi_entry)`` putting ``n_halves`` half-figures in the reel-out.
+
+    The natural user-facing loop count is what you SEE: half figure-eights
+    (lobes) flown during reel-out. ``n_loops`` in :func:`full_cycle_angles` is
+    the continuous full-period figure count instead, and with pinned handover
+    phases the VISIBLE reel-out figure count snaps to ``k + gap`` (integer
+    ``k``; ``gap`` the fractional figure fixed by the entry/exit phases), so
+    typed counts and visible lobes drift apart. This inverts the snap:
+
+    - BOTH phases pinned: returns the (generally non-integer) ``n_loops``
+      whose snapped reel-out count is closest to ``n_halves / 2`` figures.
+      The pinned phases fix the PARITY of reachable half-counts (the descent
+      must land on a given lobe), so when the requested parity does not match,
+      ``psi_entry`` is shifted by pi -- the handover moves to the mirrored
+      figure point (for the designed "lobe" shape: the climb peels off the
+      OTHER, equally valid, climbing centre crossing) which flips the gap by
+      half a figure while leaving the descent landing (``psi_exit``)
+      untouched. The returned ``psi_entry`` REPLACES the input one. The
+      count is always honoured exactly; the re-entry SIDE is chosen
+      independently through the ``az_reelin_amp`` sign (tangential vs
+      crossing descent, see ``bow_shape="lobe"`` in
+      :func:`full_cycle_angles`).
+    - Any phase free (``None``): exact periodicity needs an integer figure
+      count per period, so the nearest integer to
+      ``n_halves / (2 * reelout_fraction)`` is returned and ``psi_entry``
+      passes through unchanged.
+    """
+    n_halves = int(n_halves)
+    if n_halves < 1:
+        raise ValueError(f"n_halves must be a positive integer, got {n_halves}")
+    f = float(reelout_fraction)
+    if psi_entry is None or psi_exit is None:
+        return max(1, int(round(n_halves / (2.0 * f)))), psi_entry
+    best = None
+    for shift in (0.0, np.pi):
+        candidate_entry = (float(psi_entry) + shift) % (2.0 * np.pi)
+        _, _, gap = _pinned_handover_edges(
+            candidate_entry, psi_exit, bow_shape, lobe_handover_phase
+        )
+        k = max(int(round(n_halves / 2.0 - gap)), 0)
+        n_ro = k + gap
+        if n_ro <= 0.0:  # mirror full_cycle_angles' degenerate fallback
+            n_ro = gap if gap > 0.0 else 1.0
+        err = abs(2.0 * n_ro - n_halves)
+        if best is None or err < best[0]:
+            best = (err, n_ro, candidate_entry)
+    _, n_ro, psi_entry = best
+    return n_ro / f, psi_entry
 
 
 def make_full_cycle_bspline_path_parameters(
@@ -747,9 +2039,19 @@ def make_full_cycle_bspline_path_parameters(
     az_amp0=0.3,
     beta_reelin_peak=1.1,
     az_reelin_amp=0.25,
+    az_reelin_through=0.0,
+    reelin_cross_pos=0.7,
     ramp_fraction=0.4,
+    reelin_center=0.5,
     psi0=0.0,
+    psi_entry=None,
+    psi_exit=None,
+    bow_shape="sym",
     downloops=True,
+    lobe_handover_phase=LOBE_HANDOVER_PHASE,
+    n_halves=None,
+    reelin_turn_radius=DUBINS_TURN_RADIUS_M,
+    reelin_min_turn_radius=None,
     precision=6,
 ):
     """YAML-ready *periodic* path parameters for a synthetic full pumping cycle.
@@ -770,9 +2072,20 @@ def make_full_cycle_bspline_path_parameters(
         az_amp0=az_amp0,
         beta_reelin_peak=beta_reelin_peak,
         az_reelin_amp=az_reelin_amp,
+        az_reelin_through=az_reelin_through,
+        reelin_cross_pos=reelin_cross_pos,
         ramp_fraction=ramp_fraction,
+        reelin_center=reelin_center,
         psi0=psi0,
+        psi_entry=psi_entry,
+        psi_exit=psi_exit,
+        bow_shape=bow_shape,
         downloops=downloops,
+        lobe_handover_phase=lobe_handover_phase,
+        n_halves=n_halves,
+        r0=r0,
+        reelin_turn_radius=reelin_turn_radius,
+        reelin_min_turn_radius=reelin_min_turn_radius,
     )
     _, C_phi, C_beta = fit_bspline_pattern_to_trajectory(
         spline_type="periodic",
@@ -799,3 +2112,333 @@ def make_full_cycle_bspline_path_parameters(
         "s_final": 1.0,
         "downloops": bool(downloops),
     }
+
+
+# ---------------------------------------------------------------------------
+# Slanted "up-loop" figure eight: one closed period holding BOTH the reel-out
+# (low lobe + crossings) and the reel-in (high arc) -- a single-lobe-pair
+# pumping cycle whose reel-in is the upper lobe of the eight itself.
+# ---------------------------------------------------------------------------
+def _slanted_eight_raw(p, *, az_low, el_low, radius_low, az_high, el_high, radius_high):
+    """(az, el) of the Gerono eight at phase ``p`` (no s offset applied).
+
+    Local Gerono curve ``x = sin p``, ``y = sin p cos p`` (``sin p > 0`` is
+    the high lobe), each lobe scaled to the circle it stands for: along the
+    lobe axis from the centre crossing to the FAR edge of the circle
+    (``L = d/2 + R``, ``d`` the distance between the lobe centres), across it
+    to the circle's half-width (``Y = 2 R sin p cos p`` peaks at ``R``). Both
+    scales blend between the lobes with ``(1 + sin p) / 2`` so the curve stays
+    smooth through the crossing. Placed on the sphere: the local X axis points
+    from the low-lobe centre to the high-lobe centre (tilt ``theta`` measured
+    in the locally conformal ``(az cos el, el)`` chart), Y is X turned 90 deg
+    anticlockwise, and the eight is centred on the midpoint of the two lobe
+    centres. (A Gerono lobe scaled by ``R`` alone is ``R`` long and ``R/2``
+    wide, so it would never reach the stated circle.)
+    """
+    p = np.asarray(p, dtype=float)
+    sp, cp = np.sin(p), np.cos(p)
+    az_c = 0.5 * (az_low + az_high)
+    el_c = 0.5 * (el_low + el_high)
+    d_az = (az_high - az_low) * np.cos(el_c)
+    d_el = el_high - el_low
+    half_d = 0.5 * np.hypot(d_az, d_el)
+    blend = 0.5 * (1.0 + sp)
+    L = (half_d + radius_low) + (radius_high - radius_low) * blend
+    R = radius_low + (radius_high - radius_low) * blend
+    X = L * sp
+    Y = 2.0 * R * sp * cp
+    theta = np.arctan2(d_el, d_az)
+    el = el_c + X * np.sin(theta) + Y * np.cos(theta)
+    az = az_c + (X * np.cos(theta) - Y * np.sin(theta)) / np.cos(el)
+    return az, el
+
+
+def _slanted_eight_offset(sense, shape, n_dense=8192):
+    """Phase offset (in s) putting ``s = 0`` at the low-lobe bottom.
+
+    Dense sample over one period followed by a parabolic refinement through
+    the three samples around the elevation minimum, so the bottom is resolved
+    far below the sample spacing.
+    """
+    s = np.linspace(0.0, 1.0, int(n_dense), endpoint=False)
+    _, el = _slanted_eight_raw(sense * 2.0 * np.pi * s, **shape)
+    i = int(np.argmin(el))
+    e0, e1, e2 = el[i - 1], el[i], el[(i + 1) % el.size]
+    denom = e0 - 2.0 * e1 + e2
+    frac = 0.5 * (e0 - e2) / denom if abs(denom) > 1e-15 else 0.0
+    return (s[i] + frac / el.size) % 1.0
+
+
+def _slanted_eight_shape(shape):
+    return {
+        k: float(shape[k])
+        for k in (
+            "az_low",
+            "el_low",
+            "radius_low",
+            "az_high",
+            "el_high",
+            "radius_high",
+        )
+    }
+
+
+def slanted_eight_angles(
+    s,
+    *,
+    az_low,
+    el_low,
+    radius_low,
+    az_high,
+    el_high,
+    radius_high,
+    sense=-1,
+):
+    """(azimuth, elevation) [rad] of the slanted up-loop figure eight at ``s``.
+
+    One period ``s in [0, 1)`` is ONE closed pumping cycle: a Gerono eight
+    (``p = sense * 2 pi s``, ``x = sin p``, ``y = sin p cos p``) whose two
+    lobes carry different radii -- the LOW lobe (centre ``az_low``,
+    ``el_low``, angular radius ``radius_low``) is the reel-out figure and the
+    HIGH lobe (``az_high``, ``el_high``, ``radius_high``) is the reel-in arc
+    -- tilted so the crossing legs run from one lobe centre to the other.
+    ``s = 0`` is at the LOW-LOBE BOTTOM (steady reel-out), the seam position
+    the periodic full-cycle configs keep.
+
+    ``sense = +1`` flies (azimuth right, elevation up) the high lobe
+    clockwise and the low lobe anticlockwise, both centre crossings with a
+    positive local-Y velocity. The DEFAULT ``sense = -1`` is the up-loop
+    pattern: each lobe is flown CLIMBING ON ITS OUTSIDE (the turns go upward),
+    the high lobe anticlockwise and the low lobe clockwise; the outbound
+    crossing leg to the high lobe is shallow / near-horizontal and the return
+    leg to the low lobe is a steep descent.
+    """
+    shape = _slanted_eight_shape(locals())
+    sense = float(np.sign(sense)) or -1.0
+    offset = _slanted_eight_offset(sense, shape)
+    p = sense * 2.0 * np.pi * (np.asarray(s, dtype=float) + offset)
+    return _slanted_eight_raw(p, **shape)
+
+
+def slanted_eight_landmarks(n_dense=4096, sense=-1, **shape):
+    """``s`` of the eight's landmarks: ``s_low_bottom`` (0 by construction),
+    ``s_high_apex`` (max elevation, the depower-window centre) and
+    ``s_crossing`` (the two ``s`` at which the path passes the centre
+    crossing), ``s_lobe_apex`` (``(s, s)`` of the elevation maximum of the
+    low / high lobe -- with both lobe centres at one elevation, the "low" lobe
+    is the ``az_low`` one) plus ``high_lobe(s)`` -> bool mask (True on the
+    high lobe).
+    """
+    shape = _slanted_eight_shape(shape)
+    sense = float(np.sign(sense)) or -1.0
+    s = np.linspace(0.0, 1.0, int(n_dense), endpoint=False)
+    _, el = slanted_eight_angles(s, sense=sense, **shape)
+    offset = _slanted_eight_offset(sense, shape)
+
+    def high_lobe(s_v):
+        p = sense * 2.0 * np.pi * (np.asarray(s_v, dtype=float) + offset)
+        return np.sin(p) > 0.0
+
+    # Crossings are the raw phases p = 0 (mod pi): s = k/2 - offset.
+    crossings = sorted(((k * 0.5 - offset) % 1.0) for k in range(2))
+    high = high_lobe(s)
+    lobe_apex = tuple(
+        float(s[mask][int(np.argmax(el[mask]))]) for mask in (~high, high)
+    )
+    return {
+        "s_low_bottom": 0.0,
+        "s_high_apex": float(s[int(np.argmax(el))]),
+        "s_crossing": tuple(float(c) for c in crossings),
+        "s_lobe_apex": lobe_apex,
+        "high_lobe": high_lobe,
+    }
+
+
+def _great_circle_deviation(az_a, el_a, az_b, el_b):
+    """Angle [rad] between the unit-sphere points (az_a, el_a) and (az_b, el_b)."""
+    dot = np.sin(el_a) * np.sin(el_b) + np.cos(el_a) * np.cos(el_b) * np.cos(
+        az_a - az_b
+    )
+    return np.arccos(np.clip(dot, -1.0, 1.0))
+
+
+def make_slanted_eight_bspline_path_parameters(
+    r0,
+    *,
+    max_fit_error_m=1.0,
+    M_candidates=range(16, 41, 2),
+    n_fit=600,
+    precision=6,
+    **shape,
+):
+    """YAML-ready periodic path parameters of :func:`slanted_eight_angles`.
+
+    Fits a periodic cubic B-spline over ``s in [0, 1]`` for increasing ``M``
+    and keeps the SMALLEST one whose maximum great-circle deviation from the
+    analytic curve, at radius ``r0``, is below ``max_fit_error_m`` (the last
+    candidate is kept, flagged ``converged: False``, when none fits).
+    Returns ``(path_parameters, info)``: the dict has the same shape as
+    :func:`make_full_cycle_bspline_path_parameters` (``downloops: True``,
+    pattern-ready, no extra keys -- ``create_pattern_from_dict`` forwards
+    every key) and ``info`` carries ``M``, ``fit_error_m`` and ``converged``.
+    """
+    s_samples = np.linspace(0.0, 1.0, int(n_fit), endpoint=False)
+    az_target, el_target = slanted_eight_angles(s_samples, **shape)
+
+    def _rounded(coefficients):
+        values = np.round(coefficients.full().flatten(), precision)
+        values[np.isclose(values, 0.0)] = 0.0
+        return values.tolist()
+
+    best = None
+    for M in M_candidates:
+        pattern, C_phi, C_beta = fit_bspline_pattern_to_trajectory(
+            spline_type="periodic",
+            M=int(M),
+            s_init=0.0,
+            s_final=1.0,
+            az_target=az_target,
+            el_target=el_target,
+            s_samples=s_samples,
+            downloops=True,
+        )
+        az_fit = np.asarray(pattern.azimuth(float(r0), s_samples)).ravel()
+        el_fit = np.asarray(pattern.elevation(float(r0), s_samples)).ravel()
+        err = float(
+            np.max(_great_circle_deviation(az_fit, el_fit, az_target, el_target))
+            * float(r0)
+        )
+        best = (int(M), C_phi, C_beta, err)
+        if err < float(max_fit_error_m):
+            break
+    M, C_phi, C_beta, err = best
+    path_parameters = {
+        "r0": float(r0),
+        "M": int(M),
+        "C_phi": _rounded(C_phi),
+        "C_beta": _rounded(C_beta),
+        "s_init": 0.0,
+        "s_final": 1.0,
+        "downloops": True,
+    }
+    info = {
+        "M": int(M),
+        "fit_error_m": err,
+        "converged": err < float(max_fit_error_m),
+    }
+    return path_parameters, info
+
+
+def _closed_polyline_crossings(phi, beta):
+    """Pairs ``(i, j, t_i, t_j)`` of non-adjacent segments of the closed
+    polyline through the samples that intersect; ``t`` is the fractional
+    position along each segment (half-open ``[0, 1)`` so a crossing exactly
+    on a vertex counts once)."""
+    x = np.asarray(phi, dtype=float).ravel()
+    y = np.asarray(beta, dtype=float).ravel()
+    n = x.size
+    if n < 4:
+        return []
+    x2, y2 = np.roll(x, -1), np.roll(y, -1)
+    dx, dy = x2 - x, y2 - y
+    i, j = np.triu_indices(n, k=2)
+    # the (0, n-1) pair shares the seam vertex: adjacent on the closed loop
+    keep = ~((i == 0) & (j == n - 1))
+    i, j = i[keep], j[keep]
+    denom = dx[i] * dy[j] - dy[i] * dx[j]
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rx, ry = x[j] - x[i], y[j] - y[i]
+        t_i = (rx * dy[j] - ry * dx[j]) / denom
+        t_j = (rx * dy[i] - ry * dx[i]) / denom
+    hit = (
+        (np.abs(denom) > 1e-15)
+        & (t_i >= 0.0)
+        & (t_i < 1.0)
+        & (t_j >= 0.0)
+        & (t_j < 1.0)
+    )
+    return [
+        (int(a), int(b), float(ta), float(tb))
+        for a, b, ta, tb in zip(i[hit], j[hit], t_i[hit], t_j[hit])
+    ]
+
+
+def count_self_crossings(phi, beta):
+    """Number of self-intersections of the closed (azimuth, elevation) path.
+
+    Segment-pair intersections over the closed polyline through the samples,
+    adjacent segments ignored: 1 for a figure eight, 0 for a circle or a
+    helix lobe. The topology check of the single-lobe-pair cycle (an
+    optimizer pass that merges or untangles the eight changes it).
+    """
+    return len(_closed_polyline_crossings(phi, beta))
+
+
+def eight_crossing_s(phi, beta, s):
+    """``(s_a, s_b)`` at which a figure-eight path crosses itself, interpolated
+    between the samples (``s`` uniform over one period, no endpoint). Raises
+    ``ValueError`` unless the path has exactly one crossing."""
+    hits = _closed_polyline_crossings(phi, beta)
+    if len(hits) != 1:
+        raise ValueError(f"expected one self-crossing, found {len(hits)}")
+    s = np.asarray(s, dtype=float).ravel()
+    ds = float(s[1] - s[0]) if s.size > 1 else 0.0
+    i, j, t_i, t_j = hits[0]
+    return (float(s[i] + t_i * ds), float(s[j] + t_j * ds))
+
+
+def lobe_signed_areas(phi, beta, s, s_split, by="elevation"):
+    """``(A_low, A_high)`` signed shoelace areas [rad^2] of the two lobes of a
+    figure eight in the (azimuth, elevation) plane -- positive = anticlockwise
+    with azimuth to the right and elevation up.
+
+    ``s_split = (s_a, s_b)`` are the ``s`` of the crossing (see
+    :func:`eight_crossing_s`): samples with ``s_a <= s < s_b`` form one lobe,
+    the rest the other; "low" is the lobe with the lower mean elevation
+    (``by="elevation"``), or -- for a level, side-by-side eight --
+    ``by="azimuth"`` returns ``(A_left, A_right)`` by mean azimuth. Each lobe
+    starts and ends at the crossing, so it is a closed polygon.
+    """
+    if by not in ("elevation", "azimuth"):
+        raise ValueError(f"by must be 'elevation' or 'azimuth', got {by!r}")
+    phi = np.asarray(phi, dtype=float).ravel()
+    beta = np.asarray(beta, dtype=float).ravel()
+    s = np.asarray(s, dtype=float).ravel()
+    s_a, s_b = sorted(float(v) for v in s_split)
+    inside = (s >= s_a) & (s < s_b)
+
+    def _area(mask):
+        x, y = phi[mask], beta[mask]
+        return 0.5 * float(np.sum(x * np.roll(y, -1) - np.roll(x, -1) * y))
+
+    key = beta if by == "elevation" else phi
+    lobes = [(float(np.mean(key[m])), _area(m)) for m in (inside, ~inside)]
+    lobes.sort(key=lambda item: item[0])
+    return lobes[0][1], lobes[1][1]
+
+
+def symmetrize_periodic_path(path_parameters, az_center=0.0):
+    """Mirror-symmetric copy of a periodic-spline path (even ``M``).
+
+    Half a period of a uniform periodic cubic B-spline is exactly an index
+    shift by ``M/2`` (knot coordinate ``x = u M`` moves by ``M/2``), so the
+    path is mirrored about the meridian ``az_center`` under ``s -> s + 1/2``
+    iff ``C_phi[k + M/2] = 2 az_center - C_phi[k]`` and
+    ``C_beta[k + M/2] = C_beta[k]``. Returns the nearest such path (average
+    of each coefficient pair); the second half is written as the exact
+    mirror of the first, so the equality rows of
+    ``sim_parameters.mirror_symmetry`` hold to rounding.
+    """
+    M = int(path_parameters["M"])
+    if M % 2:
+        raise ValueError(f"mirror symmetry needs an even M, got {M}")
+    h = M // 2
+    c_phi = np.asarray(path_parameters["C_phi"], dtype=float).ravel()
+    c_beta = np.asarray(path_parameters["C_beta"], dtype=float).ravel()
+    c = float(az_center)
+    phi_a = 0.5 * ((c_phi[:h] - c) - (c_phi[h:] - c)) + c
+    beta_a = 0.5 * (c_beta[:h] + c_beta[h:])
+    out = dict(path_parameters)
+    out["C_phi"] = np.r_[phi_a, 2.0 * c - phi_a].tolist()
+    out["C_beta"] = np.r_[beta_a, beta_a].tolist()
+    return out

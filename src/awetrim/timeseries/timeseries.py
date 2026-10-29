@@ -793,13 +793,6 @@ class TimeSeries:
             energy = 0.0
             avg_power = 0.0
 
-        # Mean mechanical power (if available)
-        try:
-            pow_hist = self.return_variable("mechanical_power")[mask]
-            mean_power = float(np.mean(pow_hist)) if len(pow_hist) else 0.0
-        except Exception:
-            mean_power = avg_power
-
         # Basic statistics (tension and vtau)
         tension_mean = float(np.mean(tension_m)) if len(tension_m) else 0.0
         tension_max = float(np.max(tension_m)) if len(tension_m) else 0.0
@@ -812,7 +805,6 @@ class TimeSeries:
         return {
             "energy": float(energy),
             "avg_power": float(avg_power),
-            "mean_power": float(mean_power),
             "total_time": float(t_m[-1] - t_m[0]) if len(t_m) > 1 else 0.0,
             "tension_mean": float(tension_mean),
             "tension_max": float(tension_max),

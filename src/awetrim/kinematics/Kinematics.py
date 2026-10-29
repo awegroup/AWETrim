@@ -334,6 +334,61 @@ class ParametrizedKinematics:
         )
 
     @property
+    def dchi_ds(self):
+        """Total s-derivative of the course angle (same r-term as ``dphi_ds``)."""
+        return (
+            ca.gradient(self.chi, self.s)
+            + ca.gradient(self.chi, self.r) * self.vr / self.s_dot
+        )
+
+    @property
+    def dsigma_ds(self):
+        """Angular arc-length rate of the path on the UNIT sphere [rad per unit s]."""
+        return ca.sqrt(
+            self.dbeta_ds**2 + (self.dphi_ds * ca.cos(self.beta)) ** 2 + 1e-12
+        )
+
+    @property
+    def curvature_geodesic(self):
+        """Signed geodesic curvature of the path on the UNIT sphere [1/rad].
+
+        kappa = (dchi/dsigma) - tan(beta) sin(chi): the course-angle rate per
+        unit angular arc length minus the great-circle transport of the
+        spherical basis, i.e. the in-surface turning of the path only. It is
+        a pure function of the pattern (C_phi, C_beta, s) -- speed cancels.
+        The physical turn radius on the tether sphere is ``r / |kappa|`` and
+        the transport-free heading rate is ``chi_dot_turn = kappa * v_tau / r``
+        (= chi_dot - phi_dot sin(beta)). Checks: a parallel at latitude beta0
+        gives |kappa| = tan(beta0); a small circle of angular radius rho gives
+        cot(rho); a great circle gives 0.
+        """
+        return self.dchi_ds / self.dsigma_ds - ca.tan(self.beta) * ca.sin(self.chi)
+
+    @property
+    def curvature_numerator(self):
+        """``curvature_geodesic * dsigma_ds**3`` in closed polynomial form.
+
+        With u = phi' cos(beta), v = beta' (unit-sphere velocity components,
+        so sigma'^2 = u^2 + v^2) the course-angle rate is
+        dchi/ds = (u' v - u v') / sigma'^2 and the transport term is
+        tan(beta) sin(chi) sigma'^3 = sin(beta) phi' sigma'^2, hence
+
+            kappa * sigma'^3 = u' v - u v' - sin(beta) phi' sigma'^2.
+
+        Unlike ``curvature_geodesic`` this contains no division: it stays
+        finite and smooth through near-cusps (sigma' -> 0), so a turn-radius
+        constraint written as ``|R_min * numerator| <= r * sigma'^3`` has
+        bounded gradients where the ``R_min * |kappa| <= r`` form blows up.
+        """
+        u = self.dphi_ds * ca.cos(self.beta)
+        v = self.dbeta_ds
+        du_ds = self.dphi_ds2 * ca.cos(self.beta) - self.dphi_ds * self.dbeta_ds * ca.sin(
+            self.beta
+        )
+        dv_ds = self.dbeta_ds2
+        return du_ds * v - u * dv_ds - ca.sin(self.beta) * self.dphi_ds * self.dsigma_ds**2
+
+    @property
     def sqrt_A(self):
         return self.vtau / (self.s_dot * self.r)
 

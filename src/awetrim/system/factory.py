@@ -15,17 +15,24 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from pathlib import Path
-import math
 from typing import Union
 
 import yaml
 
+from awetrim.aerodynamics.kcu_drag import CT_TURBINE_OPERATING
 from awetrim.environment.Wind import Wind
+from awetrim.environment.profile_laws import DEFAULT_POWER_LAW_ALPHA
 from awetrim.system.kite import Kite
 from awetrim.system.system_model import SystemModel
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.system.williams_tether import WilliamsTether
-from awetrim.utils.system_config import get_kite, get_tether
+from awetrim.utils.system_config import (
+    get_drum,
+    get_kcu_mass,
+    get_kite,
+    get_tether,
+    get_turbine,
+)
 
 
 def create_tether_from_config(
@@ -62,41 +69,47 @@ def create_tether_from_config(
 
 
 def create_wind_model_from_config(wind_cfg):
-    """Create a Wind model from a YAML wind section."""
+    """Create a :class:`Wind` from a YAML ``wind`` section.
+
+    Keys: ``model`` (or ``model_type``; any value in
+    :data:`awetrim.environment.profile_laws.ALL_MODELS`, default ``uniform``),
+    ``z0``, ``alpha``, ``jet_amplitude``/``jet_height``/``jet_width``,
+    ``tabulated_heights``/``tabulated_speeds``, ``direction_wind`` (default 0)
+    and exactly one amplitude:
+
+    - ``speed_wind_ref`` (+ optional ``height_ref``, default 6 m),
+    - ``speed_wind_at_100`` (shorthand for ``height_ref: 100``),
+    - ``speed_wind_at_ref`` (+ ``height_ref``),
+    - ``speed_friction`` (log-based models).
+
+    No profile formula is evaluated here: ``Wind`` converts between the
+    reference speed and the friction velocity through ``profile_laws``.
+    """
     if not wind_cfg:
         return None
 
     wind_model = Wind(
         wind_model=wind_cfg.get("model", wind_cfg.get("model_type", "uniform")),
         z0=wind_cfg.get("z0", 0.01),
+        alpha=wind_cfg.get("alpha", DEFAULT_POWER_LAW_ALPHA),
+        jet_amplitude=wind_cfg.get("jet_amplitude", 0.0),
+        jet_height=wind_cfg.get("jet_height"),
+        jet_width=wind_cfg.get("jet_width"),
         tabulated_heights=wind_cfg.get("tabulated_heights"),
         tabulated_speeds=wind_cfg.get("tabulated_speeds"),
         direction_wind=wind_cfg.get("direction_wind", 0),
         speed_wind_ref=wind_cfg.get("speed_wind_ref"),
     )
+    if "height_ref" in wind_cfg:
+        wind_model.height_ref = float(wind_cfg["height_ref"])
 
     if "speed_friction" in wind_cfg:
         wind_model.speed_friction = wind_cfg["speed_friction"]
     elif "speed_wind_at_100" in wind_cfg:
-        if wind_model.wind_model == "uniform":
-            wind_model.speed_wind_ref = wind_cfg["speed_wind_at_100"]
-        else:
-            wind_model.speed_friction = (
-                wind_model.kappa
-                * wind_cfg["speed_wind_at_100"]
-                / math.log(100 / wind_model.z0)
-            )
+        wind_model.height_ref = 100.0
+        wind_model.speed_wind_ref = wind_cfg["speed_wind_at_100"]
     elif "speed_wind_at_ref" in wind_cfg:
-        height_ref = wind_cfg.get("height_ref", wind_model.height_ref)
-        wind_model.height_ref = height_ref
-        if wind_model.wind_model == "uniform":
-            wind_model.speed_wind_ref = wind_cfg["speed_wind_at_ref"]
-        else:
-            wind_model.speed_friction = (
-                wind_model.kappa
-                * wind_cfg["speed_wind_at_ref"]
-                / math.log(height_ref / wind_model.z0)
-            )
+        wind_model.speed_wind_ref = wind_cfg["speed_wind_at_ref"]
 
     return wind_model
 
@@ -104,6 +117,25 @@ def create_wind_model_from_config(wind_cfg):
 def _load_yaml(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def resolve_rom_config_path(
+    system_yaml_path: Union[str, Path],
+    rom_config_path: Union[str, Path, None] = None,
+) -> Path | None:
+    """The ROM config a kite's system file selects (None if it has none).
+
+    Resolution order: an explicit ``rom_config_path`` (relative paths are
+    taken against the system file's folder), the system file's
+    ``models.reduced_order.aerodynamics``, then a sibling ``rom_config.yaml``
+    (legacy ``aero_coeffs_rom.yaml``). A kite with several ROMs (e.g. the
+    LEI-V3 ``rom_config_aerostructural_flight_corrected.yaml`` and
+    ``rom_config_aerostructural.yaml``) names its default in the system file.
+    """
+    system_yaml_path = Path(system_yaml_path)
+    return _resolve_aero_config_path(
+        _load_yaml(system_yaml_path), system_yaml_path, rom_config_path
+    )
 
 
 def _resolve_aero_config_path(
@@ -149,6 +181,121 @@ def load_aero_input(
     return cfg.get("wing", {}).get("aerodynamics", {})
 
 
+def load_rom_validity(
+    cfg: dict,
+    config_path: Union[str, Path, None] = None,
+    aero_yaml_path: Union[str, Path, None] = None,
+) -> dict:
+    """The ``validity`` block of the system's ROM file (empty when the ROM is
+    inline or the file states none)."""
+    base_path = Path(config_path) if config_path is not None else None
+    aero_path = _resolve_aero_config_path(cfg, base_path, aero_yaml_path)
+    if aero_path is None:
+        return {}
+    return _load_yaml(aero_path).get("validity") or {}
+
+
+def load_rom_depower_validity(
+    cfg: dict,
+    config_path: Union[str, Path, None] = None,
+    aero_yaml_path: Union[str, Path, None] = None,
+) -> tuple[float, float] | None:
+    """The ``validity.input_depower`` band of the system's ROM file, if stated.
+
+    A polynomial ROM extrapolates freely in u_p outside the depower range it
+    was identified on, and an optimizer with a wider actuator box follows the
+    extrapolation (an LEI-V3 server run on the flight-corrected ROM ran to the
+    bottom of the 1.1 m box at the winch limits). ``None`` when the ROM is
+    inline or the file states no band.
+    """
+    band = load_rom_validity(cfg, config_path, aero_yaml_path).get("input_depower")
+    if not band:
+        return None
+    return float(min(band)), float(max(band))
+
+
+def intersect_steering_validity(hardware_limits: dict, abs_max: float | None) -> dict:
+    """Clip the optimizer's ``input_steering`` box to the ROM's
+    ``validity.input_steering_abs_max``, the largest |u_s| the steering chains
+    were identified on (LEI-V3: 0.20 m of tape, 0.143, inside the KCU's
+    0.175). Override through ``sim_parameters["opti_limits_override"]``.
+    """
+    if abs_max is None:
+        return hardware_limits
+    from awetrim.utils.defaults import DEFAULT_OPTI_LIMITS
+
+    lo, hi = hardware_limits.get("input_steering", DEFAULT_OPTI_LIMITS["input_steering"])
+    clipped = (max(float(lo), -float(abs_max)), min(float(hi), float(abs_max)))
+    if clipped[0] >= clipped[1]:
+        raise ValueError(
+            f"steering actuator range [{lo}, {hi}] does not overlap the ROM's "
+            f"validity |u_s| <= {abs_max}"
+        )
+    if clipped != (float(lo), float(hi)):
+        print(
+            f"  steering box [{lo}, {hi}] clipped to the ROM validity band -> "
+            f"[{clipped[0]:.4g}, {clipped[1]:.4g}]"
+        )
+    return {**hardware_limits, "input_steering": clipped}
+
+
+def apply_tension_floor(hardware_limits: dict, floor: float | None) -> dict:
+    """Raise the optimizer's tether-tension lower bound to the ROM's floor.
+
+    ``validity.min_tether_force_n`` is the lowest tension at which the ROM's
+    wing still holds its shape through a gust lull (identification step 3:
+    F_t (1 - lull)^2 >= 2 m_KCU g). Below it the identified states do not
+    exist, so the optimizer must not fly there. The bound acts on the ground
+    tension the NLP carries; the kite-end tension is lower only by the tether
+    weight share. A run that wants the bare numerical bound overrides it
+    through ``sim_parameters["opti_limits_override"]["tension_tether_ground"]``.
+    """
+    if floor is None:
+        return hardware_limits
+    from awetrim.utils.defaults import DEFAULT_OPTI_LIMITS
+
+    lo, hi = hardware_limits.get(
+        "tension_tether_ground", DEFAULT_OPTI_LIMITS["tension_tether_ground"]
+    )
+    if float(floor) <= float(lo):
+        return hardware_limits
+    if float(floor) >= float(hi):
+        raise ValueError(
+            f"ROM tension floor {floor} N is above the tension bound {hi} N"
+        )
+    print(f"  tension lower bound raised to the ROM floor: {float(floor):.0f} N")
+    return {**hardware_limits, "tension_tether_ground": (float(floor), float(hi))}
+
+
+def intersect_depower_validity(
+    hardware_limits: dict, band: tuple[float, float] | None
+) -> dict:
+    """Clip the optimizer's ``input_depower`` box to the ROM's validity band.
+
+    The box is the actuator range (system.yaml) where given, else
+    ``DEFAULT_OPTI_LIMITS``; the result is their intersection. A run that
+    deliberately wants to extrapolate overrides it through
+    ``sim_parameters["opti_limits_override"]["input_depower"]``.
+    """
+    if band is None:
+        return hardware_limits
+    from awetrim.utils.defaults import DEFAULT_OPTI_LIMITS
+
+    lo, hi = hardware_limits.get("input_depower", DEFAULT_OPTI_LIMITS["input_depower"])
+    clipped = (max(float(lo), band[0]), min(float(hi), band[1]))
+    if clipped[0] >= clipped[1]:
+        raise ValueError(
+            f"depower actuator range [{lo}, {hi}] does not overlap the ROM's "
+            f"validity band [{band[0]}, {band[1]}]"
+        )
+    if clipped != (float(lo), float(hi)):
+        print(
+            f"  depower box [{lo}, {hi}] clipped to the ROM validity band -> "
+            f"[{clipped[0]:.4g}, {clipped[1]:.4g}]"
+        )
+    return {**hardware_limits, "input_depower": clipped}
+
+
 def _extract_params_awesio(cfg: dict) -> tuple:
     """Extract model parameters from an awesIO-format config dict."""
     try:
@@ -164,19 +311,31 @@ def _extract_params_awesio(cfg: dict) -> tuple:
     cs_struct = kite.get("control_system", {}).get("structure", {})
     tether_struct = get_tether(cfg).get("structure", {})
 
-    mass_wing = wing_struct.get("mass", 20.0)
+    # The point-mass "wing" is everything airborne above the KCU: the canopy
+    # (wing.structure.mass) AND the bridle (bridle.structure.mass), whose
+    # weight the wing carries. Until 2026-10-29 the bridle was left out.
+    bridle_struct = (kite.get("bridle") or {}).get("structure", {}) or {}
+    mass_wing = wing_struct.get("mass", 20.0) + float(bridle_struct.get("mass", 0.0) or 0.0)
     area_wing = wing_struct.get("projected_surface_area", 20.0)
-    mass_kcu = cs_struct.get("mass", 0.0)
+    # KCU body plus its onboard turbine (separate masses in awesIO).
+    mass_kcu = get_kcu_mass(cfg) or 0.0
+    # KCU envelope, used for its bluff-body drag (awetrim.aerodynamics.
+    # kcu_drag). Absent in older/partial system files -> 0.0, which the
+    # drag model reads as 'no KCU drag' rather than failing.
+    length_kcu = float(cs_struct.get("length", 0.0) or 0.0)
+    diameter_kcu = float(cs_struct.get("diameter", 0.0) or 0.0)
     tether_diameter = tether_struct.get("diameter", 0.006)
     tether_density = tether_struct.get("density", 970.0)
     wind_cfg = cfg.get("wind", {})
 
-    hardware_limits = _extract_hardware_limits(cs_struct, tether_struct)
+    hardware_limits = _extract_hardware_limits(cs_struct, tether_struct, get_drum(cfg))
 
     return (
         mass_wing,
         area_wing,
         mass_kcu,
+        length_kcu,
+        diameter_kcu,
         tether_diameter,
         tether_density,
         wind_cfg,
@@ -184,14 +343,18 @@ def _extract_params_awesio(cfg: dict) -> tuple:
     )
 
 
-def _extract_hardware_limits(cs_struct: dict, tether_struct: dict) -> dict:
+def _extract_hardware_limits(
+    cs_struct: dict, tether_struct: dict, drum: dict | None = None
+) -> dict:
     """Build the optimizer's hardware-limit overrides from system.yaml.
 
     Maps the KCU actuator limits (control_system.structure.steering /
-    .depower) onto the ``DEFAULT_OPTI_LIMITS`` keys the trajectory optimizer
-    reads, plus the max tether length used to cap the radial distance. Keys are
-    only present when the corresponding field exists in the config; missing
-    ones fall back to ``DEFAULT_OPTI_LIMITS``.
+    .depower) and the winch drive envelope
+    (ground_station.drums[0], awesIO ``drum_object``) onto the
+    ``DEFAULT_OPTI_LIMITS`` keys the trajectory optimizer reads, plus the max
+    tether length used to cap the radial distance. Keys are only present when
+    the corresponding field exists in the config; missing ones fall back to
+    ``DEFAULT_OPTI_LIMITS``.
     """
     hw: dict = {}
     steering = cs_struct.get("steering", {})
@@ -210,6 +373,22 @@ def _extract_hardware_limits(cs_struct: dict, tether_struct: dict) -> dict:
     tether_length = tether_struct.get("length")
     if tether_length is not None:
         hw["_max_tether_length"] = float(tether_length)
+
+    # Winch drive envelope. The reeling speed v_r is the optimizer's
+    # ``speed_radial`` (positive = reel-out), so the drum's speed range maps
+    # straight onto it; the acceleration capability becomes the symmetric
+    # slew-rate limit on v_r used when it is a direct control
+    # (``sim_parameters["winch_mode"] == "free_speed"``). Both bounds are only
+    # emitted when BOTH ends are given, so a partial drum entry cannot silently
+    # half-apply a bound.
+    drum = drum or {}
+    v_min = drum.get("min_tether_speed")
+    v_max = drum.get("max_tether_speed")
+    if v_min is not None and v_max is not None:
+        hw["speed_radial"] = (float(v_min), float(v_max))
+    acc_max = drum.get("max_winch_acceleration")
+    if acc_max is not None:
+        hw["winch_acceleration"] = (-float(acc_max), float(acc_max))
     return hw
 
 
@@ -227,11 +406,14 @@ def _extract_params_legacy(cfg: dict) -> tuple:
     tether_diameter = tether_cfg.get("diameter", 0.006)
     tether_density = tether_cfg.get("density", 970.0)
 
+    # The legacy format carries no KCU envelope -> no KCU drag.
     return (
         mass_wing,
         area_wing,
         aero_cfg,
         mass_kcu,
+        0.0,
+        0.0,
         tether_diameter,
         tether_density,
         wind_cfg,
@@ -269,6 +451,8 @@ def create_system_model_from_yaml(
             mass_wing,
             area_wing,
             mass_kcu,
+            length_kcu,
+            diameter_kcu,
             tether_diameter,
             tether_density,
             wind_cfg,
@@ -280,6 +464,8 @@ def create_system_model_from_yaml(
             area_wing,
             aero_cfg,
             mass_kcu,
+            length_kcu,
+            diameter_kcu,
             tether_diameter,
             tether_density,
             wind_cfg,
@@ -290,9 +476,27 @@ def create_system_model_from_yaml(
     print(
         f"Creating SystemModel with mass_wing={mass_wing}, area_wing={area_wing}, mass_kcu={mass_kcu}, tether_diameter={tether_diameter}, tether_density={tether_density}"
     )
+    # 0.0 here means the system file carries no KCU envelope, so the trims
+    # will run without KCU drag -- worth seeing in a run log.
+    print(f"  KCU envelope: length={length_kcu} m, diameter={diameter_kcu} m")
     if "components" in cfg:
         aero_cfg = load_aero_input(
             cfg, config_path=config_path, aero_yaml_path=aero_yaml_path
+        )
+        hardware_limits = intersect_depower_validity(
+            hardware_limits,
+            load_rom_depower_validity(
+                cfg, config_path=config_path, aero_yaml_path=aero_yaml_path
+            ),
+        )
+        validity = load_rom_validity(
+            cfg, config_path=config_path, aero_yaml_path=aero_yaml_path
+        )
+        hardware_limits = intersect_steering_validity(
+            hardware_limits, validity.get("input_steering_abs_max")
+        )
+        hardware_limits = apply_tension_floor(
+            hardware_limits, validity.get("min_tether_force_n")
         )
 
     tether = create_tether_from_config(
@@ -302,9 +506,26 @@ def create_system_model_from_yaml(
         f"  tether model: {type(tether).__name__} "
         f"(diameter={tether_diameter}, density={tether_density})"
     )
+    # Onboard-turbine DRAG envelope (its mass is lumped into mass_kcu by
+    # get_kcu_mass): the optional awesIO ``control_system.turbine`` block.
+    # Absent -> zero diameter -> the KCU drag model adds no turbine term.
+    # The thrust coefficient is aerodynamic, not hardware, so it is the
+    # model's operating value (kcu_drag.CT_TURBINE_OPERATING).
+    turbine_struct = get_turbine(cfg) if "components" in cfg else {}
+    diameter_turbine = float(turbine_struct.get("rotor_diameter", 0.0) or 0.0)
+    if turbine_struct:
+        print(
+            f"  KCU turbine: rotor diameter={diameter_turbine} m, "
+            f"mass={turbine_struct.get('mass', 0.0)} kg (in mass_kcu), "
+            f"hub position_KA={turbine_struct.get('position_KA')} m"
+        )
     kite = Kite(
         mass_wing=mass_wing,
         mass_kcu=mass_kcu,
+        length_kcu=length_kcu,
+        diameter_kcu=diameter_kcu,
+        diameter_turbine=diameter_turbine,
+        thrust_coefficient_turbine=CT_TURBINE_OPERATING,
         area_wing=area_wing,
         aero_input=aero_cfg,
         steering_control=steering_control,

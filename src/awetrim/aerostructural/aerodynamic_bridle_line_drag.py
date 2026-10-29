@@ -16,6 +16,8 @@
 
 import numpy as np
 
+from awetrim.aerodynamics.apparent_wind import apparent_wind_at, inflow_state_of
+
 
 def compute_line_aerodynamic_force(p1, p2, d, va, cd_cable, cf_cable, rho):
 
@@ -103,10 +105,29 @@ def main(
     f_aero_bridle = np.zeros_like(struc_nodes)
 
     line_system = _extract_body_aero_bridle_line_system(body_aero)
-    va = np.asarray(
-        getattr(body_aero, "va", vel_app) if body_aero is not None else vel_app,
-        dtype=float,
-    )
+    # ``body_aero.va`` is the FREESTREAM at the reference point, not the inflow
+    # at a bridle segment: the VSM adds the rotational term
+    # ``-omega x (r - r0)`` per station (see awetrim.aerodynamics.apparent_wind).
+    # Charging va_free to every segment is the same class of error as charging
+    # the wing's mean -- it just errs the other way -- and it vanishes on an
+    # unsteered baseline, which is why it went unseen. Each segment below is
+    # evaluated at its own midpoint instead, matching what the trim balances.
+    if body_aero is None:
+        va, omega, reference_point = (
+            np.asarray(vel_app, dtype=float),
+            np.zeros(3),
+            np.zeros(3),
+        )
+    else:
+        va, omega, reference_point = inflow_state_of(body_aero)
+        if va is None:
+            # Per-panel distribution: no single freestream to rotate about, so
+            # charge the caller's own vector and add no rotational term.
+            va, omega = np.asarray(vel_app, dtype=float), np.zeros(3)
+
+    def _inflow(p1, p2):
+        """Apparent wind at this segment's midpoint, where its force acts."""
+        return apparent_wind_at(va, omega, 0.5 * (p1 + p2), reference_point)
 
     # Preferred path: use VSM bridle mapping but evaluate force on current structural
     # endpoints each iteration.
@@ -125,11 +146,12 @@ def main(
                 d = float(bridle_diameters_arr[idx])
 
             line = [p1, p2, d]
+            va_segment = _inflow(p1, p2)
             if body_aero is not None and hasattr(
                 body_aero, "compute_line_aerodynamic_force"
             ):
                 f_line_total = body_aero.compute_line_aerodynamic_force(
-                    va,
+                    va_segment,
                     line,
                     cd_cable=cd_cable,
                     cf_cable=cf_cable,
@@ -140,7 +162,7 @@ def main(
                     p1,
                     p2,
                     d,
-                    va,
+                    va_segment,
                     cd_cable,
                     cf_cable,
                     rho,
@@ -162,7 +184,8 @@ def main(
 
         # Compute total aerodynamic force on this line segment
         f_line_total = compute_line_aerodynamic_force(
-            p1, p2, d, va, cd_cable, cf_cable, rho
+            p1, p2, d, _inflow(np.asarray(p1, dtype=float), np.asarray(p2, dtype=float)),
+            cd_cable, cf_cable, rho,
         )
 
         # Distribute force equally to both nodes (50/50 split)

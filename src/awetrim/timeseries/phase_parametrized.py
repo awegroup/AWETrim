@@ -17,7 +17,11 @@
 from matplotlib import pyplot as plt
 from awetrim.timeseries.timeseries import TimeSeries
 from awetrim import SystemModel
-from awetrim.kinematics.parametrized_patterns import create_pattern_from_dict
+from awetrim.kinematics.parametrized_patterns import (
+    PeriodicBSpline,
+    create_pattern_from_dict,
+    symmetrize_periodic_coefficients,
+)
 from awetrim.kinematics.Kinematics import ParametrizedKinematics
 import casadi as ca
 import numpy as np
@@ -28,6 +32,7 @@ from awetrim.utils.defaults import (
     DEFAULT_WINCH_CONFIG,
 )
 import copy
+import warnings
 from awetrim.system.tether import RigidLinkTether
 from awetrim.system.williams_tether import WilliamsTether
 from awetrim.utils.reference_frames import (
@@ -41,6 +46,13 @@ from dataclasses import dataclass
 import logging
 
 logger = logging.getLogger(__name__)
+
+#: Functions ``residual_solver`` stores on the phase for the solver it builds
+#: (each over that solver's decision vector).
+_RESIDUAL_SOLVER_NODE_FUNCTIONS = (
+    "_node_alpha_function",
+    "_williams_tension_ground_function",
+)
 
 
 @dataclass
@@ -165,6 +177,27 @@ def _eval_path_kinematic(expr, s_value, state_obj, default=0.0):
         return float(fun(*values))
     except (RuntimeError, TypeError):
         return float(default)
+
+
+
+def _expand_node_function(fun):
+    """SX-expand a per-node CasADi Function used N times in the NLP graph.
+
+    The NLP calls the same trim-residual / AoA / curvature Function once per
+    node. Expanding each Function ONCE (MX -> SX) gives every call SX-fast
+    evaluation and derivatives while the outer graph stays MX -- the solver
+    then never has to SX-expand the whole N-node graph (``expand=True`` in
+    ``Phase.run_opti``), whose construction time and memory grow with N (the
+    inlined copies) and whose Jacobian sparsity pass scales ~N^2. Falls back
+    to the MX Function when the graph holds MX-only nodes (interpolant wind,
+    custom_spline winch, externals).
+    """
+    try:
+        return fun.expand()
+    except Exception as exc:  # MX-only nodes inside: keep the MX Function
+        first = str(exc).strip().splitlines()[0] if str(exc).strip() else exc
+        print(f"[nlp] {fun.name()}: SX expansion unsupported ({first}); keeping MX")
+        return fun
 
 
 class PhaseParameterized(TimeSeries):
@@ -923,8 +956,29 @@ class PhaseParameterized(TimeSeries):
             )
             return _finalize_guesses(guesses)
 
+        # Branch selection: a root must lie BELOW THE STALL (the ROM's
+        # aerodynamics.params.angle_of_attack_stall). The node residual has a
+        # pre-stall root and a spurious post-stall one (alpha ~20-25 deg), and
+        # a retry from a perturbed guess can land on either -- one retry used
+        # to put the march on the post-stall branch for the rest of the loop.
+        # A converged post-stall root is only kept as a fallback while the
+        # remaining retries look for a pre-stall one. The seed is NOT
+        # constrained: when only post-stall roots exist the one closest in
+        # path rate to the previous node is used and the march goes on.
+        # (The paper's speed-stability criterion, Eq. 36, was tried first: it
+        # selects correctly in crosswind flight but classifies every flown
+        # reel-in state as unstable.) sim_parameters.seed_reject_post_stall
+        # (default True; off when the ROM states no stall angle).
+        alpha_function = getattr(self, "_node_alpha_function", None)
+        alpha_stall = self.kite_model.kite.aero_params.get("angle_of_attack_stall")
+        if not sim_params.get("seed_reject_post_stall", True) or alpha_stall is None:
+            alpha_function = None
+        rate_index = 1 if use_williams else 2
+        rate_previous = [None]  # path rate s_dot of the last returned node root
+
         def _solve_node(z_guess, p_solver, node_index):
             last_error = None
+            fallback = None  # (|s_dot - s_dot_previous|, solution, alpha)
             accept_residual_norm = float(
                 sim_params.get("solver_accept_residual_norm", 1e-5)
             )
@@ -950,6 +1004,23 @@ class PhaseParameterized(TimeSeries):
                 accepted = stats.get("success", False) or (
                     finite and residual_norm <= accept_residual_norm
                 )
+                if accepted and finite and alpha_function is not None:
+                    alpha_node = float(alpha_function(sol_candidate["x"], p_solver))
+                    logger.debug(
+                        "node %d attempt %d: s_dot %.4f, alpha %.2f deg",
+                        node_index, attempt,
+                        float(sol_candidate["x"][rate_index]), np.degrees(alpha_node),
+                    )
+                    if not alpha_node < float(alpha_stall):
+                        rate = float(sol_candidate["x"][rate_index])
+                        jump = (
+                            abs(rate - rate_previous[0])
+                            if rate_previous[0] is not None
+                            else 0.0
+                        )
+                        if fallback is None or jump < fallback[0]:
+                            fallback = (jump, sol_candidate, alpha_node)
+                        continue
                 if accepted and finite:
                     if attempt:
                         logger.info(
@@ -957,12 +1028,23 @@ class PhaseParameterized(TimeSeries):
                             node_index,
                             attempt,
                         )
+                    rate_previous[0] = float(sol_candidate["x"][rate_index])
                     return sol_candidate
 
                 last_error = RuntimeError(
                     f"status={stats.get('return_status')}, finite={finite}, "
                     f"||g||={residual_norm:.3e}"
                 )
+
+            if fallback is not None:
+                logger.info(
+                    "Phase node %d: no pre-stall root found; continuing on the "
+                    "post-stall one closest to the previous node (alpha %.1f deg)",
+                    node_index,
+                    np.degrees(fallback[2]),
+                )
+                rate_previous[0] = float(fallback[1]["x"][rate_index])
+                return fallback[1]
 
             message = (
                 f"Phase residual solve failed at node {node_index} after "
@@ -1355,14 +1437,18 @@ class PhaseParameterized(TimeSeries):
         if not opti:
             opti = ca.Opti()
 
-        # Previous NLP optimum, injected by ``Phase.initialize_phase`` between
-        # staged solves. When a variable matches this grid it seeds the NLP
-        # instead of the forward simulation: pass-to-pass warm starts are then
-        # exact, and -- crucially for ``winch_mode: free_speed`` -- the
-        # force-law march is no longer a failure point between passes. The
-        # march always closes v_r with the winch tension curve, so it can fail
-        # to trim a shape that was optimized under free reel speed even though
-        # the NLP is perfectly solvable from the previous optimum.
+        # Stored warm-start trajectory, injected by ``Phase.initialize_phase``:
+        # the previous NLP optimum between staged solves, or a forward
+        # simulation the caller already ran (``Phase.run_simulation(...,
+        # seed_warm_start=True)``). When a variable matches this grid it seeds
+        # the NLP instead of the forward simulation: pass-to-pass warm starts
+        # are then exact, and -- crucially for ``winch_mode: free_speed`` --
+        # the force-law march is no longer a failure point between passes.
+        # The march always closes v_r with the winch tension curve, so it can
+        # fail to trim a shape that was optimized under free reel speed even
+        # though the NLP is perfectly solvable from the previous optimum.
+        # ``warm_start_is_optimum`` tells a previous optimum (used as-is) from
+        # a simulated seed (still rate-limited below in free_speed mode).
         n_grid = int(self.pattern_config["sim_parameters"]["n_points"])
         warm_traj = {
             key: np.asarray(values, dtype=float).ravel()
@@ -1371,26 +1457,56 @@ class PhaseParameterized(TimeSeries):
             ).items()
             if np.asarray(values).size == n_grid
         }
+        warm_is_optimum = bool(getattr(self, "warm_start_is_optimum", False))
 
         def _warm_hist(name):
-            """Warm-start history: previous NLP optimum, else the forward sim."""
+            """Warm-start history: stored trajectory, else the forward sim."""
             if name in warm_traj:
                 return warm_traj[name]
             return np.asarray(self.return_variable(name), dtype=float).ravel()
 
-        try:
-            self.run_simulation_phase(start_state)
-        except RuntimeError as exc:
-            if not warm_traj:
-                raise
-            print(
-                f"Warm-start forward simulation failed mid-cycle ({exc}); "
-                "seeding the NLP from the previous optimum's trajectory instead."
+        # The forward march is only needed for seeds the stored trajectory
+        # does not provide. When it covers every per-node decision the march
+        # would re-derive values that are never used (its result was always
+        # overridden by the stored trajectory) -- at ~0.3-0.4 s/node for a
+        # full cycle, so skip it. Missing/mismatched keys fall back to the
+        # march exactly as before.
+        seed_keys = {
+            "s",
+            "s_dot",
+            "input_steering",
+            "speed_radial",
+            "distance_radial",
+            "tension_tether_ground",
+        }
+        if bool(
+            self.pattern_config.get("sim_parameters", {}).get(
+                "optimize_depower_profile", False
             )
-        chi_hist = self.return_variable("angle_course")
+        ):
+            seed_keys.add("input_depower")
+        if seed_keys <= set(warm_traj):
+            self.states = []
+            print(
+                "Warm start: NLP seeded from the stored "
+                f"{'optimum' if warm_is_optimum else 'forward-simulation'} "
+                f"trajectory ({n_grid} nodes); warm-start forward simulation "
+                "skipped."
+            )
+        else:
+            try:
+                self.run_simulation_phase(start_state)
+            except RuntimeError as exc:
+                if not warm_traj:
+                    raise
+                print(
+                    f"Warm-start forward simulation failed mid-cycle ({exc}); "
+                    "seeding the NLP from the stored trajectory instead."
+                )
+        chi_hist = _warm_hist("angle_course")
         if len(chi_hist):
-            print(f"Initial course angle (chi) from simulation: {chi_hist[0]:.2f} rad")
-            print(f"Final course angle (chi) from simulation: {chi_hist[-1]:.2f} rad")
+            print(f"Initial course angle (chi) from warm start: {chi_hist[0]:.2f} rad")
+            print(f"Final course angle (chi) from warm start: {chi_hist[-1]:.2f} rad")
         self.kite_model.reset_solver()
 
         if start_state_opti:
@@ -1418,6 +1534,33 @@ class PhaseParameterized(TimeSeries):
         # editing the global DEFAULT_OPTI_LIMITS.
         for _name, _bounds in (sim_params.get("opti_limits_override") or {}).items():
             limits[_name] = tuple(_bounds)
+        # Stall margin: keep alpha at least ``sim_parameters.stall_margin_deg``
+        # below the ROM's stall angle (aerodynamics.params.angle_of_attack_stall)
+        # at every node. It REPLACES the generic alpha box (a stand-in for
+        # "stay off the stall"), so alpha has no lower bound and no other
+        # upper bound when a margin is set. Independent of the seed march,
+        # which is not bounded.
+        stall_margin_deg = sim_params.get("stall_margin_deg")
+        if stall_margin_deg is not None:
+            alpha_stall = self.kite_model.kite.aero_params.get("angle_of_attack_stall")
+            if alpha_stall is None:
+                raise ValueError(
+                    "sim_parameters.stall_margin_deg needs the ROM to state "
+                    "aerodynamics.params.angle_of_attack_stall"
+                )
+            limits["angle_of_attack"] = (
+                -np.inf,
+                float(alpha_stall) - np.radians(float(stall_margin_deg)),
+            )
+        # The tether length is a physical ceiling, not a tunable bound: an
+        # override may tighten the radial range but never lift it past the
+        # tether (the radial chord cannot exceed the line it is made of).
+        tether_max = (
+            getattr(self.kite_model, "hardware_limits", None) or {}
+        ).get("_max_tether_length")
+        if tether_max is not None:
+            lb, ub = limits["distance_radial"]
+            limits["distance_radial"] = (lb, min(float(ub), float(tether_max)))
 
         pattern = create_pattern_from_dict(
             self.pattern_config_opti["pattern_type"], path_params
@@ -1443,12 +1586,20 @@ class PhaseParameterized(TimeSeries):
         # NLP-only: the forward warm-start simulation still marches with the
         # force law, which simply seeds v_r with a feasible trajectory.
         free_speed = sim_params.get("winch_mode", "force_law") == "free_speed"
+        # Winch acceleration capability, in precedence order: an explicit
+        # per-run ``sim_parameters["winch_acceleration"]``, then the drive's
+        # own envelope from system.yaml (ground_station.drums[0].
+        # max_winch_acceleration, resolved into ``limits`` by
+        # factory._extract_hardware_limits), then the numerical default.
         winch_acc = tuple(
             sim_params.get(
                 "winch_acceleration",
-                (
-                    DEFAULT_WINCH_CONFIG["min_acceleration"],
-                    DEFAULT_WINCH_CONFIG["max_acceleration"],
+                limits.get(
+                    "winch_acceleration",
+                    (
+                        DEFAULT_WINCH_CONFIG["min_acceleration"],
+                        DEFAULT_WINCH_CONFIG["max_acceleration"],
+                    ),
                 ),
             )
         )
@@ -1469,6 +1620,117 @@ class PhaseParameterized(TimeSeries):
 
         # Symbolic affine map: s_grid is MX because s1 is MX
         s_grid = s0 + (s1 - s0) * tau
+
+        # Periodic wrap (``sim_parameters["periodic_wrap"]``, default False):
+        # the phase is ONE closed period of a periodic spline, so node N-1's
+        # interval ends at node 0 and the seam gets the same rows every
+        # interior interval has -- radial continuity, the control slew-rate
+        # limits, the AoA bound -- plus its energy and time in the objective
+        # (the NLP is byte-identical with the flag off). With it, the cycle
+        # closes through the continuity row ``r[0] = r[N-1] + v_r[N-1] dt``
+        # instead of the one-sided ``close_radial_cycle`` pin, so the two are
+        # mutually exclusive. Needs a numeric s-span equal to the spline's
+        # period: on an open spline or a partial period the seam is not a
+        # physical interval.
+        periodic_wrap = bool(sim_params.get("periodic_wrap", False))
+        if periodic_wrap:
+            if bool(sim_params.get("close_radial_cycle", False)):
+                raise ValueError(
+                    "sim_parameters.periodic_wrap and close_radial_cycle are "
+                    "mutually exclusive: the wrap row already closes the radius"
+                )
+            if not isinstance(pattern, PeriodicBSpline):
+                raise ValueError(
+                    "sim_parameters.periodic_wrap needs a periodic spline "
+                    f"pattern, got {type(pattern).__name__}"
+                )
+            if isinstance(s0, ca.MX) or isinstance(s1, ca.MX):
+                raise ValueError(
+                    "sim_parameters.periodic_wrap needs numeric start_angle / "
+                    "end_angle (the phase must span exactly one period)"
+                )
+            period = float(pattern.s_final - pattern.s_init)
+            if abs(float(s1) - float(s0) - period) > 1e-9 * max(1.0, abs(period)):
+                raise ValueError(
+                    "sim_parameters.periodic_wrap needs end_angle - start_angle "
+                    f"== the spline period ({period:g}); got "
+                    f"{float(s1) - float(s0):g}"
+                )
+
+        # Mirror symmetry (``sim_parameters["mirror_symmetry"]``, default
+        # False; NLP unchanged when off): the closed cycle repeats MIRRORED
+        # about the meridian ``mirror_azimuth`` (default 0) after half a
+        # period. A uniform periodic cubic B-spline shifted by half a period
+        # is exactly its coefficient vector shifted by M/2 (knot coordinate
+        # x = u M moves by M/2), so the shape rows are linear coefficient
+        # pairs, C_phi[k+M/2] = 2 az_c - C_phi[k], C_beta[k+M/2] = C_beta[k];
+        # the node rows pair node i with node i + N/2: v_r and u_p equal,
+        # u_s opposite. Needs the periodic wrap (one closed period), even M
+        # and even N, and ``winch_mode: free_speed`` (with the force law v_r
+        # is tied to T by an equality, so the v_r rows duplicate what the
+        # mirrored T already implies -- degenerate rows); a fixed
+        # (non-decision) shape must already be mirrored. The mirror is
+        # PHYSICAL only about the downwind meridian az = 0 (the wind and the
+        # kite are symmetric about it); another ``mirror_azimuth`` is a
+        # geometric constraint only and is warned about.
+        #
+        # Known degeneracy (LICQ): every node bound is imposed on BOTH
+        # members of a mirrored pair, so wherever a bound is active (depower
+        # band, rate limits, height floor, turn radius, ...) it is active at
+        # i and at i + N/2 together, and those rows are linearly dependent
+        # once the mirror rows are added. IPOPT copes (regularization) but the
+        # multipliers of such pairs are not unique. The clean formulation is
+        # elimination: declare only the first half of the node controls and
+        # of the shape coefficients as variables and build the second half
+        # from them -- a known follow-up, not done here.
+        mirror_symmetry = bool(sim_params.get("mirror_symmetry", False))
+        mirror_azimuth = float(sim_params.get("mirror_azimuth", 0.0))
+        if mirror_symmetry:
+            if not periodic_wrap:
+                raise ValueError(
+                    "sim_parameters.mirror_symmetry needs periodic_wrap"
+                )
+            if not free_speed:
+                raise ValueError(
+                    "sim_parameters.mirror_symmetry needs winch_mode: free_speed "
+                    "(the force law makes the v_r mirror rows degenerate)"
+                )
+            if mirror_azimuth != 0.0:
+                warnings.warn(
+                    f"sim_parameters.mirror_azimuth = {mirror_azimuth:g} rad: the "
+                    "mirror is physical only about the downwind meridian az = 0; "
+                    "this one is a geometric constraint only",
+                    stacklevel=2,
+                )
+            if not isinstance(pattern, PeriodicBSpline):
+                raise ValueError(
+                    "sim_parameters.mirror_symmetry needs a periodic spline "
+                    f"pattern, got {type(pattern).__name__}"
+                )
+            if int(pattern.M) % 2:
+                raise ValueError(
+                    f"sim_parameters.mirror_symmetry needs an even M, got {pattern.M}"
+                )
+            if int(sim_params["n_points"]) % 2:
+                raise ValueError(
+                    "sim_parameters.mirror_symmetry needs an even n_points, "
+                    f"got {int(sim_params['n_points'])}"
+                )
+            _h = int(pattern.M) // 2
+            for _name, _mirror in (
+                ("C_phi", lambda c: 2.0 * mirror_azimuth - c),
+                ("C_beta", lambda c: c),
+            ):
+                if _name in (opti_params or {}):
+                    continue  # decision variable: tied by rows below
+                _c = np.asarray(path_params[_name], dtype=float).ravel()
+                _gap = float(np.max(np.abs(_c[_h:] - _mirror(_c[:_h]))))
+                if _gap > 1e-5:
+                    raise ValueError(
+                        f"sim_parameters.mirror_symmetry: the fixed {_name} is "
+                        f"not mirror-symmetric (max pair defect {_gap:.3g}); "
+                        "build the seed with symmetrize_periodic_path"
+                    )
         winch_model = Winch(pattern_config=radial_params)
         km_copy = self.substitute_parametrized_kinematics(pattern)
         self.km_param = km_copy
@@ -1582,15 +1844,17 @@ class PhaseParameterized(TimeSeries):
         if optimize_depower_profile:
             # Seed from the (constant) depower used in the warm-start simulation.
             warm_starts["input_depower"] = _fit_len(_warm_hist("input_depower"), N)
-        if free_speed and "speed_radial" not in warm_traj:
+        if free_speed and ("speed_radial" not in warm_traj or not warm_is_optimum):
             # The force-law seed steps v_r sharply at the force-clamp corners,
             # violating the new winch-acceleration constraints from iteration 0
             # (a needless ~1-2 of initial primal infeasibility). Rate-limit the
             # seed with a forward-backward clip so those rows start feasible.
             # (A previous-optimum seed already satisfies the acceleration rows,
-            # so it is used as-is.)
+            # so it is used as-is; a stored forward-simulation seed is clipped
+            # like a fresh one.) The step times come from the stored
+            # trajectory when it carries ``t``, else from the march.
             vr = np.asarray(warm_starts["speed_radial"], dtype=float).copy()
-            dt = _fit_len(np.diff(self.return_variable("t")), max(N - 1, 1))
+            dt = _fit_len(np.diff(_warm_hist("t")), max(N - 1, 1))
             dt = np.clip(dt, 1e-3, None)
             for i in range(N - 1):
                 vr[i + 1] = min(
@@ -1621,6 +1885,52 @@ class PhaseParameterized(TimeSeries):
             # the scaled decisions).
             init_values = np.asarray(values) / init_scales.get(var_name, 1.0)
             opti.set_initial(raw_init_vars[var_name], init_values)
+
+        # Optional: hold the per-node depower profile at its warm start
+        # (``sim_parameters["fix_depower_profile"]``). A feasibility round
+        # with a free profile has no productivity incentive and closes the
+        # cycle by reeling in fully powered, a point the power round can only
+        # leave through large moves; pinned, it closes through the reel speed
+        # and the shape. Off (absent/False): the NLP is unchanged.
+        if optimize_depower_profile and bool(sim_params.get("fix_depower_profile", False)):
+            if "input_depower" not in warm_starts:
+                raise ValueError("fix_depower_profile needs a depower warm start")
+            opti.subject_to(
+                opti_vars["input_depower"]
+                == ca.DM(np.asarray(warm_starts["input_depower"], dtype=float))
+            )
+            print("Depower profile held at its warm start (fix_depower_profile)")
+
+        # Optional: a proximal anchor on the depower profile instead of the
+        # hold (``sim_parameters["depower_anchor_weight"]``): w * mean of
+        # ((l_dp - l_dp_warm) / bound width)^2, added to the objective by
+        # ``Phase.run_simulation_opti``. For a warm start optimal at ANOTHER
+        # operating point (a wind continuation): in the rated region the extra
+        # force can only be shed by depowering, which the hold forbids (11 ->
+        # 12 m/s at 100 m stalled locally infeasible with the reel-out speed
+        # at its cap), while the anchor still makes reeling in powered a large,
+        # costly move. Off (absent/0): the NLP is unchanged.
+        depower_anchor = None
+        depower_anchor_weight = float(sim_params.get("depower_anchor_weight", 0.0) or 0.0)
+        if optimize_depower_profile and depower_anchor_weight > 0.0:
+            if bool(sim_params.get("fix_depower_profile", False)):
+                raise ValueError(
+                    "depower_anchor_weight and fix_depower_profile are mutually exclusive"
+                )
+            if "input_depower" not in warm_starts:
+                raise ValueError("depower_anchor_weight needs a depower warm start")
+            lo, hi = limits["input_depower"]
+            depower_anchor = depower_anchor_weight * ca.sumsqr(
+                (
+                    opti_vars["input_depower"]
+                    - ca.DM(np.asarray(warm_starts["input_depower"], dtype=float))
+                )
+                / float(hi - lo)
+            ) / N
+            print(
+                "Depower profile anchored to its warm start "
+                f"(depower_anchor_weight={depower_anchor_weight:g})"
+            )
 
         # Fix initial radius (constrain the scaled decision so the row stays
         # O(1)). With ``r0`` as a named optimization parameter the pin follows
@@ -1689,6 +1999,235 @@ class PhaseParameterized(TimeSeries):
             + flat_syms,
             [km_copy.angle_course],
         )
+        # Geodesic curvature of the pattern on the unit sphere (a pure function
+        # of the spline coefficients and s; see
+        # ``ParametrizedKinematics.curvature_geodesic``). Same input list as the
+        # residual so it can be evaluated node-by-node with the same argument
+        # bundle; the speed/tension inputs are simply unused. Feeds the optional
+        # minimum-turn-radius constraint below and the per-node ``turn_radius``
+        # diagnostic exported through the objective dict.
+        path_kin = ParametrizedKinematics(pattern, self)
+        curvature_eq = ca.Function(
+            "path_curvature",
+            [
+                self.s,
+                self.s_dot,
+                km_copy.input_steering,
+                km_copy.tension_tether_ground,
+                km_copy.speed_radial,
+                km_copy.distance_radial,
+            ]
+            + flat_syms,
+            [
+                path_kin.curvature_geodesic,
+                path_kin.curvature_numerator,
+                path_kin.dsigma_ds,
+            ],
+        )
+        # Per-node Functions: expand each ONCE to SX (see
+        # ``_expand_node_function``) so the N calls below evaluate and
+        # differentiate as compiled scalar code without the solver having to
+        # expand the whole N-node graph. ``sim_parameters
+        # ["expand_node_functions"]`` (default True) turns this off; combine
+        # with ``expand_nlp: false`` for linear-in-N construction time/memory.
+        expand_nodes = bool(sim_params.get("expand_node_functions", True))
+        if expand_nodes:
+            residual = _expand_node_function(residual)
+            aoa_eq = _expand_node_function(aoa_eq)
+            chi_eq = _expand_node_function(chi_eq)
+            curvature_eq = _expand_node_function(curvature_eq)
+
+        # --- Local-support node functions (periodic spline, coefficients
+        # optimized). A shared per-node Function takes ``s`` symbolically, so
+        # its graph references ALL M spline coefficients and its Jacobian is a
+        # dense M-wide block per node (~2x the NLP Jacobian nonzeros, ~10x
+        # the per-iteration derivative work at M~40) -- which is what
+        # whole-graph ``expand=True`` avoids by constant-folding each node's
+        # numeric ``s``. Instead, build the Functions per KNOT INTERVAL from a
+        # truncated-support copy of the spline (``PeriodicBSpline
+        # .local_support(k)``: only the 4 basis terms non-zero on that
+        # interval), lazily and cached: at most M copies of a ~0.1 s build,
+        # independent of n_points, and every node call depends structurally
+        # on exactly its 4+4 supporting control points. Exactness: the
+        # truncation is exact on the closed interval, so picking k by
+        # ``knot_interval(s_i)`` reproduces the full spline at every node and
+        # sub-sample. Only with SX node functions (where the dense block
+        # costs) and a periodic spline whose coefficients are decisions.
+        local_support = (
+            expand_nodes
+            and isinstance(pattern, PeriodicBSpline)
+            and pattern.support_interval is None
+            and any(name in (opti_params or {}) for name in ("C_phi", "C_beta"))
+        )
+        _node_fn_cache = {}
+        # Function INPUT symbols, captured now: the trailing flat_sym (the
+        # scalar depower) is pinned to a number just before the node loop, and
+        # the per-interval Functions are built lazily -- possibly after that.
+        _node_fn_syms = list(flat_syms)
+        _node_in_base = [
+            self.s,
+            self.s_dot,
+            km_copy.input_steering,
+            km_copy.tension_tether_ground,
+            km_copy.speed_radial,
+            km_copy.distance_radial,
+        ]
+
+        def _node_functions(k):
+            """(residual, aoa, curvature, path) SX Functions for knot interval k."""
+            fns = _node_fn_cache.get(k)
+            if fns is None:
+                pat_k = pattern.local_support(k)
+                km_k = self.substitute_parametrized_kinematics(pattern=pat_k)
+                km_k.establish_residual()
+                kin_k = ParametrizedKinematics(pat_k, self)
+                ins = _node_in_base + _node_fn_syms
+                fns = (
+                    _expand_node_function(
+                        ca.Function(f"residual_k{k}", ins, [km_k.residual])
+                    ),
+                    _expand_node_function(
+                        ca.Function(
+                            f"aoa_k{k}", ins, [km_k.expression("angle_of_attack")]
+                        )
+                    ),
+                    _expand_node_function(
+                        ca.Function(
+                            f"path_curvature_k{k}",
+                            ins,
+                            [
+                                kin_k.curvature_geodesic,
+                                kin_k.curvature_numerator,
+                                kin_k.dsigma_ds,
+                            ],
+                        )
+                    ),
+                    _expand_node_function(
+                        ca.Function(
+                            f"path_k{k}",
+                            [self.s] + _node_fn_syms,
+                            [
+                                pat_k.azimuth(km_k.distance_radial, self.s),
+                                pat_k.elevation(km_k.distance_radial, self.s),
+                            ],
+                        )
+                    ),
+                )
+                _node_fn_cache[k] = fns
+            return fns
+
+        def _knot_of(s_value):
+            return int(pattern.knot_interval(float(s_value)))
+
+        def _node_syms(i):
+            """Call-time argument bundle of node i: the profile depower swaps
+            in per node; a fixed scalar depower is its numeric value (the same
+            pin the node loop applies to ``flat_syms`` below)."""
+            syms = list(flat_syms)
+            if optimize_depower_profile:
+                syms[-1] = opti_vars["input_depower"][i]
+            elif "input_depower" not in opti_params:
+                syms[-1] = sim_params["input_depower"]
+            return syms
+
+        # Diagnostic flag (also lets callers pick expand_nlp per problem: with
+        # local support both modes are cheap -- True ~2x faster per iteration,
+        # False ~40% less memory; without it True is the only fast one).
+        self.nlp_local_support = bool(local_support)
+        if local_support:
+            print(
+                "NLP node functions: local-support periodic spline (per knot "
+                f"interval, M={pattern.M}) -- sparse coefficient Jacobian"
+            )
+        # Optional minimum physical turn radius R_min [m] of the flown path
+        # (``sim_parameters["min_turn_radius"]``; None/0 -> off, the NLP is
+        # unchanged), i.e. r / |kappa| >= R_min. Enforced on
+        # ``turn_radius_subsamples`` points per node interval (default 4, k = 0
+        # being the node itself, node states held over the interval): the
+        # spline can form a curvature peak or a cusp BETWEEN two nodes that no
+        # node-wise quantity sees, so node-only enforcement misses exactly the
+        # paths that matter. Written in the polynomial (cross-product) form
+        #     -r sigma'^3 <= R_min * (kappa sigma'^3) <= r sigma'^3
+        # rather than R_min |kappa| <= r: kappa ~ 1/sigma'^3 blows up near a
+        # cusp, and a cold IPOPT path that passes through a near-cusp shape then
+        # stalls on the exploding rows (300-340 m cold solves went from
+        # converged to 1000-iteration failures with the |kappa| form); the
+        # polynomial numerator is smooth and bounded there. Purely geometric,
+        # independent of the steering ROM: tight loops and near-cusps are
+        # infeasible by construction (an exactly straight, reversing path has
+        # zero curvature and is not excluded -- that collapse is caught by the
+        # dynamics being infeasible, not by geometry).
+        min_turn_radius = float(sim_params.get("min_turn_radius") or 0.0)
+        if min_turn_radius < 0.0:
+            raise ValueError(
+                f"sim_parameters['min_turn_radius'] must be >= 0, got {min_turn_radius}"
+            )
+        turn_radius_subsamples = int(sim_params.get("turn_radius_subsamples", 4))
+        if turn_radius_subsamples < 1:
+            raise ValueError("sim_parameters['turn_radius_subsamples'] must be >= 1")
+        # Companion floor on the parametric speed sigma'(s) >= floor * sigma_ref
+        # at the same samples (constraint active only). The periodic spline can
+        # otherwise form a HESITATION point -- sigma' -> 0 over a sliver of s,
+        # s_dot jumping up to compensate -- carrying a millimetre-long kink of
+        # tiny radius. That kink is physically meaningless but shows up as a
+        # sub-R_min sample in the returned path, and the sigma'^3-scaled rows
+        # above cannot see it (both sides vanish below IPOPT's tolerance).
+        # Legitimate optima have min sigma' >= ~0.4 sigma_ref; the artefacts
+        # sit at <= 0.1, so 0.2 separates them without touching real shapes.
+        turn_radius_sigma_floor = float(sim_params.get("turn_radius_sigma_floor", 0.2))
+        if not 0.0 <= turn_radius_sigma_floor < 1.0:
+            raise ValueError(
+                "sim_parameters['turn_radius_sigma_floor'] must be in [0, 1)"
+            )
+        # The same anti-hesitation floor on its own, without a turn-radius
+        # constraint (``sim_parameters["parametric_speed_floor"]``, a fraction
+        # of sigma_ref; None/0 -> off, the NLP is unchanged). Without it the
+        # optimizer can collapse sigma' at one node (the full-cycle LEI-V3
+        # optimum had sigma' = 0.07 at the reel-in exit with s_dot 2.6), and a
+        # step past zero is a true cusp: the path reverses, the node's trim
+        # breaks (AoA ~146 deg seen) and IPOPT ends in restoration. Ignored
+        # when min_turn_radius is set (turn_radius_sigma_floor applies).
+        parametric_speed_floor = float(sim_params.get("parametric_speed_floor") or 0.0)
+        if not 0.0 <= parametric_speed_floor < 1.0:
+            raise ValueError(
+                "sim_parameters['parametric_speed_floor'] must be in [0, 1)"
+            )
+        if min_turn_radius > 0.0:
+            parametric_speed_floor = 0.0
+        _sigma_ref = 1.0  # typical unit-sphere arc rate sigma' of the pattern
+        if min_turn_radius > 0.0:
+            print(
+                f"NLP turn-radius constraint: R >= {min_turn_radius:g} m on "
+                f"{turn_radius_subsamples} sample(s) per node interval"
+            )
+        elif parametric_speed_floor > 0.0:
+            print(
+                f"NLP parametric-speed floor: sigma' >= {parametric_speed_floor:g} "
+                f"sigma_ref on {turn_radius_subsamples} sample(s) per node interval"
+            )
+        if min_turn_radius > 0.0 or parametric_speed_floor > 0.0:
+            # sigma' scale from the numeric starting pattern: angular path
+            # length of one pass over [s0, s1] divided by the s-span.
+            try:
+                _pat0 = create_pattern_from_dict(
+                    self.pattern_config["pattern_type"],
+                    self.pattern_config["path_parameters"],
+                )
+                _s0 = float(self.pattern_config["sim_parameters"]["start_angle"])
+                _s1 = float(self.pattern_config["sim_parameters"]["end_angle"])
+                _ss = np.linspace(_s0, _s1, 400)
+                _r0 = float(self.pattern_config["path_parameters"].get("r0", 1.0))
+                _ph = np.asarray(_pat0.azimuth(_r0, _ss)).ravel()
+                _be = np.asarray(_pat0.elevation(_r0, _ss)).ravel()
+                _dsig = np.sqrt(
+                    np.diff(_be) ** 2 + (np.diff(_ph) * np.cos(_be[:-1])) ** 2
+                )
+                _sigma_ref = float(max(np.sum(_dsig) / max(_s1 - _s0, 1e-9), 1e-3))
+            except Exception:
+                _sigma_ref = 1.0
+        # Row scale for the polynomial constraint below: R_min * kappa * sigma'^3
+        # ~ r sigma'^3 at the bound, so divide both sides by R_SCALE sigma_ref^3.
+        _turn_scale = R_SCALE * _sigma_ref**3
         # Constrained NLP expressions collected for the post-solve constraint
         # report (``Phase._print_constraint_report``). Each row carries the
         # NLP's OWN expression plus the bounds actually applied, so the
@@ -1707,10 +2246,224 @@ class PhaseParameterized(TimeSeries):
             }
 
         # --- Safety / geometry constraint
-        height = pattern.z(opti_vars["distance_radial"], s_grid[:-1])  # N entries
+        if local_support:
+            # Node elevations through the local-support path functions: the
+            # height rows then depend on each node's 4 supporting C_beta
+            # entries only (the dense N x M block of ``pattern.z`` on the
+            # full spline is what every other node row avoids).
+            elevation_nodes = ca.vertcat(
+                *[
+                    _node_functions(_knot_of(s_grid[i]))[3](
+                        s_grid[i], *_node_syms(i)
+                    )[1]
+                    for i in range(N)
+                ]
+            )
+            height = opti_vars["distance_radial"] * ca.sin(elevation_nodes)
+        else:
+            height = pattern.z(opti_vars["distance_radial"], s_grid[:-1])  # N entries
         opti.subject_to(height >= limits["height"][0])
         opti.subject_to(height <= limits["height"][1])
         _report_ineq("height", height, limits["height"], "m")
+
+        # --- Optional azimuth-amplitude floor
+        # ``sim_parameters["min_azimuth_amplitude"]`` [rad] guards the degenerate
+        # C_phi -> 0 collapse (a zero-width, reversing "figure" on which the
+        # dynamics are infeasible) with ONE smooth row: the mean square of the
+        # azimuth over the nodes must be >= a^2/2. A figure-eight or helix of
+        # azimuth half-width A has mean(phi^2) = A^2/2, so this reads "the
+        # figure's azimuth half-width stays >= a". Off by default: the NLP is
+        # unchanged when the key is absent or 0. (Box limits on where the path
+        # may go are the C_phi / C_beta coefficient bounds -- convex hull of the
+        # B-spline -- set via ``opti_limits_override``.)
+        min_azimuth_amplitude = float(
+            sim_params.get("min_azimuth_amplitude") or 0.0
+        )
+        if min_azimuth_amplitude < 0.0:
+            raise ValueError(
+                f"min_azimuth_amplitude must be >= 0, got {min_azimuth_amplitude}"
+            )
+        if min_azimuth_amplitude > 0.0:
+            azimuth_nodes = pattern.azimuth(
+                opti_vars["distance_radial"], s_grid[:-1]
+            )  # N entries
+            azimuth_ms = ca.sumsqr(azimuth_nodes) / azimuth_nodes.numel()
+            amplitude_row = 2.0 * azimuth_ms - min_azimuth_amplitude**2
+            # (``ca.depends_on(expr, opti.x)`` is False for Opti variables --
+            # opti.x is a view, not the symbols -- so test for free symbols.)
+            if isinstance(amplitude_row, ca.MX) and ca.symvar(amplitude_row):
+                opti.subject_to(amplitude_row >= 0.0)
+                _report_ineq(
+                    "azimuth_amplitude (rms*sqrt2)",
+                    ca.sqrt(2.0 * azimuth_ms + 1e-12),
+                    (min_azimuth_amplitude, np.inf),
+                    "rad",
+                )
+                print(
+                    "Azimuth amplitude floor: "
+                    f"{np.degrees(min_azimuth_amplitude):.1f} deg"
+                )
+            else:
+                # C_phi is not an optimization parameter: the pattern's azimuth
+                # is fixed, so the floor is a plain check on the given shape.
+                value = (
+                    float(ca.evalf(amplitude_row))
+                    if isinstance(amplitude_row, ca.MX)
+                    else float(amplitude_row)
+                )
+                if value < 0.0:
+                    raise ValueError(
+                        "min_azimuth_amplitude "
+                        f"({np.degrees(min_azimuth_amplitude):.1f} deg) is "
+                        "violated by the fixed pattern and C_phi is not optimized"
+                    )
+
+        # --- Elevation-span ceiling
+        # The mirror of the azimuth floor above: ONE smooth row caps how TALL
+        # the figure is -- the mean square of the elevation's deviation from
+        # its own mean must be <= b^2/2. A figure-eight or helix of elevation
+        # half-span B satisfies that with B <= b. Where ``elevation_max`` (a
+        # C_beta coefficient bound) only caps where the path may SIT, this
+        # caps its SPAN, which is what the curvature margin actually reads:
+        # lifting the floor with the ceiling fixed squeezes the figure into a
+        # narrower band and concentrates curvature at the lobe shoulders.
+        # Off by default: the NLP is unchanged when the key is absent or 0.
+        max_elevation_amplitude = float(
+            sim_params.get("max_elevation_amplitude") or 0.0
+        )
+        if max_elevation_amplitude < 0.0:
+            raise ValueError(
+                f"max_elevation_amplitude must be >= 0, got "
+                f"{max_elevation_amplitude}"
+            )
+        if max_elevation_amplitude > 0.0:
+            elevation_nodes = pattern.elevation(
+                opti_vars["distance_radial"], s_grid[:-1]
+            )  # N entries
+            el_dev = elevation_nodes - ca.sum1(elevation_nodes) / (
+                elevation_nodes.numel()
+            )
+            el_ms = ca.sumsqr(el_dev) / el_dev.numel()
+            el_amplitude_row = 2.0 * el_ms - max_elevation_amplitude**2
+            # (``ca.depends_on(expr, opti.x)`` is False for Opti variables --
+            # opti.x is a view, not the symbols -- so test for free symbols.)
+            if isinstance(el_amplitude_row, ca.MX) and ca.symvar(el_amplitude_row):
+                opti.subject_to(el_amplitude_row <= 0.0)
+                _report_ineq(
+                    "elevation_amplitude (rms*sqrt2)",
+                    ca.sqrt(2.0 * el_ms + 1e-12),
+                    (0.0, max_elevation_amplitude),
+                    "rad",
+                )
+                print(
+                    "Elevation amplitude ceiling: "
+                    f"{np.degrees(max_elevation_amplitude):.1f} deg"
+                )
+            else:
+                # C_beta is not an optimization parameter: the pattern's
+                # elevation is fixed, so the ceiling is a plain check on the
+                # given shape.
+                value = (
+                    float(ca.evalf(el_amplitude_row))
+                    if isinstance(el_amplitude_row, ca.MX)
+                    else float(el_amplitude_row)
+                )
+                if value > 0.0:
+                    raise ValueError(
+                        "max_elevation_amplitude "
+                        f"({np.degrees(max_elevation_amplitude):.1f} deg) is "
+                        "violated by the fixed pattern and C_beta is not "
+                        "optimized"
+                    )
+
+        # --- Climb-angle ceiling
+        # ``sim_parameters["max_climb_angle"]`` [rad] caps how steeply the path
+        # may CLIMB in the azimuth/elevation plane: wherever the elevation
+        # rises along the flight direction (s increases with time, s_dot > 0),
+        # d(elevation) <= tan(gamma) * |d(azimuth)|. Descending is free, so
+        # the vertical dives at the sides of a figure-eight stay allowed. A
+        # kite cannot follow a path that rises much steeper than 45 deg: it
+        # loses speed and force on the climb. Written smooth, without abs or
+        # a branch, as
+        #     max(d_el, 0)^2 - tan(gamma)^2 * d_az^2 <= 0,
+        # whose max(., 0)^2 has a continuous derivative. The slopes are
+        # central differences of the spline on ``turn_radius_subsamples``
+        # points per node interval (both are linear in the coefficients), the
+        # rows scaled by the typical slope so they stay O(1). Plain
+        # azimuth/elevation slope, no cos(elevation) factor on the azimuth.
+        # Off by default: the NLP is unchanged when the key is absent or 0.
+        max_climb_angle = float(sim_params.get("max_climb_angle") or 0.0)
+        if not 0.0 <= max_climb_angle < 0.5 * np.pi:
+            raise ValueError(
+                f"max_climb_angle must be in [0, pi/2), got {max_climb_angle}"
+            )
+        if max_climb_angle > 0.0:
+            tan2 = float(np.tan(max_climb_angle)) ** 2
+            # s_grid may be symbolic (an optimized s range): slice, no numpy.
+            ds_nodes = s_grid[1:] - s_grid[:-1]  # N entries
+            h = 0.01 * ds_nodes
+            # Typical slope of the pattern per unit s (angular path length /
+            # s-span) on the numeric start pattern, as for ``_sigma_ref``.
+            try:
+                _pat0 = create_pattern_from_dict(
+                    self.pattern_config["pattern_type"],
+                    self.pattern_config["path_parameters"],
+                )
+                _s0 = float(self.pattern_config["sim_parameters"]["start_angle"])
+                _s1 = float(self.pattern_config["sim_parameters"]["end_angle"])
+                _ss = np.linspace(_s0, _s1, 400)
+                _r0 = float(self.pattern_config["path_parameters"].get("r0", 1.0))
+                _ph = np.asarray(_pat0.azimuth(_r0, _ss)).ravel()
+                _be = np.asarray(_pat0.elevation(_r0, _ss)).ravel()
+                _slope_ref = float(
+                    max(
+                        np.sum(np.hypot(np.diff(_ph), np.diff(_be)))
+                        / max(_s1 - _s0, 1e-9),
+                        1e-3,
+                    )
+                )
+            except Exception:
+                _slope_ref = 1.0
+            climb_rows = []
+            for k in range(turn_radius_subsamples):
+                s_k = s_grid[:-1] + (k / turn_radius_subsamples) * ds_nodes
+                r_nodes = opti_vars["distance_radial"]
+                d_az = (
+                    pattern.azimuth(r_nodes, s_k + h) - pattern.azimuth(r_nodes, s_k - h)
+                ) / (2.0 * h)
+                d_el = (
+                    pattern.elevation(r_nodes, s_k + h)
+                    - pattern.elevation(r_nodes, s_k - h)
+                ) / (2.0 * h)
+                climb_rows.append(
+                    (ca.fmax(d_el, 0.0) ** 2 - tan2 * d_az**2) / _slope_ref**2
+                )
+            climb_row = ca.vertcat(*climb_rows)
+            if isinstance(climb_row, ca.MX) and ca.symvar(climb_row):
+                opti.subject_to(climb_row <= 0.0)
+                _report_ineq("climb_angle_row", climb_row, (-np.inf, 0.0), "-")
+                print(
+                    "Climb-angle ceiling: "
+                    f"{np.degrees(max_climb_angle):.1f} deg on "
+                    f"{turn_radius_subsamples} sample(s) per node interval"
+                )
+            else:
+                # The pattern is fixed: the ceiling is a plain check on it.
+                value = float(
+                    np.max(
+                        np.asarray(
+                            ca.evalf(climb_row)
+                            if isinstance(climb_row, ca.MX)
+                            else ca.DM(climb_row)
+                        )
+                    )
+                )
+                if value > 1e-9:
+                    raise ValueError(
+                        "max_climb_angle "
+                        f"({np.degrees(max_climb_angle):.1f} deg) is violated "
+                        "by the fixed pattern and C_phi/C_beta are not optimized"
+                    )
 
         # Constraint init and end azimuth
         # azimuth = pattern.azimuth(opti_vars["distance_radial"], s_grid[:-1])
@@ -1744,7 +2497,14 @@ class PhaseParameterized(TimeSeries):
         E0 = float(np.sum(P_hist[:-1] * dt_hist))  # left Riemann sum
         T0 = float(np.sum(dt_hist))
         P0 = E0 / (T0 + 1e-12)
-        P_scale = max(abs(P0), 1.0)
+        # Floor by the typical power MAGNITUDE: on a closed cycle the net
+        # power can nearly cancel (a warm start that only closes the cycle
+        # sits near 0 W), and a scale of a few watts makes the power objective
+        # dwarf the trust region and the constraints -- IPOPT then trades
+        # trim violation for "power" and ends in restoration. Unchanged
+        # whenever |P0| >= 0.25 mean|P| (reel-out phases, ordinary seeds).
+        P_abs_mean = float(np.sum(np.abs(P_hist[:-1]) * dt_hist)) / (T0 + 1e-12)
+        P_scale = max(abs(P0), 0.25 * P_abs_mean, 1.0)
 
         # --- Auto scales from warm start (robust to outliers)
         def _scale(x, floor=1.0):
@@ -1812,6 +2572,9 @@ class PhaseParameterized(TimeSeries):
         _rep_trim = []
         _rep_continuity = []
         _rep_tension = []  # force_law: scaled residuals; free_speed: node tension
+        _rep_turn_radius = []  # node-wise turn radius r/|kappa| [m] (k = 0 samples)
+        _rep_turn_radius_dense = []  # all sub-samples; the constrained set when active
+        _rep_sigma = []  # parametric speed sigma'/sigma_ref at the samples (floor rows)
 
         for i in range(N):
 
@@ -1832,6 +2595,13 @@ class PhaseParameterized(TimeSeries):
                     else sim_params["input_depower"]
                 )
 
+            # Local-support mode: this node's (and its sub-samples') functions
+            # come from the knot interval the sample falls in.
+            if local_support:
+                residual_i_fn, aoa_i_fn, _, _ = _node_functions(_knot_of(s_grid[i]))
+            else:
+                residual_i_fn, aoa_i_fn = residual, aoa_eq
+
             # The node tension is the decision variable itself, fed straight
             # into the trim residual below -- the radial force balance is what
             # determines it (same square per-node structure as the forward
@@ -1850,17 +2620,26 @@ class PhaseParameterized(TimeSeries):
                 opti.subject_to(T_i / S["T"] <= _free_tf_hi / S["T"])
                 _rep_tension.append(T_i)
             else:
-                # The winch force law ties the tension to the reel speed.
-                T_model = winch_model.tension_curve(
-                    opti_vars["speed_radial"][i], input_depower=node_depower
+                # The winch force law ties the tension to the reel speed:
+                # T_i - T(v_r), or its blend with the speed form near v_sat
+                # (Winch.radial_equation), same zero set, in newtons.
+                law_residual = winch_model.radial_equation(
+                    speed_radial=opti_vars["speed_radial"][i],
+                    tension_tether_ground=T_i,
+                    input_depower=node_depower,
                 )
 
                 # Scale the tether law residual
-                opti.subject_to((T_i - T_model) / S["T"] == 0)
-                _rep_tension.append((T_i - T_model) / S["T"])
+                opti.subject_to(law_residual / S["T"] == 0)
+                _rep_tension.append(law_residual / S["T"])
+                if winch_model.uses_speed_law():
+                    # The speed form is flat at v_sat, so it no longer caps
+                    # the force by itself the way T(v) <= max_tether_force did.
+                    _tf_hi = float(radial_params["max_tether_force"])
+                    opti.subject_to(T_i / S["T"] <= _tf_hi / S["T"])
 
             # Residual equations (scaled)
-            res_i = residual(
+            res_i = residual_i_fn(
                 s_grid[i],
                 opti_vars["s_dot"][i],
                 opti_vars["input_steering"][i],
@@ -1904,7 +2683,7 @@ class PhaseParameterized(TimeSeries):
                 t_eff += dt_i
 
                 # LImit angle of attack
-                aoa_i = aoa_eq(
+                aoa_i = aoa_i_fn(
                     s_grid[i],
                     opti_vars["s_dot"][i],
                     opti_vars["input_steering"][i],
@@ -1913,9 +2692,131 @@ class PhaseParameterized(TimeSeries):
                     opti_vars["distance_radial"][i],
                     *node_syms,
                 )
-                opti.subject_to(aoa_i <= limits["angle_of_attack"][1])
-                opti.subject_to(aoa_i >= limits["angle_of_attack"][0])
+                if np.isfinite(limits["angle_of_attack"][1]):
+                    opti.subject_to(aoa_i <= limits["angle_of_attack"][1])
+                if np.isfinite(limits["angle_of_attack"][0]):
+                    opti.subject_to(aoa_i >= limits["angle_of_attack"][0])
                 _rep_aoa.append(aoa_i)
+
+            # Turn radius of the pattern over this node's interval: R = r_i /
+            # |kappa(s)| with kappa the unit-sphere geodesic curvature (node
+            # states held; s_grid has N+1 entries so s_grid[i+1] exists for
+            # every node). k = 0 is the node itself (diagnostic column); the
+            # sub-samples feed the ``turn_radius_min`` diagnostic always and
+            # add constraint rows only when the constraint is active.
+            n_sub = turn_radius_subsamples
+            for k in range(n_sub):
+                s_ik = s_grid[i] + (k / n_sub) * (s_grid[i + 1] - s_grid[i])
+                curvature_ik_fn = (
+                    _node_functions(_knot_of(s_ik))[2]
+                    if local_support
+                    else curvature_eq
+                )
+                kappa_ik, kappa_num_ik, dsigma_ik = curvature_ik_fn(
+                    s_ik,
+                    opti_vars["s_dot"][i],
+                    opti_vars["input_steering"][i],
+                    T_i,
+                    opti_vars["speed_radial"][i],
+                    opti_vars["distance_radial"][i],
+                    *node_syms,
+                )
+                R_ik = opti_vars["distance_radial"][i] / ca.sqrt(kappa_ik**2 + 1e-6)
+                if k == 0:
+                    _rep_turn_radius.append(R_ik)
+                _rep_turn_radius_dense.append(R_ik)
+                if min_turn_radius > 0.0:
+                    # -r sigma'^3 <= R_min kappa sigma'^3 <= r sigma'^3, i.e.
+                    # r/|kappa| >= R_min without the 1/sigma'^3 blow-up; scaled
+                    # by the radius scale and the typical sigma'^3 to stay O(1).
+                    lhs = min_turn_radius * kappa_num_ik / _turn_scale
+                    rhs = distance_scaled[i] * dsigma_ik**3 / _sigma_ref**3
+                    opti.subject_to(lhs <= rhs)
+                    opti.subject_to(-lhs <= rhs)
+                    if turn_radius_sigma_floor > 0.0:
+                        # No hesitation points: keeps the rows above meaningful
+                        # and the returned point set free of micro-kinks.
+                        opti.subject_to(
+                            dsigma_ik / _sigma_ref >= turn_radius_sigma_floor
+                        )
+                        _rep_sigma.append(dsigma_ik / _sigma_ref)
+                elif parametric_speed_floor > 0.0:
+                    opti.subject_to(dsigma_ik / _sigma_ref >= parametric_speed_floor)
+                    _rep_sigma.append(dsigma_ik / _sigma_ref)
+
+        if periodic_wrap:
+            # Seam interval [s_grid[N-1], s_grid[N]] -> node 0: the same
+            # left-rule rows as the interior intervals (same v_r expression
+            # the interior rows use in either winch mode), appended to the
+            # same report groups so the seam shows up next to them.
+            i_last = N - 1
+            dt_w = (s_grid[N] - s_grid[i_last]) / opti_vars["s_dot"][i_last]
+            T_last = opti_vars["tension_tether_ground"][i_last]
+            r_cont_w = (
+                opti_vars["distance_radial"][0]
+                - opti_vars["distance_radial"][i_last]
+                - opti_vars["speed_radial"][i_last] * dt_w
+            ) / S["r"]
+            opti.subject_to(r_cont_w == 0)
+            _rep_continuity.append(r_cont_w)
+            for ctrl in node_controls:
+                u_ctrl = opti_vars[ctrl.name]
+                ctrl_rate = (u_ctrl[0] - u_ctrl[i_last]) / dt_w
+                opti.subject_to(ctrl_rate <= ctrl.rate_limit[1])
+                opti.subject_to(ctrl_rate >= ctrl.rate_limit[0])
+                _rep_rates[ctrl.name].append(ctrl_rate)
+            energy += T_last * opti_vars["speed_radial"][i_last] * dt_w
+            t_eff += dt_w
+            aoa_w_fn = (
+                _node_functions(_knot_of(s_grid[i_last]))[1]
+                if local_support
+                else aoa_eq
+            )
+            aoa_w = aoa_w_fn(
+                s_grid[i_last],
+                opti_vars["s_dot"][i_last],
+                opti_vars["input_steering"][i_last],
+                T_last,
+                opti_vars["speed_radial"][i_last],
+                opti_vars["distance_radial"][i_last],
+                *_node_syms(i_last),
+            )
+            if np.isfinite(limits["angle_of_attack"][1]):
+                opti.subject_to(aoa_w <= limits["angle_of_attack"][1])
+            if np.isfinite(limits["angle_of_attack"][0]):
+                opti.subject_to(aoa_w >= limits["angle_of_attack"][0])
+            _rep_aoa.append(aoa_w)
+
+        if mirror_symmetry:
+            # Linear equality rows of the half-period mirror (see the guard
+            # block above for the derivation and requirements).
+            _rep_mirror = []
+            _h = int(pattern.M) // 2
+            for _name, _sign, _offset in (
+                ("C_phi", -1.0, 2.0 * mirror_azimuth),
+                ("C_beta", 1.0, 0.0),
+            ):
+                _c = (opti_params or {}).get(_name)
+                if _c is None:
+                    continue
+                for k in range(_h):
+                    row = _c[k + _h] - (_offset + _sign * _c[k])
+                    opti.subject_to(row == 0)
+                    _rep_mirror.append(row)
+            half = N // 2
+            node_pairs = [("speed_radial", 1.0, S["vr"]), ("input_steering", -1.0, 1.0)]
+            if optimize_depower_profile:
+                node_pairs.append(("input_depower", 1.0, 1.0))
+            for _name, _sign, _scale in node_pairs:
+                u_ctrl = opti_vars[_name]
+                for i in range(half):
+                    row = (u_ctrl[i + half] - _sign * u_ctrl[i]) / _scale
+                    opti.subject_to(row == 0)
+                    _rep_mirror.append(row)
+            constraint_report["mirror_symmetry (scaled)"] = {
+                "expr": ca.vertcat(*_rep_mirror),
+                "equality": True,
+            }
 
         power = energy / (t_eff + 1e-12)
 
@@ -1935,12 +2836,16 @@ class PhaseParameterized(TimeSeries):
             lims = limits.get(name)
             return float(lims[1] - lims[0]) if lims and lims[1] > lims[0] else fallback
 
-        n_int = max(N - 1, 1)
+        # Under the periodic wrap the seam step (node N-1 -> node 0) is one
+        # more interval, penalized like the others.
+        n_int = N if periodic_wrap else max(N - 1, 1)
         reg = 0
         for ctrl in node_controls:
-            reg = reg + ca.sumsqr(
-                ca.diff(opti_vars[ctrl.name]) / _bound_width(ctrl.name)
-            )
+            u_ctrl = opti_vars[ctrl.name]
+            width = _bound_width(ctrl.name)
+            reg = reg + ca.sumsqr(ca.diff(u_ctrl) / width)
+            if periodic_wrap:
+                reg = reg + ((u_ctrl[0] - u_ctrl[N - 1]) / width) ** 2
         reg = reg / n_int
 
         # --- Initials for optimization parameters
@@ -1973,6 +2878,42 @@ class PhaseParameterized(TimeSeries):
                 opti.subject_to(mx <= ub)
             else:
                 continue
+
+        # --- Mirror symmetry of the figure-eight
+        # Nothing in the physics prefers one side (symmetric kite, wind and
+        # gravity), but the power objective barely reads the lobe balance, so
+        # the multi-modal solve settles on lopsided figures. Under
+        # ``symmetric_pattern`` the path is pinned to its mirror image half a
+        # period later: C_phi[k + M/2] = -C_phi[k], C_beta[k + M/2] = C_beta[k]
+        # (exact for a uniform periodic spline with even M; see
+        # ``symmetrize_periodic_coefficients``). Linear rows, and the warm
+        # start is projected onto them so IPOPT starts feasible. Off by
+        # default: the NLP is unchanged when the key is absent or False.
+        if bool(sim_params.get("symmetric_pattern", False)):
+            if not isinstance(pattern, PeriodicBSpline):
+                raise ValueError("symmetric_pattern needs a periodic spline pattern")
+            path_params = self.pattern_config["path_parameters"]
+            C_phi0, C_beta0 = symmetrize_periodic_coefficients(
+                path_params["C_phi"], path_params["C_beta"]
+            )
+            h = C_phi0.size // 2
+            for var, sign, projected in (
+                ("C_phi", -1.0, C_phi0),
+                ("C_beta", 1.0, C_beta0),
+            ):
+                mx = opti_params.get(var)
+                if mx is not None:
+                    opti.subject_to(mx[h:] - sign * mx[:h] == 0)
+                    opti.set_initial(mx, projected)
+                else:
+                    # Fixed coordinate: the given shape must already comply.
+                    given = np.asarray(path_params[var], dtype=float).ravel()
+                    if np.max(np.abs(given - projected)) > 1e-9:
+                        raise ValueError(
+                            f"symmetric_pattern is violated by the fixed "
+                            f"pattern and {var} is not optimized"
+                        )
+            print(f"Symmetric pattern: {2 * h} mirror rows on C_phi/C_beta (M = {2 * h})")
 
         # Hard per-solve trust region on the optimized parameters:
         # ``sim_parameters["param_step_bound"]`` maps parameter name -> max
@@ -2104,6 +3045,26 @@ class PhaseParameterized(TimeSeries):
                 "equality": True,
             }
 
+        if min_turn_radius > 0.0 and _rep_turn_radius_dense:
+            _report_ineq(
+                "turn_radius",
+                ca.vertcat(*_rep_turn_radius_dense),
+                (min_turn_radius, np.inf),
+                "m",
+            )
+        if _rep_sigma:
+            _report_ineq(
+                "path_param_speed (sigma'/ref)",
+                ca.vertcat(*_rep_sigma),
+                (
+                    turn_radius_sigma_floor
+                    if min_turn_radius > 0.0
+                    else parametric_speed_floor,
+                    np.inf,
+                ),
+                "-",
+            )
+
         radial_closure = (distance_scaled[-1] - distance_scaled[0]) ** 2
         objective_dict = {
             "energy": energy,
@@ -2111,9 +3072,16 @@ class PhaseParameterized(TimeSeries):
             "power_scale": P_scale,
             "reg": reg,
             "radial_closure": radial_closure,
+            "depower_anchor": depower_anchor,
             "angle_elevation_start": angle_elevation[0],
             "angle_elevation_end": angle_elevation[-1],
             "constraint_report": constraint_report,
+            # Per-node physical turn radius r/|kappa| [m] (N entries) and the
+            # tightest radius over the sub-sampled path (scalar); evaluated at
+            # the solution by ``Phase.run_simulation_opti`` into the optimized
+            # trajectory (``turn_radius`` column) and ``turn_radius_min``.
+            "turn_radius": ca.vertcat(*_rep_turn_radius),
+            "turn_radius_min": ca.mmin(ca.vertcat(*_rep_turn_radius_dense)),
         }
         return (
             opti,
@@ -2170,7 +3138,16 @@ class PhaseParameterized(TimeSeries):
         rigid_kite_model.reset_solver()
 
         # Temporarily swap; residual_solver and substitute_parametrized_kinematics
-        # both read self.kite_model.
+        # both read self.kite_model. residual_solver also stores the node
+        # functions of the solver it builds on self; the caller's Williams
+        # solver was built first, so they are saved and put back: the rigid
+        # ones take a shorter decision vector, and the Williams march calling
+        # them fails at its first node.
+        saved = {
+            name: self.__dict__[name]
+            for name in _RESIDUAL_SOLVER_NODE_FUNCTIONS
+            if name in self.__dict__
+        }
         self.kite_model = rigid_kite_model
         try:
             rigid_km = self.substitute_parametrized_kinematics(pattern)
@@ -2225,6 +3202,11 @@ class PhaseParameterized(TimeSeries):
             }
         finally:
             self.kite_model = original_kite_model
+            for name in _RESIDUAL_SOLVER_NODE_FUNCTIONS:
+                if name in saved:
+                    setattr(self, name, saved[name])
+                else:
+                    self.__dict__.pop(name, None)
 
     def integrator(self, time_step, kite_model=None):
         if kite_model is None:
@@ -2522,6 +3504,22 @@ class PhaseParameterized(TimeSeries):
             "g": alg,
             "p": p,
         }
+        # Wing angle of attack over the same (x, p) as the node NLP, so the
+        # forward march can tell WHICH root a converged node landed on: the
+        # residual has a pre-stall root and a spurious post-stall one (alpha
+        # ~20-25 deg). None when alpha depends on anything outside (x, p).
+        alpha_expr = km_copy.kite.angle_of_attack_for(km_copy)
+        if use_williams:
+            alpha_expr = ca.substitute(
+                alpha_expr, km_copy.tether.tension_tether_kite,
+                tension_kite_scaled * self.WILLIAMS_TENSION_SCALE,
+            )
+        known = {sym.name() for sym in ca.symvar(z)} | {sym.name() for sym in ca.symvar(p)}
+        self._node_alpha_function = (
+            ca.Function("node_angle_of_attack", [z, p], [alpha_expr], ["x", "p"], ["alpha"])
+            if all(sym.name() in known for sym in ca.symvar(alpha_expr))
+            else None
+        )
         if use_williams:
             self._williams_tension_ground_function = ca.Function(
                 "williams_tension_tether_ground",

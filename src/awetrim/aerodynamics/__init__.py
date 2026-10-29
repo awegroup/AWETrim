@@ -27,6 +27,13 @@ from awetrim.aerodynamics.parametric_geometry import (
     morph_wing,
     morph_wing_to,
 )
+from awetrim.aerodynamics.apparent_wind import apparent_wind_at
+from awetrim.aerodynamics.kcu_drag import (
+    KcuDragModel,
+    cd_area_axial_kcu,
+    cd_area_broadside_kcu,
+    force_drag_kcu,
+)
 from awetrim.aerodynamics.vsm_adapter import VSMAeroModelAdapter
 from awetrim.aerodynamics.vsm_quasi_steady import (
     DEFAULT_AXES,
@@ -34,6 +41,7 @@ from awetrim.aerodynamics.vsm_quasi_steady import (
     DEFAULT_BOUNDS_UPPER,
     DEFAULT_TRANSFORMATION_C_FROM_VSM,
     compute_vsm_trim_stability_derivatives,
+    corotating_state_transform,
     plot_vsm_quasi_steady_sweep,
     run_vsm_quasi_steady_sweep,
     solve_vsm_quasi_steady_trim,
@@ -42,6 +50,11 @@ from awetrim.aerodynamics.vsm_quasi_steady import (
 
 __all__ = [
     "VSMAeroModelAdapter",
+    "apparent_wind_at",
+    "KcuDragModel",
+    "cd_area_axial_kcu",
+    "cd_area_broadside_kcu",
+    "force_drag_kcu",
     "WingSections",
     "morph_wing",
     "morph_wing_to",
@@ -54,6 +67,7 @@ __all__ = [
     "DEFAULT_BOUNDS_UPPER",
     "DEFAULT_TRANSFORMATION_C_FROM_VSM",
     "compute_vsm_trim_stability_derivatives",
+    "corotating_state_transform",
     "plot_vsm_quasi_steady_sweep",
     "run_vsm_quasi_steady_sweep",
     "solve_vsm_quasi_steady_trim",

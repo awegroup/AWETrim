@@ -1,0 +1,1008 @@
+# Copyright (c) 2023-2026 Oriol Cayon, Delft University of Technology
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Importer of the RETIRED full-model geometry format (``struc_geometry_FEM_full.yaml``).
+
+The structural geometry is an awesIO structure document (``structure.yml``,
+read by ``awesio_structure.load_structure``; the solver arrays come from
+``Structure.resolved``). This reader is kept only to convert a file in the
+old authoring format -- whose strut padding, canopy chord nodes and tube
+masses it generates -- and is called by ``awesio_structure.to_awesio`` alone
+(``load_structure`` of an old file, ``convert_file``). New code must not call
+:func:`main`.
+"""
+
+import numpy as np
+import logging
+
+from awetrim.aerostructural.utils import bridle_connection_rest_lengths
+from awetrim.utils.system_config import get_kcu_mass
+from awetrim.aerostructural.symmetry import warn_if_asymmetric
+
+
+def _resolve_kcu_mass(struc_geometry, config=None, system_config=None):
+    """Resolve KCU mass.
+
+    Single source of truth is the system config
+    (``components.kites[0].control_system.structure.mass`` plus the onboard
+    turbine's mass, resolved via ``get_kcu_mass``). ``struc_geometry`` must NOT
+    carry a ``kcu_mass`` — it is only honoured as a deprecated fallback.
+
+    Priority: system_config -> config (per-run override) -> struc_geometry.
+    """
+    if isinstance(system_config, dict):
+        mass_kcu = get_kcu_mass(system_config)
+        if mass_kcu is not None:
+            return mass_kcu
+
+    if isinstance(config, dict):
+        kcu_cfg = config.get("kcu", {})
+        if isinstance(kcu_cfg, dict) and "mass" in kcu_cfg:
+            return float(kcu_cfg["mass"])
+        if "kcu_mass" in config:
+            return float(config["kcu_mass"])
+
+    if "kcu_mass" in struc_geometry:
+        logging.warning(
+            "KCU mass read from struc_geometry.kcu_mass (deprecated); define it in "
+            "system.yaml control_system.structure.mass instead."
+        )
+        return float(struc_geometry["kcu_mass"])
+
+    logging.warning(
+        "KCU mass not found in system_config, config, or structural geometry; defaulting to 0.0 kg."
+    )
+    return 0.0
+
+
+def initialize_particles(
+    struc_geometry, struc_nodes, m_arr, strut_padding="bisect_longest"
+):
+    """
+    Initialize particles for the kite structure.
+
+    This function adds wing and bridle particles to the structural nodes list
+    and initializes their masses to zero. It also identifies leading edge and
+    trailing edge node indices based on even/odd node indexing, and generates
+    additional canopy section nodes between struts.
+
+    Args:
+        struc_geometry (dict): Dictionary containing structural geometry data
+        struc_nodes (list): List to append particle positions to
+        m_arr (list): List to append particle masses to
+
+    Returns:
+        tuple: (struc_nodes, m_arr, struc_node_le_indices, struc_node_te_indices,
+                strut_node_le_indices, strut_node_te_indices, canopy_sections)
+            Updated lists with particle positions, masses, edge node indices,
+            strut node indices, and canopy section connectivity
+    """
+
+    struc_node_le_indices = []
+    struc_node_te_indices = []
+
+    for node_idx, x, y, z in struc_geometry["wing_particles"]["data"]:
+        # node_indices.append(node_idx)
+        struc_nodes.append(np.array([x, y, z]))
+        m_arr.append(0)
+        # if uneven --> this is a leading-edge node
+        if node_idx % 2 != 0:
+            struc_node_le_indices.append(node_idx)
+        else:
+            struc_node_te_indices.append(node_idx)
+
+    for node_idx, x, y, z in struc_geometry["bridle_particles"]["data"]:
+        # node_indices.append(node_idx)
+        struc_nodes.append(np.array([x, y, z]))
+        m_arr.append(0)
+
+    # add extra nodes for canopy
+    strut_node_le_indices = []
+    strut_node_te_indices = []
+    strut_indices = []
+    nodes_per_strut = int(0)
+    for (
+        name,
+        ci,
+        cj,
+        strut_diam_le,
+        strut_diam_te,
+        le_diameter,
+        node_indices,
+    ) in struc_geometry["strut_tubes"]["data"]:
+        strut_node_le_indices.append(ci)
+        strut_node_te_indices.append(cj)
+        nodes_per_strut = max(len(node_indices), nodes_per_strut)
+        # NOT a copy, deliberately. The padding loop below inserts into these
+        # lists, and because this IS the YAML's own node_indices list, that is
+        # how the padding nodes reach initialize_wing_structure, which re-reads
+        # struc_geometry["strut_tubes"] to build the strut beam elements. Copy
+        # it and each strut tube loses its padded segments: 97 beam elements
+        # become 77, the struts are no longer continuous, and the unsteered
+        # solve stops being mirror-symmetric (22.9 mm instead of 2e-5 mm).
+        # The cost is that main() mutates the geometry dict it is given, so a
+        # caller that reads one loaded dict twice sees a pre-padded wing the
+        # second time -- load the YAML fresh per call.
+        strut_indices.append(node_indices)
+
+    canopy_section_le_indices = [
+        idx for idx in struc_node_le_indices if idx not in strut_node_le_indices
+    ]
+    canopy_section_te_indices = [
+        idx for idx in struc_node_te_indices if idx not in strut_node_te_indices
+    ]
+    canopy_sections = []
+
+    # TODO: Add extra nodes along chord here, make input through configuration file?
+    nodes_per_strut += 1
+
+    # Pad every strut up to a common node count so the wing is a structured
+    # grid. Where the padding nodes go is a real mesh-quality decision:
+    #
+    #   "legacy"          all of them into the second-to-last gap, and NOT
+    #                     evenly across it: the loop below re-reads the gap
+    #                     ends after every insertion, so each node lands
+    #                     partway into what is left of the gap and they pile
+    #                     up geometrically against its far end. On the LEI-V3
+    #                     tip closure -- a 348 mm chord -- four padding nodes
+    #                     land at 0.20, 0.52, 0.81 and 0.96 of the 173 mm gap
+    #                     instead of 0.2/0.4/0.6/0.8, giving segments of
+    #                     96.8, 34.7, 55.5, 49.9, 26.6, 6.7 and 78.5 mm. That
+    #                     6.7 mm beam is the reason the spread across the wing
+    #                     is 118x and not the 22x that filling the same gap
+    #                     evenly would give, and the canopy sections inherit
+    #                     the same spacing ratios.
+    #   "bisect_longest"  each padding node bisects the longest segment the
+    #                     strut currently has, which is the standard greedy
+    #                     refinement and grades the mesh evenly around the
+    #                     bridle attachments that have to stay put. The same
+    #                     tip closure comes out 48.4, 48.4, 43.3, 43.3, 43.3,
+    #                     43.3, 78.5 mm -- no sliver, and 46x across the wing.
+    #
+    # "bisect_longest" is the default. "legacy" is kept, unchanged and with
+    # its cascade intact, because it is what every stored FEM result was
+    # produced with: set strut_padding: legacy to reproduce one.
+    if strut_padding not in ("legacy", "bisect_longest"):
+        raise ValueError(
+            f"strut_padding must be 'legacy' or 'bisect_longest', got {strut_padding!r}"
+        )
+
+    for indices in strut_indices:
+        missing_nodes = nodes_per_strut - len(indices)
+        if strut_padding == "bisect_longest":
+            for _ in range(missing_nodes):
+                segments = [
+                    np.linalg.norm(struc_nodes[indices[j + 1]] - struc_nodes[indices[j]])
+                    for j in range(len(indices) - 1)
+                ]
+                longest = int(np.argmax(segments))
+                struc_nodes.append(
+                    0.5
+                    * (struc_nodes[indices[longest]] + struc_nodes[indices[longest + 1]])
+                )
+                m_arr.append(0)
+                node_idx += 1
+                indices.insert(longest + 1, node_idx)
+            continue
+
+        for i in range(missing_nodes):
+            coords_front = struc_nodes[indices[-3]]
+            coords_back = struc_nodes[indices[-2]]
+            ratio = (i + 1) / (missing_nodes + 1)
+            x = coords_front[0] + ratio * (coords_back[0] - coords_front[0])
+            y = coords_front[1] + ratio * (coords_back[1] - coords_front[1])
+            z = coords_front[2] + ratio * (coords_back[2] - coords_front[2])
+            struc_nodes.append(np.array([x, y, z]))
+            m_arr.append(0)
+            node_idx += 1
+            indices.insert(-2, node_idx)
+
+    simplified_bridle_points = []
+    for i, indices in enumerate(strut_indices):
+        # Project all intermediate nodes onto the line between first and last node
+        start_pos = struc_nodes[indices[0]]
+        end_pos = struc_nodes[indices[-1]]
+        line_vector = end_pos - start_pos
+        for j in range(1, len(indices) - 1):
+            idx = indices[j]
+            current_pos = struc_nodes[idx]
+            # Project current node onto the line between start and end
+            projection_scalar = np.dot(current_pos - start_pos, line_vector) / np.dot(
+                line_vector, line_vector
+            )
+            projected_pos = start_pos + projection_scalar * line_vector
+            struc_nodes[idx] = projected_pos
+            simplified_bridle_points.append([idx, current_pos, projected_pos])
+    simplified_bridle_points = np.array(simplified_bridle_points, dtype=object)
+
+    for n1, n2 in zip(canopy_section_le_indices, canopy_section_te_indices):
+        # Find closest indices to n1 in strut_node_le_indices
+        neg_distances = [(idx - n1) for idx in strut_node_le_indices if idx < n1]
+        strut_right_le = (
+            strut_node_le_indices[
+                strut_node_le_indices.index(
+                    min(neg_distances, key=abs, default=n1) + n1
+                )
+            ]
+            if neg_distances
+            else n1
+        )
+        # Find closest index with positive offset
+        pos_distances = [(idx - n1) for idx in strut_node_le_indices if idx > n1]
+        strut_left_le = (
+            strut_node_le_indices[
+                strut_node_le_indices.index(
+                    min(pos_distances, key=abs, default=n1) + n1
+                )
+            ]
+            if pos_distances
+            else n1
+        )
+        # Find closest indices to n2 in strut_node_te_indices
+        neg_distances = [(idx - n1) for idx in strut_node_te_indices if idx < n1]
+        strut_right_te = (
+            strut_node_te_indices[
+                strut_node_te_indices.index(
+                    min(neg_distances, key=abs, default=n1) + n1
+                )
+            ]
+            if neg_distances
+            else n1
+        )
+        # Find closest index with positive offset
+        pos_distances = [(idx - n2) for idx in strut_node_te_indices if idx > n2]
+        strut_left_te = (
+            strut_node_te_indices[
+                strut_node_te_indices.index(
+                    min(pos_distances, key=abs, default=n2) + n2
+                )
+            ]
+            if pos_distances
+            else n2
+        )
+
+        leading_edge_tube_indices = np.arange(strut_right_le, strut_left_le + 2, 2)
+        trailing_edge_tube_indics = np.arange(strut_right_te, strut_left_te + 2, 2)
+        leading_edge_tube_length = sum(
+            np.linalg.norm(
+                struc_nodes[leading_edge_tube_indices[i]]
+                - struc_nodes[leading_edge_tube_indices[i + 1]]
+            )
+            for i in range(len(leading_edge_tube_indices) - 1)
+        )
+        trailing_edge_tube_length = sum(
+            np.linalg.norm(
+                struc_nodes[trailing_edge_tube_indics[i]]
+                - struc_nodes[trailing_edge_tube_indics[i + 1]]
+            )
+            for i in range(len(trailing_edge_tube_indics) - 1)
+        )
+        def _arc_to(node, chain):
+            """Arc length from the start of ``chain`` to ``node``, along it.
+
+            Summed segment by segment, to match the denominators below, which
+            are also arc lengths. Mixing a straight-line distance with an arc
+            breaks mirror symmetry on a curved edge: the two chords from either
+            bounding strut do not add up to the arc between them, so a section
+            and its mirror get blend weights that do not sum to one. Measured
+            residual on the LEI-V3 before this: 8.1 mm on the interior nodes,
+            with the leading and trailing edges themselves exact.
+            """
+            total = 0.0
+            for first, second in zip(chain[:-1], chain[1:]):
+                if first == node:
+                    return total
+                total += float(
+                    np.linalg.norm(struc_nodes[second] - struc_nodes[first])
+                )
+            return total
+
+        ratio_le = (
+            _arc_to(n1, leading_edge_tube_indices) / leading_edge_tube_length
+        )
+        # Measured along the TRAILING edge. This used the leading-edge distance
+        # (n1 to strut_right_le) over the trailing-edge length, which is a
+        # fraction only when the two runs happen to be equal. Everywhere else it
+        # breaks mirror symmetry: under y -> -y the LE distance becomes its
+        # complement while the TE length does not, so a section and its mirror
+        # got different blend weights. Worst where the bounding struts differ
+        # most -- at the tip, a 0.35 m chord beside a 1.7 m one -- which is
+        # exactly where the built geometry came out 127-172 mm asymmetric.
+        ratio_te = (
+            _arc_to(n2, trailing_edge_tube_indics) / trailing_edge_tube_length
+        )
+        ratio_canopy = (ratio_le + ratio_te) / 2
+
+        length_right = np.linalg.norm(
+            struc_nodes[strut_right_le] - struc_nodes[strut_right_te]
+        )
+        length_left = np.linalg.norm(
+            struc_nodes[strut_left_le] - struc_nodes[strut_left_te]
+        )
+
+        strut_indices_right = strut_indices[strut_node_le_indices.index(strut_right_le)]
+        strut_indices_left = strut_indices[strut_node_le_indices.index(strut_left_le)]
+
+        canopy_section_length = np.linalg.norm(struc_nodes[n1] - struc_nodes[n2])
+        direction = struc_nodes[n2] - struc_nodes[n1]
+        direction_normalized = direction / np.linalg.norm(direction)
+        canopy_section_indices = [n1]
+        for n in range(1, nodes_per_strut - 1):
+            l_ratio_right = (
+                np.linalg.norm(
+                    struc_nodes[strut_indices_right[n]] - struc_nodes[strut_right_le]
+                )
+                / length_right
+            )
+            l_ratio_left = (
+                np.linalg.norm(
+                    struc_nodes[strut_indices_left[n]] - struc_nodes[strut_left_le]
+                )
+                / length_left
+            )
+            l_ratio = l_ratio_right * (1 - ratio_canopy) + l_ratio_left * ratio_canopy
+            coordinates = (
+                struc_nodes[n1] + canopy_section_length * l_ratio * direction_normalized
+            )
+            struc_nodes.append(coordinates)
+            m_arr.append(0)
+            node_idx += 1
+            canopy_section_indices.append(node_idx)
+        canopy_section_indices.append(n2)
+        canopy_sections.append(canopy_section_indices)
+    strut_sections = strut_indices
+    return (
+        struc_nodes,
+        m_arr,
+        struc_node_le_indices,
+        struc_node_te_indices,
+        strut_node_le_indices,
+        strut_node_te_indices,
+        canopy_sections,
+        strut_sections,
+        simplified_bridle_points,
+    )
+
+
+def initialize_wing_structure(
+    struc_geometry,
+    struc_nodes,
+    m_arr,
+    kite_connectivity_arr,
+    l0_arr,
+    k_arr,
+    c_arr,
+    linktype_arr,
+    canopy_sections,
+    strut_sections,
+):
+    """
+    Create the structural nodes and connectivity for the kite structure.
+
+    Args:
+        geometry_dict (dict): Kite configuration dictionary.
+
+    Returns:
+        tuple: (struc_nodes, wing_ci, wing_cj, bridle_ci, bridle_cj, struc_node_le_indices,
+                struc_node_te_indices, pulley_point_indices, tubular_frame_line_idx_list,
+                te_line_idx_list, n_struc_ribs)
+    """
+
+    # Struts
+    for (
+        name,
+        ci,
+        cj,
+        strut_diam_le,
+        strut_diam_te,
+        le_diameter,
+        node_indices,
+    ) in struc_geometry["strut_tubes"]["data"]:
+        c1s = node_indices[0:-1]
+        c2s = node_indices[1:]
+        length = np.linalg.norm(
+            struc_nodes[node_indices[0]] - struc_nodes[node_indices[-1]]
+        )
+        for c1, c2 in zip(c1s, c2s):
+            rest_length = np.linalg.norm(struc_nodes[c1] - struc_nodes[c2])
+            # determine diameter of element, scale linearly from le to te
+            l1 = np.linalg.norm(struc_nodes[ci] - struc_nodes[c1])
+            l2 = np.linalg.norm(struc_nodes[ci] - struc_nodes[c2])
+            diameter_n1 = strut_diam_le - (strut_diam_le - strut_diam_te) / length * l1
+            diameter_n2 = strut_diam_le - (strut_diam_le - strut_diam_te) / length * l2
+            diameter = (diameter_n1 + diameter_n2) / 2
+            mass = 2 * np.pi * (diameter / 2) * rest_length * 170 / 1000
+            # m_arr[c1] += mass/2
+            # m_arr[c2] += mass/2
+            kite_connectivity_arr.append([c1, c2])
+            l0_arr.append(rest_length)
+            k_arr.append(diameter)  # use k array to store diameter
+            c_arr.append(struc_geometry["pressure"])  # use c array to store pressure
+            linktype_arr.append("inflatable_beam")
+    # for struct_sect in strut_sections:
+    #     print(struct_sect)
+
+    # leading edge tube
+    for name, ci, cj, diameter in struc_geometry["leading_edge_tubes"]["data"]:
+        rest_length = np.linalg.norm(struc_nodes[ci] - struc_nodes[cj])
+        mass = 2 * np.pi * (diameter / 2) * rest_length * 170 / 1000
+        # m_arr[ci] += mass/2
+        # m_arr[cj] += mass/2
+        kite_connectivity_arr.append([ci, cj])
+        l0_arr.append(rest_length)
+        k_arr.append(diameter)  # use k array to store diameter
+        c_arr.append(struc_geometry["pressure"])  # use c array to store pressure
+        linktype_arr.append("inflatable_beam")
+
+    # combine and order canopy_and strut sections by first indices
+    all_sections = canopy_sections + strut_sections
+    all_sections.sort(key=lambda section: section[0])
+
+    # Connect canopy sections along chord
+    for canopy_section in canopy_sections:
+        c1s = canopy_section[0:-1]
+        c2s = canopy_section[1:]
+        for c1, c2 in zip(c1s, c2s):
+            rest_length = np.linalg.norm(struc_nodes[c1] - struc_nodes[c2])
+            kite_connectivity_arr.append([c1, c2])
+            l0_arr.append(rest_length)
+            k_arr.append(5000)
+            c_arr.append(0)
+            linktype_arr.append("noncompressive")
+
+    # canopy connections (crosses and rectangles)
+    all_sections_1 = all_sections[0:-1]
+    all_sections_2 = all_sections[1:]
+    for section1, section2 in zip(all_sections_1, all_sections_2):
+        # Connect corresponding nodes between adjacent struts with squares and diagonals
+        # Skip the first connection (section1[0] to section2[0])
+        for i in range(1, len(section1)):
+            if i < len(section2):
+                # Square connections: section1[i] to section2[i]
+                rest_length = np.linalg.norm(
+                    struc_nodes[section1[i]] - struc_nodes[section2[i]]
+                )
+                kite_connectivity_arr.append([section1[i], section2[i]])
+                l0_arr.append(rest_length)
+                k_arr.append(5000)
+                c_arr.append(0)
+                linktype_arr.append("noncompressive")
+
+                # Diagonal connections: section1[i] to section2[i-1] (if i > 0)
+                if i > 0:
+                    rest_length = np.linalg.norm(
+                        struc_nodes[section1[i]] - struc_nodes[section2[i - 1]]
+                    )
+                    kite_connectivity_arr.append([section1[i], section2[i - 1]])
+                    l0_arr.append(rest_length)
+                    k_arr.append(5000)
+                    c_arr.append(0)
+                    linktype_arr.append("noncompressive")
+
+                # Diagonal connections: section1[i-1] to section2[i] (if i > 0)
+                if i > 0:
+                    rest_length = np.linalg.norm(
+                        struc_nodes[section1[i - 1]] - struc_nodes[section2[i]]
+                    )
+                    kite_connectivity_arr.append([section1[i - 1], section2[i]])
+                    l0_arr.append(rest_length)
+                    k_arr.append(5000)
+                    c_arr.append(0)
+                    linktype_arr.append("noncompressive")
+
+    # assign masses canopy
+    def triangle_area(p1, p2, p3):
+        # Vectors for two sides of the triangle
+        v1 = p2 - p1
+        v2 = p3 - p1
+        # Cross product magnitude gives 2 * triangle area
+        return 0.5 * np.linalg.norm(np.cross(v1, v2))
+
+    def quad_area(A, B, C, D):
+        A = np.array(A)
+        B = np.array(B)
+        C = np.array(C)
+        D = np.array(D)
+
+        # Split quad into triangles ABC and ACD
+        area1 = triangle_area(A, B, C)
+        area2 = triangle_area(A, C, D)
+        return area1 + area2
+
+    # m_arr already holds the KCU at index 0 when the canopy is weighed, so the
+    # canopy's mass is what the quads ADD, not the array's sum. Summing the
+    # array charged the KCU to the canopy and took it off the tubes: -3.6 kg on
+    # the LEI-V3 FEM_full tubes with system.yaml's 8.4 kg KCU, and a NEGATIVE
+    # wing (-8.6 kg with the bridle) under the flown 22 kg one.
+    mass_before_canopy = float(np.sum(m_arr))
+    for i in range(len(canopy_sections) - 1):
+        section_a = canopy_sections[i]
+        section_b = canopy_sections[i + 1]
+        # Create quads by connecting adjacent nodes in consecutive sections
+        for j in range(len(section_a) - 1):
+            quad = [section_a[j], section_a[j + 1], section_b[j + 1], section_b[j]]
+            # Get coordinates and calculate area
+            corners = [struc_nodes[node] for node in quad]
+            area = quad_area(corners[0], corners[1], corners[2], corners[3])
+            # Distribute quad mass to its 4 nodes (each gets 1/4 of quad mass)
+            quad_mass = (
+                area * struc_geometry["canopy_density"] / 1000
+            )  # Convert g/m^2 to kg/m^2
+            for node in quad:
+                m_arr[node] += quad_mass / 4
+
+    mass_canopy = float(np.sum(m_arr)) - mass_before_canopy
+
+    le_indices = np.array(all_sections)[:, 0]
+
+    # Calculate total length of inflatable tubes
+    total_inflatable_length = 0
+
+    # Add up lengths in leading edge
+    for i in range(len(le_indices) - 1):
+        total_inflatable_length += np.linalg.norm(
+            struc_nodes[le_indices[i]] - struc_nodes[le_indices[i + 1]]
+        )
+
+    # Add up lengths in strut sections
+    for section in strut_sections:
+        for j in range(len(section) - 1):
+            total_inflatable_length += np.linalg.norm(
+                struc_nodes[section[j]] - struc_nodes[section[j + 1]]
+            )
+
+    # Calculate target mass for inflatable tubes
+    target_mass_inflatable = struc_geometry["mass_without_bridles"] - mass_canopy
+    if target_mass_inflatable < 0.0:
+        # The tubes then carry NEGATIVE lumped mass. The model's total stays
+        # right, but its mass sits in the wrong place, and every consumer that
+        # weighs nodes differently (clipping the negatives away, say) lands on
+        # a different CG -- on the LEI-V3 FEM_full geometry, 0.64 m in z.
+        logging.warning(
+            "canopy mass %.3f kg already exceeds mass_without_bridles %.3f kg: "
+            "%.3f kg is hung on the LE/strut nodes as NEGATIVE mass. Check "
+            "canopy_density against mass_without_bridles.",
+            mass_canopy,
+            struc_geometry["mass_without_bridles"],
+            target_mass_inflatable,
+        )
+
+    # Distribute mass along leading edge based on segment lengths
+    for i in range(len(le_indices) - 1):
+        segment_length = np.linalg.norm(
+            struc_nodes[le_indices[i]] - struc_nodes[le_indices[i + 1]]
+        )
+        segment_mass = target_mass_inflatable * (
+            segment_length / total_inflatable_length
+        )
+        m_arr[le_indices[i]] += segment_mass / 2
+        m_arr[le_indices[i + 1]] += segment_mass / 2
+
+    # Distribute mass along strut sections based on segment lengths
+    for section in strut_sections:
+        for j in range(len(section) - 1):
+            segment_length = np.linalg.norm(
+                struc_nodes[section[j]] - struc_nodes[section[j + 1]]
+            )
+            segment_mass = target_mass_inflatable * (
+                segment_length / total_inflatable_length
+            )
+            m_arr[section[j]] += segment_mass / 2
+            m_arr[section[j + 1]] += segment_mass / 2
+
+    return (
+        # node level
+        struc_nodes,
+        m_arr,
+        # element level
+        kite_connectivity_arr,
+        l0_arr,  # l
+        k_arr,  # d
+        c_arr,  # p
+        linktype_arr,
+    )
+
+
+def initialize_bridle_line_system(
+    struc_geometry,
+    struc_nodes,
+    m_arr,
+    kite_connectivity_arr,
+    l0_arr,
+    k_arr,
+    c_arr,
+    linktype_arr,
+    simplified_bridle_points,
+):
+    """
+    Initialize the bridle line system for the kite.
+
+    Returns:
+        tuple: (bridle_ci, bridle_cj, pulley_point_indices)
+    """
+
+    ### node level ###
+
+    # First append the bridle_point_node, as this node (KCU) should have index 0
+    # Then append rest of the defined bridle_particles
+
+    # for node_idx, x, y, z in struc_geometry["bridle_particles"]["data"]:
+    #     struc_nodes.append(np.array([x, y, z]))
+    #     m_arr.append(0.0)
+
+    ### element level ###
+
+    # Create an element dict of dicts: { name → {l0:..., d:..., ...} }
+    bridle_lines_dict = {
+        row[0]: dict(zip(struc_geometry["bridle_lines"]["headers"][1:], row[1:]))
+        for row in struc_geometry["bridle_lines"]["data"]
+    }
+
+    # initialize a connectivity counter, that starts with the number of wing_connections
+    conn_idx_counter = len(kite_connectivity_arr)
+    bridle_connectivity_arr = []
+    bridle_diameter_arr = []
+    pulley_node_indices = []
+    pulley_line_indices = []
+    pulley_line_to_other_node_pair_dict = {}
+    steering_tape_indices = []
+    power_tape_index = 0
+    # Per-connection rest lengths of an actuated snapshot override the
+    # line's (steering tapes share one bridle_lines row).
+    connection_l0 = bridle_connection_rest_lengths(struc_geometry)
+    for conn_row, conn_data in enumerate(struc_geometry["bridle_connections"]["data"]):
+
+        conn_name = conn_data[0]
+        ci = int(conn_data[1])
+        cj = int(conn_data[2])
+
+        # computing the mass of the bridle line, and adding it 0.5 to each particle using m_arr
+        l0 = connection_l0.get(conn_row, bridle_lines_dict[conn_name]["l0"])
+        material = bridle_lines_dict[conn_name]["material"]
+        cross_sectional_area = (
+            np.pi * (bridle_lines_dict[conn_name]["d"] / 2) ** 2
+        )
+        m_line = struc_geometry[material]["density"] * cross_sectional_area * l0
+
+        # If there is third connections, this line is a pulley!
+        # In here we will treat both ci-cj and cj-ck
+        if len(conn_data[1:]) == 3:
+            logging.debug(
+                f"-- linktype should be pulley, linktype: {bridle_lines_dict[conn_name]['linktype']}"
+            )
+            # adding pulley_node_indices
+            pulley_node_indices.append(cj)
+
+            # making the third node an integer
+            ck = int(conn_data[3])
+
+            # add the pulley mass, to the pulley_index cj
+            m_arr[cj] += struc_geometry["pulley_mass"]
+
+            #######################################
+            # Computing k,c
+            # Compute the straight-line distances between the nodes involved in the pulley:
+            # - len_ci_cj: distance between ci and cj (the current segment)
+            # - len_cj_ck: distance between cj and ck (the other segment)
+            len_ci_cj = np.linalg.norm(
+                np.array(struc_nodes[ci]) - np.array(struc_nodes[cj])
+            )
+            len_cj_ck = np.linalg.norm(
+                np.array(struc_nodes[cj]) - np.array(struc_nodes[ck])
+            )
+
+            # The total straight-line length is the sum of both segments
+            len_ci_cj_ck = len_ci_cj + len_cj_ck
+
+            # Divide the rest length proportionally between the two segments,
+            # based on their straight-line distances ratios to the total length
+            l0_len_ci_cj = (len_ci_cj / len_ci_cj_ck) * l0
+            l0_len_cj_ck = (len_cj_ck / len_ci_cj_ck) * l0
+
+            k = (struc_geometry[material]["youngs_modulus"] * cross_sectional_area) / (
+                l0
+            )
+            c = struc_geometry[material]["damping_per_stiffness"] * k
+
+            #######################################
+            # updating l0 to include simplification in bridle attachment point
+
+            if ci in simplified_bridle_points[:, 0]:
+                i = np.where(simplified_bridle_points[:, 0] == ci)[0][0]
+                original_pos = simplified_bridle_points[i, 1]
+                projected_pos = simplified_bridle_points[i, 2]
+                original_lenth = np.linalg.norm(original_pos - struc_nodes[ck])
+                new_length = np.linalg.norm(projected_pos - struc_nodes[ck])
+                delta = original_lenth - new_length
+                l0 -= delta
+
+            if ck in simplified_bridle_points[:, 0]:
+                i = np.where(simplified_bridle_points[:, 0] == ck)[0][0]
+                original_pos = simplified_bridle_points[i, 1]
+                projected_pos = simplified_bridle_points[i, 2]
+                original_lenth = np.linalg.norm(original_pos - struc_nodes[ck])
+                new_length = np.linalg.norm(projected_pos - struc_nodes[ck])
+                delta = original_lenth - new_length
+                l0 -= delta
+
+            #######################################
+            # Dealing with ci-cj
+            # add this new connection to the connectivity array, and also increase counter
+            kite_connectivity_arr.append([ci, cj])
+            bridle_connectivity_arr.append([ci, cj])
+            bridle_diameter_arr.append(bridle_lines_dict[conn_name]["d"])
+            l0_arr.append(l0)
+            k_arr.append(k)  # EA/l0, computed above
+            c_arr.append(c)
+            linktype_arr.append(bridle_lines_dict[conn_name]["linktype"])
+
+            # Create a special mapping for the Structural Particle System Solver
+            # key: pulley_line_index
+            # value: [cj, ck, line_len_other]
+            # This is used to connect the pulley line to the other node pair
+            pulley_line_to_other_node_pair_dict[str(conn_idx_counter)] = np.array(
+                [
+                    cj,
+                    ck,
+                    l0_len_cj_ck,
+                    l0_len_ci_cj,
+                    ci,
+                ]
+            )
+
+            # Mark the indices of connectivity
+            pulley_line_index_ci_cj = conn_idx_counter
+            pulley_line_indices.append(pulley_line_index_ci_cj)
+            conn_idx_counter += 1
+
+            #######################################
+            # Dealing with cj-ck
+            # add this new connection to the connectivity array, and also increase counter
+            kite_connectivity_arr.append([cj, ck])
+            bridle_connectivity_arr.append([cj, ck])
+            bridle_diameter_arr.append(bridle_lines_dict[conn_name]["d"])
+            l0_arr.append(l0)
+            k_arr.append(k)  # EA/l0, computed above
+            c_arr.append(c)
+            linktype_arr.append(bridle_lines_dict[conn_name]["linktype"])
+            # add mass
+            m_arr[ci] += m_line / 4
+            m_arr[cj] += m_line / 2
+            m_arr[ck] += m_line / 4
+
+            # Create a special mapping for the Structural Particle System Solver
+            # key: pulley_line_index
+            # value: [cj, ck, line_len_other]
+            # This is used to connect the pulley line to the other node pair
+            pulley_line_to_other_node_pair_dict[str(conn_idx_counter)] = np.array(
+                [
+                    cj,
+                    ci,
+                    l0_len_ci_cj,
+                    l0_len_cj_ck,
+                    ci,
+                ]
+            )
+
+            # Mark the indices of connectivity
+            pulley_line_index_cj_ck = conn_idx_counter
+            pulley_line_indices.append(pulley_line_index_cj_ck)
+
+        # if there is no third connections this line represents a knot-to-knot line, a regular spring damper
+        elif len(conn_data[1:]) == 2:
+            logging.debug(
+                f"-- linktype should be noncompressive, linktype: {bridle_lines_dict[conn_name]['linktype']}"
+            )
+            # add this new connection to the connectivity array, and also increase counter
+            k = (struc_geometry[material]["youngs_modulus"] * cross_sectional_area) / l0
+            c = (
+                struc_geometry[material]["damping_per_stiffness"] * k
+            )  # Rayleigh damping
+            #######################################
+            # updating l0 to include simplification in bridle attachment point
+            if ci in simplified_bridle_points[:, 0]:
+                i = np.where(simplified_bridle_points[:, 0] == ci)[0][0]
+                original_pos = simplified_bridle_points[i, 1]
+                projected_pos = simplified_bridle_points[i, 2]
+                original_lenth = np.linalg.norm(original_pos - struc_nodes[cj])
+                new_length = np.linalg.norm(projected_pos - struc_nodes[cj])
+                delta = original_lenth - new_length
+                l0 -= delta
+            elif cj in simplified_bridle_points[:, 0]:
+                i = np.where(simplified_bridle_points[:, 0] == cj)[0][0]
+                original_pos = simplified_bridle_points[i, 1]
+                projected_pos = simplified_bridle_points[i, 2]
+                original_lenth = np.linalg.norm(original_pos - struc_nodes[ci])
+                new_length = np.linalg.norm(projected_pos - struc_nodes[ci])
+                delta = original_lenth - new_length
+                l0 -= delta
+
+            m_arr[ci] += m_line / 2
+            m_arr[cj] += m_line / 2
+            kite_connectivity_arr.append([ci, cj])
+            bridle_connectivity_arr.append([ci, cj])
+            bridle_diameter_arr.append(bridle_lines_dict[conn_name]["d"])
+            l0_arr.append(l0)
+            k_arr.append(k)  # EA/l0, computed above
+            c_arr.append(c)
+            linktype_arr.append(bridle_lines_dict[conn_name]["linktype"])
+
+        else:
+            raise ValueError(
+                "bridle_connections should have 2 or 3 connections (ci,cj,ck), not more or less"
+            )
+        # Tape names follow the YAML's bridle_lines table, the same strings the
+        # PSS reader matches (pss/structural_geometry_io.py). They used to be
+        # matched as "Power Tape" / "Steering Tape", which appear in no kite
+        # YAML, so tape actuation was a silent no-op on the FEM path.
+        if conn_name == "depower_tape":
+            power_tape_index = conn_idx_counter
+
+        if conn_name == "steering_tape":
+            steering_tape_indices.append(conn_idx_counter)
+
+        ## increasing the counter
+        conn_idx_counter += 1
+
+    return (
+        # node level
+        struc_nodes,
+        m_arr,
+        power_tape_index,
+        steering_tape_indices,
+        pulley_node_indices,
+        # element level
+        kite_connectivity_arr,
+        bridle_connectivity_arr,
+        bridle_diameter_arr,
+        l0_arr,
+        k_arr,
+        c_arr,
+        linktype_arr,
+        pulley_line_indices,
+        pulley_line_to_other_node_pair_dict,
+    )
+
+
+def main(struc_geometry, config=None, system_config=None):
+
+    ### First append the bridle_point_node, as this node (KCU) should have index 0
+    struc_nodes = []
+    m_arr = []
+    struc_nodes.append(np.array(struc_geometry["bridle_point_node"]))
+    m_arr.append(
+        _resolve_kcu_mass(struc_geometry, config=config, system_config=system_config)
+    )
+
+    # initialize element level lists
+    kite_connectivity_arr = []
+    l0_arr = []
+    k_arr = []
+    c_arr = []
+    linktype_arr = []
+
+    # initialize particles
+    (
+        struc_nodes,
+        m_arr,
+        struc_node_le_indices,
+        struc_node_te_indices,
+        strut_node_le_indices,
+        strut_node_te_indices,
+        canopy_sections,
+        strut_sections,
+        simplified_bridle_points,
+    ) = initialize_particles(
+        struc_geometry,
+        struc_nodes,
+        m_arr,
+        strut_padding=(config or {}).get("strut_padding", "bisect_longest"),
+    )
+
+    ### Analyze Wing Structure
+    (
+        # node level
+        struc_nodes,
+        m_arr,
+        # element level
+        kite_connectivity_arr,
+        l0_arr,
+        k_arr,
+        c_arr,
+        linktype_arr,
+    ) = initialize_wing_structure(
+        struc_geometry,
+        struc_nodes,
+        m_arr,
+        kite_connectivity_arr,
+        l0_arr,
+        k_arr,
+        c_arr,
+        linktype_arr,
+        canopy_sections,
+        strut_sections,
+    )
+
+    ### Analyze Bridle Structure
+    (
+        # node level
+        struc_nodes,
+        m_arr,
+        power_tape_index,
+        steering_tape_indices,
+        pulley_node_indices,
+        # element level
+        kite_connectivity_arr,
+        bridle_connectivity_arr,
+        bridle_diameter_arr,
+        l0_arr,
+        k_arr,
+        c_arr,
+        linktype_arr,
+        pulley_line_indices,
+        pulley_line_to_other_node_pair_dict,
+    ) = initialize_bridle_line_system(
+        struc_geometry,
+        struc_nodes,
+        m_arr,
+        kite_connectivity_arr,
+        l0_arr,
+        k_arr,
+        c_arr,
+        linktype_arr,
+        simplified_bridle_points,
+    )
+
+    # explicit numpy arrays
+    struc_nodes = np.array(struc_nodes)
+    kite_connectivity_arr = np.array(kite_connectivity_arr)
+    bridle_connectivity_arr = np.array(bridle_connectivity_arr)
+    bridle_diameter_arr = np.array(bridle_diameter_arr)
+    l0_arr = np.array(l0_arr)
+    k_arr = np.array(k_arr)
+    c_arr = np.array(c_arr)
+    m_arr = np.array(m_arr)
+    linktype_arr = np.array(linktype_arr)
+    struc_node_le_indices = np.array(struc_node_le_indices)
+    struc_node_te_indices = np.array(struc_node_te_indices)
+
+    # An asymmetric input turns an unsteered kite; warn (see symmetry.py).
+    warn_if_asymmetric(
+        struc_nodes, kite_connectivity_arr, l0_arr, k_arr, linktype_arr, m_arr, config
+    )
+    return (
+        # node level
+        struc_nodes,
+        m_arr,
+        struc_node_le_indices,
+        struc_node_te_indices,
+        power_tape_index,
+        steering_tape_indices,
+        pulley_node_indices,
+        canopy_sections,
+        strut_sections,
+        simplified_bridle_points,
+        # element level
+        kite_connectivity_arr,
+        bridle_connectivity_arr,
+        bridle_diameter_arr,
+        l0_arr,
+        k_arr,
+        c_arr,
+        linktype_arr,
+        pulley_line_indices,
+        pulley_line_to_other_node_pair_dict,
+    )

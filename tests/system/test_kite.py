@@ -220,7 +220,7 @@ class TestRigidLumpedTetherForces:
         v3_tether.velocity_apparent_wind = v_a
         v3_tether.distance_radial = r
         v3_tether.diameter_tether = d
-        v3_tether.rho = rho_sym
+        v3_tether.air_density = rho_sym
 
         # Expected formula from paper: 0.125 * Cd * r * d * rho * v_a * ||v_a||
         Cd = v3_tether.drag_coefficient_tether

@@ -1,4 +1,4 @@
-"""Unit tests for the cheap, pure helpers in scripts/*/common.py.
+"""Unit tests for the cheap, pure helpers in examples/*/common.py.
 
 Scripts are not an installed package, so each ``common.py`` is loaded directly
 by file path under a unique module name (three different files share the name
@@ -26,17 +26,17 @@ def _load(relpath, name):
 @pytest.fixture(scope="module")
 def aero_common():
     try:
-        return _load("scripts/aerodynamics/common.py", "scripts_aero_common")
+        return _load("examples/1_aerodynamics/common.py", "scripts_aero_common")
     except Exception as exc:  # pragma: no cover - environment guard
-        pytest.skip(f"cannot import scripts/aerodynamics/common.py: {exc}")
+        pytest.skip(f"cannot import examples/1_aerodynamics/common.py: {exc}")
 
 
 @pytest.fixture(scope="module")
 def as_common():
     try:
-        return _load("scripts/aerostructural/common.py", "scripts_as_common")
+        return _load("examples/2_aerostructural/common.py", "scripts_as_common")
     except Exception as exc:  # pragma: no cover - environment guard
-        pytest.skip(f"cannot import scripts/aerostructural/common.py: {exc}")
+        pytest.skip(f"cannot import examples/2_aerostructural/common.py: {exc}")
 
 
 # --- csv_vector -------------------------------------------------------------

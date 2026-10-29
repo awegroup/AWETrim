@@ -1,8 +1,7 @@
 """Unit tests for awetrim.utils.utils.
 
-Covers the CasADi vector helpers (evaluated numerically) and the recursive
-HDF5-group reader (exercised with a lightweight fake group so no file I/O is
-needed).
+Covers the CasADi vector helpers (evaluated numerically). The EKF-file reader
+that used to live here is awetrim.flight_data (tests/flight_data/).
 """
 
 import casadi as ca
@@ -11,7 +10,6 @@ import pytest
 
 from awetrim.utils.utils import (
     calculate_angle_2vec,
-    read_dict_from_group,
     skew_symmetric,
 )
 
@@ -53,38 +51,3 @@ def test_angle_is_scale_invariant():
     assert angle == pytest.approx(angle_scaled)
     assert angle == pytest.approx(np.pi / 4)
 
-
-# --- read_dict_from_group: fake the slice of the h5py API the reader uses ----
-
-
-class _FakeAttrs:
-    def __init__(self, data):
-        self._data = data
-
-    def items(self):
-        return self._data.items()
-
-
-class _FakeGroup:
-    def __init__(self, attrs=None, subgroups=None):
-        self.attrs = _FakeAttrs(attrs or {})
-        self._subgroups = subgroups or {}
-
-    def __iter__(self):
-        return iter(self._subgroups)
-
-    def __getitem__(self, key):
-        return self._subgroups[key]
-
-
-def test_read_dict_from_group_decodes_bytes_and_recurses():
-    group = _FakeGroup(
-        attrs={"name": b"v3", "n_points": 200},
-        subgroups={"child": _FakeGroup(attrs={"x": 1.0})},
-    )
-    result = read_dict_from_group(group)
-    assert result == {"name": "v3", "n_points": 200, "child": {"x": 1.0}}
-
-
-def test_read_dict_from_group_flat_group():
-    assert read_dict_from_group(_FakeGroup(attrs={"a": 1, "b": 2})) == {"a": 1, "b": 2}

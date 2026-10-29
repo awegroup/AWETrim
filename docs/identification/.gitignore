@@ -1,0 +1,9 @@
+# LaTeX build artefacts (latexmk -pdf rom_aerostructural.tex); the PDF is kept.
+*.aux
+*.log
+*.fls
+*.fdb_latexmk
+*.out
+*.toc
+*.synctex.gz
+build.log

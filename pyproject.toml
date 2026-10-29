@@ -1,6 +1,6 @@
 [project]
 name = "awetrim"
-version = "0.1.0"
+version = "1.0.0"
 description = "Aerostructural modelling, trim analysis, and trajectory optimisation for soft-kite Airborne Wind Energy Systems (AWES)"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -11,7 +11,7 @@ keywords = [
   "aerostructural-simulation",
   "trajectory-optimisation",
   "vortex-step-method",
-  "particle-system-simulator",
+  "minimum-energy-structural-model",
   "reduced-order-modelling",
   "wind-energy",
 ]
@@ -48,11 +48,18 @@ dependencies = [
   "scipy",
   "PyYAML",
   "prompt_toolkit",
-  "VSM @ git+https://github.com/awegroup/Vortex-Step-Method.git@2a12f13388122eafa541041c11c13be5f020f1fb",
-  "PSS @ git+https://github.com/awegroup/Particle_System_Simulator.git@v1.0.2",
-  "awes-ekf @ git+https://github.com/ocayon/EKF-AWE.git@7ca4660e7bf5d6b9ec56193fb4e722027fbc3ee0",
-  "kite_fem @ git+https://github.com/awegroup/kite_fem.git@mass_proportional_regularisation",
-  "awesIO @ git+https://github.com/awegroup/awesIO.git@d454992301e1790e069ff850eabf65526545d33c",
+  "vplot3d @ git+https://github.com/rschmehl/vplot3d.git@c5efdc8ffb96832eaaf3f7d7749cac923c2516f7",
+  "billow @ git+https://github.com/awegroup/Billow.git@ec6fb79e0a0af8706eda325f309154fd24fa7aae",
+  # Pinned: aerodynamics/panel_kernels.py and trim_casadi.py mirror VSM's
+  # panel force law and its CasADi panel function, so a VSM change there
+  # breaks the CasADi trim. 1201f6f = VSM develop with the curved
+  # bound-vortex / attached-trailed-force work (2026-10-13); move the pin only
+  # together with the kernels (tests/aerodynamics/test_panel_kernels.py).
+  "VSM @ git+https://github.com/awegroup/Vortex-Step-Method.git@1201f6fd1e4c419159ce8867cbb654210d9ef060",
+  # EKF-AWE: the shared KCU drag model (awetrim.aerodynamics.kcu_drag). Its flight
+  # reconstructions are read by awetrim.flight_data, not produced here.
+  "awes-ekf @ git+https://github.com/awegroup/EKF-AWE.git@52579b914fefa070e8298539e68677cbcdb7c4b8",
+  "awesIO @ git+https://github.com/awegroup/awesIO.git@5799a2dbd3e74c83914dae342aa6d9a43b2180e1",
 ]
 
 [project.optional-dependencies]
@@ -60,6 +67,12 @@ dev = [
   "pytest",
   "pytest-cov",
   "black",
+  "httpx",
+  ]
+server = [
+  "fastapi>=0.110",
+  "uvicorn[standard]",
+  "pydantic>=2",
   ]
 
 [project.urls]

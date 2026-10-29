@@ -46,7 +46,7 @@ from awetrim.aerodynamics.vsm_quasi_steady import (
     # Utilities
     _as_3vector,
     _as_5vector,
-    _default_vsm_solver,
+    default_vsm_solver,
     DEFAULT_BOUNDS_LOWER,
     DEFAULT_BOUNDS_UPPER,
     DEFAULT_AXES,

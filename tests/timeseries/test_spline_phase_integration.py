@@ -2,7 +2,7 @@
 the LEI-V3 kite and march the parametrised quasi-steady phase along each.
 
 Mirrors the flow in
-``scripts/reduced-order-model/optimization/reelout/{generate_spline_config,helix_pattern}.py``:
+``examples/4_trajectory_optimization/reelout/{generate_spline_config,helix_pattern}.py``:
 generate path parameters from a named initial curve, drop them into the V3
 helix template config, build the V3 system model (rigid lumped tether), then
 run ``PhaseParameterized.run_simulation_phase``.
@@ -25,12 +25,20 @@ from awetrim.utils.config_paths import (
 )
 from awetrim.utils.utils import load_cycle_config_from_yaml
 
-# Initial-curve shape (matches the defaults in generate_spline_config.py).
+# Initial-curve shape (the NLP-building tests).
 _M = 10
 _R0 = 230.0
 _S_INIT = 0.0
 _S_FINAL = 2.0 * np.pi
 _CURVE_KWARGS = dict(az_amp0=0.32, beta0=0.3, beta_amp0=0.15, downloops=True)
+# The figure test_spline_phase_runs_quasi_steady FLIES node by node (also the
+# generate_spline_config.py default): one the
+# LEI-V3 can fly at 10 m/s inside its ROM's identified steering (|u_s| <= 0.143;
+# 0.133 at most on all three curves, lowest point 0.1 rad above the horizon).
+# The 0.32 / 0.15 rad one at 230 m above needs |u_s| up to 0.47 and post-stall
+# roots (2026-10-29).
+_FLOWN_R0 = 300.0
+_FLOWN_CURVE_KWARGS = dict(az_amp0=0.65, beta0=0.4, beta_amp0=0.30, downloops=True)
 
 pytestmark = pytest.mark.skipif(
     not LEI_V3_SYSTEM_CONFIG.exists() or not LEI_V3_HELIX_SPLINE_CONFIG.exists(),
@@ -38,25 +46,25 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _spline_path_parameters(curve_type):
+def _spline_path_parameters(curve_type, r0=_R0, curve_kwargs=None):
     return make_bspline_path_parameters_from_named_curve(
         spline_type="periodic",
         M=_M,
-        r0=_R0,
+        r0=r0,
         s_init=_S_INIT,
         s_final=_S_FINAL,
         n_fit=200,
         curve_type=curve_type,
-        **_CURVE_KWARGS,
+        **(curve_kwargs or _CURVE_KWARGS),
     )
 
 
-def _reelout_config(curve_type, n_points):
+def _reelout_config(curve_type, n_points, r0=_R0, curve_kwargs=None):
     """V3 helix template config with its path swapped for a named-curve spline."""
     reelout_config, _ = load_cycle_config_from_yaml(LEI_V3_HELIX_SPLINE_CONFIG)
     reelout_config = copy.deepcopy(reelout_config)
     reelout_config["pattern_type"] = "spline_periodic"
-    reelout_config["path_parameters"] = _spline_path_parameters(curve_type)
+    reelout_config["path_parameters"] = _spline_path_parameters(curve_type, r0, curve_kwargs)
     sim = reelout_config["sim_parameters"]
     sim["start_angle"] = _S_INIT
     sim["end_angle"] = _S_FINAL
@@ -108,7 +116,9 @@ def test_spline_phase_runs_quasi_steady(curve_type):
     from awetrim.timeseries.phase_parametrized import PhaseParameterized
 
     n_points = 30
-    config = _reelout_config(curve_type, n_points=n_points)
+    config = _reelout_config(
+        curve_type, n_points=n_points, r0=_FLOWN_R0, curve_kwargs=_FLOWN_CURVE_KWARGS
+    )
     system_model = _v3_system_model()
 
     start_state = {
@@ -151,6 +161,11 @@ def test_spline_phase_runs_quasi_steady(curve_type):
     # Tether stays in tension and the kite stays above the horizon.
     assert np.all(phase.return_variable("tension_tether_ground") > 0.0)
     assert np.all(phase.return_variable("angle_elevation") > 0.0)
+
+    # The pattern is flown inside the steering the ROM was identified on (the
+    # factory clips the optimizer's box to it; the forward solve is unbounded).
+    u_s_max = system_model.hardware_limits["input_steering"][1]
+    assert np.max(np.abs(phase.return_variable("input_steering"))) <= u_s_max
 
 
 # --- slow: per-node depower-profile optimization ---------------------------
@@ -349,6 +364,124 @@ def test_warm_start_trajectory_seeds_decisions_over_forward_sim():
     assert not np.allclose(seeded_steering, marker_sdot)
 
 
+@pytest.mark.slow
+def test_complete_warm_start_trajectory_skips_forward_march(monkeypatch):
+    """When the stored trajectory covers every per-node seed, ``opti_phase``
+    does not run the forward march at all (its values were always overridden
+    by the stored ones); a partial one still triggers the march."""
+    import casadi as ca
+
+    from awetrim.timeseries import phase_parametrized as pp
+    from awetrim.timeseries.phase_parametrized import PhaseParameterized
+
+    n_points = 20
+    config = _reelout_config("lissajous", n_points=n_points)
+    system_model = _v3_system_model()
+    start_state = {
+        "t": 0.0,
+        "s": _S_INIT,
+        "s_dot": 3.0,
+        "input_steering": 0.0,
+        "tension_tether_ground": 8.4e4,
+        "speed_radial": 0.0,
+        "distance_radial": config["path_parameters"]["r0"],
+    }
+    r0 = float(config["path_parameters"]["r0"])
+    full = {
+        "s": np.linspace(0.0, 1.0, n_points, endpoint=False),
+        "s_dot": np.full(n_points, 3.0),
+        "input_steering": np.zeros(n_points),
+        "speed_radial": np.full(n_points, 0.5),
+        "distance_radial": np.full(n_points, r0),
+        "tension_tether_ground": np.full(n_points, 8.0e3),
+        "t": np.linspace(0.0, 10.0, n_points),
+        "angle_course": np.zeros(n_points),
+    }
+
+    calls = []
+    real_march = PhaseParameterized.run_simulation_phase
+
+    def counting_march(self, *args, **kwargs):
+        calls.append(1)
+        return real_march(self, *args, **kwargs)
+
+    monkeypatch.setattr(PhaseParameterized, "run_simulation_phase", counting_march)
+
+    # Complete seed (as a previous optimum or a flagged simulation): no march.
+    phase = PhaseParameterized(system_model, quasi_steady=True, pattern_config=config)
+    phase.warm_start_trajectory = dict(full)
+    phase.warm_start_is_optimum = True
+    opti, opti_vars, _ = phase.opti_phase(start_state=start_state, opti_params={})
+    assert calls == []
+    seeded_T = np.asarray(
+        opti.value(opti_vars["tension_tether_ground"], opti.initial())
+    ).ravel()
+    assert np.allclose(seeded_T, 8.0e3)
+
+    # Partial seed: the march runs and fills the missing variables.
+    partial = {k: v for k, v in full.items() if k != "input_steering"}
+    phase2 = PhaseParameterized(system_model, quasi_steady=True, pattern_config=config)
+    phase2.warm_start_trajectory = partial
+    phase2.opti_phase(start_state=start_state, opti_params={})
+    assert calls == [1]
+
+
+# --- slow: local-support node functions == dense ones, but sparse ------------
+
+
+@pytest.mark.slow
+def test_local_support_node_functions_match_dense_and_sparsify_jacobian():
+    """With the spline coefficients optimized, opti_phase builds its per-node
+    SX Functions per knot interval from truncated-support splines. The NLP
+    must be the SAME problem (identical constraint vector at the warm start)
+    with a Jacobian that only couples each node to its 4+4 supporting control
+    points (far fewer nonzeros than the shared dense-``s`` functions)."""
+    import casadi as ca
+
+    from awetrim.timeseries.phase import Phase
+
+    n_points = 24
+    start_state = {
+        "t": 0.0,
+        "s": _S_INIT,
+        "s_dot": 3.0,
+        "input_steering": 0.0,
+        "tension_tether_ground": 8.4e4,
+        "speed_radial": 0.0,
+        "distance_radial": None,
+    }
+
+    def build(expand_nodes):
+        config = _reelout_config("lissajous", n_points=n_points)
+        config["sim_parameters"]["expand_node_functions"] = expand_nodes
+        ss = dict(start_state)
+        ss["distance_radial"] = config["path_parameters"]["r0"]
+        phase = Phase(system_model=_v3_system_model(), pattern_config=config,
+                      start_state=ss)
+        phase.run_simulation(run_plots=False, phase_sim=True, seed_warm_start=True)
+        opti, _, _, _ = phase.get_opti_components(
+            optimization_params=["C_phi", "C_beta"]
+        )
+        g0 = np.asarray(opti.value(opti.g, opti.initial())).ravel()
+        jac = ca.jacobian(opti.g, opti.x)
+        # Structural coupling of the constraint rows to C_phi (the first M
+        # decision columns: C_phi is the first optimization parameter).
+        pattern01 = np.asarray(ca.DM(jac.sparsity(), 1.0).full())
+        M = int(config["path_parameters"]["M"])
+        max_row_coupling = int(pattern01[:, :M].sum(axis=1).max())
+        return g0, jac.nnz(), max_row_coupling, M
+
+    g_dense, nnz_dense, couple_dense, M = build(False)  # shared, symbolic s
+    g_local, nnz_local, couple_local, _ = build(True)  # per-interval, local
+    assert g_dense.shape == g_local.shape
+    assert np.allclose(g_dense, g_local, rtol=1e-7, atol=1e-6 * max(1.0, np.abs(g_dense).max()))
+    assert nnz_local < nnz_dense
+    # a node row sees all M control points with the shared function, but
+    # only the 4 that support its knot interval with local support
+    assert couple_dense == M
+    assert couple_local == 4
+
+
 # --- slow: constraint report exposes the NLP's constrained expressions ------
 
 
@@ -399,3 +532,509 @@ def test_constraint_report_exposes_nlp_expressions():
     assert report["trim_residual (scaled)"]["expr"].numel() == 3 * n_points
     assert report["radial_continuity (scaled)"]["expr"].numel() == n_points - 1
     assert report["winch_tension_law (scaled)"]["expr"].numel() == n_points
+
+
+# --- slow: minimum turn-radius constraint --------------------------------------
+
+
+@pytest.mark.slow
+def test_min_turn_radius_adds_dense_rows_and_diagnostics():
+    """``sim_parameters["min_turn_radius"]`` adds three rows per sub-sample per
+    node (default 4 per interval), exports the ``turn_radius`` report row and
+    always exposes the per-node ``turn_radius`` / scalar ``turn_radius_min``
+    diagnostics; without it the constraint set is unchanged."""
+    import casadi as ca
+
+    from awetrim.timeseries.phase_parametrized import PhaseParameterized
+
+    n_points = 20
+    system_model = _v3_system_model()
+
+    def _build(**sim_overrides):
+        config = _reelout_config("lissajous", n_points=n_points)
+        config["sim_parameters"]["input_depower"] = 1.6
+        config["sim_parameters"].update(sim_overrides)
+        start_state = {
+            "t": 0.0,
+            "s": _S_INIT,
+            "s_dot": 3.0,
+            "input_steering": 0.0,
+            "tension_tether_ground": 8.4e4,
+            "speed_radial": 0.0,
+            "distance_radial": config["path_parameters"]["r0"],
+        }
+        phase = PhaseParameterized(
+            system_model, quasi_steady=True, pattern_config=config
+        )
+        opti, _, objective_dict = phase.opti_phase(
+            start_state=start_state, opti_params={}
+        )
+        return opti, objective_dict
+
+    opti_off, od_off = _build()
+    opti_on, od_on = _build(min_turn_radius=12.0)
+    opti_k1, _ = _build(min_turn_radius=12.0, turn_radius_subsamples=1)
+
+    # three rows per sample: -r s'^3 <= R_min kappa s'^3 <= r s'^3 and the
+    # parametric-speed floor s'/s'_ref >= turn_radius_sigma_floor
+    assert opti_on.g.numel() - opti_off.g.numel() == 3 * 4 * n_points
+    assert opti_k1.g.numel() - opti_off.g.numel() == 3 * n_points
+    assert "turn_radius" not in od_off["constraint_report"]
+    assert "path_param_speed (sigma'/ref)" in od_on["constraint_report"]
+    row = od_on["constraint_report"]["turn_radius"]
+    assert row["expr"].numel() == 4 * n_points
+    assert row["lb"] == 12.0 and row["ub"] == float("inf")
+    for od in (od_off, od_on):
+        assert isinstance(od["turn_radius"], ca.MX)
+        assert od["turn_radius"].numel() == n_points
+        assert od["turn_radius_min"].numel() == 1
+
+    with pytest.raises(ValueError, match="min_turn_radius"):
+        _build(min_turn_radius=-1.0)
+
+    # sim_parameters["min_azimuth_amplitude"] (the PatternLimits azimuth
+    # amplitude floor) is ONE smooth row when C_phi is optimized; with a fixed
+    # pattern it is only a check on the given shape; negative values rejected.
+    def _build_cphi(**sim_overrides):
+        config = _reelout_config("lissajous", n_points=n_points)
+        config["sim_parameters"]["input_depower"] = 1.6
+        config["sim_parameters"].update(sim_overrides)
+        phase = PhaseParameterized(
+            system_model, quasi_steady=True, pattern_config=config
+        )
+        opti = ca.Opti()
+        phase.pattern_config_opti = copy.deepcopy(config)
+        c_phi = opti.variable(len(config["path_parameters"]["C_phi"]))
+        phase.pattern_config_opti["path_parameters"]["C_phi"] = c_phi
+        start_state = {
+            "t": 0.0, "s": _S_INIT, "s_dot": 3.0, "input_steering": 0.0,
+            "tension_tether_ground": 8.4e4, "speed_radial": 0.0,
+            "distance_radial": config["path_parameters"]["r0"],
+        }
+        opti, _, objective_dict = phase.opti_phase(
+            start_state=start_state, opti=opti, opti_params={"C_phi": c_phi}
+        )
+        return opti, objective_dict
+
+    opti_c_off, od_c_off = _build_cphi()
+    opti_amp, od_amp = _build_cphi(min_azimuth_amplitude=np.radians(5.0))
+    assert opti_amp.g.numel() - opti_c_off.g.numel() == 1
+    row = od_amp["constraint_report"]["azimuth_amplitude (rms*sqrt2)"]
+    assert row["lb"] == pytest.approx(np.radians(5.0)) and row["ub"] == float("inf")
+    assert "azimuth_amplitude (rms*sqrt2)" not in od_c_off["constraint_report"]
+    # fixed pattern: satisfied -> no row; violated -> error
+    opti_fixed, _ = _build(min_azimuth_amplitude=np.radians(5.0))
+    assert opti_fixed.g.numel() == opti_off.g.numel()
+    with pytest.raises(ValueError, match="min_azimuth_amplitude"):
+        _build(min_azimuth_amplitude=np.radians(89.0))
+    with pytest.raises(ValueError, match="min_azimuth_amplitude"):
+        _build(min_azimuth_amplitude=-0.1)
+
+
+# --- slow: periodic wrap (one closed period, seam rows) ----------------------
+
+
+def _wrap_phase(n_points, sim_overrides=None, pattern_type=None, **kw):
+    """PhaseParameterized with a complete stored warm start (no march)."""
+    from awetrim.timeseries.phase_parametrized import PhaseParameterized
+
+    config = _reelout_config("lissajous", n_points=n_points)
+    config["sim_parameters"]["input_depower"] = 1.6
+    config["sim_parameters"].update(sim_overrides or {})
+    if pattern_type:
+        config["pattern_type"] = pattern_type
+    r0 = float(config["path_parameters"]["r0"])
+    s0, s1 = config["sim_parameters"]["start_angle"], config["sim_parameters"]["end_angle"]
+    full = {
+        "s": np.linspace(s0, s1, n_points, endpoint=False),
+        "s_dot": np.full(n_points, 3.0),
+        "input_steering": np.linspace(-0.1, 0.1, n_points),
+        "speed_radial": np.full(n_points, 0.5),
+        "distance_radial": np.full(n_points, r0),
+        "tension_tether_ground": np.full(n_points, 8.0e3),
+        "t": np.linspace(0.0, 10.0, n_points),
+        "angle_course": np.zeros(n_points),
+    }
+    start_state = {
+        "t": 0.0,
+        "s": s0,
+        "s_dot": 3.0,
+        "input_steering": 0.0,
+        "tension_tether_ground": 8.4e4,
+        "speed_radial": 0.0,
+        "distance_radial": r0,
+    }
+    phase = PhaseParameterized(_v3_system_model(), quasi_steady=True, pattern_config=config)
+    phase.warm_start_trajectory = full
+    phase.warm_start_is_optimum = True
+    return phase, start_state
+
+
+_N_WRAP = 20
+_WRAP_FORMULATIONS = {
+    # force law, scalar depower: the steering rate is the only seam rate row
+    "force_law": ({}, {"input_steering_rate"}),
+    # free reel speed + per-node depower: all three node controls get one
+    "free_speed+depower": (
+        {
+            "winch_mode": "free_speed",
+            "optimize_depower_profile": True,
+            "input_depower_profile": [1.6] * (_N_WRAP + 1),
+        },
+        {"input_steering_rate", "input_depower_rate", "speed_radial_rate"},
+    ),
+}
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("formulation", sorted(_WRAP_FORMULATIONS))
+def test_periodic_wrap_adds_the_seam_rows_and_closes_the_regularizer(formulation):
+    """With ``periodic_wrap`` the seam interval (node N-1 -> node 0) gets the
+    same rows as every interior interval -- so the AoA, rate and continuity
+    report groups hold n_points entries instead of n_points - 1 -- the
+    constraint count grows by exactly those rows (one rate pair per node
+    control: steering alone with the force law, steering + depower + reel
+    speed in free_speed with a depower profile), and the smoothness
+    regularizer couples u[0] to u[N-1]. Both flags off leave the NLP as it
+    was (n_points - 1 entries, the count the pre-wrap test pins)."""
+    import casadi as ca
+
+    n_points = _N_WRAP
+    sim_overrides, expected_rate_keys = _WRAP_FORMULATIONS[formulation]
+    phase_off, start = _wrap_phase(n_points, dict(sim_overrides))
+    opti_off, vars_off, obj_off = phase_off.opti_phase(start_state=start, opti_params={})
+    phase_on, start = _wrap_phase(n_points, {**sim_overrides, "periodic_wrap": True})
+    opti_on, vars_on, obj_on = phase_on.opti_phase(start_state=start, opti_params={})
+
+    rep_off, rep_on = obj_off["constraint_report"], obj_on["constraint_report"]
+    rate_keys = [k for k in rep_on if k.endswith("_rate")]
+    assert set(rate_keys) == expected_rate_keys
+    for key in ["angle_of_attack", "radial_continuity (scaled)"] + rate_keys:
+        assert rep_off[key]["expr"].numel() == n_points - 1, key
+        assert rep_on[key]["expr"].numel() == n_points, key
+
+    n_aoa = int(np.isfinite(rep_on["angle_of_attack"]["lb"])) + int(
+        np.isfinite(rep_on["angle_of_attack"]["ub"])
+    )
+    expected_extra = 1 + 2 * len(rate_keys) + n_aoa
+    assert opti_on.g.numel() == opti_off.g.numel() + expected_extra
+
+    # reg: the seam term couples u[0] and u[N-1] (a Hessian corner entry)
+    for opti, opti_vars, obj, coupled in (
+        (opti_off, vars_off, obj_off, False),
+        (opti_on, vars_on, obj_on, True),
+    ):
+        u = opti_vars["input_steering"]
+        H = ca.hessian(obj["reg"], u)[0]
+        assert H.sparsity().has_nz(0, n_points - 1) is coupled
+        assert H.sparsity().has_nz(0, 1)
+
+
+@pytest.mark.slow
+def test_periodic_wrap_guards():
+    """The wrap refuses a second closure pin, an open spline and a phase that
+    does not span exactly one period."""
+    phase, start = _wrap_phase(12, {"periodic_wrap": True, "close_radial_cycle": True})
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        phase.opti_phase(start_state=start, opti_params={})
+
+    phase, start = _wrap_phase(12, {"periodic_wrap": True}, pattern_type="spline_open")
+    with pytest.raises(ValueError, match="periodic spline"):
+        phase.opti_phase(start_state=start, opti_params={})
+
+    phase, start = _wrap_phase(
+        12, {"periodic_wrap": True, "end_angle": 0.5 * (_S_INIT + _S_FINAL)}
+    )
+    with pytest.raises(ValueError, match="period"):
+        phase.opti_phase(start_state=start, opti_params={})
+
+
+@pytest.mark.slow
+def test_depower_anchor_is_an_objective_term_only():
+    """``depower_anchor_weight`` adds no constraint rows; it returns a convex
+    quadratic in the depower profile, diagonal with the stated weight over the
+    bound width squared and n_points, zero at the warm start. Off it is None,
+    and it refuses to be combined with the ``fix_depower_profile`` hold."""
+    import casadi as ca
+
+    from awetrim.utils.defaults import DEFAULT_OPTI_LIMITS
+
+    n_points = 12
+    base = dict(_WRAP_FORMULATIONS["free_speed+depower"][0])
+    base["input_depower_profile"] = [1.6] * (n_points + 1)
+    phase_off, start = _wrap_phase(n_points, dict(base))
+    opti_off, _, obj_off = phase_off.opti_phase(start_state=start, opti_params={})
+    phase_on, start = _wrap_phase(n_points, {**base, "depower_anchor_weight": 0.5})
+    opti_on, vars_on, obj_on = phase_on.opti_phase(start_state=start, opti_params={})
+
+    assert obj_off["depower_anchor"] is None
+    assert opti_on.g.numel() == opti_off.g.numel()
+    u = vars_on["input_depower"]
+    H = ca.Function("H", [u], [ca.hessian(obj_on["depower_anchor"], u)[0]])(
+        np.full(n_points, 1.6)
+    )
+    # the RESOLVED band (the system file's KCU range), not the generic default
+    lo, hi = phase_on._resolve_opti_limits()["input_depower"]
+    assert (lo, hi) != tuple(DEFAULT_OPTI_LIMITS["input_depower"])
+    expected = 2.0 * 0.5 / (hi - lo) ** 2 / n_points
+    np.testing.assert_allclose(np.asarray(H), expected * np.eye(n_points), rtol=1e-12)
+
+    phase_both, start = _wrap_phase(
+        n_points, {**base, "depower_anchor_weight": 0.5, "fix_depower_profile": True}
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        phase_both.opti_phase(start_state=start, opti_params={})
+
+
+# --- slow: mirror symmetry (half-period mirror rows) -------------------------
+
+
+def _mirror_phase(n_points, sim_overrides=None, shape_decision=False, M=None):
+    """Free-speed + depower wrap phase on a mirror-symmetrized lissajous
+    (``M`` refits the curve with that many control points, unsymmetrized).
+    Returns ``(phase, start_state, opti, opti_params)``."""
+    import casadi as ca
+
+    from awetrim.kinematics.parametrized_patterns import symmetrize_periodic_path
+
+    overrides = {**_WRAP_FORMULATIONS["free_speed+depower"][0], "periodic_wrap": True}
+    overrides["input_depower_profile"] = [1.6] * (n_points + 1)
+    overrides.update(sim_overrides or {})
+    phase, start = _wrap_phase(n_points, overrides)
+    config = phase.pattern_config
+    if M is not None:
+        config["path_parameters"] = make_bspline_path_parameters_from_named_curve(
+            spline_type="periodic",
+            M=M,
+            r0=_R0,
+            s_init=_S_INIT,
+            s_final=_S_FINAL,
+            n_fit=200,
+            curve_type="lissajous",
+            **_CURVE_KWARGS,
+        )
+    else:
+        config["path_parameters"] = symmetrize_periodic_path(config["path_parameters"])
+    config_opti = copy.deepcopy(config)
+    opti = ca.Opti()
+    opti_params = {}
+    if shape_decision:
+        for name in ("C_phi", "C_beta"):
+            opti_params[name] = opti.variable(int(config["path_parameters"]["M"]))
+            config_opti["path_parameters"][name] = opti_params[name]
+    phase.pattern_config_opti = config_opti
+    return phase, start, opti, opti_params
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("shape_decision", [False, True])
+def test_mirror_symmetry_adds_the_half_period_rows(shape_decision):
+    """``mirror_symmetry`` adds N/2 rows per node control (v_r, u_s, u_p in
+    free_speed with a depower profile) plus M/2 per optimized shape
+    coefficient vector, exported as one equality report group; an explicit
+    False leaves the NLP as it was."""
+    n_points = 20
+    runs = {}
+    for label, flag in (("absent", {}), ("off", {"mirror_symmetry": False}),
+                        ("on", {"mirror_symmetry": True})):
+        phase, start, opti, params = _mirror_phase(n_points, flag, shape_decision)
+        opti, _, obj = phase.opti_phase(start_state=start, opti=opti, opti_params=params)
+        runs[label] = (opti.g.numel(), obj["constraint_report"], phase)
+
+    assert runs["off"][0] == runs["absent"][0]
+    assert "mirror_symmetry (scaled)" not in runs["absent"][1]
+    M = int(runs["on"][2].pattern_config["path_parameters"]["M"])
+    expected = 3 * (n_points // 2) + (M if shape_decision else 0)
+    assert runs["on"][0] == runs["absent"][0] + expected
+    group = runs["on"][1]["mirror_symmetry (scaled)"]
+    assert group["equality"] and group["expr"].numel() == expected
+
+
+@pytest.mark.slow
+def test_mirror_symmetry_guards():
+    """Refuses a phase without the periodic wrap, an odd N or M, the force-law
+    winch, and a fixed shape that is not mirror-symmetric."""
+    cases = (
+        (dict(n_points=20, sim_overrides={"mirror_symmetry": True, "periodic_wrap": False}),
+         "periodic_wrap"),
+        (dict(n_points=21, sim_overrides={"mirror_symmetry": True}), "even n_points"),
+        (dict(n_points=20, sim_overrides={"mirror_symmetry": True}, M=9), "even M"),
+        (dict(n_points=20, sim_overrides={"mirror_symmetry": True, "winch_mode": "force_law"}),
+         "free_speed"),
+    )
+    for kwargs, match in cases:
+        phase, start, opti, params = _mirror_phase(**kwargs)
+        with pytest.raises(ValueError, match=match):
+            phase.opti_phase(start_state=start, opti=opti, opti_params=params)
+
+    phase, start, opti, params = _mirror_phase(20, {"mirror_symmetry": True})
+    phase.pattern_config_opti["path_parameters"]["C_beta"][0] += 0.05
+    with pytest.raises(ValueError, match="not mirror-symmetric"):
+        phase.opti_phase(start_state=start, opti=opti, opti_params=params)
+
+
+@pytest.mark.slow
+def test_mirror_symmetry_rows_vanish_exactly_on_a_mirrored_point():
+    """The mirror rows, as a Function of the decision variables, are zero at a
+    hand-built mirrored point (u_s opposite, v_r and u_p equal, C_phi pairs
+    mirrored about a NON-zero meridian, C_beta pairs equal) and non-zero when
+    any single pairing is broken: the u_s sign, the 2 az_c offset, or an
+    off-by-one pairing. A non-zero mirror_azimuth warns (only az = 0 is a
+    physical mirror)."""
+    import casadi as ca
+
+    n_points, az_c = 20, 0.1
+    phase, start, opti, params = _mirror_phase(
+        n_points,
+        {"mirror_symmetry": True, "mirror_azimuth": az_c},
+        shape_decision=True,
+    )
+    with pytest.warns(UserWarning, match="mirror_azimuth"):
+        opti, opti_vars, obj = phase.opti_phase(
+            start_state=start, opti=opti, opti_params=params
+        )
+    expr = obj["constraint_report"]["mirror_symmetry (scaled)"]["expr"]
+    inputs = [
+        opti_vars["input_steering"],
+        opti_vars["speed_radial"],
+        opti_vars["input_depower"],
+        params["C_phi"],
+        params["C_beta"],
+    ]
+    rows = ca.Function("mirror_rows", inputs, [expr])
+
+    h, M = n_points // 2, int(params["C_phi"].numel())
+    rng = np.random.default_rng(3)
+    u_s_half, v_r_half, u_p_half = (rng.normal(size=h) for _ in range(3))
+    c_phi_half, c_beta_half = rng.normal(size=M // 2), rng.normal(size=M // 2)
+    point = {
+        "u_s": np.r_[u_s_half, -u_s_half],
+        "v_r": np.r_[v_r_half, v_r_half],
+        "u_p": np.r_[u_p_half, u_p_half],
+        "C_phi": np.r_[c_phi_half, 2.0 * az_c - c_phi_half],
+        "C_beta": np.r_[c_beta_half, c_beta_half],
+    }
+
+    def residual(pt):
+        args = [pt[k] for k in ("u_s", "v_r", "u_p", "C_phi", "C_beta")]
+        return float(np.max(np.abs(np.asarray(rows(*args)))))
+
+    assert residual(point) < 1e-12
+    broken = {
+        "u_s sign": {**point, "u_s": np.r_[u_s_half, u_s_half]},
+        "2 az_c offset": {**point, "C_phi": np.r_[c_phi_half, -c_phi_half]},
+        "off-by-one pairing": {**point, "v_r": np.r_[v_r_half, np.roll(v_r_half, 1)]},
+        "u_p pair": {**point, "u_p": np.r_[u_p_half, u_p_half + 0.01]},
+        "C_beta pair": {**point, "C_beta": np.r_[c_beta_half, c_beta_half[::-1]]},
+    }
+    for what, pt in broken.items():
+        assert residual(pt) > 1e-3, what
+
+
+@pytest.mark.slow
+def test_symmetric_pattern_adds_mirror_rows_and_projects_warm_start():
+    """``sim_parameters["symmetric_pattern"]`` adds M linear rows (M/2 per
+    coordinate) when C_phi/C_beta are optimized and seeds them with the
+    symmetric projection of the warm start; with a fixed pattern it is only a
+    check on the given shape."""
+    import casadi as ca
+
+    from awetrim.timeseries.phase_parametrized import PhaseParameterized
+
+    n_points = 20
+    system_model = _v3_system_model()
+    start_state = {
+        "t": 0.0, "s": _S_INIT, "s_dot": 3.0, "input_steering": 0.0,
+        "tension_tether_ground": 8.4e4, "speed_radial": 0.0, "distance_radial": _R0,
+    }
+
+    def _build(optimize, lopsided=False, **sim_overrides):
+        config = _reelout_config("lissajous", n_points=n_points)
+        config["sim_parameters"]["input_depower"] = 1.6
+        config["sim_parameters"].update(sim_overrides)
+        if lopsided:  # shift the figure 2 deg to one side
+            config["path_parameters"]["C_phi"] = [
+                c + np.radians(2.0) for c in config["path_parameters"]["C_phi"]
+            ]
+        phase = PhaseParameterized(system_model, quasi_steady=True, pattern_config=config)
+        opti = ca.Opti()
+        params = {}
+        if optimize:
+            phase.pattern_config_opti = copy.deepcopy(config)
+            for var in ("C_phi", "C_beta"):
+                params[var] = opti.variable(len(config["path_parameters"][var]))
+                phase.pattern_config_opti["path_parameters"][var] = params[var]
+        opti, _, _ = phase.opti_phase(start_state=start_state, opti=opti, opti_params=params)
+        return opti, params
+
+    opti_off, _ = _build(True, lopsided=True)
+    opti_on, params = _build(True, lopsided=True, symmetric_pattern=True)
+    assert opti_on.g.numel() - opti_off.g.numel() == _M
+    c_phi = np.ravel(opti_on.debug.value(params["C_phi"], opti_on.initial()))
+    c_beta = np.ravel(opti_on.debug.value(params["C_beta"], opti_on.initial()))
+    h = _M // 2
+    np.testing.assert_allclose(c_phi[h:], -c_phi[:h], atol=1e-12)
+    np.testing.assert_allclose(c_beta[h:], c_beta[:h], atol=1e-12)
+
+    # fixed pattern: the Lissajous fit is symmetric -> no rows; lopsided -> error
+    opti_fixed_off, _ = _build(False)
+    opti_fixed_on, _ = _build(False, symmetric_pattern=True)
+    assert opti_fixed_on.g.numel() == opti_fixed_off.g.numel()
+    with pytest.raises(ValueError, match="symmetric_pattern"):
+        _build(False, lopsided=True, symmetric_pattern=True)
+
+
+@pytest.mark.slow
+def test_max_climb_angle_adds_rows_per_sample():
+    """``sim_parameters["max_climb_angle"]`` (the PatternLimits climb-angle
+    ceiling) adds one smooth row per turn-radius sample (default 4 per node
+    interval) when C_phi/C_beta are optimized and reports them; with a fixed
+    pattern it is only a check on the given shape; out-of-range values are
+    rejected."""
+    import casadi as ca
+
+    from awetrim.timeseries.phase_parametrized import PhaseParameterized
+
+    n_points = 20
+    system_model = _v3_system_model()
+    start_state = {
+        "t": 0.0, "s": _S_INIT, "s_dot": 3.0, "input_steering": 0.0,
+        "tension_tether_ground": 8.4e4, "speed_radial": 0.0, "distance_radial": _R0,
+    }
+
+    def _build(optimize, **sim_overrides):
+        config = _reelout_config("lissajous", n_points=n_points)
+        config["sim_parameters"]["input_depower"] = 1.6
+        config["sim_parameters"].update(sim_overrides)
+        phase = PhaseParameterized(system_model, quasi_steady=True, pattern_config=config)
+        opti = ca.Opti()
+        params = {}
+        if optimize:
+            phase.pattern_config_opti = copy.deepcopy(config)
+            for var in ("C_phi", "C_beta"):
+                params[var] = opti.variable(len(config["path_parameters"][var]))
+                phase.pattern_config_opti["path_parameters"][var] = params[var]
+        opti, _, objective_dict = phase.opti_phase(
+            start_state=start_state, opti=opti, opti_params=params
+        )
+        return opti, objective_dict
+
+    opti_off, od_off = _build(True)
+    opti_on, od_on = _build(True, max_climb_angle=np.radians(45.0))
+    opti_k1, _ = _build(True, max_climb_angle=np.radians(45.0), turn_radius_subsamples=1)
+    assert opti_on.g.numel() - opti_off.g.numel() == 4 * n_points
+    assert opti_k1.g.numel() - opti_off.g.numel() == n_points
+    assert "climb_angle_row" not in od_off["constraint_report"]
+    row = od_on["constraint_report"]["climb_angle_row"]
+    assert row["expr"].numel() == 4 * n_points
+    assert row["lb"] == float("-inf") and row["ub"] == 0.0
+
+    # fixed pattern: a ceiling the Lissajous fit keeps adds no row; one it
+    # breaks (it climbs somewhere, so 1 deg) is an error
+    opti_fixed_off, _ = _build(False)
+    opti_fixed_on, _ = _build(False, max_climb_angle=np.radians(89.0))
+    assert opti_fixed_on.g.numel() == opti_fixed_off.g.numel()
+    with pytest.raises(ValueError, match="max_climb_angle"):
+        _build(False, max_climb_angle=np.radians(1.0))
+    with pytest.raises(ValueError, match="max_climb_angle"):
+        _build(True, max_climb_angle=-0.1)

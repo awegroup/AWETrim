@@ -25,17 +25,35 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from pathlib import Path
 import copy
+import dataclasses
+import time
 from VSM.core.BodyAerodynamics import BodyAerodynamics
 from VSM.core.WingGeometry import Wing
-from VSM.core.Solver import Solver
+from awetrim.aerodynamics.vsm_settings import (
+    VSM_SOLVER_DEFAULTS,
+    make_vsm_solver,
+    vsm_body_kwargs,
+)
 from VSM.plot_geometry_matplotlib import plot_geometry
+from awetrim.aerodynamics.kcu_drag import KcuDragModel
+from awetrim.aerostructural.case import air_density_at_case
+from awetrim.aerostructural.coupled.awesio_structure import load_structure
+from awetrim.aerodynamics.line_drag import (
+    attach_bridle_lines,
+    bridle_drag_diameters,
+    settings_from_config,
+)
 from awetrim.aerodynamics.vsm_quasi_steady import (
+    extend_polar_past_onset,
     solve_quasi_steady_state,
+    solve_vsm_qs_trim_with_williams_tether,
+    AV_ATTACHED_FIRST as _AV_ATTACHED_FIRST_DEFAULT,
     DEFAULT_TRANSFORMATION_C_FROM_VSM,
+    _as_numeric_3vector,
 )
 
 # Bounds and defaults (aoa, sideslip, course_rate_body)
-kite_speed_bounds = (1.0, 50.0)  # m/s
+kite_speed_bounds = (-2.0, 50.0)  # m/s
 pitch_bounds = (-10, 10)  # deg
 yaw_bounds = (-10, 10)  # deg
 course_rate_bounds = (
@@ -51,6 +69,129 @@ DEFAULT_GUESS_QS = np.array(
     [30.0, 0.0, 0.0, 0.0, -0.0]
 )  # [kite_speed, roll, pitch, yaw, course_rate_body]
 
+#: Mid-span chord angle of attack [deg] a cold trim seed must start in
+#: (``quasi_steady_trim.initial_aoa_band_deg``); see feasible_initial_guess.
+DEFAULT_INITIAL_AOA_BAND_DEG = (0.0, 15.0)
+
+
+def mid_span_chord_angle_of_attack(body_aero, va) -> float:
+    """Signed angle [rad] from the mid-span panel's chord to the apparent
+    wind ``va`` (VSM frame), in the x-z plane: the geometric angle of attack
+    the coupled drivers report, no induced velocity."""
+    panel = body_aero.panels[len(body_aero.panels) // 2]
+    chord = 0.5 * (panel.TE_point_1 + panel.TE_point_2) - 0.5 * (
+        panel.LE_point_1 + panel.LE_point_2
+    )
+    chord_2d = np.array([chord[0], chord[2]]) / np.hypot(chord[0], chord[2])
+    va = np.asarray(va, dtype=float)
+    wind_2d = np.array([va[0], va[2]]) / np.hypot(va[0], va[2])
+    # z-component of the 2-D cross product, written out: np.cross on
+    # 2-element vectors is deprecated since NumPy 2.0.
+    cross = chord_2d[0] * wind_2d[1] - chord_2d[1] * wind_2d[0]
+    return float(np.arctan2(cross, np.clip(np.dot(chord_2d, wind_2d), -1.0, 1.0)))
+
+
+def feasible_initial_guess(
+    body_aero, system_model, speed_bounds, aoa_band_deg=DEFAULT_INITIAL_AOA_BAND_DEG
+) -> np.ndarray:
+    """The cold trim seed: DEFAULT_GUESS_QS when its mid-span chord angle of
+    attack lies in ``aoa_band_deg``, else the same level attitude at the kite
+    speed (inside ``speed_bounds``) that puts it mid-band.
+
+    30 m/s level suits a powered kite, not a slow depowered one, whose real
+    speed is a fraction of it: the seed then meets the wing far below its
+    angle of attack, the first trim residual is not finite and the coupled
+    solve is lost (V3Kite emulation, 3 m/s wind, power tape 2.05 m, real
+    speed 7.9 m/s: mid-span -15 deg, panels to -19, 2026-10-27). Geometric
+    only -- the apparent wind of the trim's own kinematics against the
+    chord, no VSM solve. A seed inside the band is returned unchanged.
+    """
+    guess = np.array(DEFAULT_GUESS_QS, dtype=float)
+    trans = np.asarray(DEFAULT_TRANSFORMATION_C_FROM_VSM, dtype=float)
+    lo, hi = (float(v) for v in aoa_band_deg)
+
+    def aoa_deg(speed):
+        system_model.speed_tangential = float(speed)
+        va = _as_numeric_3vector(system_model, trans @ system_model.velocity_apparent_wind)
+        return np.degrees(mid_span_chord_angle_of_attack(body_aero, va))
+
+    aoa_default = aoa_deg(guess[0])
+    if lo <= aoa_default <= hi:
+        return guess
+    speeds = np.linspace(max(float(speed_bounds[0]), 0.5), float(speed_bounds[1]), 200)
+    aoas = np.array([aoa_deg(s) for s in speeds])
+    guess[0] = speeds[int(np.nanargmin(np.abs(aoas - 0.5 * (lo + hi))))]
+    logging.info(
+        "Cold trim seed moved to %.2f m/s: at %.1f m/s the mid-span chord meets "
+        "the wind at %.1f deg, outside [%g, %g]; now %.1f deg.",
+        guess[0], DEFAULT_GUESS_QS[0], aoa_default, lo, hi, aoa_deg(guess[0]),
+    )
+    return guess
+
+
+#: Trim-state names, for the on-bound diagnostic below.
+_QS_STATE_NAMES = ("kite_speed", "roll", "pitch", "yaw", "course_rate")
+
+
+def pre_loop_trim_config(config: dict | None) -> dict | None:
+    """Return ``config`` with ``quasi_steady_trim.pre_loop`` applied.
+
+    The coupled drivers rotate the structure by every trim's roll/pitch/yaw,
+    so inside the loop the trim bounds limit a per-iteration increment, while
+    on the pre-loop trim they limit the whole attitude. The ``pre_loop`` keys
+    override the block's own for that one call; without them ``config`` is
+    returned unchanged.
+    """
+    if not config:
+        return config
+    key = "quasi_steady_trim" if "quasi_steady_trim" in config else "quasi_steady"
+    qs_cfg = config.get(key) or {}
+    overrides = qs_cfg.get("pre_loop") or {}
+    if not overrides:
+        return config
+    return {**config, key: {**qs_cfg, **overrides}}
+
+
+def _warn_if_trim_on_bounds(opt_x, bounds_lower, bounds_upper, rel_tol=1e-3) -> list:
+    """Warn for each trim unknown that ended on its search bound.
+
+    ``least_squares`` reports ``success=True`` for a constrained optimum, so a
+    trim pinned against a bound looks converged while being no equilibrium at
+    all -- the force balance wanted a value the box forbade. Returns the list of
+    ``(name, value, "lower"/"upper")`` that are pinned (empty if none).
+
+    ``rel_tol`` is a fraction of the bound span. The TRF method stays strictly
+    inside the box, so a pinned trim stops just short of the bound: yaw
+    3.9987 on [-4, 4] at 40 deg elevation (2026-10-22), which the former
+    1e-6 never caught.
+    """
+    if opt_x is None:
+        return []
+    x = np.asarray(opt_x, dtype=float).ravel()
+    lo = np.asarray(bounds_lower, dtype=float).ravel()
+    hi = np.asarray(bounds_upper, dtype=float).ravel()
+    if x.size != lo.size or x.size != hi.size:
+        return []
+    pinned = []
+    for i, name in enumerate(_QS_STATE_NAMES[: x.size]):
+        span = max(abs(hi[i] - lo[i]), 1e-12)
+        if abs(x[i] - lo[i]) <= rel_tol * span:
+            pinned.append((name, float(x[i]), "lower"))
+        elif abs(x[i] - hi[i]) <= rel_tol * span:
+            pinned.append((name, float(x[i]), "upper"))
+    for name, value, which in pinned:
+        logging.warning(
+            "Quasi-steady trim is pinned on its %s bound: %s = %.6g. This is a "
+            "constrained optimum, NOT an equilibrium -- widen the bound "
+            "(quasi_steady.%s_bounds* in the config) or the deformed shape and "
+            "everything downstream describe a state the kite cannot fly.",
+            which,
+            name,
+            value,
+            name,
+        )
+    return pinned
+
 
 def _alpha_stall_from_polar(polar_data: np.ndarray) -> float:
     """Return the stall angle of attack [rad] from a 2-D polar table.
@@ -63,6 +204,7 @@ def _alpha_stall_from_polar(polar_data: np.ndarray) -> float:
     stall is not detectable from this polar and the panel is never flagged.
     """
     import math
+
     polar = np.asarray(polar_data)
     cl = polar[:, 1]
     alpha = polar[:, 0]
@@ -122,14 +264,24 @@ def _run_vsm_direct_fallback(body_aero, solver, system_model, current_guess):
     mass_total = float(system_model.kite.mass_wing) + float(
         getattr(system_model.kite, "mass_kcu", 0.0)
     )
-    inertial_force = -mass_total * np.asarray(
-        trans @ np.asarray(system_model.acceleration_course_body, dtype=float),
-        dtype=float,
-    ).reshape(3)
-    gravity_force = np.asarray(
-        trans @ np.asarray(system_model.force_gravity, dtype=float),
-        dtype=float,
-    ).reshape(3)
+    # SystemModel does not expose these as plain numeric attributes (they live
+    # in the CasADi expression registry); a missing one must not crash the
+    # fallback -- this path already reports success=False, and the coupled loop
+    # only needs F_distribution to keep stepping. Zero is the QS assumption.
+    def _course_vector(attribute):
+        value = getattr(system_model, attribute, None)
+        if value is None:
+            print(
+                f"WARNING: system_model has no numeric {attribute!r}; "
+                "fallback uses zeros."
+            )
+            return np.zeros(3)
+        return np.asarray(
+            trans @ np.asarray(value, dtype=float), dtype=float
+        ).reshape(3)
+
+    inertial_force = -mass_total * _course_vector("acceleration_course_body")
+    gravity_force = _course_vector("force_gravity")
 
     guess = np.asarray(current_guess, dtype=float).reshape(5)
     fallback_opt_x = np.array(DEFAULT_GUESS_QS, dtype=float)
@@ -151,6 +303,187 @@ def _run_vsm_direct_fallback(body_aero, solver, system_model, current_guess):
     }
 
 
+def _solve_trim_casadi(
+    *,
+    body_aero,
+    solver,
+    system_model,
+    center_of_gravity,
+    reference_point,
+    x_guess,
+    bounds_lower,
+    bounds_upper,
+    include_gravity,
+    kcu_drag,
+    tether_model,
+    gamma_seed,
+    tolerance,
+):
+    """The quasi-steady trim as ONE CasADi root-finding problem
+    (``awetrim.aerodynamics.trim_casadi``), in the contract of the NumPy
+    trims: ``(results, body)`` with the per-panel loads and the rotated body
+    the coupled loop consumes.
+
+    The VSM settings come off the coupled solver's own ``Solver`` (artificial
+    viscosity and its factor, polar interpolation, rho, core radius, model
+    type), so the trim solves the same circulation problem as the
+    ``least_squares`` path's inner loop. ``tether_model`` is ``None``
+    (tetherless) or ``"williams"``; ``rigid_lumped`` is not covered by the
+    CasADi trim and is refused upstream.
+
+    Attached-first branch rule, at the TRIM level: with the artificial
+    viscosity on and ``attached_first`` set on the solver (the default,
+    ``solve_vsm_attached_first``), the trim is first solved on every polar
+    continued linearly past its stall onset (no stalled-tip fixed point to
+    lock into) and kept when every panel comes out below its ORIGINAL onset
+    -- that state is an exact solution of the true model, ``av_stage =
+    "attached"``. Otherwise the true polars + AV problem is solved from the
+    caller's seed, ``av_stage = "stalled"``. The NumPy trims apply the same
+    rule per VSM evaluation; the trim is either attached or not, so once per
+    trim is the consistent place, and it costs one extra graph build.
+    """
+    from awetrim.aerodynamics.trim_casadi import CasadiTrim, CasadiTrimOptions
+    from awetrim.aerodynamics.vsm_quasi_steady import (
+        _attached_polars_installed,
+        _panel_stall_onsets_rad,
+    )
+
+    options = CasadiTrimOptions(
+        tether_model=tether_model,
+        polar_interpolation=str(
+            getattr(solver, "polar_interpolation", VSM_SOLVER_DEFAULTS["polar_interpolation"])
+        ),
+        is_with_artificial_viscosity=bool(
+            getattr(
+                solver,
+                "is_with_artificial_viscosity",
+                VSM_SOLVER_DEFAULTS["is_with_artificial_viscosity"],
+            )
+        ),
+        artificial_viscosity_factor=float(
+            getattr(
+                solver,
+                "artificial_viscosity_factor",
+                VSM_SOLVER_DEFAULTS["artificial_viscosity_factor"],
+            )
+        ),
+        # Refused inside CasadiTrim when True: the kernels are the
+        # freestream-direction law, so a config asking for the corrected
+        # directions must run the least_squares trims.
+        is_aoa_corrected=bool(
+            getattr(solver, "is_aoa_corrected", VSM_SOLVER_DEFAULTS["is_aoa_corrected"])
+        ),
+        is_with_attached_trailed_vortex_force=bool(
+            getattr(
+                solver,
+                "is_with_attached_trailed_vortex_force",
+                VSM_SOLVER_DEFAULTS["is_with_attached_trailed_vortex_force"],
+            )
+        ),
+        include_gravity=bool(include_gravity),
+        tolerance=float(tolerance),
+        rho=float(getattr(solver, "rho", VSM_SOLVER_DEFAULTS["rho"])),
+        core_radius_fraction=float(
+            getattr(solver, "core_radius_fraction", VSM_SOLVER_DEFAULTS["core_radius_fraction"])
+        ),
+        aerodynamic_model_type=str(
+            getattr(
+                solver, "aerodynamic_model_type", VSM_SOLVER_DEFAULTS["aerodynamic_model_type"]
+            )
+        ),
+    )
+
+    # One graph per (polars, counts, options, system model), cached on the
+    # coupled solver's own Solver object and re-used across the coupled
+    # iterations with the deformed shape swapped in as parameters: the build
+    # (~0.5 s at 45 panels) is paid once per coupled solve, not per
+    # iteration. The attached-first stage swaps polars, so it gets its own
+    # entry. Keyed on the system model's identity too (its wind, position and
+    # masses are baked into the graph numerically).
+    cache = getattr(solver, "_awetrim_casadi_trims", None)
+    if cache is None:
+        cache = {}
+        try:
+            solver._awetrim_casadi_trims = cache
+        except AttributeError:  # a slotted or mock solver: no cache
+            pass
+    def run_once():
+        # The key is taken HERE, with the polars actually installed: the
+        # attached-first stage swaps in continued polars, so a key computed
+        # once up front filed that stage's graph under the TRUE polars' entry,
+        # and every stalled-stage solve then tripped update_geometry's polar
+        # check and fell back to an untrimmed direct VSM solve (2026-09-15:
+        # every coupled iteration of the deep-depower reel-in grid points).
+        key = (
+            CasadiTrim.geometry_signature(body_aero),
+            dataclasses.astuple(options),
+            None if kcu_drag is None else dataclasses.astuple(kcu_drag),
+            tuple(np.asarray(bounds_lower, dtype=float).ravel().tolist()),
+            tuple(np.asarray(bounds_upper, dtype=float).ravel().tolist()),
+            tuple(np.asarray(reference_point, dtype=float).ravel().tolist()),
+        )
+        entry = cache.get(key)
+        if entry is not None and entry[0] is system_model:
+            trim = entry[1]
+            trim.update_geometry(body_aero, center_of_gravity)
+        else:
+            trim = CasadiTrim(
+                body_aero,
+                system_model,
+                center_of_gravity,
+                reference_point,
+                kcu_drag=kcu_drag,
+                bounds_lower=bounds_lower,
+                bounds_upper=bounds_upper,
+                options=options,
+            )
+            if len(cache) >= 8:
+                cache.pop(next(iter(cache)))
+            cache[key] = (system_model, trim)
+        return trim.solve_with_body(x_guess, gamma_seed=gamma_seed)
+
+    av_first = options.is_with_artificial_viscosity and bool(
+        getattr(solver, "_awetrim_attached_first", _AV_ATTACHED_FIRST_DEFAULT)
+    )
+    if not av_first:
+        results, body = run_once()
+        results["av_stage"] = None
+        return results, body
+
+    # Stage 1: the attached predictor. The graph reads the polars at
+    # construction, so building it inside the swap bakes the continued polars
+    # in; the returned body is a deep copy made during the swap and is given
+    # the original tables back, so nothing downstream inherits the extension.
+    onsets = _panel_stall_onsets_rad(body_aero)
+    with _attached_polars_installed(body_aero):
+        results, body = run_once()
+    for panel_out, panel_in in zip(body.panels, body_aero.panels):
+        original = getattr(panel_in, "_panel_polar_data", None)
+        if original is not None:
+            panel_out._panel_polar_data = original
+    alpha = results.get("alpha_at_ac")
+    attached = bool(results.get("converged", False))
+    if attached and alpha is not None and onsets.size:
+        alpha = np.asarray(alpha, dtype=float).ravel()
+        if alpha.shape == onsets.shape:
+            finite = np.isfinite(alpha) & np.isfinite(onsets)
+            attached = bool(np.all(alpha[finite] <= onsets[finite])) and bool(
+                np.all(np.isfinite(alpha))
+            )
+        else:
+            attached = False
+    if attached:
+        results["av_stage"] = "attached"
+        return results, body
+
+    # Stage 2: the true model, from the caller's seed.
+    predictor_converged = bool(results.get("converged", False))
+    results, body = run_once()
+    results["av_stage"] = "stalled"
+    results["attached_predictor_converged"] = predictor_converged
+    return results, body
+
+
 def initialize(
     aero_geometry_path,
     config,
@@ -164,7 +497,9 @@ def initialize(
         aero_geometry_path: Path to aerodynamic geometry file.
         config (dict): Main ASKITE configuration dictionary.
         n_panels_aero (int): Number of aerodynamic panels.
-        bridle_path: Optional structural geometry path used by VSM to build bridle lines.
+        bridle_path: Optional structure file (awesIO ``structure.yml``; a
+            retired-format file is converted by ``load_structure``), or a
+            loaded :class:`Structure`, whose bridle lines the body carries.
 
     Returns:
         tuple: (body_aero, vsm_solver, vel_app, initial_polar_data)
@@ -175,26 +510,41 @@ def initialize(
         spanwise_panel_distribution=config["aerodynamic"][
             "spanwise_panel_distribution"
         ],
-        bridle_path=bridle_path,
+        **vsm_body_kwargs(),
     )
+    # The bridle lines come from the structure (VSM's own bridle_path parse
+    # reads only the retired format). The drag law reads one diameter per
+    # segment, and the structure stores flat tapes as an AREA-equivalent
+    # circle -- right for mass/EA, meaningless for drag -- so the
+    # drag-equivalent diameters go in before anything solves
+    # (awetrim.aerodynamics.line_drag).
+    if bridle_path is not None:
+        _roll_model, _cd_cable = settings_from_config(config)
+        _n = attach_bridle_lines(body_aero, bridle_path, _roll_model, _cd_cable)
+        if _n:
+            logging.info(
+                "flat-tape drag applied to %d bridle segments (roll model %r)",
+                _n,
+                _roll_model,
+            )
 
     aero_cfg = config["aerodynamic"]
-    vsm_solver = Solver(
-        max_iterations=aero_cfg["max_iterations"],
-        allowed_error=aero_cfg["allowed_error"],
-        relaxation_factor=aero_cfg["relaxation_factor"],
-        reference_point=aero_cfg["reference_point"],
-        mu=config["mu"],
-        rho=config["rho"],
-        # Optional post-stall stabilization: the parameter-free Li/Gaunaa
-        # spanwise artificial viscosity (TORQUE 2026), applied in the base
-        # gamma loop. Off by default to preserve historical behaviour.
-        is_with_artificial_viscosity=aero_cfg.get(
-            "is_with_artificial_viscosity", False
-        ),
-        artificial_viscosity_factor=aero_cfg.get(
-            "artificial_viscosity_factor", 0.035
-        ),
+    # AWETrim's VSM settings (awetrim.aerodynamics.vsm_settings), overridden
+    # by any of the same keys in the case's ``aerodynamic`` block (as_config:
+    # relaxation_factor, the anderson loop, artificial viscosity, ...). Two
+    # are model choices, not numerics: ``is_aoa_corrected`` (force directions
+    # from the quarter-chord flow; the CasADi trim kernels implement False
+    # only) and ``is_with_artificial_viscosity`` (Li/Gaunaa post-stall
+    # regularisation). ``gamma_loop_type: anderson`` terminates on a
+    # non-smooth residual that corrupts the FD Jacobian of the QSM trim unless
+    # ``allowed_error`` is ~1e-8: set the two together or not at all.
+    vsm_solver = make_vsm_solver(
+        **{
+            **{key: aero_cfg[key] for key in VSM_SOLVER_DEFAULTS if key in aero_cfg},
+            "reference_point": aero_cfg["reference_point"],
+            "mu": config["mu"],
+            "rho": air_density_at_case(config),
+        }
     )
 
     # For QSM, wind speed comes from system model configuration (wind_speed_wind_ref).
@@ -207,6 +557,43 @@ def initialize(
     initial_polar_data = []
     for new_section in new_sections:
         initial_polar_data.append(new_section.polar_data)
+    # ATTACHED-BRANCH FINDER (aerodynamic.attached_polars, off by default):
+    # every section polar continued linearly past its stall onset, so the
+    # coupled solve cannot lock into the AV stalled-tip family. Only a state
+    # with every panel below its ORIGINAL onset is a solution of the true
+    # model; the caller (the sweep's attached guard) validates that with a
+    # trim on the true polars and discards the rest. The stall mask this
+    # adapter logs is built from the extended polars and reports nothing --
+    # the validation is the caller's, not this log line.
+    # ATTACHED-FIRST branch finder, per run. Defaults to the module's own
+    # AV_ATTACHED_FIRST (True since 2026-09-12): try the attached branch first
+    # on every VSM evaluation and keep it when the whole wing comes out below
+    # its stall onset, falling through to the true post-stall problem when it
+    # does not. Set `aerodynamic.attached_first: false` to reproduce an older
+    # result. Stored on the solver rather than mutating the module global, so
+    # two runs in one process cannot fight over it.
+    vsm_solver._awetrim_attached_first = bool(
+        aero_cfg.get("attached_first", _AV_ATTACHED_FIRST_DEFAULT)
+    )
+
+    if bool(aero_cfg.get("attached_polars", False)):
+        initial_polar_data = [
+            extend_polar_past_onset(polar) for polar in initial_polar_data
+        ]
+        body_aero.update_from_points(
+            *(
+                np.array([[s.LE_point for s in new_sections]][0]),
+                np.array([[s.TE_point for s in new_sections]][0]),
+            ),
+            aero_input_type="reuse_initial_polar_data",
+            initial_polar_data=initial_polar_data,
+        )
+        logging.warning(
+            "attached_polars: %d section polars continued linearly past their "
+            "stall onset -- the coupled solve targets the ATTACHED family; "
+            "validate the result on the true polars",
+            len(initial_polar_data),
+        )
 
     return body_aero, vsm_solver, vel_app, initial_polar_data
 
@@ -233,6 +620,55 @@ def plot_vsm_geometry(body_aero):
     )
 
 
+def parse_bridle_line_specs(struc_geometry, config: dict = None) -> list:
+    """``(node_i, node_j, diameter)`` rows of the VSM bridle-line system.
+
+    One row per ``Structure.bridle_segments`` entry, the line system
+    ``initialize`` gives the body (``Structure.bridle_line_system``), but with
+    NODE INDICES instead of baked-in coordinates -- so the segments can be
+    rebuilt from the live ``struc_nodes`` as the structure deforms. Node
+    indices are the structure's (``points`` row order; the KCU is
+    ``Structure.kcu``). ``struc_geometry`` is a :class:`Structure` or anything
+    ``load_structure`` accepts.
+
+    The diameter is the DRAG-equivalent one, matching what ``initialize``
+    put in the body: flat tapes carry their projected width, every other
+    line its structural diameter (awetrim.aerodynamics.line_drag). Without
+    ``config`` the module defaults apply.
+    """
+    if not struc_geometry:
+        return []
+    structure = load_structure(struc_geometry)
+    diameters = bridle_drag_diameters(structure, *settings_from_config(config))
+    return [
+        (structure.index[a], structure.index[b], diameter)
+        for (a, b), diameter in zip(
+            (s["points"] for s in structure.bridle_segments), diameters
+        )
+    ]
+
+
+def rebuild_bridle_line_system(body_aero, struc_nodes, bridle_line_specs) -> None:
+    """Point the body's bridle-line drag system at the CURRENT node positions.
+
+    ``BodyAerodynamics.update_from_points`` refreshes the wings only; the
+    bridle segments built at ``instantiate`` keep their initial coordinates.
+    On an actuated (steered/depowered) kite the deformed bridle is asymmetric,
+    and its drag carries a roll moment the static initial bridle misses -- the
+    coupled trim then converges to a slightly wrong roll state. Rebuilding the
+    segment list per aero call keeps the bridle drag consistent with the
+    structure the loads come from.
+    """
+    body_aero._bridle_line_system = [
+        [
+            np.asarray(struc_nodes[i], dtype=float).copy(),
+            np.asarray(struc_nodes[j], dtype=float).copy(),
+            diameter,
+        ]
+        for i, j, diameter in bridle_line_specs
+    ]
+
+
 def run_vsm_package(
     body_aero,
     solver,
@@ -247,6 +683,10 @@ def run_vsm_package(
     include_gravity=False,
     is_with_plot=False,
     current_guess=None,
+    config=None,
+    struc_nodes=None,
+    bridle_line_specs=None,
+    gamma_seed=None,
 ):
     """
     Run quasi-steady aerodynamic solve for the current structural geometry.
@@ -275,47 +715,184 @@ def run_vsm_package(
         aero_input_type=aero_input_type,
         initial_polar_data=initial_polar_data,
     )
+    # update_from_points refreshes wings only; keep the bridle-line drag
+    # segments tracking the deforming structure too (see
+    # rebuild_bridle_line_system). Only when the body was built WITH bridles.
+    if (
+        bridle_line_specs
+        and struc_nodes is not None
+        and getattr(body_aero, "_bridle_line_system", None) is not None
+    ):
+        rebuild_bridle_line_system(body_aero, struc_nodes, bridle_line_specs)
     # set again where velocity vector is coming from
     # The VSM va setter accepts keyword arguments but properties don't support that in Python
     # So we call the underlying setter method directly using the descriptor protocol
     # type(body_aero).va.fset(body_aero, va_vector)
 
+    # Trim search bounds. The module constants above are the defaults; a
+    # ``config`` with a ``quasi_steady`` block overrides them. Those YAML keys
+    # (kite_speed_bounds_ms, roll_bounds_deg, ...) already existed in
+    # as_config.yaml and read as if they configured this solve, but nothing
+    # consulted them -- so the hard-coded values silently won. That matters for
+    # near-stationary states: a kite whose trim speed is below
+    # kite_speed_bounds[0] cannot be represented at all, and the optimiser
+    # returns a bound-constrained point that is NOT an equilibrium.
+    # The kite configs name this block ``quasi_steady_trim``; ``quasi_steady``
+    # is accepted as an alias so either spelling works.
+    _cfg = config or {}
+    qs_cfg = _cfg.get("quasi_steady_trim") or _cfg.get("quasi_steady") or {}
+    speed_b = tuple(qs_cfg.get("kite_speed_bounds_ms", kite_speed_bounds))
+    roll_b = tuple(qs_cfg.get("roll_bounds_deg", roll_bounds))
+    pitch_b = tuple(qs_cfg.get("pitch_bounds_deg", pitch_bounds))
+    yaw_b = tuple(qs_cfg.get("yaw_bounds_deg", yaw_bounds))
+    rate_b = tuple(qs_cfg.get("course_rate_bounds_rad_s", course_rate_bounds))
+
     bounds_lower = np.array(
-        [
-            kite_speed_bounds[0],
-            roll_bounds[0],
-            pitch_bounds[0],
-            yaw_bounds[0],
-            course_rate_bounds[0],
-        ]
+        [speed_b[0], roll_b[0], pitch_b[0], yaw_b[0], rate_b[0]]
     )
     bounds_upper = np.array(
-        [
-            kite_speed_bounds[1],
-            roll_bounds[1],
-            pitch_bounds[1],
-            yaw_bounds[1],
-            course_rate_bounds[1],
-        ]
+        [speed_b[1], roll_b[1], pitch_b[1], yaw_b[1], rate_b[1]]
     )
+    # Trim evaluation cap (opt-in, quasi_steady_trim.max_nfev). Inside a
+    # coupled loop a FULLY converged trim on an intermediate geometry is
+    # wasted work -- the geometry moves right after. Capping least_squares to
+    # a few evaluations per coupled iteration lets trim and geometry converge
+    # TOGETHER (measured 2026-09-09: cap 8 cut VSM calls ~30% at identical
+    # outer iteration count and final state). Warm-started trims near the
+    # coupled fixed point terminate inside the cap on their own tolerances,
+    # so the final accepted state is a genuinely converged trim. Absent key =
+    # None = historical behaviour.
+    trim_max_nfev = qs_cfg.get("max_nfev")
+    trim_max_nfev = int(trim_max_nfev) if trim_max_nfev else None
     if current_guess is None:
-        current_guess = DEFAULT_GUESS_QS
+        current_guess = feasible_initial_guess(
+            body_aero,
+            system_model,
+            speed_b,
+            qs_cfg.get("initial_aoa_band_deg", DEFAULT_INITIAL_AOA_BAND_DEG),
+        )
+    # Which trim solver (quasi_steady_trim.solver, 2026-09-15):
+    #   'least_squares' -- the NumPy trims (scipy least_squares over the five
+    #                      trim states, a full inner VSM solve per residual
+    #                      evaluation). The default; every stored result.
+    #   'casadi'        -- awetrim.aerodynamics.trim_casadi: trim states and
+    #                      circulations as ONE Newton problem with the exact
+    #                      Jacobian. Same physics, no max_nfev (a converged
+    #                      trim per coupled iteration costs ~0.5 s at 45
+    #                      panels, most of it the graph build).
+    trim_solver_name = str(qs_cfg.get("solver", "least_squares")).lower()
+    if trim_solver_name not in ("least_squares", "casadi"):
+        raise ValueError(
+            f"quasi_steady_trim.solver must be 'least_squares' or 'casadi', "
+            f"got {trim_solver_name!r}"
+        )
+    # Newton tolerance of the CasADi trim on its stacked (nondimensional)
+    # residual; the NumPy trims' inner loop uses the solver's allowed_error.
+    trim_casadi_tolerance = float(qs_cfg.get("casadi_tolerance", 1e-8))
+
+    # Tether in the trim (opt-in). The default trim is TETHERLESS: its residuals
+    # are the tangential force balance only, so the tether is implicitly
+    # massless, dragless and perfectly radial. With
+    # ``config["tether"]["include_in_trim"]`` true the tether-aware trim is used
+    # instead, which carries the tether's off-radial drag and weight:
+    #   'rigid_lumped' -- lumped drag + half weight at the kite, 6th unknown is
+    #                     the radial tension. Needs only diameter/density.
+    #   'williams'     -- full distributed shape with ground closure, 6th
+    #                     unknown is the tether length. Needs a WilliamsTether
+    #                     on the system model, and costs a nested tether solve
+    #                     per residual evaluation.
+    # Default False keeps every existing aerostructural run bit-identical.
+    tether_cfg = (config or {}).get("tether", {}) or {}
+    include_tether_in_trim = bool(tether_cfg.get("include_in_trim", False))
+    tether_model = str(tether_cfg.get("model", "rigid_lumped")).lower()
+
+    # KCU bluff-body drag: on unless a config switches it off. Reads the
+    # KCU envelope off the system model, so a system.yaml without a
+    # control_system.structure block yields None = no term. ``.get`` (not
+    # ``[]``) because stored snapshot configs predate the key.
+    kcu_drag = (
+        KcuDragModel.from_system_model(system_model)
+        if bool((config or {}).get("is_with_kcu_drag", True))
+        else None
+    )
+
+    if trim_solver_name == "casadi" and include_tether_in_trim and tether_model != "williams":
+        raise ValueError(
+            "quasi_steady_trim.solver 'casadi' covers the tetherless and the "
+            f"'williams' tether trims; tether.model {tether_model!r} needs "
+            "'least_squares'."
+        )
 
     # Primary path: quasi-steady trim solve.
+    t_trim_start = time.perf_counter()
     try:
         # Preserve the pre-trim body state in case we need direct-solve fallback.
         body_fallback = copy.deepcopy(body_aero)
-        results, body_aero = solve_quasi_steady_state(
-            body_aero=body_aero,
-            center_of_gravity=center_of_gravity,
-            reference_point=reference_point,
-            system_model=system_model,
-            x_guess=current_guess,
-            solver=solver,
-            bounds_lower=bounds_lower,
-            bounds_upper=bounds_upper,
-            include_gravity=include_gravity,
-        )
+        if trim_solver_name == "casadi":
+            results, body_aero = _solve_trim_casadi(
+                body_aero=body_aero,
+                solver=solver,
+                system_model=system_model,
+                center_of_gravity=center_of_gravity,
+                reference_point=reference_point,
+                x_guess=current_guess,
+                bounds_lower=bounds_lower,
+                bounds_upper=bounds_upper,
+                include_gravity=include_gravity,
+                kcu_drag=kcu_drag,
+                tether_model="williams" if include_tether_in_trim else None,
+                gamma_seed=gamma_seed,
+                tolerance=trim_casadi_tolerance,
+            )
+            # A trim on a search bound is reported through ``trim_on_bounds``
+            # below (the coupled loop's runaway stop counts it), as with
+            # least_squares, which also returns success there; only a Newton
+            # failure takes the direct-solve fallback.
+            results["success"] = bool(results.get("converged", False))
+        elif include_tether_in_trim:
+            results, body_aero = solve_vsm_qs_trim_with_williams_tether(
+                kcu_drag=kcu_drag,
+                body_aero=body_aero,
+                center_of_gravity=center_of_gravity,
+                reference_point=reference_point,
+                system_model=system_model,
+                x_guess=current_guess,
+                solver=solver,
+                bounds_lower=bounds_lower,
+                bounds_upper=bounds_upper,
+                include_gravity=include_gravity,
+                tether_model=tether_model,
+                # Warm continuation across coupling iterations: the previous
+                # iteration's converged circulation seeds every inner solve of
+                # this trim. In deep stall a cold-started gamma loop is noisy
+                # enough that least_squares parks on a residual plateau
+                # (qs_cm ~ 3e-2 observed) and burns minutes per aero call; the
+                # fixed per-solve seed removes both while staying FD-smooth.
+                gamma_seed=gamma_seed,
+                max_nfev=trim_max_nfev,
+            )
+        else:
+            results, body_aero = solve_quasi_steady_state(
+                kcu_drag=kcu_drag,
+                body_aero=body_aero,
+                center_of_gravity=center_of_gravity,
+                reference_point=reference_point,
+                system_model=system_model,
+                x_guess=current_guess,
+                solver=solver,
+                bounds_lower=bounds_lower,
+                bounds_upper=bounds_upper,
+                include_gravity=include_gravity,
+                max_nfev=trim_max_nfev,
+            )
+        if not results.get("success", False) and trim_max_nfev is not None:
+            # A capped trim reports success=False (status 0) while it is still
+            # mid-convergence -- that partial step IS the point of the cap, so
+            # keep it rather than discarding it through the direct-solve
+            # fallback below. The real failure modes (non-finite residuals)
+            # raise and take the except path regardless of the cap.
+            results["trim_truncated"] = True
+            results["success"] = True
         if not results.get("success", False):
             print(
                 "Quasi-steady optimization did not converge to a valid trim state. "
@@ -327,6 +904,19 @@ def run_vsm_package(
                 system_model=system_model,
                 current_guess=current_guess,
             )
+        else:
+            # A trim sitting ON a search bound is a constrained optimum, not an
+            # equilibrium: the solution the force balance wants lies outside the
+            # box. ``success`` is still True there, so this would otherwise pass
+            # silently and every downstream result would inherit a state the
+            # kite cannot actually fly.
+            pinned = _warn_if_trim_on_bounds(
+                results.get("opt_x"), bounds_lower, bounds_upper
+            )
+            # Names of the trim unknowns sitting on a bound (empty when none):
+            # the coupled loop's runaway stop reads ``"kite_speed"`` here.
+            results["trim_on_bounds"] = [name for name, _value, _which in pinned]
+        results["trim_solver"] = trim_solver_name
     except ValueError as exc:
         # Typical case: non-finite residual in initial optimizer point.
         print(
@@ -339,6 +929,7 @@ def run_vsm_package(
             system_model=system_model,
             current_guess=current_guess,
         )
+    results["trim_time_s"] = time.perf_counter() - t_trim_start
     if is_with_plot:
         plot_vsm_geometry(body_aero)
 
@@ -380,18 +971,20 @@ def run_frozen_geometry_alpha_sweep(
     """Direct VSM alpha sweep at a fixed (frozen) deformed geometry.
 
     For each requested angle of attack the apparent wind is imposed on the frozen
-    mesh *exactly as the quasi-steady trim does it* — through
-    ``body_aero.va_initialize`` with the SAME sideslip, body-rate, body axis and
-    reference point — and a single ``solver.solve(body_aero)`` is run on the
-    unchanged geometry (no re-trim).
+    mesh with the same inflow mechanism as the quasi-steady trim — through
+    ``body_aero.va_initialize`` with sideslip, body-rate, body axis and
+    reference point, rates given in world components — and a single
+    ``solver.solve(body_aero)`` is run on the unchanged geometry (no re-trim).
 
     The freestream apparent wind is
     ``va = |va| * (cos a cos b, sin b, sin a)`` so that ``atan2(va_z, va_x) == a``
     and the sideslip is ``b``; the rigid-body rate is added as rotational inflow
-    about ``body_axis`` (default ``-radial = (0, 0, -1)``) by the VSM ``va``
-    setter, and ``phi_a`` is the tilt of the total aero force about that
-    freestream apparent wind — matching
-    ``vsm_quasi_steady.solve_vsm_quasi_steady_trim``.
+    about ``body_axis`` by the VSM ``va`` setter, and ``phi_a`` is the tilt of
+    the total aero force about that freestream apparent wind. Note the trim
+    solvers evaluate the aero at the full course-frame transport rate
+    ``Omega_C``; to reproduce a trim anchor exactly, pass the anchor's
+    ``|Omega_C|`` and axis (world frame). The default ``body_axis``
+    ``-radial = (0, 0, -1)`` is the radial-only reduction.
 
     With the defaults (``side_slip_deg=0``, ``body_rates=0``) the sweep recovers
     the pure symmetric ``C_L(alpha)`` / ``C_D(alpha)`` / ``phi_a(alpha)`` response.
@@ -410,8 +1003,10 @@ def run_frozen_geometry_alpha_sweep(
         side_slip_deg: sideslip angle [deg] held constant over the sweep.
         body_rates: rigid-body rate(s) [rad/s] held constant over the sweep
             (scalar or per-axis), added as rotational inflow about ``body_axis``.
-        body_axis: rotation axis (or axes) for ``body_rates``; defaults to
-            ``-radial = (0, 0, -1)`` to match the trim.
+        body_axis: rotation axis (or axes) for ``body_rates``, in world
+            components; defaults to ``-radial = (0, 0, -1)`` (the radial-only
+            reduction). Pass the anchor's full ``Omega_C`` axis to match the
+            trim exactly.
         reference_point: reference point r0 for the rotational inflow
             ``v_rot(r) = omega x (r - r0)``; defaults to the origin.
 
@@ -447,6 +1042,11 @@ def run_frozen_geometry_alpha_sweep(
             ]
         )
         try:
+            # rates_in_body_frame=True: body_axis is given in world components
+            # and must be used as-is. False would multiply the rate vector by
+            # the body's accumulated ``geometry_rotation`` — a silent tilt for
+            # any body that has been ``rotate()``d (e.g. a steering-rolled
+            # turning anchor); identity-rotation bodies are unaffected.
             body_aero.va_initialize(
                 Umag=float(va_magnitude),
                 angle_of_attack=float(alpha_deg),
@@ -454,7 +1054,7 @@ def run_frozen_geometry_alpha_sweep(
                 body_rates=body_rates,
                 body_axis=body_axis,
                 reference_point=reference_point,
-                rates_in_body_frame=False,
+                rates_in_body_frame=True,
             )
             results = solver.solve(body_aero)
             cl = float(np.mean(np.asarray(results["cl"], dtype=float)))
@@ -479,6 +1079,129 @@ def run_frozen_geometry_alpha_sweep(
             }
         )
     return rows
+
+
+def body_centre_panel_axes(body_aero) -> np.ndarray:
+    """FRD centre-panel body axes of a VSM body, as it stands.
+
+    Rows ``[x_K, y_K, z_K]`` in the body's (VSM/structural) frame, the
+    construction of
+    :func:`awetrim.identification.rigid_body_axes.compute_centre_panel_axes`
+    applied to the body's own panel corners, so they follow whatever attitude
+    and deformation the body has (a trimmed body included).
+    """
+    from awetrim.identification.rigid_body_axes import compute_centre_panel_axes
+
+    panels = body_aero.panels
+    le = [p.LE_point_1 for p in panels] + [panels[-1].LE_point_2]
+    te = [p.TE_point_1 for p in panels] + [panels[-1].TE_point_2]
+    nodes = np.vstack([np.asarray(le, dtype=float), np.asarray(te, dtype=float)])
+    n = len(le)
+    return compute_centre_panel_axes(nodes, np.arange(n), np.arange(n, 2 * n)).axes
+
+
+def run_frozen_alpha_polar_about_trim(
+    body_aero,
+    solver,
+    d_alpha_deg,
+    *,
+    body_axes: np.ndarray | None = None,
+) -> list[dict]:
+    """Angle-of-attack polar of a TRIMMED body on its frozen shape.
+
+    ``body_aero`` is the body a trim returned (``coupled_solver.main``'s
+    ``final_state["body_aero"]``): trimmed attitude, deformed shape and the
+    trim's inflow -- freestream ``va`` plus the rotational inflow ``omega x
+    (r - r0)`` of the course frame -- already set. For each ``d_alpha_deg``
+    the freestream is turned in the FRD centre-panel body axes so that its
+    angle of attack changes by exactly that much at fixed ``|va|`` and side
+    slip, the rotational inflow is kept, and the circulation is solved on the
+    unchanged geometry (no re-trim). ``d_alpha = 0`` therefore re-solves the
+    trim's own aerodynamics: compare its force with the trim's
+    ``total_aero_force_vec`` to check the polar is about the right state.
+
+    The solves march outward from ``d_alpha = 0`` in both directions, each
+    seeded with its neighbour's circulation, and land on the attached solution
+    whenever one exists (``solve_vsm_attached_first``, as the trims do).
+
+    Args:
+        body_aero: the trimmed VSM body (not modified; a copy is solved).
+        solver: VSM ``Solver``.
+        d_alpha_deg: angle-of-attack increments [deg]; 0 is added if absent.
+        body_axes: FRD rows in the body's frame; default
+            :func:`body_centre_panel_axes` of ``body_aero``.
+
+    Returns:
+        One dict per increment, sorted by it: ``d_alpha_deg``,
+        ``alpha_body_deg`` (FRD angle of attack of the freestream),
+        ``va_world`` and ``force_world`` (VSM wing force, bridle-line drag
+        included when the body carries the bridle) as 3-vectors in the body's
+        frame, ``gamma_converged`` and ``av_stage``. A failed solve gives NaN
+        forces and ``gamma_converged`` False instead of raising.
+    """
+    import inspect
+
+    from awetrim.aerodynamics.apparent_wind import inflow_state_of
+    from awetrim.aerodynamics.vsm_quasi_steady import solve_vsm_attached_first
+
+    va0, omega, r0 = inflow_state_of(body_aero)
+    if va0 is None:
+        raise ValueError("body_aero carries no single freestream va to rotate.")
+    axes = body_centre_panel_axes(body_aero) if body_axes is None else np.asarray(body_axes)
+    v_body = axes @ (-va0)  # air-relative kite velocity, FRD
+    speed = float(np.linalg.norm(v_body))
+    alpha0 = float(np.arctan2(v_body[2], v_body[0]))
+    beta0 = float(np.arcsin(np.clip(v_body[1] / speed, -1.0, 1.0)))
+    rate = float(np.linalg.norm(omega))
+    axis = omega / rate if rate > 1e-12 else np.array([0.0, 0.0, -1.0])
+    try:
+        accepts_seed = "gamma_distribution" in inspect.signature(solver.solve).parameters
+    except (TypeError, ValueError):
+        accepts_seed = False
+
+    steps = np.asarray(d_alpha_deg, dtype=float).ravel()
+    if not np.any(steps == 0.0):
+        steps = np.append(steps, 0.0)
+    steps = np.unique(steps)
+    body = copy.deepcopy(body_aero)
+
+    def solve_at(d_alpha, seed):
+        alpha = alpha0 + np.deg2rad(d_alpha)
+        v_new = speed * np.array(
+            [np.cos(alpha) * np.cos(beta0), np.sin(beta0), np.sin(alpha) * np.cos(beta0)]
+        )
+        va = -(axes.T @ v_new)
+        try:
+            type(body).va.fset(
+                body, va, body_rates=rate, body_axis=axis,
+                reference_point=r0, rates_in_body_frame=True,
+            )
+            res = solve_vsm_attached_first(solver, body, seed, accepts_seed=accepts_seed)
+            force = np.array([res["Fx"], res["Fy"], res["Fz"]], dtype=float)
+            converged = bool(res.get("gamma_converged", True))
+            gamma = res.get("gamma_distribution")
+            stage = res.get("av_stage")
+        except Exception:
+            logging.exception("Frozen polar: VSM solve failed at d_alpha=%.2f deg.", d_alpha)
+            force, converged, gamma, stage = np.full(3, np.nan), False, None, None
+        row = {
+            "d_alpha_deg": float(d_alpha),
+            "alpha_body_deg": float(np.rad2deg(alpha)),
+            "va_world": va,
+            "force_world": force,
+            "gamma_converged": converged,
+            "av_stage": stage,
+        }
+        return row, (gamma if converged else seed)
+
+    rows = {}
+    centre, centre_gamma = solve_at(0.0, None)
+    rows[0.0] = centre
+    for branch in (steps[steps > 0.0], steps[steps < 0.0][::-1]):
+        seed = centre_gamma
+        for d_alpha in branch:
+            rows[float(d_alpha)], seed = solve_at(float(d_alpha), seed)
+    return [rows[float(d)] for d in steps]
 
 
 def plot_aero_forces_with_frames(
@@ -527,8 +1250,13 @@ def plot_aero_forces_with_frames(
         ax.plot(xs, ys, zs, color="dimgrey", linewidth=0.8, alpha=0.6)
 
     ax.scatter(
-        struc_nodes[:, 0], struc_nodes[:, 1], struc_nodes[:, 2],
-        s=10, c="dimgrey", alpha=0.5, zorder=2,
+        struc_nodes[:, 0],
+        struc_nodes[:, 1],
+        struc_nodes[:, 2],
+        s=10,
+        c="dimgrey",
+        alpha=0.5,
+        zorder=2,
     )
 
     # ── aerodynamic force arrows at panel ACs ─────────────────────────────────
@@ -536,38 +1264,82 @@ def plot_aero_forces_with_frames(
     for k in range(len(cp)):
         fvec = f_aero_panel[k] * force_scale
         ax.quiver(
-            cp[k, 0], cp[k, 1], cp[k, 2],
-            fvec[0], fvec[1], fvec[2],
-            color="tab:orange", linewidth=1.2, arrow_length_ratio=0.2,
+            cp[k, 0],
+            cp[k, 1],
+            cp[k, 2],
+            fvec[0],
+            fvec[1],
+            fvec[2],
+            color="tab:orange",
+            linewidth=1.2,
+            arrow_length_ratio=0.2,
         )
     # single legend proxy for forces
-    ax.quiver([], [], [], [], [], [], color="tab:orange", linewidth=1.2,
-              label=f"Aero force (max={f_max:.1f} N)")
+    ax.quiver(
+        [],
+        [],
+        [],
+        [],
+        [],
+        [],
+        color="tab:orange",
+        linewidth=1.2,
+        label=f"Aero force (max={f_max:.1f} N)",
+    )
 
     # ── frame triads: shared colours (x=red, y=green, z=blue) ────────────────
     frame_colors = ["tab:red", "tab:green", "tab:blue"]
 
     # course frame at origin (dashed, thinner)
-    course_axes = np.array([[-1., 0., 0.], [0., -1., 0.], [0., 0., 1.]])
+    course_axes = np.array([[-1.0, 0.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0]])
     course_labels = ["$X_C$", "$Y_C$", "$Z_C$"]
     for k, (col, lbl) in enumerate(zip(frame_colors, course_labels)):
         tip = course_axes[k] * frame_len * 0.6
-        ax.quiver(0, 0, 0, tip[0], tip[1], tip[2],
-                  color=col, linewidth=1.0, arrow_length_ratio=0.15,
-                  linestyle="dashed", alpha=0.55)
+        ax.quiver(
+            0,
+            0,
+            0,
+            tip[0],
+            tip[1],
+            tip[2],
+            color=col,
+            linewidth=1.0,
+            arrow_length_ratio=0.15,
+            linestyle="dashed",
+            alpha=0.55,
+        )
         ax.text(*(tip * 1.08), lbl, color=col, fontsize=7)
-    ax.plot([], [], color="grey", linestyle="dashed", linewidth=1.0,
-            label="Course frame $C$")
+    ax.plot(
+        [],
+        [],
+        color="grey",
+        linestyle="dashed",
+        linewidth=1.0,
+        label="Course frame $C$",
+    )
 
     # body frame at CG (solid, thicker)
     body_labels = ["$x_K$", "$y_K$", "$z_K$"]
     for k, (col, lbl) in enumerate(zip(frame_colors, body_labels)):
         tip = body_axes[k] * frame_len
-        ax.quiver(*cg, tip[0], tip[1], tip[2],
-                  color=col, linewidth=2.2, arrow_length_ratio=0.15)
+        ax.quiver(
+            *cg,
+            tip[0],
+            tip[1],
+            tip[2],
+            color=col,
+            linewidth=2.2,
+            arrow_length_ratio=0.15,
+        )
         ax.text(*(cg + tip * 1.08), lbl, color=col, fontsize=7)
-    ax.plot([], [], color="grey", linestyle="solid", linewidth=2.0,
-            label="Body frame $K$ (inertia)")
+    ax.plot(
+        [],
+        [],
+        color="grey",
+        linestyle="solid",
+        linewidth=2.0,
+        label="Body frame $K$ (inertia)",
+    )
 
     ax.scatter(*cg, s=80, c="black", marker="*", zorder=5, label="CG")
 

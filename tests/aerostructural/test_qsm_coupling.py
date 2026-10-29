@@ -1,7 +1,7 @@
 import numpy as np
 
 from awetrim.aerostructural import (
-    PssQsmCoupler,
+    WireframeQsmCoupler,
     QsmCouplingRequest,
     QsmCouplingSettings,
     StructuralGeometry,
@@ -157,7 +157,7 @@ def test_qsm_coupler_runs_with_fake_protocol_implementations():
         settings=settings(),
     )
 
-    result = PssQsmCoupler(
+    result = WireframeQsmCoupler(
         structural_solver=structural_solver,
         trim_solver=fake_trim_solver,
     ).solve(request)
@@ -172,7 +172,7 @@ def test_qsm_coupler_runs_with_fake_protocol_implementations():
 def test_fixed_node_residual_components_are_removed():
     residual = np.arange(12, dtype=float)
 
-    cleaned = PssQsmCoupler._residual_without_fixed_nodes(residual, [1])
+    cleaned = WireframeQsmCoupler._residual_without_fixed_nodes(residual, [1])
 
     np.testing.assert_allclose(cleaned[3:6], np.zeros(3))
     np.testing.assert_allclose(cleaned[:3], residual[:3])
@@ -193,7 +193,7 @@ def test_tape_actuation_updates_only_target_rest_lengths():
         steering_tape_extension_step=0.05,
     )
 
-    PssQsmCoupler._apply_actuation(
+    WireframeQsmCoupler._apply_actuation(
         system,
         actuation,
         iteration=0,

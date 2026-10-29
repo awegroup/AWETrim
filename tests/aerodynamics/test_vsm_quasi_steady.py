@@ -17,10 +17,20 @@ from awetrim.aerodynamics.vsm_quasi_steady import (
     compute_vsm_trim_stability_derivatives,
     run_vsm_quasi_steady_sweep,
     solve_vsm_quasi_steady_trim,
+    turn_radius_vs_steer_moment,
     # Backward-compatibility aliases (used by migrated scripts)
     compute_stability_derivatives,
     run_quasi_steady_sweep,
     solve_quasi_steady_state,
+    # Internals exercised directly for the Omega_C gyroscopic coupling
+    _gyroscopic_rate_coupling,
+    _course_transport_rate_axes,
+    _compose_attitude_rotation,
+    _strip_theory_added_mass,
+    corotating_state_transform,
+    ALL_STATE_NAMES,
+    AUG_STATE_NAMES,
+    DEFAULT_AXES,
 )
 
 
@@ -97,6 +107,66 @@ _TRIM_RESULT = {
     "tether_force": 500.0,
 }
 _X_TRIM = np.array([20.0, 0.0, 0.0, 0.0, 0.0])
+
+
+# ---------------------------------------------------------------------------
+# Steering / turn-map API (applied moment + turn_radius_vs_steer_moment)
+# ---------------------------------------------------------------------------
+
+
+def test_solve_trim_accepts_applied_moment_nm():
+    """The steering injection is an optional, backward-compatible parameter."""
+    sig = inspect.signature(solve_vsm_quasi_steady_trim)
+    assert "applied_moment_nm" in sig.parameters
+    assert sig.parameters["applied_moment_nm"].default is None
+
+
+def test_williams_trim_accepts_reel_speed_along_tether():
+    """The reel-along-tether switch is optional and off by default."""
+    from awetrim.aerodynamics.vsm_quasi_steady import (
+        solve_vsm_qs_trim_with_williams_tether,
+    )
+
+    sig = inspect.signature(solve_vsm_qs_trim_with_williams_tether)
+    assert "reel_speed_along_tether" in sig.parameters
+    assert sig.parameters["reel_speed_along_tether"].default is False
+    # The tetherless trim has no tether to take a tangent from.
+    assert "reel_speed_along_tether" not in inspect.signature(
+        solve_vsm_quasi_steady_trim
+    ).parameters
+
+
+def test_reel_velocity_correction_geometry():
+    """delta_v = v_r (t_hat - e_r): zero when degenerate, exact otherwise."""
+    from awetrim.aerodynamics.vsm_quasi_steady import reel_velocity_correction
+
+    radial = np.array([0.0, 0.0, 1.0])
+    # Zero reel speed and zero direction both collapse to no correction.
+    assert np.allclose(
+        reel_velocity_correction(0.0, np.array([0.1, 0.0, 1.0]), radial), 0.0
+    )
+    assert np.allclose(reel_velocity_correction(-4.0, np.zeros(3), radial), 0.0)
+    # A radially aligned tether gives no correction regardless of |t_hat|.
+    assert np.allclose(reel_velocity_correction(-4.0, 5.0 * radial, radial), 0.0)
+    # Tilted tangent: the input is normalised, and the correction is
+    # v_r * (t_hat - e_r) exactly.
+    tilt = np.deg2rad(5.0)
+    t_hat = np.array([np.sin(tilt), 0.0, np.cos(tilt)])
+    delta = reel_velocity_correction(-4.0, 3.0 * t_hat, radial)
+    assert np.allclose(delta, -4.0 * (t_hat - radial))
+    # Radial component is the sag-projection deficit v_r (cos(tilt) - 1).
+    assert np.isclose(delta @ radial, -4.0 * (np.cos(tilt) - 1.0))
+
+
+def test_turn_radius_vs_steer_moment_signature():
+    sig = inspect.signature(turn_radius_vs_steer_moment)
+    params = list(sig.parameters)
+    assert params[:6] == [
+        "body_aero", "center_of_gravity", "reference_point", "system_model",
+        "steer_moments_nm", "x_guess",
+    ]
+    assert "steer_gain_nm_per_us" in sig.parameters
+    assert sig.parameters["include_gravity"].default is False
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +337,8 @@ def test_compute_vsm_trim_stability_derivatives_bad_x_trim_raises():
 
 
 def test_compute_vsm_trim_stability_derivatives_full_state_outputs():
-    """J_full (6, 9) and A_full (9, 9) are always present, in canonical order."""
+    """J_full (6, 10) and A_full (10, 10) are always present, in canonical
+    order — the 10 states include the lateral velocity ``v``."""
     from awetrim.aerodynamics.vsm_quasi_steady import ALL_STATE_NAMES
 
     result = compute_vsm_trim_stability_derivatives(
@@ -282,11 +353,12 @@ def test_compute_vsm_trim_stability_derivatives_full_state_outputs():
         inertia_yy=20.0,
         inertia_zz=100.0,
     )
-    assert result["J_full"].shape == (6, 9)
-    assert result["A_full"].shape == (9, 9)
-    assert result["eig_full"].shape == (9,)
-    assert result["vec_full"].shape == (9, 9)
+    assert result["J_full"].shape == (6, 10)
+    assert result["A_full"].shape == (10, 10)
+    assert result["eig_full"].shape == (10,)
+    assert result["vec_full"].shape == (10, 10)
     assert result["state_names_full"] == list(ALL_STATE_NAMES)
+    assert "v" in ALL_STATE_NAMES
 
     # phi/theta/psi rows of A_full must be pure kinematics: phi_dot=p, etc.
     phi_idx = ALL_STATE_NAMES.index("phi")
@@ -349,6 +421,403 @@ def test_compute_vsm_trim_stability_derivatives_coupled_selection():
     assert result["states_selected"] == sel
 
 
+def test_compute_vsm_trim_stability_derivatives_gyroscopic_coupling():
+    """A_full carries the gyroscopic term omega x I_B omega on the rate rows.
+
+    Since the B-point rework the gyroscopic term is part of the differenced
+    right-hand side (it lives in ``eval_force_moment``), so it reaches A_full
+    through J_full rather than through an analytic addition. With the mock
+    solver returning a constant aerodynamic result, a ZERO CG offset (so the
+    mass matrix is block-diagonal, I_B == I_cg, and no offset-force terms
+    appear), and ``Omega_C = -course_rate * e_radial`` (spin rate
+    ``w = -course_rate`` about the radial axis), the classical linearised
+    Euler closed forms must be recovered exactly (central differences are
+    exact for the quadratic term):
+        A[p, q] = w (Iyy - Izz) / Ixx = course_rate * (Izz - Iyy) / Ixx
+        A[q, p] = w (Izz - Ixx) / Iyy = course_rate * (Ixx - Izz) / Iyy
+    with the r row (and the p/q <-> r entries) untouched.
+    """
+    course_rate = 0.3
+    ixx, iyy, izz = 80.0, 20.0, 100.0
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        center_of_gravity=np.zeros(3),
+        reference_point=np.zeros(3),
+        x_trim=np.array([20.0, 0.0, 0.0, 0.0, course_rate]),
+        trim_result=_TRIM_RESULT,
+        solver=_MockSolver(),
+        mass=15.0,
+        inertia_xx=ixx,
+        inertia_yy=iyy,
+        inertia_zz=izz,
+    )
+    names = list(result["state_names_full"])
+    p, q, r = names.index("p"), names.index("q"), names.index("r")
+    A = result["A_full"]
+    assert A[p, q] == pytest.approx(course_rate * (izz - iyy) / ixx)
+    assert A[q, p] == pytest.approx(course_rate * (ixx - izz) / iyy)
+    # Radial-only Omega_C does not couple the yaw rate, and has no self-damping.
+    assert A[p, r] == pytest.approx(0.0)
+    assert A[q, r] == pytest.approx(0.0)
+    assert A[r, p] == pytest.approx(0.0)
+    assert A[r, q] == pytest.approx(0.0)
+    assert A[p, p] == pytest.approx(0.0)
+    assert A[q, q] == pytest.approx(0.0)
+
+    # A zero course rate recovers the torque-free rate rows (no coupling).
+    result0 = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        center_of_gravity=np.zeros(3),
+        reference_point=np.zeros(3),
+        x_trim=np.array([20.0, 0.0, 0.0, 0.0, 0.0]),
+        trim_result=_TRIM_RESULT,
+        solver=_MockSolver(),
+        mass=15.0,
+        inertia_xx=ixx,
+        inertia_yy=iyy,
+        inertia_zz=izz,
+    )
+    A0 = result0["A_full"]
+    assert A0[p, q] == pytest.approx(0.0)
+    assert A0[q, p] == pytest.approx(0.0)
+
+
+def test_compute_vsm_trim_stability_derivatives_bpoint_coupling():
+    """A nonzero CG offset couples the translational and rotational channels.
+
+    The coupled B-point mass matrix ``[[m 1, -m c_x], [m c_x, I_B]]`` and the
+    offset inertial terms (centripetal force, gravity/transport moments) make
+    the force columns feed the rate rows and vice versa. A_full must equal the
+    documented assembly ``solve(M6, J_full)`` plus kinematic rows, and the
+    u-row must pick up rate-column entries that a point-mass model cannot
+    have.
+    """
+    course_rate = 0.3
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        center_of_gravity=np.array([0.5, 0.0, 0.5]),
+        reference_point=np.zeros(3),
+        x_trim=np.array([20.0, 0.0, 0.0, 0.0, course_rate]),
+        trim_result=_TRIM_RESULT,
+        solver=_MockSolver(),
+        mass=15.0,
+        inertia_xx=100.0,
+        inertia_yy=20.0,
+        inertia_zz=100.0,
+    )
+    names = list(result["state_names_full"])
+    A = np.asarray(result["A_full"], dtype=float)
+    J = np.asarray(result["J_full"], dtype=float)
+    accel = np.linalg.solve(np.asarray(result["mass_matrix_axes"], float), J)
+    assert A[names.index("u"), :] == pytest.approx(accel[0, :])
+    assert A[names.index("w"), :] == pytest.approx(accel[2, :])
+    assert A[names.index("p"), :] == pytest.approx(accel[3, :])
+    # I_B carries the parallel-axis shift of the CG offset.
+    c = np.asarray(result["cg_offset_trim_world"], dtype=float)
+    expected_ib = np.diag([100.0, 20.0, 100.0]) + 15.0 * (
+        float(c @ c) * np.eye(3) - np.outer(c, c)
+    )
+    assert np.asarray(result["inertia_b_axes"]) == pytest.approx(expected_ib)
+    # The gyroscopic/centripetal rate columns now reach the u-row through the
+    # coupled solve: at least one rate-column entry must be nonzero.
+    rate_cols = [names.index(s) for s in ("p", "q", "r")]
+    assert np.max(np.abs(A[names.index("u"), rate_cols])) > 0.0
+
+
+def test_strip_theory_added_mass_flat_wing_closed_form():
+    """Single flat panel (chord 1, span 10, normal +z, mid-chord at x=0.5).
+
+    Strip theory entrains ``m = rho pi c^2/4 * span`` along the normal only:
+    the translational block is ``m e_z e_z^T`` (no in-plane entrainment), the
+    pitch inertia about the origin is ``m (c/2)^2``, and the heave-pitch
+    coupling is ``-m c/2`` — the rank-1 mass matrix of a point mass at the
+    mid-chord constrained to move along the panel normal.
+    """
+    rho = 1.225
+    m = rho * np.pi / 4.0 * 1.0**2 * 10.0
+    Ma = _strip_theory_added_mass(_MockBody(), np.zeros(3), rho=rho)
+
+    expected = np.zeros((6, 6))
+    expected[2, 2] = m
+    expected[2, 4] = expected[4, 2] = -0.5 * m
+    expected[4, 4] = 0.25 * m
+    assert Ma == pytest.approx(expected)
+    # Symmetric and positive semi-definite by construction.
+    assert Ma == pytest.approx(Ma.T)
+    assert float(np.min(np.linalg.eigvalsh(Ma))) >= -1e-12
+
+
+def test_compute_vsm_trim_stability_derivatives_added_mass_flag():
+    """``include_added_mass`` augments the mass matrix and nothing else.
+
+    Off (default): historical rigid-only behaviour, zero recorded block,
+    model "none". On: ``mass_matrix_axes`` gains exactly the strip-theory
+    matrix (zero trim attitude -> no rotation) and ``A_full`` still equals
+    the documented ``solve(M6 + M_a, J_full)`` assembly.
+    """
+    kwargs = dict(
+        body_aero=_MockBody(),
+        center_of_gravity=np.array([0.5, 0.0, 0.5]),
+        reference_point=np.zeros(3),
+        x_trim=np.array([20.0, 0.0, 0.0, 0.0, 0.3]),
+        trim_result=_TRIM_RESULT,
+        solver=_MockSolver(),
+        mass=15.0,
+        inertia_xx=100.0,
+        inertia_yy=20.0,
+        inertia_zz=100.0,
+    )
+    rigid = compute_vsm_trim_stability_derivatives(**kwargs)
+    with_ma = compute_vsm_trim_stability_derivatives(
+        **kwargs, include_added_mass=True
+    )
+
+    assert rigid["added_mass_model"] == "none"
+    assert np.asarray(rigid["added_mass_matrix_axes"]) == pytest.approx(
+        np.zeros((6, 6))
+    )
+
+    Ma = _strip_theory_added_mass(_MockBody(), np.zeros(3), rho=_MockSolver.rho)
+    assert with_ma["added_mass_model"] == "strip_theory"
+    assert np.asarray(with_ma["added_mass_matrix_axes"]) == pytest.approx(Ma)
+    assert np.asarray(with_ma["mass_matrix_axes"]) == pytest.approx(
+        np.asarray(rigid["mass_matrix_axes"]) + Ma
+    )
+
+    names = list(with_ma["state_names_full"])
+    A = np.asarray(with_ma["A_full"], dtype=float)
+    accel = np.linalg.solve(
+        np.asarray(with_ma["mass_matrix_axes"], dtype=float),
+        np.asarray(with_ma["J_full"], dtype=float),
+    )
+    assert A[names.index("u"), :] == pytest.approx(accel[0, :])
+    assert A[names.index("q"), :] == pytest.approx(accel[4, :])
+
+    # The exposed per-attitude mass matrix is the one nonlinear_rhs solves:
+    # at zero perturbation (identity axes, zero trim attitude) it equals the
+    # assembled trim matrix, and the trim RHS has an anchored force channel.
+    M_world = with_ma["mass_matrix_world_fn"]()
+    assert M_world == pytest.approx(np.asarray(with_ma["mass_matrix_axes"]))
+    rhs0 = np.asarray(with_ma["rhs_world_at_trim"], dtype=float)
+    assert rhs0[:3] == pytest.approx(np.zeros(3))
+
+
+def test_gyroscopic_rate_coupling_full_omega_c_couples_p_and_r():
+    """The great-circle normal component of Omega_C couples p <-> r.
+
+    G = -I^{-1} ([Omega_C]_x I - [I Omega_C]_x). For a diagonal inertia and
+    Omega_C = (0, Omega_y, Omega_z) in the (course, normal, radial) basis the
+    closed form is
+        G[p, q] = -Omega_z (Izz - Iyy) / Ixx,
+        G[p, r] = -Omega_y (Izz - Iyy) / Ixx,
+        G[q, p] = -Omega_z (Ixx - Izz) / Iyy,
+        G[r, p] = +Omega_y (Ixx - Iyy) / Izz,
+    so the radial component couples p <-> q and the normal (great-circle)
+    component couples p <-> r, with no q <-> r coupling and a zero diagonal.
+    """
+    ixx, iyy, izz = 80.0, 20.0, 100.0
+    omega_y, omega_z = 0.25, -0.3
+    G = _gyroscopic_rate_coupling(
+        np.array([0.0, omega_y, omega_z]), np.diag([ixx, iyy, izz])
+    )
+    # p <-> r from the normal (great-circle) component.
+    assert G[0, 2] == pytest.approx(-omega_y * (izz - iyy) / ixx)
+    assert G[2, 0] == pytest.approx(+omega_y * (ixx - iyy) / izz)
+    # p <-> q from the radial (turn) component.
+    assert G[0, 1] == pytest.approx(-omega_z * (izz - iyy) / ixx)
+    assert G[1, 0] == pytest.approx(-omega_z * (ixx - izz) / iyy)
+    # No q <-> r coupling and no self-damping (Omega has no course component).
+    assert G[1, 2] == pytest.approx(0.0)
+    assert G[2, 1] == pytest.approx(0.0)
+    assert np.allclose(np.diag(G), 0.0)
+
+
+def test_compute_vsm_trim_stability_derivatives_rotates_inertia_by_trim():
+    """The body inertia is rotated into the stability frame by the trim attitude.
+
+    In the course frame the kite's body axes are tilted from the stability axes
+    by the trim attitude, so I_stab = R diag(I) R^T picks up off-diagonal
+    products of inertia. Disabling the rotation recovers the diagonal set.
+    """
+    ixx, iyy, izz = 100.0, 20.0, 120.0
+    roll, pitch, yaw = 3.0, -4.0, 8.0  # degrees
+    common = dict(
+        body_aero=_MockBody(),
+        center_of_gravity=np.array([0.5, 0.0, 0.5]),
+        reference_point=np.zeros(3),
+        x_trim=np.array([20.0, roll, pitch, yaw, 0.0]),
+        trim_result=_TRIM_RESULT,
+        solver=_MockSolver(),
+        mass=15.0,
+        inertia_xx=ixx,
+        inertia_yy=iyy,
+        inertia_zz=izz,
+    )
+
+    result = compute_vsm_trim_stability_derivatives(**common)
+    I_stab = np.asarray(result["inertia_stability"])
+    assert result["inertia_rotated_by_trim"] is True
+    R = _compose_attitude_rotation(
+        roll_deg=roll, pitch_deg=pitch, yaw_deg=yaw, axes=DEFAULT_AXES
+    )
+    assert np.allclose(I_stab, R @ np.diag([ixx, iyy, izz]) @ R.T)
+    assert np.allclose(I_stab, I_stab.T)  # symmetric
+    # Nonzero trim attitude -> genuine products of inertia (off-diagonal terms).
+    assert not np.allclose(I_stab, np.diag(np.diag(I_stab)))
+
+    result_diag = compute_vsm_trim_stability_derivatives(
+        **common, rotate_inertia_by_trim=False
+    )
+    assert result_diag["inertia_rotated_by_trim"] is False
+    assert np.allclose(result_diag["inertia_stability"], np.diag([ixx, iyy, izz]))
+
+
+def test_compute_vsm_trim_stability_derivatives_accepts_full_inertia_tensor():
+    """``inertia_cg`` carries the full CG tensor, overriding the scalars.
+
+    A diagonal ``inertia_cg`` must reproduce the diagonal-scalar path
+    exactly; a tensor with a roll-yaw product of inertia must carry it into
+    ``inertia_stability`` (rotated by the trim attitude like the geometry).
+    """
+    ixx, iyy, izz, ixz = 100.0, 20.0, 120.0, 8.0
+    roll, pitch, yaw = 3.0, -4.0, 8.0  # degrees
+    common = dict(
+        body_aero=_MockBody(),
+        center_of_gravity=np.array([0.5, 0.0, 0.5]),
+        reference_point=np.zeros(3),
+        x_trim=np.array([20.0, roll, pitch, yaw, 0.0]),
+        trim_result=_TRIM_RESULT,
+        solver=_MockSolver(),
+        mass=15.0,
+    )
+
+    scalar = compute_vsm_trim_stability_derivatives(
+        **common, inertia_xx=ixx, inertia_yy=iyy, inertia_zz=izz
+    )
+    tensor_diag = compute_vsm_trim_stability_derivatives(
+        **common, inertia_cg=np.diag([ixx, iyy, izz])
+    )
+    assert np.allclose(tensor_diag["inertia_stability"], scalar["inertia_stability"])
+    assert np.allclose(tensor_diag["A_full"], scalar["A_full"])
+
+    full = np.array(
+        [[ixx, 0.0, ixz], [0.0, iyy, 0.0], [ixz, 0.0, izz]], dtype=float
+    )
+    R = _compose_attitude_rotation(
+        roll_deg=roll, pitch_deg=pitch, yaw_deg=yaw, axes=DEFAULT_AXES
+    )
+    result = compute_vsm_trim_stability_derivatives(**common, inertia_cg=full)
+    assert np.allclose(result["inertia_stability"], R @ full @ R.T)
+
+    # The diagonal scalars are ignored when the full tensor is given.
+    ignored = compute_vsm_trim_stability_derivatives(
+        **common, inertia_cg=full, inertia_xx=1.0, inertia_yy=1.0, inertia_zz=1.0
+    )
+    assert np.allclose(ignored["inertia_stability"], R @ full @ R.T)
+
+
+def test_corotating_state_transform_structure():
+    """T maps frozen-axes to co-rotating-axes perturbation states.
+
+    Velocity rows pick up [v_trim]_x on the attitude columns, rate rows pick
+    up [Omega_C]_x; everything else is identity. T is unipotent, so
+    inv(T) = 2I - T exactly, and any similarity T A inv(T) preserves the
+    spectrum.
+    """
+    v_trim = np.array([20.0, 0.0, -2.0])
+    omega_c = np.array([0.0, 0.1, -0.3])
+    T = corotating_state_transform(v_trim, omega_c)
+    n = len(ALL_STATE_NAMES)
+    assert T.shape == (n, n)
+
+    idx = {s: k for k, s in enumerate(ALL_STATE_NAMES)}
+    att = [idx["phi"], idx["theta"], idx["psi"]]
+
+    def _skew_ref(v):
+        return np.array(
+            [[0.0, -v[2], v[1]], [v[2], 0.0, -v[0]], [-v[1], v[0], 0.0]]
+        )
+
+    assert np.allclose(
+        T[np.ix_([idx["u"], idx["v"], idx["w"]], att)], _skew_ref(v_trim)
+    )
+    assert np.allclose(
+        T[np.ix_([idx["p"], idx["q"], idx["r"]], att)], _skew_ref(omega_c)
+    )
+    # All other entries are the identity.
+    T_stripped = T.copy()
+    T_stripped[np.ix_([idx["u"], idx["v"], idx["w"]], att)] = 0.0
+    T_stripped[np.ix_([idx["p"], idx["q"], idx["r"]], att)] = 0.0
+    assert np.allclose(T_stripped, np.eye(n))
+    # Unipotent: the attitude coupling is nilpotent.
+    assert np.allclose(T @ (2.0 * np.eye(n) - T), np.eye(n))
+
+
+def test_compute_vsm_trim_stability_derivatives_corotating_outputs():
+    """The result dict carries the co-rotating transform, consistent with the
+    recorded v_kite_trim_axes / omega_c_axes, and the similarity it defines
+    leaves the spectrum untouched."""
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        center_of_gravity=np.array([0.5, 0.0, 0.5]),
+        reference_point=np.zeros(3),
+        x_trim=_X_TRIM,
+        trim_result=_TRIM_RESULT,
+        solver=_MockSolver(),
+        mass=15.0,
+        inertia_xx=100.0,
+        inertia_yy=20.0,
+        inertia_zz=100.0,
+    )
+    # Minimal trim_result has no kite_vel_world and no system_model: the
+    # fallback is the tangential speed along the course axis.
+    v_axes = np.asarray(result["v_kite_trim_axes"], dtype=float)
+    assert np.allclose(v_axes, [_X_TRIM[0], 0.0, 0.0])
+
+    T = np.asarray(result["T_corotating_from_frozen"], dtype=float)
+    assert np.allclose(
+        T, corotating_state_transform(v_axes, result["omega_c_axes"])
+    )
+
+    A_frozen = np.asarray(result["A_full"], dtype=float)
+    A_corot = T @ A_frozen @ np.linalg.inv(T)
+    assert np.allclose(
+        np.sort_complex(np.linalg.eigvals(A_corot)),
+        np.sort_complex(np.asarray(result["eig_full"], dtype=complex)),
+    )
+
+
+def test_compute_vsm_trim_stability_derivatives_rejects_bad_inertia_cg():
+    """Wrong shape and asymmetric tensors are rejected before any solve."""
+    common = dict(
+        body_aero=_MockBody(),
+        center_of_gravity=np.zeros(3),
+        reference_point=np.zeros(3),
+        x_trim=_X_TRIM,
+        trim_result=_TRIM_RESULT,
+        solver=_MockSolver(),
+    )
+    with pytest.raises(ValueError, match="3x3"):
+        compute_vsm_trim_stability_derivatives(**common, inertia_cg=np.zeros(3))
+    with pytest.raises(ValueError, match="symmetric"):
+        compute_vsm_trim_stability_derivatives(
+            **common,
+            inertia_cg=np.array(
+                [[100.0, 0.0, 5.0], [0.0, 20.0, 0.0], [0.0, 0.0, 120.0]]
+            ),
+        )
+
+
+def test_course_transport_rate_axes_reduced_without_system_model():
+    """Without a system model (or with full=False) the radial-only Omega_C is used."""
+    axes_body, axes_world, is_full = _course_transport_rate_axes(
+        None, DEFAULT_AXES, course_rate=0.3, speed_tangential=20.0, full=True
+    )
+    assert is_full is False
+    assert np.allclose(axes_body, [0.0, 0.0, -0.3])
+    assert np.allclose(axes_world, [0.0, 0.0, -0.3])
+
+
 def test_compute_vsm_trim_stability_derivatives_rejects_unknown_state():
     with pytest.raises(ValueError, match="Unknown stability state"):
         compute_vsm_trim_stability_derivatives(
@@ -363,6 +832,83 @@ def test_compute_vsm_trim_stability_derivatives_rejects_unknown_state():
 
 
 # ---------------------------------------------------------------------------
+# New — numerical-hygiene diagnostics of the finite-difference solves
+# ---------------------------------------------------------------------------
+
+
+def test_stability_derivatives_hygiene_diagnostics_graceful_defaults():
+    """Mocks without gamma support / alpha_at_ac / panel polars opt out.
+
+    The warm-start machinery must not require the solver to accept a
+    ``gamma_distribution`` keyword, and the linearisation-point stall check
+    must degrade to NaN/None when the solver or body exposes no stall
+    information.
+    """
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        center_of_gravity=np.zeros(3),
+        reference_point=np.zeros(3),
+        x_trim=_X_TRIM,
+        trim_result=_TRIM_RESULT,
+        solver=_MockSolver(),
+    )
+    assert result["perturbation_solves_converged"] is True
+    assert result["n_unconverged_perturbation_solves"] == 0
+    assert result["gamma_warm_start_used"] is False
+    assert np.isnan(result["stall_margin_min_deg_at_trim"])
+    assert result["n_stalled_panels_at_trim"] is None
+
+
+class _MockStallPanel(_MockPanel):
+    def __init__(self, onset_rad: float):
+        super().__init__()
+        alpha = np.deg2rad(np.arange(-5.0, 26.0, 1.0))
+        cl = 1.5 - 5.0 * (alpha - onset_rad) ** 2  # interior peak at onset
+        self.panel_polar_data = np.column_stack(
+            [alpha, cl, np.full(alpha.size, 0.02), np.zeros(alpha.size)]
+        )
+
+
+class _MockGammaSolver(_MockSolver):
+    """Accepts a warm start and reports circulation + effective alphas."""
+
+    def __init__(self):
+        self.warm_started_calls = 0
+        self.calls = 0
+
+    def solve(self, body, gamma_distribution=None) -> dict:
+        self.calls += 1
+        if gamma_distribution is not None:
+            self.warm_started_calls += 1
+        res = dict(super().solve(body))
+        res["gamma_distribution"] = np.zeros(1)
+        res["gamma_converged"] = True
+        res["alpha_at_ac"] = np.array([[np.deg2rad(8.0)]])  # (n, 1) like VSM
+        return res
+
+
+def test_stability_derivatives_warm_start_and_trim_stall_check():
+    body = _MockBody()
+    body.panels = [_MockStallPanel(onset_rad=np.deg2rad(12.0))]
+    solver = _MockGammaSolver()
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=body,
+        center_of_gravity=np.zeros(3),
+        reference_point=np.zeros(3),
+        x_trim=_X_TRIM,
+        trim_result=_TRIM_RESULT,
+        solver=solver,
+    )
+    assert result["gamma_warm_start_used"] is True
+    # Baseline solve is cold; every finite-difference solve is warm-started.
+    assert solver.warm_started_calls == solver.calls - 1
+    assert result["perturbation_solves_converged"] is True
+    # alpha_eff 8 deg vs onset 12 deg -> 4 deg margin, no stalled panels.
+    assert result["stall_margin_min_deg_at_trim"] == pytest.approx(4.0)
+    assert result["n_stalled_panels_at_trim"] == 0
+
+
+# ---------------------------------------------------------------------------
 # Existing — verify backward-compatibility aliases
 # ---------------------------------------------------------------------------
 
@@ -372,3 +918,721 @@ def test_compatibility_aliases_point_to_canonical_functions():
     assert solve_quasi_steady_state is solve_vsm_quasi_steady_trim
     assert run_quasi_steady_sweep is run_vsm_quasi_steady_sweep
     assert compute_stability_derivatives is compute_vsm_trim_stability_derivatives
+
+
+# ---------------------------------------------------------------------------
+# Position-augmented 12-state block (position_states=True)
+# ---------------------------------------------------------------------------
+
+
+class _MockUniformWind:
+    wind_model = "uniform"
+    direction_wind = 0.0
+    z0 = 0.0
+
+    def speed_wind_at_height(self, height):
+        return 8.0
+
+
+class _MockShearWind(_MockUniformWind):
+    """Linear profile U(h) = U0 + k h — nonzero dU/dh everywhere."""
+
+    wind_model = "tabulated"
+    U0 = 6.0
+    k = 0.02
+
+    def speed_wind_at_height(self, height):
+        return self.U0 + self.k * float(height)
+
+
+class _MockPositionSystemModel:
+    """Bare system model for the position-state prerequisites: window angles,
+    a wind with ``speed_wind_at_height``, and settable course rate / speed.
+    Deliberately has no ``speed_radial`` and no
+    ``velocity_rotation_course_frame`` — tests run with ``full_omega_c=False``
+    (reduced transport rate) and ``include_gravity=False``."""
+
+    def __init__(self, wind=None, elevation=0.0):
+        self.wind = wind if wind is not None else _MockUniformWind()
+        self.angle_azimuth = 0.0
+        self.angle_elevation = float(elevation)
+        self.angle_course = 0.0
+        self.timeder_angle_course = 0.0
+        self.speed_tangential = 0.0
+
+
+_POSITION_COMMON = dict(
+    center_of_gravity=np.zeros(3),  # cg at B: block-diagonal mass matrix
+    reference_point=np.zeros(3),
+    x_trim=_X_TRIM,
+    trim_result=_TRIM_RESULT,
+    mass=15.0,
+    inertia_xx=100.0,
+    inertia_yy=20.0,
+    inertia_zz=100.0,
+    include_gravity=False,
+    full_omega_c=False,
+    distance_radial=250.0,
+)
+
+
+def test_position_states_default_off_is_backward_compatible():
+    """No aug keys by default, and an explicit False call is identical."""
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(), solver=_MockSolver(), **_POSITION_COMMON
+    )
+    explicit = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=False,
+        **_POSITION_COMMON,
+    )
+    assert all(not k.endswith("_aug") for k in result)
+    assert result["A_full"].shape == (10, 10)
+    assert np.allclose(result["A_full"], explicit["A_full"])
+
+
+def test_position_states_prerequisites_raise():
+    """Missing system model, radius, or wind interface fails fast."""
+    with pytest.raises(ValueError, match="position_states"):
+        compute_vsm_trim_stability_derivatives(
+            body_aero=_MockBody(),
+            solver=_MockSolver(),
+            position_states=True,
+            **_POSITION_COMMON,
+        )
+    no_radius = {k: v for k, v in _POSITION_COMMON.items() if k != "distance_radial"}
+    with pytest.raises(ValueError, match="position_states"):
+        compute_vsm_trim_stability_derivatives(
+            body_aero=_MockBody(),
+            solver=_MockSolver(),
+            position_states=True,
+            system_model=_MockPositionSystemModel(),
+            **no_radius,
+        )
+
+    class _NoHeightWind:
+        direction_wind = 0.0
+
+    with pytest.raises(ValueError, match="position_states"):
+        compute_vsm_trim_stability_derivatives(
+            body_aero=_MockBody(),
+            solver=_MockSolver(),
+            position_states=True,
+            system_model=_MockPositionSystemModel(wind=_NoHeightWind()),
+            **_POSITION_COMMON,
+        )
+
+
+def test_position_states_output_shapes_and_names():
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=_MockPositionSystemModel(),
+        **_POSITION_COMMON,
+    )
+    assert result["state_names_aug"] == list(AUG_STATE_NAMES)
+    assert result["J_aug"].shape == (6, 12)
+    assert result["A_aug"].shape == (12, 12)
+    assert result["eig_aug"].shape == (12,)
+    assert result["vec_aug"].shape == (12, 12)
+    # 10-state outputs keep the historical contract.
+    assert result["A_full"].shape == (10, 10)
+    assert result["state_names_full"] == list(ALL_STATE_NAMES)
+    # No Williams tether in the mock -> analytic straight-tether model.
+    assert result["tether_position_model_aug"] == "straight_tether_analytic"
+    # Co-rotating transform extends with identity position rows.
+    T_aug = np.asarray(result["T_corotating_from_frozen_aug"], dtype=float)
+    assert T_aug.shape == (12, 12)
+    names = result["state_names_aug"]
+    for s in ("x", "y"):
+        row = names.index(s)
+        expected = np.zeros(12)
+        expected[row] = 1.0
+        assert np.allclose(T_aug[row], expected)
+
+
+def test_position_states_straight_tether_stiffness():
+    """The x/y columns carry the spherical-pendulum stiffness -(T/r) on the
+    tangential diagonal, no moment content (tether acts through B), and the
+    acceleration row A[u, x] = -(T/r)/m with the CG at the attachment. Holds
+    at nonzero window elevation — the projector maps back to the tangential
+    plane of the stability axes exactly."""
+    T0, r = 500.0, 250.0
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=_MockPositionSystemModel(elevation=np.deg2rad(30.0)),
+        **_POSITION_COMMON,
+    )
+    names = result["state_names_aug"]
+    ix, iy = names.index("x"), names.index("y")
+    stiffness = T0 / r
+    J_x, J_y = result["J_aug"][:, ix], result["J_aug"][:, iy]
+    assert J_x[0] == pytest.approx(-stiffness, rel=1e-4)
+    assert J_y[1] == pytest.approx(-stiffness, rel=1e-4)
+    # Radial force response and every moment row vanish; cross terms too.
+    assert np.allclose(J_x[[1, 2, 3, 4, 5]], 0.0, atol=1e-6 * stiffness)
+    assert np.allclose(J_y[[0, 2, 3, 4, 5]], 0.0, atol=1e-6 * stiffness)
+    # And the fallback has zero radial stiffness: the aug z column equals the
+    # constant-force z column of the 10-state block (uniform wind => no shear).
+    iz = names.index("z")
+    assert np.allclose(result["J_aug"][:, iz], result["J_full"][:, iz])
+    A = result["A_aug"]
+    iu = names.index("u")
+    assert A[iu, ix] == pytest.approx(-stiffness / 15.0, rel=1e-4)
+
+
+def test_tether_lateral_feedback_off_zeroes_the_xy_columns():
+    """``tether_lateral_feedback=False``: the tether translates WITH the kite.
+
+    Only the radial component of a position offset reaches the tether model, so
+    a tangential displacement produces no tether force and no re-solve. Under a
+    uniform wind nothing else responds to a tangential displacement either --
+    the aerodynamics see the same inflow, gravity is unchanged, and the
+    centrifugal term is radial -- so the ``x`` and ``y`` columns must vanish
+    IDENTICALLY, not merely become small. That removes the spherical-pendulum
+    stiffness asserted in ``test_position_states_straight_tether_stiffness``.
+
+    The radial (``z``) channel must be untouched: the projection keeps the
+    radial component, so the tether still responds along ``e_r``.
+    """
+    common = dict(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=_MockPositionSystemModel(elevation=np.deg2rad(30.0)),
+        **_POSITION_COMMON,
+    )
+    free = compute_vsm_trim_stability_derivatives(**common)
+    frozen = compute_vsm_trim_stability_derivatives(
+        tether_lateral_feedback=False, **common
+    )
+
+    names = frozen["state_names_aug"]
+    ix, iy, iz = names.index("x"), names.index("y"), names.index("z")
+    assert np.array_equal(frozen["J_aug"][:, ix], np.zeros(6))
+    assert np.array_equal(frozen["J_aug"][:, iy], np.zeros(6))
+    # ...whereas the default carries the pendulum stiffness -(T/r).
+    assert free["J_aug"][0, ix] == pytest.approx(-500.0 / 250.0, rel=1e-4)
+    # Radial channel and the whole 10-state block are unaffected.
+    assert np.allclose(frozen["J_aug"][:, iz], free["J_aug"][:, iz])
+    assert np.allclose(frozen["J_full"], free["J_full"])
+    assert frozen["tether_lateral_feedback"] is False
+    assert frozen["tether_position_model_aug"].endswith("_radial_only")
+
+
+def test_position_states_transport_kinematic_rows():
+    """delta_r_dot = delta_v - Omega_C x delta_r with the reduced transport
+    rate Omega_C = -course_rate * e_radial."""
+    course_rate = 0.3
+    x_trim = np.array([20.0, 0.0, 0.0, 0.0, course_rate])
+    common = {**_POSITION_COMMON, "x_trim": x_trim}
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=_MockPositionSystemModel(),
+        **common,
+    )
+    names = result["state_names_aug"]
+    idx = {s: names.index(s) for s in names}
+    A = result["A_aug"]
+    W_r = -course_rate  # omega_c_axes = (0, 0, -course_rate)
+    assert A[idx["x"], idx["u"]] == pytest.approx(1.0)
+    assert A[idx["y"], idx["v"]] == pytest.approx(1.0)
+    assert A[idx["z"], idx["w"]] == pytest.approx(1.0)
+    # x_dot += W_r * y, y_dot -= W_r * x (from -Omega_C x delta_r).
+    assert A[idx["x"], idx["y"]] == pytest.approx(W_r)
+    assert A[idx["y"], idx["x"]] == pytest.approx(-W_r)
+    # No transport coupling into z from x/y at zero normal transport rate.
+    assert A[idx["z"], idx["x"]] == pytest.approx(0.0)
+    assert A[idx["z"], idx["y"]] == pytest.approx(0.0)
+    # The 10-state z-row is untouched: pure z_dot = w.
+    A10 = result["A_full"]
+    z_row = np.zeros(10)
+    z_row[list(ALL_STATE_NAMES).index("w")] = 1.0
+    assert np.allclose(A10[list(ALL_STATE_NAMES).index("z")], z_row)
+
+
+def test_position_states_top_block_identity_and_shear():
+    """With no shear (uniform wind) the augmented block restricts exactly to
+    the 10-state one: A_aug[:10, :10] == A_full. The identity needs (i) zero
+    shear and (ii) matching radial tether stiffness — true here because the
+    straight-tether fallback is radially rigid like the constant-force model.
+    With a sheared wind at nonzero elevation, only the z column moves."""
+    sm_uniform = _MockPositionSystemModel(elevation=np.deg2rad(30.0))
+    result_u = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=sm_uniform,
+        **_POSITION_COMMON,
+    )
+    assert np.allclose(result_u["A_aug"][:10, :10], result_u["A_full"])
+
+    sm_shear = _MockPositionSystemModel(
+        wind=_MockShearWind(), elevation=np.deg2rad(30.0)
+    )
+    result_s = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=sm_shear,
+        **_POSITION_COMMON,
+    )
+    # The mock solver ignores the inflow, so the shear cannot reach the
+    # forces; the recomputed z column must still equal the historical one.
+    d = np.abs(result_s["J_aug"][:, :10] - result_s["J_full"])
+    assert np.allclose(d, 0.0)
+
+
+def test_position_states_shear_reaches_the_inflow():
+    """The displaced-height wind perturbation must reach va_initialize: with
+    a linear profile and the kite at 30 deg elevation, a radial offset dz
+    changes the height by dz*sin(elev)... in the wind frame, and the recorded
+    inflow magnitude shifts by k * dh (the wind is along +x of the wind frame
+    while va_trim is course-aligned; the mock records the magnitude)."""
+
+    class _RecordingBody(_MockBody):
+        # Class-level so the deep copy made by the linearisation
+        # (working_body) records into the same list.
+        umags: list = []
+
+        def va_initialize(self, **kwargs):
+            _RecordingBody.umags.append(float(kwargs["Umag"]))
+
+    body = _RecordingBody()
+    sm = _MockPositionSystemModel(wind=_MockShearWind(), elevation=np.deg2rad(30.0))
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=body,
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=sm,
+        **_POSITION_COMMON,
+    )
+    fn = result["eval_force_moment_fn"]
+    zero3 = np.zeros(3)
+    _RecordingBody.umags.clear()
+    fn(zero3, zero3, 0.0, 0.0, 0.0, 0.0)  # historical positional call works
+    fn(
+        zero3,
+        zero3,
+        position_offset_axes=10.0 * DEFAULT_AXES.radial,
+        position_feedback=True,
+    )
+    fn(
+        zero3,
+        zero3,
+        position_offset_axes=10.0 * DEFAULT_AXES.radial,
+        position_feedback=False,
+    )
+    u_base, u_shear, u_frozen = body.umags
+    assert u_frozen == pytest.approx(u_base)
+    assert u_shear != pytest.approx(u_base)
+    # |dU| bounded by k * |offset| (the height change is a projection).
+    assert abs(u_shear - u_base) <= _MockShearWind.k * 10.0 + 1e-9
+
+
+def test_position_states_nonlinear_rhs_aug_consistency():
+    """f_aug(0) vanishes at the anchored trim and central differences of the
+    independent 12-state field reproduce the x/y columns of A_aug."""
+    course_rate = 0.2
+    x_trim = np.array([20.0, 0.0, 0.0, 0.0, course_rate])
+    common = {**_POSITION_COMMON, "x_trim": x_trim}
+    result = compute_vsm_trim_stability_derivatives(
+        body_aero=_MockBody(),
+        solver=_MockSolver(),
+        position_states=True,
+        system_model=_MockPositionSystemModel(elevation=np.deg2rad(30.0)),
+        **common,
+    )
+    rhs = result["nonlinear_rhs_aug"]
+    assert np.allclose(rhs(np.zeros(12)), 0.0, atol=1e-9)
+    A = np.asarray(result["A_aug"], dtype=float)
+    eps = float(result["eps_position_lateral_used"])
+    names = result["state_names_aug"]
+    for state in ("x", "y"):
+        k = names.index(state)
+        e = np.zeros(12)
+        e[k] = eps
+        col_fd = (rhs(e) - rhs(-e)) / (2.0 * eps)
+        assert np.allclose(col_fd, A[:, k], rtol=1e-6, atol=1e-9)
+
+
+# ---------------------------------------------------------------------------
+# Course-rate block: algebraic chi_dot_turn replacing the lateral velocity
+# ---------------------------------------------------------------------------
+
+_CHI_COMMON = dict(
+    center_of_gravity=np.array([0.1, 0.0, -0.4]),
+    reference_point=np.zeros(3),
+    x_trim=_X_TRIM,
+    trim_result=_TRIM_RESULT,
+    mass=15.0,
+    inertia_xx=100.0,
+    inertia_yy=20.0,
+    inertia_zz=100.0,
+    include_gravity=False,
+    full_omega_c=False,
+)
+
+
+class _RecordingMockBody(_MockBody):
+    """Mock body that keeps the inflow state handed to ``va_initialize``."""
+
+    va_state: dict = {}
+
+    def va_initialize(self, **kwargs):
+        self.va_state = kwargs
+
+
+class _RateResponsiveMockSolver:
+    """Aerodynamics linear in the body rate.
+
+    The constant ``_MockSolver`` gives the normal-force channel no response to
+    any state, so the eliminated turn rate comes out identically zero. A side
+    force and yaw moment proportional to the yaw rate are the minimum needed
+    to exercise the closure: they make ``d(a_normal)/d(r)`` — and hence the
+    gain row — non-trivial.
+    """
+
+    rho: float = 1.225
+
+    def solve(self, body) -> dict:
+        state = getattr(body, "va_state", {}) or {}
+        rates = float(state.get("body_rates", 0.0))
+        axis = np.asarray(state.get("body_axis", [0.0, 0.0, 1.0]), dtype=float)
+        omega = rates * axis
+        return {
+            "Fx": 0.0,
+            "Fy": -30.0 * omega[2] - 5.0 * omega[0],
+            "Fz": -500.0,
+            "cmx": -0.01 * omega[0],
+            "cmy": 0.0,
+            "cmz": -0.02 * omega[2],
+        }
+
+
+def _chi_result(responsive: bool = False, **kwargs):
+    merged = dict(_CHI_COMMON)
+    merged.update(kwargs)
+    body = _RecordingMockBody() if responsive else _MockBody()
+    solver = _RateResponsiveMockSolver() if responsive else _MockSolver()
+    return compute_vsm_trim_stability_derivatives(
+        body_aero=body, solver=solver, **merged
+    )
+
+
+def test_course_rate_state_default_off_is_backward_compatible():
+    """No course-rate keys by default; an explicit False call is identical."""
+    result = _chi_result()
+    explicit = _chi_result(course_rate_state=False)
+    assert "A_chi" not in result
+    assert "J_course_rate" not in result
+    assert "nonlinear_rhs_chi" not in result
+    assert result["A_full"].shape == (10, 10)
+    assert np.allclose(result["A_full"], explicit["A_full"])
+
+
+def test_course_rate_state_output_shapes_and_names():
+    from awetrim.aerodynamics.vsm_quasi_steady import CHI_STATE_NAMES
+
+    result = _chi_result(course_rate_state=True)
+    # The canonical 10-state contract is untouched.
+    assert result["A_full"].shape == (10, 10)
+    assert result["state_names_full"] == list(ALL_STATE_NAMES)
+    # ...and the course-rate block sits alongside it.
+    assert CHI_STATE_NAMES == tuple(s for s in ALL_STATE_NAMES if s != "v")
+    assert result["state_names_chi"] == list(CHI_STATE_NAMES)
+    assert result["A_chi"].shape == (9, 9)
+    assert result["eig_chi"].shape == (9,)
+    assert result["vec_chi"].shape == (9, 9)
+    assert result["J_course_rate"].shape == (6,)
+    assert result["chi_turn_gain_row"].shape == (9,)
+    assert result["chi_turn_closure_singular"] is False
+
+
+def test_course_rate_column_is_the_transport_derivative():
+    """Sign anchor for the chi_dot_turn perturbation.
+
+    With the constant mock solver the aerodynamic force does not respond to
+    the body rate, so the only chi_dot_turn dependence left in the normal
+    force channel is the transport term ``f_transport[1] = -m v_tau chi_dot``.
+    That pins the perturbation direction: ``d F_normal / d chi_dot_turn`` must
+    come out as ``-m v_tau``, i.e. ``+m u0`` in the stability-axes sign
+    convention where the kite flies along ``-e_course``.
+    """
+    result = _chi_result(course_rate_state=True)
+    mass, v_tau = 15.0, 20.0
+    assert result["J_course_rate"][1] == pytest.approx(-mass * v_tau, rel=1e-6)
+    # The closure denominator d(a_normal)/d(chi_dot_turn) inherits it.
+    assert result["chi_turn_denominator"] == pytest.approx(-v_tau, rel=1e-3)
+
+
+def test_cg_eom_eval_delta_course_rate_is_transport_only():
+    """The CG-form evaluator routes ``delta_course_rate`` like the B form.
+
+    A chi_dot_turn perturbation is trajectory curvature: it may move the
+    transport inertial force ``-m Omega_C x v_cg`` and nothing else. The
+    rate-responsive solver makes any leakage into the aerodynamic body rate
+    visible (``Fy``/``cmz`` respond to ``omega``), so the aero rows staying
+    identical is a real routing check, not vacuous.
+    """
+    result = _chi_result(responsive=True)
+    ev = result["cg_eom_eval"]
+    base = ev()
+    delta = 0.02
+    pert = ev(delta_course_rate=delta)
+    # No leakage: aero, tether, gyroscopic and body-rate outputs unchanged.
+    for key in (
+        "F_aero",
+        "M_aero_cg",
+        "F_tether",
+        "M_tether_cg",
+        "M_gyro_cg",
+        "omega_total_world",
+        "moment_cg_net",
+    ):
+        assert np.allclose(pert[key], base[key], atol=1e-12), key
+    # The transport delta is analytic: dOmega = -delta * e_radial, so
+    # dF = -m (dOmega x v_cg); force_net moves by exactly the same amount.
+    mass = 15.0
+    d_omega = -delta * base["axes_radial"]
+    expected = -mass * np.cross(d_omega, base["v_cg_world"])
+    assert np.allclose(pert["F_transport"] - base["F_transport"], expected, atol=1e-9)
+    assert np.allclose(pert["force_net"] - base["force_net"], expected, atol=1e-9)
+    assert np.allclose(pert["accel_cg"] - base["accel_cg"], expected / mass, atol=1e-9)
+    # Default 0.0 leaves the historical evaluation unchanged.
+    again = ev(delta_course_rate=0.0)
+    assert np.allclose(again["force_net"], base["force_net"], atol=1e-12)
+    assert np.allclose(again["moment_cg_net"], base["moment_cg_net"], atol=1e-12)
+
+
+def test_eval_force_moment_with_contributions_sums_to_net():
+    """The optional B-point breakdown reproduces the net rows exactly and
+    the default call keeps the historical 3-tuple."""
+    result = _chi_result(responsive=True)
+    fn = result["eval_force_moment_fn"]
+    zero3 = np.zeros(3)
+    out_default = fn(zero3, zero3)
+    assert len(out_default) == 3
+    force, moment, _res, contrib = fn(zero3, zero3, with_contributions=True)
+    assert np.allclose(force, out_default[0]) and np.allclose(
+        moment, out_default[1]
+    )
+    f_sum = (contrib["F_aero"] + contrib["F_tether"] + contrib["F_gravity"]
+             + contrib["F_transport"] + contrib["F_centripetal"])
+    m_sum = (contrib["M_aero_B"] + contrib["M_gravity_B"]
+             + contrib["M_transport_B"] + contrib["M_gyro_B"])
+    assert np.allclose(f_sum, force, atol=1e-12)
+    assert np.allclose(m_sum, moment, atol=1e-12)
+
+
+def test_static_slopes_summary_structure_and_chi_dot_decomposition():
+    """cg_eom.static_slopes_summary: schema, additivity, and the kinematic
+    chi_dot part pinned analytically.
+
+    The B-form course-rate column carries the transport force's CG-arm
+    moment about B, ``J_course_rate[5] = cross(c, dF)[2] = -c_x m v_tau``;
+    transporting to the CG cancels it exactly, so the kinematic z-moment
+    slope is identically ZERO — a chi_dot perturbation produces no moment
+    about the CG (the transport force acts there).
+    """
+    from awetrim.aerodynamics.cg_eom import static_slopes_summary
+
+    result = _chi_result(responsive=True, course_rate_state=True)
+    summary = static_slopes_summary(result)
+    slopes = summary["slopes_SI"]
+    assert set(slopes) == {"roll", "pitch", "yaw", "v_tau", "chi_dot", "radial"}
+    assert all(np.isfinite(v) for v in slopes.values())
+    assert set(summary["restoring"]) == {"roll", "pitch", "yaw", "v_tau", "radial"}
+    for channel, restoring in summary["restoring"].items():
+        assert restoring == (slopes[channel] < 0.0)
+    parts = summary["chi_dot_parts"]
+    assert slopes["chi_dot"] == pytest.approx(
+        parts["kinematic"] + parts["body_rate"]
+    )
+    assert summary["chi_dot_damping"] == (slopes["chi_dot"] > 0.0)
+    mass, v_tau, c_x = 15.0, 20.0, 0.1
+    assert result["J_course_rate"][5] == pytest.approx(
+        -c_x * mass * v_tau, rel=1e-6
+    )
+    assert parts["kinematic"] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_course_rate_closure_zeroes_the_normal_acceleration():
+    """The eliminated variable is exactly the one that kills a_normal.
+
+    ``v_n == 0`` is the defining property of the course frame, so its
+    frame-relative rate must vanish for every perturbation once
+    ``delta_chi_dot_turn = chi_turn_gain_row @ delta_state_9`` is substituted.
+    """
+    from awetrim.aerodynamics.vsm_quasi_steady import CHI_STATE_NAMES
+
+    result = _chi_result(responsive=True, course_rate_state=True)
+    cols = [list(ALL_STATE_NAMES).index(s) for s in CHI_STATE_NAMES]
+    J_9 = result["J_full"][:, cols]
+    M = result["mass_matrix_axes"]
+    accel_9 = np.linalg.solve(M, J_9)
+    accel_chi = np.linalg.solve(M, result["J_course_rate"])
+    normal_row = accel_9[1, :] + accel_chi[1] * result["chi_turn_gain_row"]
+    assert np.allclose(normal_row, 0.0, atol=1e-9)
+
+
+def test_course_rate_F_Omega_vanishes_on_every_differential_row():
+    """``F_Omega = 0``, so the algebraic elimination is a no-op: ``A_f = F_x``.
+
+    chi_dot_turn is a trajectory-CURVATURE term, not a body rate: it changes no
+    apparent wind, so it reaches the equations of motion only through the
+    transport inertial force ``-m (Omega_C x v)``. Two exact facts follow:
+
+    1. ``d(Omega_C x v)/d(chi_dot_turn)`` is purely NORMAL -- with
+       ``Omega_C = [0, v_tau/r, -chi_dot_turn]`` and ``v = [v_tau, 0, v_r]``
+       the cross product is ``[w_n v_r, w_r v_tau, -w_n v_tau]``, and
+       chi_dot_turn sits in the middle slot alone (paper Eq.
+       ``acceleration_course_paper``).
+    2. That force acts at the CG, so its right-hand side is the pair
+       ``[P, c x P]`` -- and the coupled B-point mass matrix maps such a pair
+       to ``[P/m, 0]``: pure translation, ZERO angular acceleration.
+
+    So the only nonzero entry of the chi_dot_turn column is the constraint row
+    itself (``G_Omega``), every differential row of ``F_Omega`` is zero, and
+    ``A_f = F_x - F_Omega G_Omega^-1 G_x`` collapses to ``F_x``. The 9-state
+    DAE block is therefore IDENTICAL to the 10-state block with ``v`` pinned.
+
+    ``G_Omega`` itself must come out as the pure kinematic ``-v_tau`` (no
+    aerodynamic content) -- that is the sharpest check that chi_dot_turn is not
+    leaking into the body rate.
+    """
+    from awetrim.aerodynamics.vsm_quasi_steady import CHI_STATE_NAMES
+
+    result = _chi_result(responsive=True, course_rate_state=True)
+    accel_chi = np.linalg.solve(result["mass_matrix_axes"], result["J_course_rate"])
+
+    # G_Omega = -v_tau exactly: no aerodynamic response to the turn rate.
+    assert result["chi_turn_denominator"] == pytest.approx(-20.0, rel=1e-9)
+    assert accel_chi[1] == pytest.approx(-20.0, rel=1e-9)
+    # F_Omega: every other force/moment row vanishes.
+    for row in (0, 2, 3, 4, 5):
+        assert abs(accel_chi[row]) < 1e-12
+
+    # ...hence A_chi is exactly the v-pinned 10-state block.
+    cols = [list(ALL_STATE_NAMES).index(s) for s in CHI_STATE_NAMES]
+    A_dropped = result["A_full"][np.ix_(cols, cols)]
+    assert np.allclose(A_dropped, result["A_chi"], rtol=0.0, atol=1e-12)
+    # The gain row is still meaningful as an OUTPUT (turn rate per unit state).
+    assert np.any(result["chi_turn_gain_row"] != 0.0)
+
+
+def test_course_rate_v_retained_variant():
+    """``A_chi10``: the same closure read as ``v_dot = 0`` instead of ``v = 0``.
+
+    One normal momentum equation, two unknowns — either the frame is frozen and
+    it integrates ``v_dot``, or the frame follows the velocity direction and it
+    determines ``chi_dot_turn``. This is the second reading WITHOUT also
+    forbidding a standing normal offset, so ``v`` stays a state with a zero
+    row. That makes the matrix block upper triangular in (others | v):
+
+    * spectrum = ``spec(A_chi)`` plus exactly one structural zero (the neutral
+      constant-sideslip mode);
+    * the ``v`` COLUMN survives, so a standing sideslip still drives the other
+      nine equations aerodynamically — the difference from the pinned block
+      lives in the eigenvectors, not the eigenvalues.
+    """
+    result = _chi_result(responsive=True, course_rate_state=True)
+    names = list(ALL_STATE_NAMES)
+    iv = names.index("v")
+    A10 = np.asarray(result["A_chi10"], dtype=float)
+
+    assert result["state_names_chi10"] == names
+    assert np.array_equal(A10[iv, :], np.zeros(len(names)))
+    # The v COLUMN is carried over UNCHANGED from the baseline block (the
+    # rank-1 substitution is F_Omega = 0), so a standing sideslip drives the
+    # other nine rows exactly as it does there — that is what this variant
+    # keeps and the pinned block throws away. Asserted as preservation, not
+    # magnitude: this mock's aerodynamics are rate-only, so the column is in
+    # fact zero here.
+    expected_col = np.asarray(result["A_full"], dtype=float)[:, iv].copy()
+    expected_col[iv] = 0.0
+    assert np.allclose(A10[:, iv], expected_col, rtol=0.0, atol=1e-12)
+
+    eig10 = np.asarray(result["eig_chi10"], dtype=complex)
+    izero = int(np.argmin(np.abs(eig10)))
+    assert abs(eig10[izero]) < 1e-9
+    rest = np.sort_complex(np.delete(eig10, izero))
+    assert np.allclose(rest, np.sort_complex(result["eig_chi"]), atol=1e-9)
+
+    # The elimination gain over 10 states is the always-present output row.
+    assert np.allclose(
+        result["chi10_gain_row"], result["chi_turn_gain_row_full"], atol=1e-12
+    )
+
+
+def test_turn_rate_output_row_of_the_baseline_block():
+    """The 10-state block reports the turn rate as an OUTPUT, for free.
+
+    chi_dot_turn is not a state there, but it is a linear functional of the
+    state: the same normal equation ``a_n = -v_tau chi_dot_turn`` read on the
+    FREE-``v`` block gives ``delta_chi_dot_turn = -(normal acceleration row) /
+    G_Omega``, i.e. one row of ``A_full`` divided by the closure denominator.
+
+    Two things are pinned here:
+
+    1. the denominator is the kinematic ``u0 = -v_tau`` when the course-rate
+       block did not run, and the FD-measured ``G_Omega`` when it did (the two
+       agree for the rigid mass matrix, cf.
+       ``test_course_rate_F_Omega_vanishes_on_every_differential_row``);
+    2. restricting the row to the 9 differential states — which is what pinning
+       ``v`` does to a linear functional — reproduces the course-rate block's
+       own ``chi_turn_gain_row`` exactly. The two code paths must not drift.
+    """
+    from awetrim.aerodynamics.vsm_quasi_steady import CHI_STATE_NAMES
+
+    plain = _chi_result(responsive=True)
+    assert plain["chi_turn_denominator_source"] == "kinematic"
+    u0 = float(np.asarray(plain["v_kite_trim_axes"], dtype=float)[0])
+    assert plain["chi_turn_denominator_full"] == pytest.approx(u0, rel=1e-12)
+    expected = -plain["A_full"][list(ALL_STATE_NAMES).index("v"), :] / u0
+    assert np.allclose(plain["chi_turn_gain_row_full"], expected, rtol=0.0, atol=0.0)
+
+    result = _chi_result(responsive=True, course_rate_state=True)
+    assert result["chi_turn_denominator_source"] == "finite-difference"
+    cols = [list(ALL_STATE_NAMES).index(s) for s in CHI_STATE_NAMES]
+    assert np.allclose(
+        np.asarray(result["chi_turn_gain_row_full"])[cols],
+        np.asarray(result["chi_turn_gain_row"]),
+        rtol=1e-12,
+        atol=1e-12,
+    )
+
+
+def test_nonlinear_rhs_chi_reproduces_A_chi():
+    """Independent cross-check: central-differencing the 9-state nonlinear
+    field must reproduce A_chi, exactly as nonlinear_rhs does for A_full."""
+    from awetrim.aerodynamics.vsm_quasi_steady import CHI_STATE_NAMES
+
+    result = _chi_result(responsive=True, course_rate_state=True)
+    rhs = result["nonlinear_rhs_chi"]
+    A = result["A_chi"]
+    assert np.allclose(rhs(np.zeros(9)), 0.0, atol=1e-8)
+    for k in range(len(CHI_STATE_NAMES)):
+        eps = 1e-4
+        e = np.zeros(9)
+        e[k] = eps
+        col_fd = (rhs(e) - rhs(-e)) / (2.0 * eps)
+        assert np.allclose(col_fd, A[:, k], rtol=1e-5, atol=1e-8)
+
+
+def test_nonlinear_rhs_chi_solves_the_normal_equation():
+    """Each evaluation drives the frame-relative normal acceleration to zero
+    and reports the turn rate it took to do so."""
+    result = _chi_result(responsive=True, course_rate_state=True)
+    full = result["nonlinear_rhs_chi_full"]
+    perturbed = np.zeros(9)
+    perturbed[7] = 0.05  # q
+    out = full(perturbed)
+    assert abs(out["normal_residual"]) < 1e-8
+    assert np.isfinite(out["delta_chi_dot_turn"])

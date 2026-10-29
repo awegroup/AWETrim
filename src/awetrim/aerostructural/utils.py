@@ -17,6 +17,9 @@
 import yaml
 from pathlib import Path
 import numpy as np
+import json
+import logging
+
 import h5py
 
 
@@ -32,6 +35,80 @@ def load_yaml(path: Path) -> dict:
     """
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+#: Optional block of per-CONNECTION bridle rest lengths in a PSM-format dict
+#: (the wireframe's internal geometry, and the retired file formats)
+#: ``{headers: [row, l0], data: [[bridle_connections row, l0 [m]], ...]}``.
+#: The bridle_lines table keys rest lengths by line NAME, and the two steering
+#: tapes share one name, so an actuated (asymmetric) state is written here; a
+#: listed connection's l0 replaces its line's. An awesIO document needs none:
+#: every segment carries its own rest length
+#: (``awesio_structure.wireframe_to_awesio`` / ``wireframe_from_awesio``
+#: translate between the two).
+BRIDLE_CONNECTION_REST_LENGTHS = "bridle_connection_rest_lengths"
+
+
+def bridle_connection_rest_lengths(struc_geometry: dict) -> dict:
+    """``{bridle_connections row index: l0}`` from the optional
+    :data:`BRIDLE_CONNECTION_REST_LENGTHS` block; empty when absent."""
+    block = struc_geometry.get(BRIDLE_CONNECTION_REST_LENGTHS) or {}
+    return {int(row): float(l0) for row, l0 in block.get("data", [])}
+
+
+def resolve_kcu_mass(config=None, system_config=None) -> float:
+    """The KCU mass [kg] a structural model carries at its KCU point.
+
+    ``system.yaml`` is the single source (``utils.system_config.get_kcu_mass``:
+    the control unit plus its onboard turbine); a run config's ``kcu.mass`` /
+    ``kcu_mass`` is the per-run fallback. An awesIO structure file carries no
+    KCU mass. 0 with a warning when neither states one.
+    """
+    from awetrim.utils.system_config import get_kcu_mass
+
+    if isinstance(system_config, dict):
+        mass_kcu = get_kcu_mass(system_config)
+        if mass_kcu is not None:
+            return mass_kcu
+    if isinstance(config, dict):
+        kcu_cfg = config.get("kcu", {})
+        if isinstance(kcu_cfg, dict) and "mass" in kcu_cfg:
+            return float(kcu_cfg["mass"])
+        if "kcu_mass" in config:
+            return float(config["kcu_mass"])
+    logging.warning(
+        "KCU mass found in neither system_config nor config; defaulting to 0.0 kg."
+    )
+    return 0.0
+
+
+def resolve_structure(structure, config=None, system_config=None) -> tuple:
+    """The full model's solver arrays of an awesIO structure, KCU mass included.
+
+    ``structure`` is an awesIO file path, a loaded document or a
+    ``Structure`` (``coupled.awesio_structure.load_structure``). Returns the
+    tuple the retired reader ``read_struc_geometry_yaml.main`` returned
+    (``Structure.resolved``), with the KCU mass of :func:`resolve_kcu_mass`
+    and the same mirror-symmetry warning. ``strut_padding`` in ``config`` no
+    longer applies: an awesIO file holds the resolved mesh.
+    """
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
+    from awetrim.aerostructural.symmetry import warn_if_asymmetric
+
+    structure = load_structure(structure)
+    if (config or {}).get("strut_padding") is not None:
+        logging.warning(
+            "config strut_padding=%r is ignored: an awesIO structure file holds "
+            "the resolved strut mesh",
+            config["strut_padding"],
+        )
+    resolved = structure.resolved(kcu_mass=resolve_kcu_mass(config, system_config))
+    # An asymmetric input turns an unsteered kite; warn (see symmetry.py).
+    warn_if_asymmetric(
+        resolved[0], resolved[10], resolved[13], resolved[14], resolved[16], resolved[1],
+        config,
+    )
+    return resolved
 
 
 def save_results(tracking, meta, filename):
@@ -51,7 +128,25 @@ def save_results(tracking, meta, filename):
         for name, arr in tracking.items():
             grp.create_dataset(name, data=arr[: meta["n_iter"]], compression="gzip")
         for k, v in meta.items():
-            grp.attrs[k] = v
+            # A single unstorable value must not cost the whole run. h5py
+            # rejects anything without a native equivalent (lists of dicts,
+            # ragged sequences, None), and this write is the LAST thing a
+            # solve does -- losing minutes of coupled iteration here because
+            # one new diagnostic was the wrong shape is never the right
+            # trade. Store what fits, JSON the rest, and say so.
+            try:
+                grp.attrs[k] = v
+            except (TypeError, ValueError):
+                try:
+                    grp.attrs[k] = json.dumps(v, default=str)
+                    logging.debug("meta[%r] stored as a JSON string", k)
+                except (TypeError, ValueError):
+                    grp.attrs[k] = repr(v)
+                    logging.warning(
+                        "meta[%r] (%s) is not HDF5-storable; saved its repr",
+                        k,
+                        type(v).__name__,
+                    )
 
 
 def load_sim_output(h5_path):
@@ -87,84 +182,34 @@ def load_sim_output(h5_path):
     return metadata, track
 
 
-def printing_rest_lengths(tracking_data, struc_geometry):
+def printing_rest_lengths(tracking_data, structure):
     """
-    Print current and initial lengths of bridle lines by averaging the lengths
-    of their segments in bridle_connections.
-
-    Supports both legacy `bridle_lines` and newer `bridle_lines` YAML schemas.
-
-    For each connection:
-    - if 3 nodes, sum ci-cj and cj-ck
-    - if 2 nodes, sum ci-cj
+    Print current and initial lengths of the bridle lines, each line's
+    connections averaged (a pulley rope as the sum of its two arms), against
+    their mean rest length in ``structure`` (an awesIO path, document or
+    ``Structure``).
     """
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
+
     positions = tracking_data["positions"]
     struc_nodes = positions[-1]  # current positions
     initial_struc_nodes = positions[0]  # initial positions
 
-    if "bridle_lines" in struc_geometry:
-        bridle_defs_data = struc_geometry["bridle_lines"]["data"]
-    elif "bridle_elements" in struc_geometry:
-        bridle_defs_data = struc_geometry["bridle_elements"]["data"]
-    else:
-        raise KeyError("Expected 'bridle_lines' or 'bridle_elements' in struc_geometry")
+    def rope(nodes, path):
+        return sum(np.linalg.norm(nodes[a] - nodes[b]) for a, b in zip(path[:-1], path[1:]))
 
-    bridle_line_names = [row[0] for row in bridle_defs_data]
-    bridle_connections_data = struc_geometry["bridle_connections"]["data"]
+    by_line = {}
+    for element in load_structure(structure).bridle:
+        by_line.setdefault(element["name"], []).append(element)
 
-    # YAML l0 lookup dictionary
-    bridle_lines_yaml = {row[0]: row[1] for row in bridle_defs_data}
-
-    # Collect data rows: (line_name, curr_length, yaml_l0, delta_pct, initial_nodal_dist)
+    # Collect data rows: (line_name, curr_length, l0, delta_pct, initial_nodal_dist)
     rows = []
-    for line_name in bridle_line_names:
-        total_length = 0.0
-        initial_total_length = 0.0
-        count = 0
-
-        for conn in bridle_connections_data:
-            if conn[0] == line_name:
-                ci = int(conn[1])
-                cj = int(conn[2])
-                if len(conn) > 3 and conn[3] not in (None, "", 0):
-                    ck = int(conn[3])
-                    # current
-                    total_length += np.linalg.norm(struc_nodes[ci] - struc_nodes[cj])
-                    total_length += np.linalg.norm(struc_nodes[cj] - struc_nodes[ck])
-                    # initial
-                    initial_total_length += np.linalg.norm(
-                        initial_struc_nodes[ci] - initial_struc_nodes[cj]
-                    )
-                    initial_total_length += np.linalg.norm(
-                        initial_struc_nodes[cj] - initial_struc_nodes[ck]
-                    )
-                    count += 1
-                else:
-                    # current
-                    total_length += np.linalg.norm(struc_nodes[ci] - struc_nodes[cj])
-                    # initial
-                    initial_total_length += np.linalg.norm(
-                        initial_struc_nodes[ci] - initial_struc_nodes[cj]
-                    )
-                    count += 1
-
-        if count > 0:
-            curr_l = total_length / count
-            init_nodal_dist = initial_total_length / count
-
-            yaml_l0 = bridle_lines_yaml.get(line_name, None)
-            try:
-                yaml_l0_val = float(yaml_l0) if yaml_l0 is not None else None
-            except Exception:
-                yaml_l0_val = yaml_l0
-
-            delta_pct = (
-                100.0 * (curr_l - yaml_l0_val) / yaml_l0_val
-                if yaml_l0_val not in (None, 0)
-                else 0.0
-            )
-
-            rows.append((line_name, curr_l, yaml_l0_val, delta_pct, init_nodal_dist))
+    for line_name, elements in by_line.items():
+        curr_l = float(np.mean([rope(struc_nodes, e["nodes"]) for e in elements]))
+        init_nodal_dist = float(np.mean([rope(initial_struc_nodes, e["nodes"]) for e in elements]))
+        l0 = float(np.mean([e["rest_length"] for e in elements]))
+        delta_pct = 100.0 * (curr_l - l0) / l0 if l0 != 0 else 0.0
+        rows.append((line_name, curr_l, l0, delta_pct, init_nodal_dist))
 
     if not rows:
         print("\nNo bridle lines with matching connections found.")
@@ -374,24 +419,28 @@ def calculate_inertia(nodes, desired_point=(0.0, 0.0, 0.0)):
 
 
 def compute_kite_aggregate(struc_geometry, system_config) -> dict:
-    """Compute the aggregate kite mass, CG, and inertia from the full PSS system.
+    """Compute the aggregate kite mass, CG, and inertia from the structural nodes.
 
     The kite aggregate (wing + bridle + KCU) is *derived*, not stored in
     ``system.yaml``: the total mass is the sum of the nodal masses, while the CG
     and inertia tensor require the structural node distribution and are therefore
-    computed from the PSS particle system rather than from the per-component
-    summaries. ``system_config`` is the awesIO system config (used for the KCU
-    mass); ``struc_geometry`` is the parsed structural-geometry dict.
+    computed from the structural nodes (the full model or a wireframe, e.g. a
+    deformed snapshot) rather than from the per-component summaries.
+    ``system_config`` is the awesIO system config (used for the KCU mass);
+    ``struc_geometry`` is an awesIO structure (path, document or
+    ``Structure``; a retired-format dict is converted with a warning). The
+    nodal masses follow awesIO's rule (``Structure.masses``).
 
     Returns a dict with ``mass`` (kg), ``center_of_mass`` ([x, y, z] m), and
     ``inertia_tensor`` (3x3, kg·m², about the CG).
     """
     # Imported lazily so this lightweight, widely-imported module does not pull in
-    # the PSS structural solver at import time.
-    from awetrim.aerostructural.pss.structural_geometry_io import main as pss_initialize
+    # the structural readers at import time.
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
 
-    result = pss_initialize(struc_geometry, system_config=system_config)
-    struc_nodes, m_arr = result[0], result[1]
+    structure = load_structure(struc_geometry)
+    struc_nodes = structure.positions
+    m_arr = structure.masses(kcu_mass=resolve_kcu_mass(system_config=system_config))
 
     total_mass = float(np.sum(m_arr))
     cg = calculate_cg(struc_nodes, m_arr)
@@ -435,30 +484,8 @@ def calculate_moments_of_inertia(
     )
 
 
-def rotate_geometry(
-    struc_nodes,
-    angle_deg=None,
-    angle_rad=None,
-    point=(0.0, 0.0, 0.0),
-    axes=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
-):
-    """
-    Rotate structural nodes with three sequential axis-angle rotations.
-
-    Args:
-        struc_nodes (np.ndarray): Array of node positions (n_nodes, 3).
-        angle_deg (array-like, optional): Three angles in degrees.
-        angle_rad (array-like, optional): Three angles in radians.
-        point (array-like, optional): Pivot point for rotation. Defaults to origin.
-        axes (array-like, optional): Three axis definitions defining order.
-            Each entry can be a label ("x"/"y"/"z") or a 3D axis vector.
-            Defaults to canonical Cartesian vectors (x, y, z).
-
-    Notes:
-        - Exactly one of `angle_deg` or `angle_rad` must be provided.
-        - For backward compatibility, a single scalar angle is still accepted and
-          interpreted as a rotation about +Y only (legacy behavior).
-    """
+def _resolve_rotation_angles(angle_deg, angle_rad, axes):
+    """Normalize `rotate_geometry`-style angle/axes inputs to radians + unit axes."""
     if (angle_deg is None) == (angle_rad is None):
         raise ValueError("Provide exactly one of `angle_deg` or `angle_rad`.")
 
@@ -485,6 +512,55 @@ def rotate_geometry(
 
         axes_norm = _normalize_axes(axes)
 
+    return angle_vec_rad, axes_norm
+
+
+def rotation_matrix_from_angles(
+    angle_deg=None,
+    angle_rad=None,
+    axes=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+):
+    """
+    Composed 3x3 matrix of the three sequential rotations `rotate_geometry`
+    applies, so a caller can transform OTHER quantities (stored solver
+    history, force vectors) with exactly the geometry's rotation:
+    ``rotate_geometry(x, ...) == (x - point) @ R.T + point``.
+    """
+    angle_vec_rad, axes_norm = _resolve_rotation_angles(angle_deg, angle_rad, axes)
+    rotation = np.eye(3)
+    for ax, ang in zip(axes_norm, angle_vec_rad):
+        rotation = _rotation_matrix_from_axis(ax, ang) @ rotation
+    return rotation
+
+
+def rotate_geometry(
+    struc_nodes,
+    angle_deg=None,
+    angle_rad=None,
+    point=(0.0, 0.0, 0.0),
+    axes=((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)),
+):
+    """
+    Rotate structural nodes with three sequential axis-angle rotations.
+
+    Args:
+        struc_nodes (np.ndarray): Array of node positions (n_nodes, 3).
+        angle_deg (array-like, optional): Three angles in degrees.
+        angle_rad (array-like, optional): Three angles in radians.
+        point (array-like, optional): Pivot point for rotation. Defaults to origin.
+        axes (array-like, optional): Three axis definitions defining order.
+            Each entry can be a label ("x"/"y"/"z") or a 3D axis vector.
+            Defaults to canonical Cartesian vectors (x, y, z).
+
+    Notes:
+        - Exactly one of `angle_deg` or `angle_rad` must be provided.
+        - For backward compatibility, a single scalar angle is still accepted and
+          interpreted as a rotation about +Y only (legacy behavior).
+    """
+    rotation = rotation_matrix_from_angles(
+        angle_deg=angle_deg, angle_rad=angle_rad, axes=axes
+    )
+
     pivot = _to_3_vector(point, "point")
     nodes = np.asarray(struc_nodes, dtype=float)
     if nodes.ndim != 2 or nodes.shape[1] != 3:
@@ -492,9 +568,4 @@ def rotate_geometry(
             f"`struc_nodes` must have shape (n_nodes, 3). Got shape {nodes.shape}."
         )
 
-    rotated = nodes - pivot
-    for ax, ang in zip(axes_norm, angle_vec_rad):
-        R = _rotation_matrix_from_axis(ax, ang)
-        rotated = rotated @ R.T
-
-    return rotated + pivot
+    return (nodes - pivot) @ rotation.T + pivot

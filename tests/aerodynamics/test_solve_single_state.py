@@ -1,4 +1,4 @@
-"""Integration tests for scripts/aerodynamics/solve_single_state.py
+"""Integration tests for examples/1_aerodynamics/solve_single_state.py
 
 Tests the orchestration of VSM aerodynamic trim solving, including:
 - Command-line argument parsing and validation
@@ -19,7 +19,7 @@ import pytest
 
 # Ensure scripts directory is in path for imports
 PROJECT_DIR = Path(__file__).resolve().parents[2]
-SCRIPTS_AERODYNAMICS_DIR = PROJECT_DIR / "scripts" / "aerodynamics"
+SCRIPTS_AERODYNAMICS_DIR = PROJECT_DIR / "examples" / "1_aerodynamics"
 if str(SCRIPTS_AERODYNAMICS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_AERODYNAMICS_DIR))
 

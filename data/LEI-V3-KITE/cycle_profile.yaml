@@ -1,0 +1,124 @@
+# Full-cycle optimisation profile of the LEI-V3, read by
+# examples/4_trajectory_optimization/cycle/cycle_kites.py (--kite).
+#
+# Hardware (mass, tether, drum envelope, KCU ranges) is in system.yaml; the
+# ROM and its depower band (controls.input_depower) are in the ROM file system.yaml names.
+# This file carries only what the cycle scripts need on top. Depower values
+# are in the ROM's own u_p unit -- here the power-tape length in metres,
+# the MODEL tape: the 2019 flight reads as reel-out 1.94 / reel-in 2.40
+# (identification.yaml flight_match).
+
+# REQUIRED. The constant wind profile the seed is checked at and the cycle
+# optimized in: model_type is any law of awetrim.environment.profile_laws
+# (uniform, logarithmic, power_law, explog, jet; amplitude speed_wind_ref at
+# height_ref, other keys forwarded to create_wind_model) or "tabulated"
+# (heights [m] / speeds [m/s]). Regenerate the seed after changing it.
+wind:
+  model_type: explog
+  speed_wind_ref: 6.0   # m/s
+  height_ref: 6.0       # m
+  z0: 0.0002            # m
+  alpha: 0.08163
+  direction_wind: 0.0   # rad; irrelevant, the cycle lives in the wind frame
+
+# REQUIRED. Winch force law that marches the seed's forward simulation:
+#   T = slope_winch_ro * (v_r - offset(u_p)),
+#   offset(u_p) = offset_winch_ro + winch_offset_depower_gain * (u_p - winch_depower_ref)
+# Regressed from the 2019-10-08 flight (fit_periodic_cycle_config
+# --shape experimental re-derives it). In the default free_speed winch mode
+# the optimizer does not keep it: v_r becomes a control and only the tension
+# band [min_tether_force, max_tether_force] remains.
+winch_law:
+  slope_winch_ro: 5380.8             # N s/m
+  offset_winch_ro: 0.412             # m/s, zero-force reel speed at winch_depower_ref
+  winch_offset_depower_gain: -9.5052  # m/s per unit u_p
+  winch_depower_ref: 1.94            # u_p, the matched reel-out
+  min_tether_force: 865.4            # N
+  max_tether_force: 8400.0           # N; fallback only, the drum rating in system.yaml wins
+
+# REQUIRED. The synthetic seed (fit_periodic_cycle_config.py, --auto tunes it
+# further until it trims and closes). Angles in rad.
+seed:
+  r0: 236.7               # m, radial distance at the start of the reel-out
+  cycle_duration_s: 128.0 # s, duration PRIOR of a 3-lobe cycle (a forward
+                          # simulation measures the real one)
+  reelout_fraction: 0.65  # fraction of the period spent reeling out
+  beta0: 0.35             # figure-eight centre elevation (~20 deg)
+  beta_amp0: 0.10         # figure-eight elevation half-height
+  az_amp0: 0.30           # figure-eight azimuth half-width; bigger figures
+                          # turn gentler, az ~ 2.5 * beta keeps them balanced
+  beta_reelin_peak: 1.20  # reel-in top elevation; too high starves the kite
+                          # of apparent wind at the top
+  # Any other ARTIFICIAL knob of fit_periodic_cycle_config.py may be set here
+  # (az_reelin_amp, az_reelin_through, ramp_fraction, n_loops, ...).
+
+# Optional. Reference flight for --shape experimental (and the winch-law
+# regression). Loaders: ekf_results (awetrim EKF output, path_to_main defaults
+# to this folder) or protologger_h5 (h5: path relative to this folder).
+flight:
+  loader: ekf_results
+  year: "2019"
+  month: "10"
+  day: "08"
+  kite_model: LEI-V3 Kite
+  cycle_id: 62
+
+# Optional:
+#   m_per_second: 0.2      spline control points per second of flown cycle
+#                          (experimental fit only)
+#   min_turn_radius: 30.0  m, dense turn-radius floor in the NLP (off if absent)
+
+# Optional. The single slanted "up-loop" figure-eight cycle of
+# studies/run_uploop_eight_opti.py: ONE closed period = one eight whose low lobe (plus
+# the crossings) is the reel-out and whose high arc is the reel-in. Nothing
+# above is reused except the winch law and r0 (seed:); in particular the
+# top-level wind: is NOT inherited -- this block's wind (or the CLI
+# --wind-law/--wind-speed/--wind-height/--z0) is the profile the cycle is
+# solved in. Angles in rad (degrees in the comments).
+uploop_eight:
+  az_low: -0.0872665       # -5 deg   reel-out lobe centre, azimuth
+  el_low: 0.5148721        # 29.5 deg reel-out lobe centre, elevation
+  radius_low: 0.1308997    # 7.5 deg  reel-out lobe angular radius
+  az_high: 0.3490659       # 20 deg   reel-in lobe centre, azimuth
+  el_high: 0.7853982       # 45 deg   reel-in lobe centre, elevation
+  radius_high: 0.1745329   # 10 deg   reel-in lobe angular radius
+  sense: -1                # -1: each lobe climbs on its outside (up-loop),
+                           #     high lobe anticlockwise, low lobe clockwise;
+                           # +1: the mirrored sense
+  reelin_fraction: 0.25    # fraction of the period depowered (reel-in),
+                           # centred on the high-lobe apex
+  ramp_fraction: 0.4       # depower ramp width, fraction of the reel-in window
+  min_height_m: 40         # height band z = r sin(beta) [m], the node-wise
+  max_height_m: 400        # "height" rows of opti_phase: THE binding vertical
+                           # limit, identical for the eight and the
+                           # --baseline-seed cycle (decided 2026-10-08). The
+                           # flown 2019 cycle bottoms at ~44 m at r0 237 m; the
+                           # eight's seed bottoms at ~21.4 deg, ~86 m at r0 236.7.
+                           # The spline hull (C_beta) is left loose on purpose
+  stall_margin_deg: 2      # alpha kept this far below the ROM's stall angle
+  min_turn_radius: 25      # m, dense geometric turn-radius floor; the seed is
+                           # faired to it (stage 0 flies the fixed seed path)
+  r0_max_m: 1000           # m, upper bound of r0 (lower stays 180): lifted
+                           # 2026-10-08 to find the unconstrained r0 (the
+                           # DEFAULT 300 binds on both eights). The tether
+                           # length in system.yaml (415 m) still caps every
+                           # node radius
+  wind:                    # medium wind: 10 m/s at 100 m, logarithmic
+    model_type: logarithmic
+    speed_wind_ref: 10.0   # m/s
+    height_ref: 100.0      # m
+    z0: 0.03               # m
+
+# Optional. The LEVEL figure eight of studies/run_uploop_eight_opti.py --shape
+# symmetric: both lobe centres at one elevation, az_center -/+ az_offset;
+# sense -1 sweeps low across the middle and climbs each lobe on its OUTER
+# side, with one reel-in window per side-climb apex (reelin_fraction split
+# equally). Height band, wind, turn radius, stall margin and stages come from
+# uploop_eight above; only the C_phi box is made symmetric. Angles in rad.
+symmetric_eight:
+  az_center: 0.0           # 0 deg    mirror meridian (downwind)
+  az_offset: 0.4363323     # 25 deg   lobe centres at -/+ this azimuth
+  el_center: 0.5235988     # 30 deg   lobe-centre elevation (both)
+  radius: 0.1745329        # 10 deg   lobe angular radius (both)
+  sense: -1                # climb on the outer sides, low sweep in the middle
+  r0_max_m: 1000           # m, same lifted r0 bound as uploop_eight

@@ -16,8 +16,13 @@
 
 import numpy as np
 
+from awetrim.aerostructural.convergence import (
+    relative_residual_norm,
+    resultant_tether_force,
+)
 
-def setup_tracking_arrays(n_pts, t_vector, n_panels=0):
+
+def setup_tracking_arrays(n_pts, t_vector, n_panels=0, n_frames=0):
     """
     Initialize tracking arrays for simulation results.
 
@@ -25,6 +30,14 @@ def setup_tracking_arrays(n_pts, t_vector, n_panels=0):
         n_pts (int): Number of nodes/particles.
         t_vector (np.ndarray): Array of time steps.
         n_panels (int): Number of aerodynamic panels (0 skips aero tracking arrays).
+        n_frames (int): Number of material frames to store per iteration, or 0
+            for none. Needed by any backend whose elements carry ROTATIONAL
+            state -- a geometrically exact beam's curvature and strain energy
+            live in the frames, not in the node positions, so without them a
+            saved run cannot be asked afterwards how bent its tubes were or
+            re-evaluated at all. NOT one per node: frames are stored per
+            rotational slot, so pass ``len(state.frames)``, which on the LEI-V3
+            is 98 against 268 nodes.
 
     Returns:
         dict: Dictionary with preallocated arrays for positions, forces, and tracking metrics.
@@ -35,11 +48,38 @@ def setup_tracking_arrays(n_pts, t_vector, n_panels=0):
         "f_ext": np.zeros((nt, n_pts, 3)),
         "f_int": np.zeros((nt, n_pts, 3)),
         "residual_norm": np.zeros(nt),
+        # ||f_res|| / |sum f_ext|, the measure the coupled gate uses when
+        # residual_tol_relative is set (convergence.relative_residual_norm).
+        "residual_relative": np.full(nt, np.nan),
         "max_residual": np.zeros(nt),
     }
     if n_panels > 0:
         arrays["alpha_at_ac"] = np.full((nt, n_panels), np.nan)
         arrays["stall_mask"] = np.zeros((nt, n_panels), dtype=bool)
+    if n_frames:
+        # Stored as a PAIR. The `positions` array above is the Aitken-relaxed
+        # geometry the next aero solve sees; these two are the configuration the
+        # structural solver actually returned. They are not interchangeable: a
+        # geometrically exact beam's energy depends on positions and frames
+        # together, so evaluating the relaxed positions against these frames
+        # gives a state the solver never produced (measured: a 2288 N residual
+        # where the solve reported 0.46 N).
+        arrays["solved_positions"] = np.zeros((nt, n_pts, 3))
+        arrays["frames"] = np.tile(np.eye(3), (nt, int(n_frames), 1, 1))
+    # Per-iteration flight/actuation state. An actuated run walks the tape
+    # through several converged states inside ONE call, so without these a saved
+    # sweep cannot say which iteration belongs to which tape length or what
+    # apparent speed it flew at -- the whole chain collapses to its last point.
+    arrays["tape_length"] = np.full(nt, np.nan)
+    arrays["speed_apparent"] = np.full(nt, np.nan)
+    # Steering tape half-difference [m] (left shortened, right lengthened by
+    # it), and the trim unknowns [kite_speed, roll, pitch, yaw, course_rate]
+    # each aero solve returned. The attitude entries are INCREMENTS: the
+    # driver rotates the geometry by them and restarts the next trim at zero,
+    # so the kite's attitude is their composition over the run, not the last
+    # row.
+    arrays["steering_half_difference"] = np.full(nt, np.nan)
+    arrays["trim_state"] = np.full((nt, 5), np.nan)
     return arrays
 
 
@@ -68,6 +108,12 @@ def update_tracking_arrays(
     struc_nodes,
     f_ext_flat,
     f_int_flat,
+    frames=None,
+    solved_positions=None,
+    tape_length=None,
+    speed_apparent=None,
+    steering_half_difference=None,
+    trim_state=None,
 ):
     """
     Update tracking arrays with simulation results for a single time step.
@@ -78,6 +124,12 @@ def update_tracking_arrays(
         pos3d (np.ndarray): Current 3D positions (n_nodes, 3).
         f_ext_flat (np.ndarray): Flattened external force vector (n_nodes*3,).
         f_int_flat (np.ndarray): Flattened internal force vector (n_nodes*3,).
+        frames (np.ndarray or None): Material frames, ordered by rotational
+            slot, shape ``(n_frames, 3, 3)``. Stored only when the arrays were
+            built with a non-zero ``n_frames``, and only meaningful together
+            with ``solved_positions``.
+        solved_positions (np.ndarray or None): The positions those frames belong
+            to -- the structural solver's own output, before Aitken relaxation.
 
     Returns:
         None. Updates tracking_data in place.
@@ -99,3 +151,27 @@ def update_tracking_arrays(
     # 3) Norms
     tracking_data["residual_norm"][idx] = np.linalg.norm(f_int_flat)
     tracking_data["max_residual"][idx] = np.max(np.abs(f_int_flat))
+    if "residual_relative" in tracking_data:
+        tracking_data["residual_relative"][idx] = relative_residual_norm(
+            f_int_flat, resultant_tether_force(f_ext_flat)
+        )
+
+    # 4) Flight and actuation state, so a chain can be sliced apart later
+    for name, value in (("tape_length", tape_length),
+                        ("speed_apparent", speed_apparent),
+                        ("steering_half_difference", steering_half_difference)):
+        if value is not None and name in tracking_data:
+            tracking_data[name][idx] = float(value)
+    if trim_state is not None and "trim_state" in tracking_data:
+        state = np.ravel(np.asarray(trim_state, dtype=float))
+        tracking_data["trim_state"][idx, : min(state.size, 5)] = state[:5]
+
+    # 5) Rotational state, where the backend has any
+    if frames is not None and "frames" in tracking_data:
+        tracking_data["frames"][idx] = np.asarray(frames, dtype=float).reshape(
+            -1, 3, 3
+        )
+    if solved_positions is not None and "solved_positions" in tracking_data:
+        tracking_data["solved_positions"][idx] = np.asarray(
+            solved_positions, dtype=float
+        ).reshape(n_pts, 3)

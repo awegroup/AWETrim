@@ -20,7 +20,8 @@ def test_data_dir_under_repo_root():
 
 def test_canonical_filenames():
     assert cp.LEI_V3_SYSTEM_CONFIG.name == "system.yaml"
-    assert cp.LEI_V3_ROM_AERO_CONFIG.name == "rom_config.yaml"
+    assert cp.LEI_V3_ROM_AERO_CONFIG == cp.LEI_V3_ROM_AEROSTRUCTURAL_CONFIG
+    assert cp.LEI_V3_ROM_AEROSTRUCTURAL_FLIGHT_CONFIG.exists()
     assert cp.LEI_V3_DOWNLOOP_SPLINE_CONFIG.name == "downloop_spline.yaml"
     assert cp.LEI_V3_UPLOOP_SPLINE_CONFIG.name == "uploop_spline.yaml"
     assert cp.LEI_V3_HELIX_SPLINE_CONFIG.name == "helix_spline.yaml"

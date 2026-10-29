@@ -1,0 +1,180 @@
+% Results of the full-cycle note; \input by cycle_optimisation.tex.
+% Numbers are macros from generated/macros.tex.
+
+All results are for the LEI-V3 with the flight-calibrated (semi-empirical)
+ROM, at the wind of its \code{cycle\_profile.yaml}: an \windLaw{} profile with
+\SI{\windRef}{m/s} at \SI{\windHeight}{m}. They come from two different code
+states, which this section keeps apart:
+\begin{itemize}
+  \item \textbf{Seeds} (Sect.~\ref{sec:res-seeds}) were generated on
+        2026-10-06 with the ROM rework later merged in PR~\#22 (standardised
+        steering, bound $|u_s|\le\limSteer$; AoA bound
+        \SI{\limAoaMaxDeg}{\degree}), still on the semi-empirical ROM, i.e.\
+        before the aerostructural ROM became the LEI-V3 default.
+  \item \textbf{The optimum} (Sect.~\ref{sec:res-opt}) is the last converged
+        LEI-V3 full-cycle solve, from 2026-08-27, at the same wind. It
+        predates the Dubins reel-in, the reel-in design step and the steering
+        standardisation, so it is shown as an illustration of what the staged
+        NLP does, not as a result of the code described above.
+\end{itemize}
+Sect.~\ref{sec:res-status} states why no fresh optimum is reported.
+
+\subsection{Seed generation}
+\label{sec:res-seeds}
+
+Two seeds with \dubinsHalves{} visible half-figures were generated. The
+\emph{lobe} seed used \code{--auto}, starting from the default knobs of
+Fig.~\ref{fig:lobe}. The \emph{Dubins} seed used \code{--reelin dubins
+--loops~7 --check}: no tuning, only the forward simulation and the grid
+recalibration. Figure~\ref{fig:res-seeds} shows both paths and
+Table~\ref{tab:seeds} summarises them.
+
+\begin{figure}[H]
+  \centering
+  \includegraphics{results_seeds.pdf}
+  \caption{The two generated LEI-V3 seeds in the wind window; reel-in (depower
+  above mid-band) in orange. Left: lobe seed after \code{--auto}; right:
+  Dubins seed.}
+  \label{fig:res-seeds}
+\end{figure}
+
+\begin{table}[H]
+  \centering\small
+  \caption{Generated seeds and their forward simulations. Steering and AoA
+  ranges are to be read against the NLP bounds $|u_s|\le\limSteer$ (plus
+  the \num{\steerSlack} warm-start slack) and
+  $\alpha\le\SI{\limAoaMaxDeg}{\degree}$; closure against
+  \SI{\closureTol}{m}.}
+  \label{tab:seeds}
+  \input{generated/seeds.tex}
+\end{table}
+
+\paragraph{What worked.}
+Both seeds trim at every node of the recalibrated grid, stay under the
+curvature limit, and keep the angle of attack inside its bound with a wide
+margin. The Dubins seed reached this \emph{without any tuning}. Its
+steering grazes the bound (\seedDubinsSteerMin{}/\seedDubinsSteerMax) by less
+than the slack. The lobe seed needed the tuner (Table~\ref{tab:trace}), and
+its first three moves are the case the lever chains were written for. The
+steering violation sat at the top of the reel-in ($s\approx0.01$--$0.02$; the
+window is centred on $s=0$), and widening the bow $|a|$ shrank it step by
+step, from 31 violating nodes to 9.
+
+\paragraph{What did not.}
+Neither seed closes to within \SI{\closureTol}{m}: they end
+\SI{\seedLobeClosure}{m} (lobe) and \SI{\seedDubinsClosure}{m} (Dubins) long.
+For the lobe seed, the tuner's closure lever was already exhausted at full
+depower depth, and its fallback, shortening the reel-out fraction from
+0.65 to 0.53, moved the gap by less than a metre. The tuner therefore
+stopped and wrote its best iterate (``\autoLobeStuck''). A closure that is
+insensitive to the reel-in fraction means that the reel-in speed, and not
+the reel-in duration, limits how much tether comes back. The reel-in speed
+is set by the depower-shifted winch law of Eq.~\eqref{eq:winch}. On paper, a
+\SIrange{11}{17}{m} gap on $r_0=\SI{\seedRzero}{m}$ is a small closure
+residual that the NLP's first iterations can absorb (Sect.~\ref{sec:seedreq}).
+
+\begin{table}[H]
+  \centering\small
+  \caption{\code{--auto} trace of the lobe seed: one knob per iteration,
+  chosen from the dominant symptom and its location.}
+  \label{tab:trace}
+  \input{generated/auto_trace.tex}
+\end{table}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics{results_seed_series.pdf}
+  \caption{Forward simulations of the two seeds, which are the NLP warm
+  starts. Dotted: NLP bounds on steering and angle of attack. Both cycles
+  are about \SI{90}{s} long; the reel-in is the stretch of negative $v_r$ and
+  high $u_p$.}
+  \label{fig:res-seedseries}
+\end{figure}
+
+\subsection{An optimised cycle (2026-08-27)}
+\label{sec:res-opt}
+
+Figures~\ref{fig:res-archived-power} and~\ref{fig:res-archived} show the last
+converged solve. The figure was written by that run itself and compares its
+seed (a lobe seed of that time) with the optimum. The staged NLP raised the
+cycle-average power from \SI{1.24}{kW} to \SI{\archPower}{kW} and shortened
+the cycle to \SI{\archDuration}{s}, with the closure satisfied to
+\SI{\archClosure}{m} and $r_0$ moved to \SI{\archRzero}{m}. The mechanisms
+are visible in the per-node decisions:
+\begin{itemize}
+  \item \textbf{Reel-out at higher load.} The depower profile leaves the
+        identified band towards the powered side ($u_p$ down to
+        \SI{\archDepMin}{m}), and the tension rises to \SI{\archTensionMax}{kN}
+        peak (\SI{\archTensionMean}{kN} mean), reeling out at up to
+        \SI{\archVrMax}{m/s}.
+  \item \textbf{Shorter, faster reel-in.} The reel speed reaches
+        \SI{\archVrMin}{m/s}, and the reel-out time fraction of the cycle is
+        \num{\archReeloutFraction}.
+  \item \textbf{Free-speed winch.} The optimal $T(v_r)$ points do not lie
+        on the flight-regressed force law the seed was marched with
+        (Fig.~\ref{fig:res-archived-power}, bottom left). The regression of a
+        controller from the optimum is a separate step.
+\end{itemize}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics[width=\textwidth]{archived_power.png}
+  \caption{Seed versus optimum of the 2026-08-27 LEI-V3 solve, as written by
+  \code{run\_full\_cycle\_opti.py}: instantaneous and average power, cumulative
+  energy, winch operating plane and metrics. Shaded: reel-in.}
+  \label{fig:res-archived-power}
+\end{figure}
+
+\begin{figure}[H]
+  \centering
+  \includegraphics{results_archived.pdf}
+  \caption{The 2026-08-27 optimum ($M=\archM$, $N=\archNodes$ nodes). Left:
+  optimised spline and the node positions, reel-in ($v_r<0$) in orange.
+  Right: reel speed, tension, depower and path rate $\dot s$; the dotted line
+  is the numerical floor $\dot s\ge0.01$.}
+  \label{fig:res-archived}
+\end{figure}
+
+\paragraph{Caveats of this optimum.}
+Four features of the 2026-08-27 solution show what the constraints of that
+time did not yet cover. Each motivated a later addition to the method:
+\begin{enumerate}
+  \item The depower profile goes down to \SI{\archDepMin}{m}, below the band
+        $[\upPowered,\upDepowered]$\,m on which the ROM was identified, so
+        the reel-out extrapolates the ROM. The band is now declared in the
+        ROM file, and the AoA bound can be set from the ROM's validity range.
+  \item The flown turn radius drops to \SI{\archTurnRadiusMin}{m}, because
+        no turn-radius constraint existed. The optional sub-sampled
+        constraint of Table~\ref{tab:constraints} was added for this.
+  \item \archFloorNodes{} of the \archNodes{} nodes sit on the numerical
+        floor $\dot s=0.01$: \archFloorReelin{} while reeling in, most of
+        the rest in the transition into the reel-in (Fig.~\ref{fig:res-archived},
+        bottom right). There the time step $\Delta t=\Delta s/\dot s$ is
+        capped by a guard rather than set by the physics, so the reel-in
+        timing of this optimum is partly an artefact of that bound.
+  \item One node ($s=\archSdotMaxS$) has $\dot s=\SI{\archSdotMax}{s^{-1}}$,
+        about 150 times the median \SI{\archSdotMedian}{s^{-1}}. Since
+        $v_\tau=r\sigma'\dot s$ stays ordinary, the arc rate $\sigma'$ of the
+        spline nearly vanishes there and $\dot s$ jumps to compensate, a
+        \emph{hesitation point}. The floor $\sigma'\ge0.2\bar\sigma'$ that now
+        comes with the turn-radius constraint
+        (Table~\ref{tab:constraints}) excludes it.
+\end{enumerate}
+Its steering also reaches $|u_s|=\archSteerMax$, which was the steering bound
+before the steering input was standardised.
+
+\subsection{Status}
+\label{sec:res-status}
+
+With the code of 2026-10-06, both on commit \code{722488a} and with the ROM
+rework of PR~\#22, the staged NLP does not converge for the LEI-V3 at this
+wind. Started from the seeds above, the main stage stays close to feasible
+(primal infeasibility \num{0.1}--\num{0.4}) for about 200 iterations, then
+diverges and ends in restoration at the \maxIter-iteration cap. On the last
+commit the seed itself is harder: the tuner lowered $\beta_\mathrm{pk}$ to
+its floor without bringing the reel-in angle of attack inside its bound. Where
+the regression since 2026-08-27 comes from (ROM, steering standardisation,
+seed changes or staging) has not been isolated. Until it has, the seed
+results of Sect.~\ref{sec:res-seeds} describe the current code, and the
+optimum of Sect.~\ref{sec:res-opt} describes what the method produced when
+it last converged.

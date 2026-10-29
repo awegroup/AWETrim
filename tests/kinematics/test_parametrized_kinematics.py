@@ -169,3 +169,99 @@ def test_all_kinematics_equations():
     # extract_function must return a callable
     fk = pk.extract_function("vk")
     assert callable(fk)
+
+
+# ---------------------------------------------------------------------------
+# Geodesic curvature of the pattern (turn radius on the tether sphere)
+# ---------------------------------------------------------------------------
+
+
+class _SmallCirclePattern:
+    """Small circle of angular radius rho about (phi_c, beta_c) on the unit sphere."""
+
+    def __init__(self, rho, phi_c, beta_c):
+        import numpy as np
+
+        c = np.array(
+            [np.cos(beta_c) * np.cos(phi_c), np.cos(beta_c) * np.sin(phi_c), np.sin(beta_c)]
+        )
+        e1 = np.cross([0.0, 0.0, 1.0], c)
+        e1 /= np.linalg.norm(e1)
+        e2 = np.cross(c, e1)
+        self.rho, self.c, self.e1, self.e2 = rho, ca.DM(c), ca.DM(e1), ca.DM(e2)
+
+    def _p(self, s):
+        return ca.cos(self.rho) * self.c + ca.sin(self.rho) * (
+            ca.cos(s) * self.e1 + ca.sin(s) * self.e2
+        )
+
+    def azimuth(self, r, s):
+        p = self._p(s)
+        return ca.atan2(p[1], p[0])
+
+    def elevation(self, r, s):
+        return ca.asin(self._p(s)[2])
+
+
+class _ParallelPattern:
+    def __init__(self, beta0):
+        self.beta0 = beta0
+
+    def azimuth(self, r, s):
+        return s
+
+    def elevation(self, r, s):
+        return self.beta0 + 0.0 * s
+
+
+class _MeridianPattern:
+    def azimuth(self, r, s):
+        return 0.3 + 0.0 * s
+
+    def elevation(self, r, s):
+        return 0.1 + 0.5 * s
+
+
+def _curvature_function(pattern):
+    s = ca.MX.sym("s")
+    r = ca.MX.sym("r")
+    vr = ca.MX.sym("vr")
+    s_dot = ca.MX.sym("s_dot")
+    pk = ParametrizedKinematics(pattern, DummyPhase(s, DummyKiteModel(r, vr), s_dot, 0.0))
+    return ca.Function("kappa", [s, r, vr, s_dot], [pk.curvature_geodesic])
+
+
+def test_curvature_geodesic_small_circle_is_cot_rho():
+    """A small circle of angular radius rho anywhere on the sphere has geodesic
+    curvature cot(rho); with r = 300 m and rho = 11.35/300 the physical turn
+    radius r/|kappa| = r tan(rho) ~ 11.355 m."""
+    import numpy as np
+
+    rho = 11.35 / 300.0
+    f = _curvature_function(_SmallCirclePattern(rho, 0.4, 0.5))
+    for sv in np.linspace(0.0, 2 * np.pi, 7):
+        kappa = float(f(sv, 300.0, 1.0, 0.5)[0])
+        assert abs(abs(kappa) - 1.0 / np.tan(rho)) < 1e-6 * (1.0 / np.tan(rho))
+        assert abs(300.0 / abs(kappa) - 300.0 * np.tan(rho)) < 1e-6
+
+
+def test_curvature_geodesic_parallel_and_meridian():
+    """A parallel at latitude beta0 has |kappa| = tan(beta0) (its curvature is
+    pure transport), a meridian (great circle) has kappa = 0."""
+    import numpy as np
+
+    f_par = _curvature_function(_ParallelPattern(0.5))
+    assert abs(abs(float(f_par(1.0, 200.0, 0.0, 1.0)[0])) - np.tan(0.5)) < 1e-9
+    f_mer = _curvature_function(_MeridianPattern())
+    assert abs(float(f_mer(0.7, 200.0, 0.0, 1.0)[0])) < 1e-9
+
+
+def test_curvature_numerator_matches_kappa_times_dsigma_cubed():
+    """The division-free polynomial numerator equals kappa * sigma'^3 (used by
+    the NLP turn-radius rows), checked on a generic r-dependent pattern."""
+    pk, syms = _make_pk()
+    expr = pk.curvature_numerator - pk.curvature_geodesic * pk.dsigma_ds**3
+    f = ca.Function("chk", list(syms), [expr, pk.curvature_geodesic])
+    for vals in (_NUMERIC_VALS, (1.3, 120.0, -0.5, 0.7, 0.0), (2.0, 300.0, 2.0, 0.05, 0.1)):
+        diff, kappa = f(*vals)
+        assert abs(float(diff)) < 1e-9 * max(1.0, abs(float(kappa)))

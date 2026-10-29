@@ -1,0 +1,182 @@
+% Newton or Lagrange for the quasi-steady trim -- why the Lagrangian form is
+% not faster. Markdown twin: lagrangian_formulation.md. Numbers from
+% compare_lagrangian_residual.py (available on request)
+% Build: latexmk -pdf lagrangian_formulation.tex
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.4cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage{xurl}
+\usepackage[hidelinks]{hyperref}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcommand{\vect}[1]{\boldsymbol{#1}}
+\sisetup{per-mode=symbol}
+
+\title{Newton or Lagrange for the quasi-steady trim:\\ why the Lagrangian form is not faster}
+\author{AWETrim notes}
+\date{10 October 2026}
+
+\begin{document}
+\maketitle
+
+\paragraph{Question.} The reduced-order model writes the kite's dynamics as a
+force balance in the course-aligned reference frame
+(\code{SystemModel.force\_residual}, $-m\vect a + \vect F_\mathrm{ext}$; Cayon,
+van Deursen, Schmehl 2026, WES 11, 1097). Would deriving the same model from a
+Lagrangian make the trajectory NLP cheaper?
+
+\paragraph{Answer.} No. The Lagrangian derivation yields the same three
+equations, the inertia terms are \SI{0.3}{\percent} of each node function, and
+function evaluations are a quarter of IPOPT's wall time. The numbers below come
+from \path{compare_lagrangian_residual.py} (available on request)
+(LEI-V3, periodic B-spline reel-out, $M=10$, flight-corrected aerostructural
+ROM).
+
+\section{The two derivations}
+
+The path is prescribed on the unit sphere, $\vect q(s) = (\phi(s), \beta(s))$,
+and the kite sits at $\vect R = r\,\vect q(s)$. The course frame has $x$ along
+the path tangent, $z$ radially outward and $y$ normal to the path on the sphere.
+
+\paragraph{Newton (library).} Velocity $\vect v = (v_\tau, 0, v_r)$ with
+$v_\tau = r\,\sigma'\,\dot s$, $\sigma' = |\vect q'|$, and the frame rotation
+rate
+\begin{equation}
+  \vect\omega = \Bigl(0,\ \frac{v_\tau}{r},\ \frac{v_\tau}{r}\tan\beta\sin\chi - \dot\chi\Bigr).
+\end{equation}
+The acceleration is $\vect a = (\dot v_\tau, 0, \dot v_r) + \vect\omega\times\vect v$;
+the quasi-steady model drops the first bracket. Three rows:
+$\vect F_\mathrm{ext} - m\vect a = \vect 0$.
+
+\paragraph{Lagrange.} Generalised coordinates $(s, r)$, the path being a
+holonomic constraint. Kinetic energy
+$T = \tfrac{m}{2}\bigl(\dot r^2 + r^2\sigma'^2\dot s^2\bigr)$, generalised
+forces $Q_s = \vect F\cdot\partial\vect R/\partial s = r\sigma' F_x$ and
+$Q_r = F_z$. The Euler--Lagrange equations are
+\begin{align}
+  s:&\quad \frac{d}{dt}\bigl(m r^2\sigma'^2\dot s\bigr) - m r^2\sigma'\sigma''\dot s^2 = r\sigma' F_x, \\
+  r:&\quad m\bigl(\ddot r - r\sigma'^2\dot s^2\bigr) = F_z .
+\end{align}
+Expanding the $s$ row gives $m r\sigma'\,(\dot v_\tau + v_\tau v_r / r)$, so the
+quasi-steady assumption $\dot v_\tau = 0$ is a condition on $\ddot s$, not
+$\ddot s = 0$. The lateral force the steering has to supply is the constraint
+multiplier of the path, $m k_g v_\tau^2 / r$, with $k_g$ the geodesic
+curvature. Divided by the metric factors, the three rows are
+\begin{equation}
+  F_x - m\frac{v_\tau v_r}{r} = 0, \qquad
+  F_y + m k_g\frac{v_\tau^2}{r} = 0, \qquad
+  F_z + m\frac{v_\tau^2}{r} = 0,
+\end{equation}
+which are the Newton rows. Over 200 random states the two residuals agree to
+$3.5\times10^{-6}$ relative; the difference is the \code{fmax} floor on
+$v_\tau$ and the $10^{-6}$ guard in $\tan\beta$ of the library form. The
+multiplier row cannot be dropped, since it is the equation that determines
+$u_s$, so no equation and no unknown is eliminated.
+
+\section{Where the operations are}
+
+\begin{table}[h]
+\centering
+\caption{SX instruction counts of the per-node trim residual.}
+\begin{tabular}{lrr}
+\toprule
+expression & full spline & local support (NLP) \\
+\midrule
+Newton residual & 9971 & 3429 \\
+Lagrange residual & 20585 & 6463 \\
+path kinematics $\phi, \beta, \chi, \dot\chi, v_\tau$ & 9195 & \\
+aerodynamic force (ROM) & 9846 & \\
+inertia terms given the kinematics (Newton) & 26 & \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The whole acceleration costs 8877 instructions, but 26 of them are the inertia;
+the rest is the spline evaluation and its $s$-derivatives, which the
+aerodynamic force needs as well (the apparent wind is built in the course
+frame). The Lagrangian residual, written through \code{curvature\_geodesic}, is
+twice as large because the derivative chain of the spline is built a second
+time. The Jacobians scale the same way (13460 against 22074).
+
+\section{Where the time is}
+
+Reel-out NLP, 120 nodes, $C_\phi$, $C_\beta$ and the depower free, the
+production IPOPT options (\code{Phase.run\_opti}: L-BFGS, MUMPS, adaptive
+barrier):
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+iterations & 56 \\
+IPOPT wall time & \SI{1.4}{s} \\
+function evaluations & \SI{0.36}{s} (\SI{26}{\percent}), \SI{0.30}{s} of it the inequality Jacobian \\
+MUMPS back-solves and barrier updates & \SI{74}{\percent} \\
+inertia terms' share of the function evaluations & about \SI{0.3}{\percent}, $\sim$\SI{1}{ms} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+A reformulation of the inertia terms can therefore change at most a
+millisecond per solve. The levers that remain are the spline-kinematics graph
+in \code{ParametrizedKinematics} (nested \code{ca.gradient} chains, about
+\SI{90}{\percent} of the node operations), the iteration count, and the KKT
+size.
+
+\section{Follow-up: the remaining levers, measured}
+
+Same 120-node reel-out NLP, single runs, so differences of a few milliseconds
+per iteration are noise.
+
+\paragraph{Spline-kinematics graph.} The properties of
+\code{ParametrizedKinematics} rebuild the spline sub-graph on every access
+($\phi$ alone is evaluated about nine times inside one node function) and the
+SX expansion keeps the copies. Written with analytic B-spline derivatives, the
+course-frame chain $\chi, v_\tau, \dot\chi, k_g$ costs 470 instructions
+instead of 4951 (agreement $10^{-11}$). The cheapest fix, caching the
+properties so each sub-expression is built once, gives most of that:
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+node function & properties & cached \\
+\midrule
+residual & 3429 & 2280 \\
+angle of attack & 2868 & 1719 \\
+curvature triple & 5626 & 2013 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Yet the solve does not get faster: 56 iterations either way, 24 against
+\SI{26}{ms} per iteration without turn-radius rows, 31 against \SI{28}{ms}
+with them ($R_\mathrm{min} = \SI{25}{m}$, 95 against 94 iterations). Function
+evaluations stay at \SI{25}{\percent} of the wall time; the rest is the KKT
+back-solve, which L-BFGS turns into many right-hand sides per iteration. The
+smaller graph still cuts the whole-graph expansion memory in proportion, which
+matters at the full-cycle size (\SI{3.7}{MB} per node at $N = 376$), and would
+be a safe change: the mathematics is unchanged.
+
+\paragraph{Hessian.} The exact Hessian (available from the SX graph) halves the
+iterations, 26 instead of 56, but the Hessian evaluation costs \SI{0.69}{s}
+and the solve ends at \SI{1.66}{s} against \SI{1.36}{s}. With the turn-radius
+rows it is far worse: 245 iterations and \SI{29}{s}, the $\sigma'^3$
+polynomial rows giving an ill-conditioned Hessian. A 20-deep L-BFGS memory
+changes nothing (57 and 84 iterations). The production choice, L-BFGS with the
+default memory, stands.
+
+\paragraph{Conclusion.} At this problem size the NLP is already balanced
+between function evaluation and linear algebra, and no single lever gains
+more than the \SI{25}{\percent} that function evaluation represents. Wall time
+is governed by the iteration count and the number of staged passes, not by
+the cost of the model.
+
+\paragraph{Reproduce.} The A/B uses the flags \code{--turn-radius 25},
+\code{--kinematics-cache} and \code{--exact-hessian} of
+{\small
+\begin{verbatim}
+python compare_lagrangian_residual.py --nlp   (available on request)
+\end{verbatim}
+}
+
+\end{document}

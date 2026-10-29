@@ -1,0 +1,342 @@
+"""Case setup shared by every aerostructural driver and script.
+
+Kite paths, config defaults, the actuation case-folder name, the initial
+geometry rotation and the SystemModel the coupled trim runs on. Lived in
+``examples/2_aerostructural/common.py`` until 2026-10-07; that file now only
+re-exports this module so existing scripts keep importing ``common``.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+import numpy as np
+
+from awetrim.aerostructural.utils import load_sim_output
+from awetrim.environment.profile_laws import air_density
+from awetrim.system.factory import create_system_model_from_yaml
+from awetrim.system.system_model import SystemModel
+
+DEFAULT_KITE_NAME = "LEI-V3-KITE"
+
+# THE structural geometry of a kite: an awesIO structure document
+# (structure_schema.yml, read with coupled.awesio_structure.load_structure)
+# that Billow's full model reads and the wireframe is reduced from
+# (wireframe.reduce_fem), so both fidelities start from one input file. A
+# deformed snapshot in a results folder has the same name. See
+# data/<kite>/README_struc_files.md.
+DEFAULT_STRUC_GEOMETRY_FILENAME = "structure.yml"
+SNAPSHOT_STRUC_GEOMETRY_FILENAME = DEFAULT_STRUC_GEOMETRY_FILENAME
+#: The retired AWETrim formats' names (a full FEM geometry; a PSM-format
+#: snapshot). find_struc_geometry still finds them, and load_structure
+#: converts them on the fly, so private kites and old results keep working.
+LEGACY_STRUC_GEOMETRY_FILENAMES = ("struc_geometry_FEM_full.yaml", "struc_geometry.yaml")
+#: The per-case wireframe reduction (wireframe.driver).
+WIREFRAME_STRUC_GEOMETRY_FILENAME = "structure_wireframe.yml"
+
+# Single source of truth for config defaults used across all aerostructural scripts.
+CONFIG_DEFAULTS: dict = {
+    "angle_elevation_deg": 0.0,
+    "angle_azimuth_deg": 0.0,
+    "angle_course_deg": 90.0,
+    "speed_radial": 1.0,
+    "distance_radial": 200.0,
+    "wind_speed_wind_ref": 5.0,
+    "timeder_speed_tangential": 0.0,
+    "timeder_speed_radial": 0.0,
+    "is_with_gravity": False,
+    "is_with_aero_bridle": True,
+    # KCU bluff-body drag in the trim (awetrim.aerodynamics.kcu_drag).
+    # Added 2026-08-21; set False to reproduce a pre-2026-08-21 result.
+    "is_with_kcu_drag": True,
+    "power_tape_final_extension": 0.0,
+    "initial_geometry_rotation_deg": 0.0,
+    "initial_geometry_rotation_point": [0.0, 0.0, 0.0],
+    "initial_geometry_rotation_axes": ["x", "y", "z"],
+    # Air density: "constant" = rho everywhere; "exponential" = rho is the
+    # sea-level density of profile_laws.air_density, evaluated at the kite
+    # height r sin(beta) above a ground at height_gnd [m] (air_density_at_case).
+    "rho": 1.225,
+    "air_density_law": "constant",
+    "height_gnd": 0.0,
+}
+
+
+def air_density_at_case(config: dict) -> float:
+    """Air density [kg/m3] at the case's kite position.
+
+    The ONE value every aerostructural consumer (VSM, bridle drag, the system
+    model's tether) uses for a case: ``rho`` itself, or with
+    ``air_density_law: exponential`` the density at z = r sin(beta).
+    """
+    rho = float(config.get("rho", CONFIG_DEFAULTS["rho"]))
+    law = config.get("air_density_law", CONFIG_DEFAULTS["air_density_law"])
+    if law == "constant":
+        return rho
+    if law != "exponential":
+        raise ValueError(f"unknown air_density_law {law!r}")
+    elevation = np.deg2rad(
+        float(config.get("angle_elevation_deg", CONFIG_DEFAULTS["angle_elevation_deg"]))
+    )
+    distance = float(config.get("distance_radial", CONFIG_DEFAULTS["distance_radial"]))
+    height_gnd = float(config.get("height_gnd", CONFIG_DEFAULTS["height_gnd"]))
+    return float(air_density(distance * np.sin(elevation), rho, height_gnd=height_gnd))
+
+
+def resolve_kite_paths(
+    project_dir: Path | str,
+    kite_name: str = DEFAULT_KITE_NAME,
+) -> tuple[Path, Path, Path | None]:
+    """Resolve standard kite geometry and config paths.
+
+    Returns:
+        (config_path, aero_geometry_path, struc_geometry_path)
+        where struc_geometry_path is the kite's awesIO structure document
+        (DEFAULT_STRUC_GEOMETRY_FILENAME).
+    """
+    project_dir = Path(project_dir).resolve()
+
+    config_path = project_dir / "data" / kite_name / "as_config.yaml"
+
+    geometry_dir = project_dir / "data" / kite_name
+
+    aero_geometry_path = geometry_dir / "aero_geometry.yaml"
+    struc_geometry_path = geometry_dir / DEFAULT_STRUC_GEOMETRY_FILENAME
+
+    return config_path, aero_geometry_path, struc_geometry_path
+
+
+def resolve_config_paths(config: dict, project_dir: Path | str) -> dict:
+    """``config`` with its relative file paths made absolute against the
+    project root (``aero2struc.cp_distribution_path``), in place and returned:
+    a path relative to the working directory silently changed the physics
+    whenever a script ran from elsewhere."""
+    aero2struc = config.get("aero2struc") or {}
+    cp = aero2struc.get("cp_distribution_path")
+    if cp and not Path(cp).is_absolute():
+        aero2struc["cp_distribution_path"] = str(Path(project_dir) / cp)
+    return config
+
+
+def find_struc_geometry(folder: Path | str) -> Path | None:
+    """The structural geometry in ``folder`` (awesIO ``structure.yml``, else a
+    file in a retired format), else None."""
+    folder = Path(folder)
+    for name in (DEFAULT_STRUC_GEOMETRY_FILENAME, *LEGACY_STRUC_GEOMETRY_FILENAMES):
+        if (folder / name).exists():
+            return folder / name
+    return None
+
+
+def format_length_tag(value_m: float) -> str:
+    """Format a signed length [m] as a filesystem-friendly tag, e.g. p0150mm."""
+    sign = "p" if value_m >= 0 else "m"
+    milli = int(round(abs(float(value_m)) * 1000.0))
+    return f"{sign}{milli:04d}mm"
+
+
+def build_actuation_case_folder(config: dict) -> str:
+    """Build case folder name from final depower/steering actuation settings."""
+    depower_tag = format_length_tag(
+        config.get(
+            "power_tape_final_extension", CONFIG_DEFAULTS["power_tape_final_extension"]
+        )
+    )
+    steering_tag = format_length_tag(config.get("steering_tape_final_extension", 0.0))
+    return f"depower_{depower_tag}_steer_{steering_tag}"
+
+
+def build_flight_case_folder(config: dict) -> str:
+    """Case folder name from the flight state AND the actuation.
+
+    ``el30_az0_chi90_r300_vr1.5_vw8_g0_depower_p0000mm_steer_p0000mm``: every
+    input the demonstrator scripts expose is in the name, so changing one
+    starts a new case instead of overwriting the last.
+    """
+
+    def value(key):
+        number = float(config.get(key, CONFIG_DEFAULTS.get(key, 0.0)))
+        return f"{number:g}"
+
+    gravity = int(bool(config.get("is_with_gravity", CONFIG_DEFAULTS["is_with_gravity"])))
+    return (
+        f"el{value('angle_elevation_deg')}_az{value('angle_azimuth_deg')}"
+        f"_chi{value('angle_course_deg')}_r{value('distance_radial')}"
+        f"_vr{value('speed_radial')}_vw{value('wind_speed_wind_ref')}_g{gravity}_"
+        + build_actuation_case_folder(config)
+    )
+
+
+def resolve_initial_geometry_rotation_kwargs(config: dict) -> dict:
+    """Build rotate_geometry kwargs from config, with legacy fallback."""
+    angle_deg = config.get("initial_geometry_rotation_angles_deg")
+    angle_rad = config.get("initial_geometry_rotation_angles_rad")
+    if angle_deg is not None and angle_rad is not None:
+        raise ValueError(
+            "Provide only one of `initial_geometry_rotation_angles_deg` or "
+            "`initial_geometry_rotation_angles_rad`."
+        )
+    if angle_deg is None and angle_rad is None:
+        angle_deg = [
+            0.0,
+            float(
+                config.get(
+                    "initial_geometry_rotation_deg",
+                    CONFIG_DEFAULTS["initial_geometry_rotation_deg"],
+                )
+            ),
+            0.0,
+        ]
+    return {
+        "angle_deg": angle_deg,
+        "angle_rad": angle_rad,
+        "point": config.get(
+            "initial_geometry_rotation_point",
+            CONFIG_DEFAULTS["initial_geometry_rotation_point"],
+        ),
+        "axes": config.get(
+            "initial_geometry_rotation_axes",
+            CONFIG_DEFAULTS["initial_geometry_rotation_axes"],
+        ),
+    }
+
+
+def build_system_model(
+    system_yaml_path: Path,
+    tether,
+    mass_structural,
+    config: dict,
+) -> SystemModel:
+    """Create a SystemModel from system.yaml, override tether and masses, apply config.
+
+    Using ``create_system_model_from_yaml`` ensures the Kite is fully populated
+    from YAML (aero coefficients, etc.) rather than the bare default.
+
+    ``mass_structural`` is the per-node structural mass array (``m_arr``) from the
+    PSS/FEM geometry, with the KCU at index 0 by convention. It is authoritative
+    for aerostructural simulations, so the SystemModel masses are derived from it:
+    ``mass_kcu = m_arr[0]`` and ``mass_wing = sum(m_arr[1:])`` (wing + bridle). This
+    keeps the QSM total (``mass_wing + mass_kcu``) equal to ``sum(m_arr)`` and avoids
+    double-counting the KCU — which would happen if a full ``sum(m_arr)`` were stored
+    in ``mass_wing`` while the YAML ``mass_kcu`` were left in place.
+    """
+    system_model = create_system_model_from_yaml(system_yaml_path)
+    system_model.tether = tether
+    m_arr = np.asarray(mass_structural, dtype=float)
+    system_model.kite.mass_kcu = float(m_arr[0])  # KCU is structural node 0
+    system_model.kite.mass_wing = float(m_arr[1:].sum())  # wing + bridle nodes
+    configure_system_model_from_config(system_model, config)
+    return system_model
+
+
+def build_tether(config: dict, system_config: dict, diameter: float | None = None):
+    """The tether the coupled trim runs with, of the class ``config["tether"]`` asks for.
+
+    Diameter and density come from ``system_config`` (``diameter`` overrides
+    the former). ``tether.model: williams`` gives a :class:`WilliamsTether`
+    (``n_elements``, ``is_elastic``, ``cf``), anything else a
+    :class:`RigidLumpedTether`. The class matters only when
+    ``tether.include_in_trim`` is set, but then it must match: the Williams
+    trim refuses any other tether on the system model.
+    """
+    from awetrim.system.tether import RigidLumpedTether
+    from awetrim.utils.system_config import get_tether
+
+    structure = get_tether(system_config)["structure"]
+    tether_diameter = float(diameter) if diameter is not None else structure["diameter"]
+    density = structure.get("density", 970.0)
+    settings = config.get("tether", {}) or {}
+    if str(settings.get("model", "rigid_lumped")).lower() == "williams":
+        from awetrim.system.williams_tether import WilliamsTether
+
+        return WilliamsTether(
+            diameter=tether_diameter,
+            density=density,
+            n_elements=int(settings.get("n_elements", 10)),
+            elastic=bool(settings.get("is_elastic", False)),
+            cf=float(settings.get("cf", 0.01)),
+        )
+    return RigidLumpedTether(diameter=tether_diameter, density=density)
+
+
+def configure_system_model_from_config(system_model: SystemModel, config: dict) -> None:
+    """Populate a SystemModel from config values using CONFIG_DEFAULTS for missing keys."""
+    system_model.angle_elevation = np.deg2rad(
+        float(config.get("angle_elevation_deg", CONFIG_DEFAULTS["angle_elevation_deg"]))
+    )
+    system_model.angle_azimuth = np.deg2rad(
+        float(config.get("angle_azimuth_deg", CONFIG_DEFAULTS["angle_azimuth_deg"]))
+    )
+    system_model.angle_course = np.deg2rad(
+        float(config.get("angle_course_deg", CONFIG_DEFAULTS["angle_course_deg"]))
+    )
+    system_model.speed_radial = float(
+        config.get("speed_radial", CONFIG_DEFAULTS["speed_radial"])
+    )
+    system_model.distance_radial = float(
+        config.get("distance_radial", CONFIG_DEFAULTS["distance_radial"])
+    )
+    system_model.wind.speed_wind_ref = float(
+        config.get("wind_speed_wind_ref", CONFIG_DEFAULTS["wind_speed_wind_ref"])
+    )
+    system_model.timeder_speed_tangential = float(
+        config.get(
+            "timeder_speed_tangential", CONFIG_DEFAULTS["timeder_speed_tangential"]
+        )
+    )
+    system_model.timeder_speed_radial = float(
+        config.get("timeder_speed_radial", CONFIG_DEFAULTS["timeder_speed_radial"])
+    )
+    # The trim's tether sees the same density as the VSM wing and bridle: the
+    # position is fixed per case, so the kite-height value is a constant.
+    system_model.rho = air_density_at_case(config)
+    system_model.kite.air_density_model = None
+
+
+def resolve_starting_struc_nodes(
+    case_dir: Path,
+    struc_nodes_default: np.ndarray,
+) -> np.ndarray | None:
+    """Load final struc_nodes from a previous simulation in case_dir, or return None."""
+    h5_path = case_dir / "sim_output.h5"
+    if not h5_path.exists():
+        return None
+    try:
+        _, tracking_data = load_sim_output(h5_path)
+        if "positions" not in tracking_data:
+            return None
+        positions = np.asarray(tracking_data["positions"])
+        if positions.ndim != 3 or positions.shape[2] != 3:
+            return None
+        struc_nodes_loaded = np.array(positions[-1], dtype=float)
+        if struc_nodes_loaded.shape != np.asarray(struc_nodes_default).shape:
+            return None
+        logging.info(f"Recovered struc_nodes from previous run: {h5_path.parent.name}")
+        return struc_nodes_loaded
+    except Exception as exc:
+        logging.warning(f"Could not load struc_nodes from {h5_path}: {exc}")
+        return None
+
+
+def resolve_starting_rest_lengths(
+    case_dir: Path,
+    l0_arr_default: np.ndarray,
+) -> np.ndarray:
+    """Load final rest_lengths from a previous simulation in case_dir, or return defaults."""
+    h5_path = case_dir / "sim_output.h5"
+    if not h5_path.exists():
+        return l0_arr_default
+    try:
+        metadata, _ = load_sim_output(h5_path)
+        if "rest_lengths" in metadata:
+            rest_lengths_loaded = np.asarray(metadata["rest_lengths"], dtype=float)
+            if rest_lengths_loaded.shape == np.asarray(l0_arr_default).shape:
+                logging.info(
+                    f"Recovered rest_lengths from previous run: {h5_path.parent.name}"
+                )
+                return rest_lengths_loaded
+        return l0_arr_default
+    except Exception as exc:
+        logging.warning(f"Could not load rest_lengths from {h5_path}: {exc}")
+        return l0_arr_default

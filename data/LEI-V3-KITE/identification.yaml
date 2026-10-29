@@ -1,0 +1,174 @@
+# Inputs of the ROM identification, workflow step 3
+# (examples/3_rom_identification/, see its README).
+#
+# sweep: the coupled aerostructural states run_identification_sweep.py solves
+#        at the centre of the wind window, gravity off: continuation chains in
+#        depower and in steering, each converged state with a frozen-shape
+#        angle-of-attack polar about it.
+# fit:   the kite constants identify_rom_aerostructural.py fits the ROM with.
+#
+# Both blocks hold the settings common to every structural fidelity plus a
+# `fidelities:` block whose entry for the chosen fidelity is merged over them
+# (nested dicts key by key). `fidelity` picks the default; both scripts take
+# --fidelity to override it, and write under
+# results/<kite>/identification/<fidelity>/.
+#   billow     Billow's FULL model: inflatable tube beams, wrinkling membrane
+#              canopy and the bridle (structure.yml, awesIO).
+#   wireframe  Billow's line system, REDUCED from the same full FEM file
+#              (wireframe.driver.build_case_reduced_fem: one structural file
+#              for both fidelities), flying the full geometry's aerodynamic
+#              mesh with canopy billowing and the exact (strut-lever) load
+#              transfer (docs/aerostructural/). The official identification
+#              since 2026-10-28 (rom_config_aerostructural.yaml, 2026-10-29).
+#              Until then this block flew the PSM wireframe (short chord,
+#              17.2 m2, TE rest lengths cut to 0.95 x CAD by hand; removed
+#              2026-10-29, in v0.1.0).
+
+fidelity: wireframe
+
+sweep:
+  system_file: system.yaml      # in this folder: the masses (KCU) and the tether
+  # Merged over as_config.yaml for every solve: the flight state (course-frame
+  # angles [deg], tether length [m], reel speed [m/s]) and gravity.
+  config_overrides:
+    angle_elevation_deg: 0.0
+    angle_azimuth_deg: 0.0
+    angle_course_deg: 90.0
+    distance_radial: 300.0
+    speed_radial: 0.0
+    is_with_gravity: false
+  # Wind at the reference height of the kite's wind model [m/s], one set of
+  # chains per value. Without reel-out the kite flies at about 5 x the wind,
+  # v_a 20 and 25 m/s: inside the flown band.
+  wind_speeds: [4.0, 5.0]
+  # Depower chains: from the tape length the geometry is built at, the power
+  # tape walks to each target rest length l_dp [m] in steps of `step`.
+  # Steering chains: at each power-tape length the tape is walked to first,
+  # then the steering half-difference [m] grows to `max` in steps of `step`.
+  steering:
+    max: 0.10
+    step: 0.025
+  # A chain stops at the first state that does not converge or whose stalled
+  # span fraction exceeds this.
+  max_stalled_fraction: 0.2
+  # Frozen-shape polar about every state: [min, max, step] increments [deg].
+  polar_d_alpha_deg: [-6.0, 14.0, 1.0]
+
+  fidelities:
+    billow:
+      # The step-2 aerodynamics: 27 sections x 2 = 54 panels, VSM's base
+      # circulation loop (with artificial viscosity the stalled tips trap the
+      # Anderson loop). The canopy needs a tether force well above ~2000 N to
+      # keep its symmetric equilibrium (aerostructural/AGENTS.md).
+      config_overrides:
+        aerodynamic:
+          n_aero_panels_per_struc_section: 2
+          gamma_loop_type: base
+      # Built at 1.90 m. The full model flies the flown reel-out loads at a
+      # longer tape than the flight's 1.7 m, so the range reaches 2.6 m.
+      depower:
+        targets: [1.75, 2.60]
+        step: 0.05
+      steering:
+        power_tape_lengths: [2.10, 2.40]
+    wireframe:
+      fem_geometry: structure.yml
+      system_file: system_flown_2019.yaml   # the hardware the shipped ROM used
+      # No bridle_modulus_factor: the FEM file's Dyneema is already the
+      # datasheet 109 GPa (the PSM file's 10 GPa needed x9). The fixed-
+      # stiffness model stays: no elongation-bound stiffening, one kite for
+      # the whole sweep, whatever order the states are solved in.
+      # The wireframe flies at about 3.8 x the wind: 6 m/s reaches v_a 23.
+      wind_speeds: [4.0, 5.0, 6.0]
+      config_overrides:
+        aerodynamic:
+          # 27 FEM sections x 5 = 135 panels: within 0.5 % of 324 panels in
+          # CL and CD at 4-8 deg on the billowed wing (convergence study
+          # 2026-10-28, docs/aerostructural/)
+          n_aero_panels_per_struc_section: 5
+          # strut-to-strut trailing-edge contraction, LEI-V3 photogrammetry
+          # (Haanen 2026, Table 9.2: -5.23 % powered, -3.86 % depowered)
+          billowing:
+            contraction: 0.05
+          load_transfer: strut_lever
+        structural_pss:
+          update_stiffness: false
+      # Built at 1.90 m (the FEM file); the range covers the flown reel-out
+      # and reel-in tapes and depowers enough to reel in.
+      depower:
+        targets: [1.10, 2.60]
+        step: 0.05
+      # Across the ROM band (fit: depower_band), through both flight-match
+      # tapes (fit: flight_match): 1.95 ~ reel-out, 2.40 = reel-in; 1.70 / 2.10
+      # the previous model's match. To 0.20 m = |u_s| 0.14, toward the flown 0.175
+      # (KCU clip); the stall stop ends a chain earlier where the tip stalls.
+      steering:
+        power_tape_lengths: [1.40, 1.70, 1.95, 2.10, 2.40]
+        max: 0.20
+
+fit:
+  # The area the ROM's coefficients are normalised by [m2]: the EKF / flight
+  # area, which the flight-corrected ROM keeps (system.yaml's 17.21 m2 is the
+  # projected geometry).
+  reference_area: 19.75
+  # Steering-tape half-difference per unit of the ROM's u_s [m]
+  # (awetrim.identification.controls: the standardised flight scale).
+  steering_tape_per_unit_us: 1.4
+  # Written to the ROM file as its `tether` block.
+  rom_tether:
+    model: williams
+    n_elements: 10
+    wind_model: uniform
+    cf: 0.01
+    is_elastic: false
+  # The u_p = l_dp range the coefficients are fitted on [m], and the ROM's
+  # `controls` block: the tape lengths of the powered and depowered phases,
+  # the band the trajectory optimiser works in. These are modelling choices
+  # for whoever identifies the kite. The tape coordinate is the model's own, so
+  # each fidelity sets its own; the values below are the current LEI-V3
+  # estimates.
+  fidelities:
+    # The full model reaches the flown reel-out tether force at about 2.1 m
+    # and the reel-in at about 2.5 m: a longer tape than the flight's
+    # 1.7 / 2.1 m, because its trim flies a higher angle of attack.
+    billow:
+      depower_band: [2.0, 2.6]
+      controls:
+        input_depower:
+          powered: 2.1
+          depowered: 2.5
+    # From the sweep (2026-10-28) with gust margins (docs/aerostructural/
+    # lei_v3_wing_corrections.md): powered end 1.30 m = alpha + atan(1 m/s /
+    # v_a) below the frozen polar's stall onset at 4-6 m/s (the tether-force
+    # peak sits at 1.25-1.30 m); depowered end 2.60 m = end of the sweep, the
+    # C_L slope still linear 6 deg below every trim. The force margin (15 %
+    # lull, 2 x KCU weight: F_t >= 602 N) depends on the wind, so it is a
+    # tension floor for the optimiser, not a tape limit. Fitted down to 1.25 m
+    # so the ROM sees the force peak.
+    wireframe:
+      depower_band: [1.25, 2.6]
+      controls:
+        input_depower:
+          powered: 1.3
+          depowered: 2.6
+      # Copied into the ROM's validity block. Minimum kite-end tether force
+      # [N]: 2 x KCU weight after a 15 % speed lull, 435 N / 0.85^2 (435 N =
+      # 2 x 22.2 kg x g; the 2019 file's flown KCU is 22.0 kg, i.e. 597 N --
+      # the 1 % is inside the margin's own precision).
+      validity:
+        # the ROM band (the optimiser's depower box is clipped to it); the fit
+        # reaches 1.25 m only so the ROM sees the force peak
+        input_depower: [1.30, 2.60]
+        min_tether_force_n: 602.0
+      # The model tape that reproduces each flown phase (documentation; the
+      # fit does not read it). Matched on near-straight samples of the 2019
+      # flight: the model's u_s = 0 tether force vs v_a against the flight's
+      # binned medians (the wes-quasi-steady u_dp attribution). Reel-in is
+      # anchored at the flown v_a; force alone gives ~2.50 with a ~12 % curve
+      # shape mismatch, as in the paper. UPDATE whenever the sweep model
+      # changes and the match is redone; the steering tapes follow it.
+      flight_match:
+        flight: 2019
+        date: 2026-10-28
+        reel_out: 1.94
+        reel_in: 2.40

@@ -18,7 +18,7 @@
 
 A reusable helper so several scripts can render the same kite/tether picture.
 ``draw_kite_tether`` draws, onto a provided 3D axis, the Williams tether shape
-from ground to kite, the kite tubes/bridles (from ``struc_geometry.yaml`` when
+from ground to kite, the kite tubes/bridles (from the structure file when
 available, else the VSM panel outline) at the trimmed attitude, the KCU, and an
 optional faint wind-window surface.
 
@@ -68,44 +68,37 @@ def T_Wind_from_C(system_model: Any) -> np.ndarray:
     return T_Wind_from_W @ T_C_from_W.T
 
 
-def load_struc_nodes_and_edges(struc_path: str | None):
-    """Return (nodes_C, wing_edges, bridle_edges, wing_ids) from struc_geometry.yaml.
+def load_struc_nodes_and_edges(struc_path: Any):
+    """Return (nodes_C, wing_edges, bridle_edges, wing_ids) of a structure.
 
-    Nodes are in the course frame with KCU at origin (node 0). Wing nodes come
-    from ``wing_particles``; bridle nodes from ``bridle_particles``. Pulley
-    rows (3 ids) are split into two segments. Returns ``None`` if unavailable.
+    ``struc_path`` is a structure file (awesIO ``structure.yml``; a retired
+    format is converted by ``load_structure``) or a loaded ``Structure``.
+    Nodes are keyed by structure index, in the wing's KA frame with the KCU at
+    the origin. Wing edges are what carries the wing: the tubes (struts and
+    leading edge) of a full model, the spring members (segments without a
+    ``line``) of a wireframe -- the canopy is not drawn. Bridle edges are the
+    bridle segments, a pulley as its two arms. Returns ``None`` if unavailable.
     """
-    if not struc_path:
+    if struc_path is None or (isinstance(struc_path, str) and not struc_path):
         return None
-    import yaml
+    from awetrim.aerostructural.coupled.awesio_structure import Structure, load_structure
 
-    path = Path(struc_path)
-    if not path.exists():
+    if not isinstance(struc_path, Structure) and not Path(struc_path).exists():
         return None
-    data = yaml.safe_load(path.read_text(encoding="utf-8"))
+    structure = load_structure(struc_path)
 
-    nodes: dict[int, np.ndarray] = {0: np.zeros(3, dtype=float)}
-    wing_ids: list[int] = []
-    for row in data.get("wing_particles", {}).get("data", []):
-        pid = int(row[0])
-        nodes[pid] = np.array([float(row[1]), float(row[2]), float(row[3])])
-        wing_ids.append(pid)
-    for row in data.get("bridle_particles", {}).get("data", []):
-        pid = int(row[0])
-        nodes[pid] = np.array([float(row[1]), float(row[2]), float(row[3])])
+    nodes = {i: np.asarray(p, dtype=float) for i, p in enumerate(structure.positions)}
+    wing_ids = sorted({n for station in structure.stations for n in station})
 
-    def _edges(key: str) -> list[tuple[int, int]]:
-        out: list[tuple[int, int]] = []
-        for row in data.get(key, {}).get("data", []):
-            ids = [int(v) for v in row[1:] if v is not None]
-            if len(ids) == 2:
-                out.append((ids[0], ids[1]))
-            elif len(ids) == 3:
-                out.append((ids[1], ids[0]))
-                out.append((ids[0], ids[2]))
-        return out
+    def _pair(segment) -> tuple[int, int]:
+        a, b = segment["points"]
+        return structure.index[a], structure.index[b]
 
-    return nodes, _edges("wing_connections"), _edges("bridle_connections"), wing_ids
+    wing_edges = [tuple(t["nodes"]) for t in structure.tubes] + [
+        _pair(s) for s in structure.segments if s.get("line") is None
+    ]
+    bridle_edges = [_pair(s) for s in structure.bridle_segments]
+    return nodes, wing_edges, bridle_edges, wing_ids
 
 
 def draw_wind_axes(
@@ -226,7 +219,7 @@ def draw_kite_tether(
         for ci, cj in edges:
             if ci not in nodes_C or cj not in nodes_C:
                 continue
-            # struc_geometry nodes are in the body/VSM frame (same as the aero
+            # structure nodes are in the body/VSM frame (same as the aero
             # geometry and the VSM panels), so apply the trim attitude in VSM
             # then convert to the course frame -- exactly like the panel path.
             # (Previously these were treated as course-frame, which applied an
@@ -246,7 +239,7 @@ def draw_kite_tether(
             label=f"kite tubes (x{kite_scale:g})",
         )
     else:
-        # Fallback: VSM panel outline if no struc_geometry is available.
+        # Fallback: VSM panel outline if no structure is available.
         panels = list(getattr(body, "panels", []) or [])
         for panel in panels:
             pts_VSM = np.asarray(panel.corner_points, dtype=float)
@@ -277,9 +270,9 @@ def draw_kite_tether(
         label="KCU" if state_label is None else None,
     )
 
-    ax.set_xlabel("x [m]")
-    ax.set_ylabel("y [m]")
-    ax.set_zlabel("z [m]")
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("y (m)")
+    ax.set_zlabel("z (m)")
     if set_aspect:
         # Equal aspect so the quarter-sphere actually looks like a sphere.
         try:

@@ -113,15 +113,26 @@ def test_select_model_picks_correct_terms(synthetic_data):
     assert fit.cv_rmse < 0.05
 
 
-def test_cd_abs_basis_recovers_absolute_term(synthetic_data):
-    data, rng = synthetic_data
-    # True CD in the ROM abs basis: CD0 + 1.5*alpha^2 + 0.02*|u_s|
-    y = 0.11 + 1.5 * data["alpha"] ** 2 + 0.02 * np.abs(data["u_s"])
+def test_cd_is_fitted_in_the_plain_basis(synthetic_data):
+    data, _ = synthetic_data
+    # An odd alpha drag term stays odd: no |.| (and no kink at alpha = 0).
+    y = 0.11 + 0.05 * data["alpha"] + 1.5 * data["alpha"] ** 2
     fit = ap.select_model(data, y, target="CD", max_degree=2, max_vars_per_term=1)
-    assert fit.abs_basis is True
+    assert fit.abs_basis is False
     coef = {ap.term_label(pm): c for pm, c in fit.terms}
-    assert coef.get("u_s") == pytest.approx(0.02, abs=1e-3)
-    assert coef.get("alpha^2") == pytest.approx(1.5, abs=1e-3)
+    assert coef.get("alpha") == pytest.approx(0.05, abs=1e-3)
+
+
+def test_abs_terms_of_a_rom_file_evaluate_and_round_trip():
+    aero = {"params": {"CD0": 0.1}, "coefficients": {"CD": [
+        {"var": "u_s", "power": 1, "coef": 0.02, "abs": True},
+        {"var": "alpha", "power": 1, "coef": 0.05},
+    ]}}
+    fit = ap.fits_from_rom_aerodynamics(aero)["CD"]
+    data = {"u_s": np.array([-0.5, 0.5]), "alpha": np.array([-0.1, -0.1])}
+    assert np.allclose(fit.predict(data), 0.1 + 0.02 * 0.5 - 0.005)
+    back = ap.build_rom_aerodynamics([fit])["coefficients"]["CD"]
+    assert [e.get("abs", False) for e in back] == [True, False]
 
 
 # ── Serialisation round-trip (fit -> rom_config -> ROM evaluation) ─────────────
@@ -183,3 +194,81 @@ def test_aerodynamic_roll_pure_side_is_ninety_degrees():
     # lift_dir = +z, side_dir = lift x va_unit = z x x = +y
     force = np.array([0.0, 30.0, 0.0])
     assert aerodynamic_roll(force, va, radial) == pytest.approx(np.pi / 2, abs=1e-9)
+
+
+def test_grouped_folds_never_split_a_group():
+    groups = np.repeat(np.arange(12), 7)
+    folds = ap._fold_indices(len(groups), 4, seed=1, groups=groups)
+    assert sorted(np.concatenate(folds)) == list(range(len(groups)))
+    for test_idx in folds:
+        in_test = set(groups[test_idx])
+        rest = np.setdiff1d(np.arange(len(groups)), test_idx)
+        assert in_test.isdisjoint(groups[rest])
+
+
+def test_cv_criterion_stops_at_the_generating_terms():
+    rng = np.random.default_rng(3)
+    n_groups, per = 40, 9
+    groups = np.repeat(np.arange(n_groups), per)
+    u_p = np.repeat(rng.uniform(1.6, 2.2, n_groups), per)
+    alpha = np.repeat(rng.uniform(0.0, 0.15, n_groups), per) + np.tile(
+        np.linspace(-0.05, 0.05, per), n_groups
+    )
+    v_a = np.repeat(rng.uniform(13, 25, n_groups), per)
+    data = {"alpha": alpha, "u_p": u_p, "v_a": v_a}
+    y = 0.1 + 5.0 * alpha - 8.0 * alpha**2 - 0.2 * u_p + rng.normal(0, 1e-3, len(alpha))
+    fit = ap.select_model(
+        data, y, target="CL", regressors=("alpha", "u_p", "v_a"),
+        criterion="cv", cv_groups=groups, min_relative_improvement=0.01,
+    )
+    labels = {ap.term_label(pm) for pm, _ in fit.terms}
+    assert {"alpha", "alpha^2", "u_p"} <= labels
+    assert not any("v_a" in label for label in labels)
+    assert fit.cv_rmse < 2e-3
+
+
+def test_unknown_criterion_is_rejected():
+    data = {"alpha": np.linspace(0, 0.1, 10)}
+    with pytest.raises(ValueError):
+        ap.select_model(data, data["alpha"], target="CL", regressors=("alpha",),
+                        criterion="aic")
+
+
+def test_backward_pass_drops_a_term_made_redundant_later():
+    rng = np.random.default_rng(5)
+    groups = np.repeat(np.arange(30), 8)
+    x = rng.uniform(0.0, 1.0, len(groups))
+    z = rng.uniform(0.0, 1.0, len(groups))
+    data = {"x": x, "z": z}
+    # x*z is the single best first pick, but x and z together explain y.
+    y = 1.0 * x + 1.0 * z + rng.normal(0, 1e-3, len(x))
+    candidates = [{"x": 1, "z": 1}, {"x": 1}, {"z": 1}]
+    fwd = ap.select_model(data, y, target="CL", candidate_terms=candidates,
+                          regressors=("x", "z"), criterion="cv", cv_groups=groups,
+                          min_relative_improvement=0.01)
+    both = ap.select_model(data, y, target="CL", candidate_terms=candidates,
+                           regressors=("x", "z"), criterion="cv", cv_groups=groups,
+                           min_relative_improvement=0.01, backward=True)
+    assert len(both.terms) <= len(fwd.terms)
+    assert {ap.term_label(pm) for pm, _ in both.terms} == {"x", "z"}
+
+
+def test_rom_block_round_trips_to_the_same_predictions():
+    rng = np.random.default_rng(7)
+    data = {"alpha": rng.uniform(0, 0.2, 50), "u_p": rng.uniform(1.6, 2.2, 50)}
+    fit = ap.fit_terms(data, 0.1 + data["alpha"] - 0.3 * data["alpha"] * data["u_p"],
+                       [{"alpha": 1}, {"alpha": 1, "u_p": 1}], target="CD",
+                       regressors=("alpha", "u_p"))
+    back = ap.fits_from_rom_aerodynamics(ap.build_rom_aerodynamics([fit]))["CD"]
+    assert np.allclose(back.predict(data), fit.predict(data))
+
+
+def test_selection_path_records_every_step():
+    rng = np.random.default_rng(11)
+    groups = np.repeat(np.arange(20), 6)
+    x = rng.uniform(0, 1, len(groups))
+    fit = ap.select_model({"x": x}, 2 * x + rng.normal(0, 1e-3, len(x)), target="CL",
+                          regressors=("x",), criterion="cv", cv_groups=groups,
+                          min_relative_improvement=0.01)
+    assert [step for step, _ in fit.selection_path] == ["1", "+x"]
+    assert fit.selection_path[1][1] < fit.selection_path[0][1]

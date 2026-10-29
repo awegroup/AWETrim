@@ -62,6 +62,23 @@ class TestUpdateTrackingArrays:
         assert arrays["residual_norm"][1] == pytest.approx(5.0)
         assert arrays["max_residual"][1] == pytest.approx(4.0)
 
+    def test_relative_residual_is_normalised_by_the_resultant_load(self):
+        # The coupled gate's measure: ||f_res|| / |sum f_ext|.
+        arrays = setup_tracking_arrays(n_pts=2, t_vector=np.arange(3))
+        f_ext = np.array([0.0, 0.0, 6.0, 0.0, 0.0, 4.0])  # resultant 10 N
+        f_int = np.array([3.0, 0.0, 4.0, 0.0, 0.0, 0.0])  # norm 5 N
+
+        update_tracking_arrays(arrays, 1, np.zeros((2, 3)), f_ext, f_int)
+
+        assert arrays["residual_relative"][1] == pytest.approx(0.5)
+        assert np.isnan(arrays["residual_relative"][0])
+        assert np.isnan(arrays["residual_relative"][2])
+
+    def test_relative_residual_is_nan_without_a_load(self):
+        arrays = setup_tracking_arrays(n_pts=1, t_vector=np.arange(2))
+        update_tracking_arrays(arrays, 1, np.zeros((1, 3)), np.zeros(3), np.ones(3))
+        assert np.isnan(arrays["residual_relative"][1])
+
     def test_other_indices_untouched(self):
         arrays = setup_tracking_arrays(n_pts=1, t_vector=np.arange(3))
         update_tracking_arrays(arrays, 1, np.ones((1, 3)), np.ones(3), np.ones(3))

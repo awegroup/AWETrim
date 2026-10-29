@@ -78,7 +78,7 @@ PLOT_LABELS = {
     "y": "y (m)",
     "z": "z (m)",
     "input_steering": "$u_s$",
-    "phase": "$\\Phi (^\circ)$",
+    "phase": "$\\Phi (^\\circ)$",
     "angle_azimuth": "$\\phi (^\\circ)$",
     "angle_elevation": "$\\beta (^\\circ)$",
     "angle_of_attack": "$\\alpha (^\\circ)$",
@@ -129,8 +129,10 @@ DEFAULT_OPTI_LIMITS = {
     # max_tether_force, via the tension band / force law) is what actually
     # caps tension in the NLP; this bound should never bind.
     "tension_tether_ground": (300, 8.4e6),
-    # u_s = -kcu_actual_steering/100; 2019 V3 flight max deflection was kcu +-35.
-    "input_steering": (-0.35, 0.35),
+    # Standardised u_s (identification.controls: 1.4 m x u_s = steering-tape
+    # half-difference; 2019 V3 u_s = -kcu/200). The 2019 flight max deflection
+    # kcu +-35 is +-0.175 (was +-0.35 in the legacy -kcu/100 unit).
+    "input_steering": (-0.175, 0.175),
     "s_dot": (0.0, 40),  # Range for s_dot: 0 to 30
     "s_ddot": (-100, 100),  # Range for s_ddot: -100 to 100
     "s": (0, 300),  # Range for s: 0 to 10
@@ -152,9 +154,16 @@ DEFAULT_OPTI_LIMITS = {
     "beta_coeffs": (-1, 1),  # Range for beta coefficients: -1 to 1
     "az_coeffs": (-1, 1),  # Range for azimuth coefficients: -1 to 1
     "speed_radial": (-10, 10),
-    "distance_radial": (100, 360),
+    "distance_radial": (100, 415),
     "k_vr": (0.5, 1.5),
-    "slope_winch_ro": (3000, 30000),  # Range for slope in winch model
+    # Winch force-law slope [N/(m/s)^2]. The old (3000, 30000) box was fitted
+    # to the cycle configs (~5500) and excluded the whole range real ground
+    # stations use: a controller gain k_v maps to slope = 1/k_v^2, so k_v of
+    # 0.02/0.04/0.11 gives 2500/625/83 -- all BELOW the old lower bound, which
+    # silently clipped the seed instead of failing. This range spans
+    # k_v in [0.0045, 0.14]. The reelout server narrows it per request around
+    # the client's own k_v (see server/session.py::_apply_winch_params).
+    "slope_winch_ro": (50, 50000),
     "offset_winch_ro": (-6, 0),  # Range for offset in winch model
     "slope_winch_ri": (0, 10000),  # Range for slope in winch model
     "offset_winch_ri": (-6, -1),  # Range for offset in winch model
