@@ -1,0 +1,661 @@
+
+<!DOCTYPE html>
+
+
+<html lang="en" data-content_root="../" >
+
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" /><meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>Rigid-body load transfer onto the struts (strut lever) &#8212; title</title>
+  
+  
+  
+  <script data-cfasync="false">
+    document.documentElement.dataset.mode = localStorage.getItem("mode") || "";
+    document.documentElement.dataset.theme = localStorage.getItem("theme") || "";
+  </script>
+  
+  <!-- Loaded before other Sphinx assets -->
+  <link href="../_static/styles/theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../_static/styles/bootstrap.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+<link href="../_static/styles/pydata-sphinx-theme.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+
+  
+  <link href="../_static/vendor/fontawesome/6.5.2/css/all.min.css?digest=dfe6caa3a7d634c4db9b" rel="stylesheet" />
+  <link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-solid-900.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-brands-400.woff2" />
+<link rel="preload" as="font" type="font/woff2" crossorigin href="../_static/vendor/fontawesome/6.5.2/webfonts/fa-regular-400.woff2" />
+
+    <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
+    <link rel="stylesheet" type="text/css" href="../_static/styles/sphinx-book-theme.css?v=eba8b062" />
+    <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+  
+  <!-- Pre-loaded scripts that we'll load fully later -->
+  <link rel="preload" as="script" href="../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b" />
+<link rel="preload" as="script" href="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b" />
+  <script src="../_static/vendor/fontawesome/6.5.2/js/all.min.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+    <script src="../_static/documentation_options.js?v=f9c1cefe"></script>
+    <script src="../_static/doctools.js?v=9bcbadda"></script>
+    <script src="../_static/sphinx_highlight.js?v=dc90522c"></script>
+    <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
+    <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/scripts/sphinx-book-theme.js?v=887ef09a"></script>
+    <script>DOCUMENTATION_OPTIONS.pagename = 'aerostructural/strut_lever_load_transfer';</script>
+    <link rel="index" title="Index" href="../genindex.html" />
+    <link rel="search" title="Search" href="../search.html" />
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta name="docsearch:language" content="en"/>
+  </head>
+  
+  
+  <body data-bs-spy="scroll" data-bs-target=".bd-toc-nav" data-offset="180" data-bs-root-margin="0px 0px -60%" data-default-mode="">
+
+  
+  
+  <div id="pst-skip-link" class="skip-link d-print-none"><a href="#main-content">Skip to main content</a></div>
+  
+  <div id="pst-scroll-pixel-helper"></div>
+  
+  <button type="button" class="btn rounded-pill" id="pst-back-to-top">
+    <i class="fa-solid fa-arrow-up"></i>Back to top</button>
+
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-primary-sidebar-checkbox"/>
+  <label class="overlay overlay-primary" for="pst-primary-sidebar-checkbox"></label>
+  
+  <input type="checkbox"
+          class="sidebar-toggle"
+          id="pst-secondary-sidebar-checkbox"/>
+  <label class="overlay overlay-secondary" for="pst-secondary-sidebar-checkbox"></label>
+  
+  <div class="search-button__wrapper">
+    <div class="search-button__overlay"></div>
+    <div class="search-button__search-container">
+<form class="bd-search d-flex align-items-center"
+      action="../search.html"
+      method="get">
+  <i class="fa-solid fa-magnifying-glass"></i>
+  <input type="search"
+         class="form-control"
+         name="q"
+         id="search-input"
+         placeholder="Search..."
+         aria-label="Search..."
+         autocomplete="off"
+         autocorrect="off"
+         autocapitalize="off"
+         spellcheck="false"/>
+  <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd>K</kbd></span>
+</form></div>
+  </div>
+
+  <div class="pst-async-banner-revealer d-none">
+  <aside id="bd-header-version-warning" class="d-none d-print-none" aria-label="Version warning"></aside>
+</div>
+
+  
+    <header class="bd-header navbar navbar-expand-lg bd-navbar d-print-none">
+    </header>
+  
+
+  <div class="bd-container">
+    <div class="bd-container__inner bd-page-width">
+      
+      
+      
+        
+      
+      <div class="bd-sidebar-primary bd-sidebar">
+        
+
+  
+  <div class="sidebar-header-items sidebar-primary__section">
+    
+    
+    
+    
+  </div>
+  
+    <div class="sidebar-primary-items__start sidebar-primary__section">
+        <div class="sidebar-primary-item">
+
+  
+    
+  
+
+<a class="navbar-brand logo" href="../index.html">
+  
+  
+  
+  
+  
+  
+    <p class="title logo__title">title</p>
+  
+</a></div>
+        <div class="sidebar-primary-item">
+
+ <script>
+ document.write(`
+   <button class="btn search-button-field search-button__button" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass"></i>
+    <span class="search-button__default-text">Search</span>
+    <span class="search-button__kbd-shortcut"><kbd class="kbd-shortcut__modifier">Ctrl</kbd>+<kbd class="kbd-shortcut__modifier">K</kbd></span>
+   </button>
+ `);
+ </script></div>
+        <div class="sidebar-primary-item"><nav class="bd-links bd-docs-nav" aria-label="Main">
+    <div class="bd-toc-item navbar-nav active">
+        
+    </div>
+</nav></div>
+    </div>
+  
+  
+  <div class="sidebar-primary-items__end sidebar-primary__section">
+  </div>
+  
+  <div id="rtd-footer-container"></div>
+
+
+      </div>
+      
+      <main id="main-content" class="bd-main" role="main">
+        
+        
+
+<div class="sbt-scroll-pixel-helper"></div>
+
+          <div class="bd-content">
+            <div class="bd-article-container">
+              
+              <div class="bd-header-article d-print-none">
+<div class="header-article-items header-article__inner">
+  
+    <div class="header-article-items__start">
+      
+        <div class="header-article-item"><button class="sidebar-toggle primary-toggle btn btn-sm" title="Toggle primary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+  <span class="fa-solid fa-bars"></span>
+</button></div>
+      
+    </div>
+  
+  
+    <div class="header-article-items__end">
+      
+        <div class="header-article-item">
+
+<div class="article-header-buttons">
+
+
+
+
+
+<div class="dropdown dropdown-download-buttons">
+  <button class="btn dropdown-toggle" type="button" data-bs-toggle="dropdown" aria-expanded="false" aria-label="Download this page">
+    <i class="fas fa-download"></i>
+  </button>
+  <ul class="dropdown-menu">
+      
+      
+      
+      <li><a href="../_sources/aerostructural/strut_lever_load_transfer.md" target="_blank"
+   class="btn btn-sm btn-download-source-button dropdown-item"
+   title="Download source file"
+   data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file"></i>
+  </span>
+<span class="btn__text-container">.md</span>
+</a>
+</li>
+      
+      
+      
+      
+      <li>
+<button onclick="window.print()"
+  class="btn btn-sm btn-download-pdf-button dropdown-item"
+  title="Print to PDF"
+  data-bs-placement="left" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-file-pdf"></i>
+  </span>
+<span class="btn__text-container">.pdf</span>
+</button>
+</li>
+      
+  </ul>
+</div>
+
+
+
+
+<button onclick="toggleFullScreen()"
+  class="btn btn-sm btn-fullscreen-button"
+  title="Fullscreen mode"
+  data-bs-placement="bottom" data-bs-toggle="tooltip"
+>
+  
+
+<span class="btn__icon-container">
+  <i class="fas fa-expand"></i>
+  </span>
+
+</button>
+
+
+
+<script>
+document.write(`
+  <button class="btn btn-sm nav-link pst-navbar-icon theme-switch-button" title="light/dark" aria-label="light/dark" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="theme-switch fa-solid fa-sun fa-lg" data-mode="light"></i>
+    <i class="theme-switch fa-solid fa-moon fa-lg" data-mode="dark"></i>
+    <i class="theme-switch fa-solid fa-circle-half-stroke fa-lg" data-mode="auto"></i>
+  </button>
+`);
+</script>
+
+
+<script>
+document.write(`
+  <button class="btn btn-sm pst-navbar-icon search-button search-button__button" title="Search" aria-label="Search" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <i class="fa-solid fa-magnifying-glass fa-lg"></i>
+  </button>
+`);
+</script>
+<button class="sidebar-toggle secondary-toggle btn btn-sm" title="Toggle secondary sidebar" data-bs-placement="bottom" data-bs-toggle="tooltip">
+    <span class="fa-solid fa-list"></span>
+</button>
+</div></div>
+      
+    </div>
+  
+</div>
+</div>
+              
+              
+
+<div id="jb-print-docs-body" class="onlyprint">
+    <h1>Rigid-body load transfer onto the struts (strut lever)</h1>
+    <!-- Table of contents -->
+    <div id="print-main-content">
+        <div id="jb-print-toc">
+            
+            <div>
+                <h2> Contents </h2>
+            </div>
+            <nav aria-label="Page">
+                <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#problem">1. Problem</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#panel-load-as-awetrim-defines-it">Panel load as AWETrim defines it</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-thesis-method-cayon-2022-sec-6-3">2. The thesis method (Cayon 2022, Sec. 6.3)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#strut-lever-the-exact-rigid-body-transfer">3. Strut lever: the exact rigid-body transfer</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#relation-to-other-exact-choices">4. Relation to other exact choices</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verification">5. Verification</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#references">References</a></li>
+</ul>
+            </nav>
+        </div>
+    </div>
+</div>
+
+              
+                
+<div id="searchbox"></div>
+                <article class="bd-article">
+                  
+  <section id="rigid-body-load-transfer-onto-the-struts-strut-lever">
+<h1>Rigid-body load transfer onto the struts (strut lever)<a class="headerlink" href="#rigid-body-load-transfer-onto-the-struts-strut-lever" title="Link to this heading">#</a></h1>
+<p>How AWETrim moves the aerodynamic panel loads of VSM onto the nodes of a
+wireframe kite structure so that <strong>both the resultant force and the resultant
+moment are conserved exactly</strong>. This is the method of Cayon (2022, MSc thesis,
+Sec. 6.3), completed with the one term that thesis implementation dropped.</p>
+<p>Code: <code class="docutils literal notranslate"><span class="pre">awetrim.aerostructural.mapping.StrutLeverAeroToStructuralLoadMapper</span></code>,
+selected with <code class="docutils literal notranslate"><span class="pre">aerodynamic.load_transfer:</span> <span class="pre">strut_lever</span></code> (default <code class="docutils literal notranslate"><span class="pre">bilinear</span></code>).
+Tests: <code class="docutils literal notranslate"><span class="pre">tests/aerostructural/test_mapping.py</span></code>.</p>
+<section id="problem">
+<h2>1. Problem<a class="headerlink" href="#problem" title="Link to this heading">#</a></h2>
+<p>The aerodynamic model (VSM) discretises the wing in $N$ spanwise panels. Panel
+$i$ returns a force $\mathbf F_i$ and a moment. The structural model (the
+wireframe) has far fewer nodes: one rib per inflatable strut, each rib with a
+front node $\mathbf f$ and a rear node $\mathbf r$ (on the reduced LEI-V3
+wireframe, the front and rear bridle attachments at $x/c \approx 0.01$ and
+$0.875$). Each panel lies in one <strong>bay</strong>, between the struts $A$ and $B$ of two
+consecutive ribs, and its load must be replaced by four nodal forces
+$\mathbf q_{fA}, \mathbf q_{rA}, \mathbf q_{fB}, \mathbf q_{rB}$ on those
+ribs.</p>
+<p>The structure only feels the nodal forces, so the transfer must be <strong>statically
+equivalent</strong>: about any point $\mathbf o$,</p>
+<p>$$
+\sum_n \mathbf q_n = \mathbf F_i, \qquad
+\sum_n (\mathbf x_n - \mathbf o)\times\mathbf q_n
+= (\mathbf x_i - \mathbf o)\times\mathbf F_i + \mathbf m_i ,
+$$</p>
+<p>where $\mathbf x_i$ is the point the panel force acts at and $\mathbf m_i$ the
+panel’s own moment about it. Six equations, twelve unknowns: the transfer is a
+choice of one statically equivalent distribution. Force conservation alone is
+easy; it is the moment that sets the pitch balance of every bay, and with it
+the strut twist and the depower response of the kite.</p>
+<section id="panel-load-as-awetrim-defines-it">
+<h3>Panel load as AWETrim defines it<a class="headerlink" href="#panel-load-as-awetrim-defines-it" title="Link to this heading">#</a></h3>
+<p>VSM gives each panel’s force $\mathbf F_i$, its moment $\mathbf M_i$ about the
+solver’s reference point $\mathbf r_\mathrm{ref}$, and a per-panel centre of
+pressure $\mathbf c_i$, the point on the chord where $\mathbf F_i$ alone would
+reproduce the panel’s pitching moment. VSM clamps the lever of that point to
+$[-0.25c, 0.75c]$, so $\mathbf F_i$ at $\mathbf c_i$ is not always the whole
+load. The transfer therefore takes</p>
+<p>$$
+\mathbf x_i = \mathbf c_i, \qquad
+\mathbf m_i = \mathbf M_i - (\mathbf c_i - \mathbf r_\mathrm{ref})\times\mathbf F_i ,
+$$</p>
+<p>which is exact for any choice of $\mathbf x_i$: $\mathbf m_i$ is whatever
+moment the force at $\mathbf x_i$ does not already carry (zero where VSM’s
+centre of pressure is unclamped).</p>
+</section>
+</section>
+<section id="the-thesis-method-cayon-2022-sec-6-3">
+<h2>2. The thesis method (Cayon 2022, Sec. 6.3)<a class="headerlink" href="#the-thesis-method-cayon-2022-sec-6-3" title="Link to this heading">#</a></h2>
+<p>The thesis treats the region between the aerodynamic and the structural mesh as
+a rigid body and moves each panel load by lever rules
+(<code class="docutils literal notranslate"><span class="pre">functions_PSM.force2nodes</span></code>, <code class="docutils literal notranslate"><span class="pre">moment2nodes</span></code>):</p>
+<ol class="arabic simple">
+<li><p><strong>Chordwise.</strong> The line through $\mathbf x_i$ along the local chord
+$\hat{\mathbf t}$ meets the front line $\overline{\mathbf f_A\mathbf f_B}$
+at $\mathbf P_1$ and the rear line $\overline{\mathbf r_A\mathbf r_B}$ at
+$\mathbf P_2$. The force is split between them by the lever rule:
+$\mathbf F_{P_2} = \mathbf M_1\times\mathbf d/|\mathbf d|^2$ with
+$\mathbf M_1 = (\mathbf x_i - \mathbf P_1)\times\mathbf F_i$ and
+$\mathbf d = \mathbf P_2 - \mathbf P_1$; $\mathbf F_{P_1} = \mathbf F_i - \mathbf F_{P_2}$.</p></li>
+<li><p><strong>Spanwise.</strong> Each of $\mathbf F_{P_1}$, $\mathbf F_{P_2}$ is split between
+the two nodes of its line by the same lever rule.</p></li>
+<li><p><strong>Section moment.</strong> The pitching moment is converted into a couple of two
+opposite forces a short distance apart along the chord, and each is moved
+by steps 1-2.</p></li>
+</ol>
+<p>Every step conserves force. Step 2 also conserves moment exactly, because
+$\mathbf P_1$ lies on its line. Step 1 conserves moment <strong>only if the chord line
+through $\mathbf x_i$ really meets both lines</strong>: then
+$\mathbf M_1 \perp \mathbf d$ and
+$\mathbf d\times\mathbf F_{P_2} = \mathbf M_1$. That holds for a flat plate
+with the force point in its plane and the nodes at the leading and trailing
+edge, which was the thesis geometry.</p>
+<p><code class="docutils literal notranslate"><span class="pre">line_intersect</span></code> returns the <em>closest point</em> of the front (rear) line to the
+chord line, not an intersection. When the lines are skew, step 1 silently drops
+the component of $\mathbf M_1$ along $\mathbf d$ and the moment of the offset
+between the chord line and the closest point. On the reduced LEI-V3 wireframe
+the chord lines miss the rib lines by up to 241 mm (mean 73 mm unbillowed,
+92 mm billowed), because</p>
+<ul class="simple">
+<li><p>the rib nodes are bridle attachments, not the leading and trailing edge;</p></li>
+<li><p>each bay is warped by the anhedral: its front and rear lines are skew;</p></li>
+<li><p>the billowed panels lie off the plane of their bay.</p></li>
+</ul>
+<p>The result is a 2-5 % loss of the wing’s pitching moment (Sec. 5). The thesis
+code checked only the force (the moment check is commented out in
+<code class="docutils literal notranslate"><span class="pre">get_aero_forces2nodes</span></code>), so the loss was not visible.</p>
+</section>
+<section id="strut-lever-the-exact-rigid-body-transfer">
+<h2>3. Strut lever: the exact rigid-body transfer<a class="headerlink" href="#strut-lever-the-exact-rigid-body-transfer" title="Link to this heading">#</a></h2>
+<p>The same rigid-body idea, with the moment of every move carried along instead
+of dropped. A <strong>strut</strong> is the straight line from its front to its rear node,
+$\mathbf d_A = \mathbf r_A - \mathbf f_A$, $\mathbf d_B = \mathbf r_B - \mathbf f_B$.</p>
+<p><strong>Step 1 - lever rule along the span.</strong> Take the closest points of the two strut
+lines to $\mathbf x_i$,</p>
+<p>$$
+t_k = \frac{(\mathbf x_i - \mathbf f_k)\cdot\mathbf d_k}{\mathbf d_k\cdot\mathbf d_k},\qquad
+\mathbf p_k = \mathbf f_k + t_k,\mathbf d_k ,\qquad k \in {A, B},
+$$</p>
+<p>and split the force between them by the position of $\mathbf x_i$ along
+$\mathbf s = \mathbf p_B - \mathbf p_A$:</p>
+<p>$$
+\sigma = \frac{(\mathbf x_i - \mathbf p_A)\cdot\mathbf s}{\mathbf s\cdot\mathbf s},\qquad
+\mathbf F_A = (1-\sigma),\mathbf F_i ,\qquad \mathbf F_B = \sigma,\mathbf F_i .
+$$</p>
+<p>Force is conserved: $\mathbf F_A + \mathbf F_B = \mathbf F_i$.</p>
+<p><strong>Step 2 - the moment the move costs.</strong> About $\mathbf x_i$, the moved forces
+carry $(\mathbf p_A - \mathbf x_i)\times\mathbf F_A + (\mathbf p_B - \mathbf x_i)\times\mathbf F_B$.
+The struts still owe</p>
+<p>$$
+\mathbf R = \mathbf m_i - (\mathbf p_A - \mathbf x_i)\times\mathbf F_A - (\mathbf p_B - \mathbf x_i)\times\mathbf F_B .
+$$</p>
+<p>When $\mathbf x_i$ lies on the segment $\mathbf p_A\mathbf p_B$ (a flat bay)
+the bracket vanishes and $\mathbf R = \mathbf m_i$. Otherwise $\mathbf R$ is
+exactly the term the thesis implementation dropped.</p>
+<p><strong>Step 3 - the owed moment onto the struts.</strong> A strut, two nodes on one line,
+can carry a moment about any axis normal to itself, as a front/rear force
+pair, but none about its own axis. The part of $\mathbf R$ about a strut axis
+(a twist about the chord) goes across the span as a couple: $+\mathbf G$ on
+strut $B$, $-\mathbf G$ on strut $A$. So</p>
+<p>$$
+\mathbf R = \mathbf M_A + \mathbf M_B + \mathbf s\times\mathbf G ,
+\qquad \mathbf M_A\perp\mathbf d_A,\quad \mathbf M_B\perp\mathbf d_B,\quad \mathbf G\perp\mathbf s .
+$$</p>
+<p>Each unknown has two components (six in all) for three equations. AWETrim takes
+the minimum-norm solution, with $\mathbf G$ scaled by the span $|\mathbf s|$ so
+that every unknown is a moment of comparable size. The system is singular only
+if a strut runs along the span, which an LEI wing does not do.</p>
+<p><strong>Step 4 - each strut onto its two nodes.</strong> The force on strut $k$,
+$\mathbf F_k \mp \mathbf G$ at $\mathbf p_k$, splits by the lever rule along
+the strut; the couple $\mathbf M_k$ becomes equal and opposite node forces:</p>
+<p>$$
+\mathbf q_{fk} = (1 - t_k)(\mathbf F_k \mp \mathbf G) - \frac{\mathbf M_k\times\mathbf d_k}{|\mathbf d_k|^2},\qquad
+\mathbf q_{rk} = t_k(\mathbf F_k \mp \mathbf G) + \frac{\mathbf M_k\times\mathbf d_k}{|\mathbf d_k|^2},
+$$</p>
+<p>with the upper sign for $A$. The lever split has zero moment about
+$\mathbf p_k$ because $\mathbf p_k$ is on the strut, and the couple’s moment is
+$\mathbf d_k\times(\mathbf M_k\times\mathbf d_k)/|\mathbf d_k|^2 = \mathbf M_k$
+because $\mathbf M_k\perp\mathbf d_k$.</p>
+<p><strong>Exactness.</strong> Steps 1, 2 and 4 are identities in force and moment, and step 3
+solves for the remainder exactly, so the four nodal forces reproduce the panel
+force and its moment about any point, on warped bays and for points off the
+bay.</p>
+<p><strong>Reduction to the thesis.</strong> On a flat rectangle with $\mathbf x_i$ inside it,
+$\mathbf p_A$, $\mathbf p_B$ and $\mathbf x_i$ are collinear, $\mathbf R = \mathbf m_i$
+and the split is the lever rule along the chord and along the span: the bilinear
+split, and the thesis’.</p>
+<p><strong>Which bay.</strong> Each panel is assigned to its bay by construction (the
+aerodynamic mesh is built section by section between the struts,
+<code class="docutils literal notranslate"><span class="pre">billowing.panel_bays</span></code>), not by sorting on the span coordinate $y$. At the
+curled LEI-V3 tip $y$ is not monotonic, and a $y$ search gave the tip panels a
+degenerate bay (one front node twice), which the bilinear mapper accepted
+silently and on which the thesis code divides by zero.</p>
+</section>
+<section id="relation-to-other-exact-choices">
+<h2>4. Relation to other exact choices<a class="headerlink" href="#relation-to-other-exact-choices" title="Link to this heading">#</a></h2>
+<p>Any statically equivalent distribution is exact; they differ only in how the
+load is shared among the four nodes (the six-dimensional null space). The plain
+minimum-norm solution of the six equations is also exact and differs from the
+strut lever by less than 10 N per node on the LEI-V3 wing at $\alpha = 8°$
+(of up to 400 N). The strut lever is kept because it is the thesis’ lever-rule
+physics wherever the geometry allows it, and solves only for the remainder.</p>
+</section>
+<section id="verification">
+<h2>5. Verification<a class="headerlink" href="#verification" title="Link to this heading">#</a></h2>
+<p><strong>Synthetic</strong> (<code class="docutils literal notranslate"><span class="pre">tests/aerostructural/test_mapping.py</span></code>): 2000 random warped bays
+with points off the bay and random forces and moments conserve force and moment
+to $10^{-13}$; a flat rectangle reproduces the bilinear split; a pure twist about
+the chord goes across the span as a couple; zero load gives zero; mirrored bay
+and load give mirrored forces.</p>
+<p><strong>LEI-V3 full-FEM wing</strong>, rigid VSM (develop 1201f6f, 3/4-chord force
+directions), 135 panels, loads onto the reduced wireframe’s 10 ribs, pitching
+moment about the centre section’s quarter chord:</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>Mesh</p></th>
+<th class="head"><p>$\alpha$</p></th>
+<th class="head"><p>true $M_y$ (N m)</p></th>
+<th class="head"><p>bilinear</p></th>
+<th class="head"><p>thesis</p></th>
+<th class="head"><p>strut lever</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>full chord</p></td>
+<td><p>4° / 8° / 12°</p></td>
+<td><p>-826 / -1076 / -1274</p></td>
+<td><p>-1.0 / -4.5 / -6.0 %</p></td>
+<td><p>-2.9 / -4.2 / -4.4 %</p></td>
+<td><p>0</p></td>
+</tr>
+<tr class="row-odd"><td><p>billowed, $p = 5,%$</p></td>
+<td><p>4° / 8° / 12°</p></td>
+<td><p>-533 / -873 / -1032</p></td>
+<td><p>+3.5 / -0.4 / -3.6 %</p></td>
+<td><p>-2.0 / -3.4 / -4.9 %</p></td>
+<td><p>0</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>All three conserve force. With the billowed wing the bilinear error changes sign
+with $\alpha$, so it is not an offset a calibration could absorb.</p>
+<p>Nodal forces at $\alpha = 8°$, billowed (|q| in N, thesis / strut lever):</p>
+<div class="pst-scrollable-table-container"><table class="table">
+<thead>
+<tr class="row-odd"><th class="head"><p>rib</p></th>
+<th class="head"><p>front</p></th>
+<th class="head"><p>rear</p></th>
+</tr>
+</thead>
+<tbody>
+<tr class="row-even"><td><p>centre</p></td>
+<td><p>394 / 400</p></td>
+<td><p>223 / 224</p></td>
+</tr>
+<tr class="row-odd"><td><p>2</p></td>
+<td><p>253 / 264</p></td>
+<td><p>155 / 158</p></td>
+</tr>
+<tr class="row-even"><td><p>tip</p></td>
+<td><p>46 / 25</p></td>
+<td><p>5 / 9</p></td>
+</tr>
+</tbody>
+</table>
+</div>
+<p>The largest changes are at the tip ribs, where the chord lines miss the rib
+lines the most.</p>
+<p><strong>Coupled.</strong> One state of the identification setup (wind 5 m/s, built tape, gravity
+off) converges in 8 coupling iterations with the strut lever; the in-loop
+moment check reads $|\Delta\mathbf M| \approx 10^{-12}$ N m.</p>
+<p><strong>Cost.</strong> Batched over all panels, 0.34 ms per coupling iteration at 135 panels,
+against 0.5-1 s for one VSM solve.</p>
+</section>
+<section id="references">
+<h2>References<a class="headerlink" href="#references" title="Link to this heading">#</a></h2>
+<ul class="simple">
+<li><p>O. Cayon, <em>Fast aeroelastic model of a leading-edge inflatable kite for the
+design phase of airborne wind energy systems</em>, MSc thesis, TU Delft / DTU,
+2022, Sec. 6.3 (force coupling).</p></li>
+<li><p>Verification scripts (2026-10-28): <code class="docutils literal notranslate"><span class="pre">load_transfer_check.py</span></code>,
+<code class="docutils literal notranslate"><span class="pre">thesis_transfer_check.py</span></code>, <code class="docutils literal notranslate"><span class="pre">test_strut_lever.py</span></code> (session scratchpad;
+the tests above are their permanent form).</p></li>
+</ul>
+</section>
+</section>
+
+
+                </article>
+              
+
+              
+              
+              
+              
+                <footer class="prev-next-footer d-print-none">
+                  
+<div class="prev-next-area">
+</div>
+                </footer>
+              
+            </div>
+            
+            
+              
+                <div class="bd-sidebar-secondary bd-toc"><div class="sidebar-secondary-items sidebar-secondary__inner">
+
+
+  <div class="sidebar-secondary-item">
+  <div class="page-toc tocsection onthispage">
+    <i class="fa-solid fa-list"></i> Contents
+  </div>
+  <nav class="bd-toc-nav page-toc">
+    <ul class="visible nav section-nav flex-column">
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#problem">1. Problem</a><ul class="nav section-nav flex-column">
+<li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#panel-load-as-awetrim-defines-it">Panel load as AWETrim defines it</a></li>
+</ul>
+</li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#the-thesis-method-cayon-2022-sec-6-3">2. The thesis method (Cayon 2022, Sec. 6.3)</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#strut-lever-the-exact-rigid-body-transfer">3. Strut lever: the exact rigid-body transfer</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#relation-to-other-exact-choices">4. Relation to other exact choices</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#verification">5. Verification</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#references">References</a></li>
+</ul>
+  </nav></div>
+
+</div></div>
+              
+            
+          </div>
+          <footer class="bd-footer-content">
+            
+<div class="bd-footer-content__inner container">
+  
+  <div class="footer-item">
+    
+<p class="component-author">
+By name
+</p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+
+  <p class="copyright">
+    
+      © Copyright year, name.
+      <br/>
+    
+  </p>
+
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+  <div class="footer-item">
+    
+  </div>
+  
+</div>
+          </footer>
+        
+
+      </main>
+    </div>
+  </div>
+  
+  <!-- Scripts loaded after <body> so the DOM is not blocked -->
+  <script src="../_static/scripts/bootstrap.js?digest=dfe6caa3a7d634c4db9b"></script>
+<script src="../_static/scripts/pydata-sphinx-theme.js?digest=dfe6caa3a7d634c4db9b"></script>
+
+  <footer class="bd-footer">
+  </footer>
+  </body>
+</html>
