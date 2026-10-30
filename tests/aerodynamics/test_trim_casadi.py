@@ -25,8 +25,8 @@ from common import (  # noqa: E402
     add_common_arguments,
     build_body,
     build_system_model,
+    kite_rigid_body,
     parsed_common,
-    resolve_center_of_gravity,
 )
 
 from awetrim.aerodynamics.kcu_drag import KcuDragModel  # noqa: E402
@@ -44,8 +44,8 @@ def lei_v3():
     args = parser.parse_args([])
     body, props = build_body(args)
     values = parsed_common(args)
-    values["center_of_gravity"] = resolve_center_of_gravity(values, props)
     system_model = build_system_model(args)
+    values["center_of_gravity"] = kite_rigid_body(values, props, system_model)["center_of_gravity"]
     return dict(body=body, values=values, system_model=system_model, kcu=KcuDragModel.from_system_model(system_model))
 
 

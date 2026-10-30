@@ -68,15 +68,18 @@ def add_common_arguments(parser: argparse.ArgumentParser) -> None:
         "--center-of-gravity",
         default=None,
         help=(
-            "CG [x,y,z] in m. Default: the kite's own CG from build_body "
-            "(structure + KCU aggregate, or the wing's system.yaml CG)."
+            "CG [x,y,z] in m. Default: the kite's own CG, the structure + KCU "
+            "aggregate from build_body (kite_rigid_body)."
         ),
     )
     parser.add_argument(
         "--mass-wing",
         type=float,
         default=None,
-        help="Wing mass in kg (default: from system.yaml)",
+        help=(
+            "Wing mass in kg (default: from system.yaml). kite_rigid_body "
+            "refuses a value the structure aggregate's mass does not match."
+        ),
     )
     parser.add_argument(
         "--tether-diameter",
@@ -184,6 +187,36 @@ def resolve_center_of_gravity(
     return np.asarray(body_props["center_of_mass"], dtype=float)
 
 
+def kite_rigid_body(
+    values: dict[str, Any], body_props: dict[str, Any], system_model: Any
+) -> dict[str, Any]:
+    """Mass, CG and CG inertia tensor of the ONE body the trim balances.
+
+    The mass is the system model's wing + KCU (system.yaml), the CG and inertia
+    the structure aggregate's (``build_body``: structure + the system.yaml KCU).
+    They describe the same body only when the aggregate's mass is that mass, so
+    a mismatch raises: a ``--mass-wing`` override, ``--no-struc-geometry``'s
+    wing-only properties, or system.yaml and structure.yml out of sync. Before,
+    the stability script mixed three bodies (KCU counted twice, an arbitrary CG).
+    """
+    from awetrim.aerodynamics.vsm_quasi_steady import _system_model_mass_total
+
+    mass = float(_system_model_mass_total(system_model))
+    mass_aggregate = float(body_props["mass"])
+    if not np.isclose(mass, mass_aggregate, rtol=1e-3):
+        raise ValueError(
+            f"Trim mass {mass:.4f} kg (system model wing + KCU) differs from the "
+            f"structure aggregate's {mass_aggregate:.4f} kg, whose CG and inertia "
+            "would then belong to another body (--mass-wing, --no-struc-geometry, "
+            "or system.yaml and structure.yml out of sync)."
+        )
+    return {
+        "mass": mass,
+        "center_of_gravity": resolve_center_of_gravity(values, body_props),
+        "inertia_cg": np.asarray(body_props["inertia"], dtype=float).reshape(3, 3),
+    }
+
+
 def _resolve_csv_paths(config: dict, config_folder: Path) -> dict:
     """Resolve relative CSV file paths in config to absolute paths.
 
@@ -263,14 +296,14 @@ def load_config_from_folder(
 
     If ``deformed_from`` is given, aero_geometry.yaml and the structural geometry are
     read from that directory instead (e.g. an aerostructural results case dir).
-    system.yaml is still read from ``config_folder`` -- mass/inertia/CoG are
-    NOT recomputed from the deformed geometry.
+    system.yaml is still read from ``config_folder`` (the KCU mass, the system
+    model); the aggregate CG and inertia are those of the deformed structure.
 
     Returns a dict with:
     - 'body_config': dict ready for VSM BodyAerodynamics.instantiate
-    - 'mass': mass from system.yaml (kite if struc exists, wing structure else)
-    - 'inertia': inertia tensor from system.yaml (kite if struc exists, wing structure else)
-    - 'center_of_mass': CoG from system.yaml (kite if struc exists, wing structure else)
+    - 'mass': the aggregate's (struc exists) or system.yaml's wing-only mass
+    - 'inertia': the aggregate's CG tensor, or system.yaml's wing-only one
+    - 'center_of_mass': the aggregate's CG, or system.yaml's wing-only one
     - 'aero_geometry_path': path to aero_geometry.yaml
     - 'struc_geometry_path': path to the structural geometry (or None if not found)
     """
@@ -418,7 +451,7 @@ def build_body(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
     return body, properties
 
 
-def build_system_model(args: argparse.Namespace, mass_wing: float | None = None):
+def build_system_model(args: argparse.Namespace):
     import yaml
     from awetrim.system.factory import create_system_model_from_yaml
     from awetrim.system.system_model import SystemModel
@@ -449,9 +482,7 @@ def build_system_model(args: argparse.Namespace, mass_wing: float | None = None)
         system = SystemModel(tether=RigidLumpedTether(diameter=args.tether_diameter))
 
     # Explicit overrides take precedence over YAML values
-    if mass_wing is not None:
-        system.kite.mass_wing = mass_wing
-    elif getattr(args, "mass_wing", None) is not None:
+    if getattr(args, "mass_wing", None) is not None:
         system.kite.mass_wing = args.mass_wing
 
     system.angle_elevation = np.deg2rad(args.elevation_deg)

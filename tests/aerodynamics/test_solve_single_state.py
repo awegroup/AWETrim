@@ -28,6 +28,8 @@ from common import (
     add_common_arguments,
     build_body,
     build_system_model,
+    kite_rigid_body,
+    load_config_from_folder,
     output_dir,
     parsed_common,
     print_trim_summary,
@@ -120,6 +122,33 @@ class TestCommonHelpers:
         values = parsed_common(parser.parse_args(["--center-of-gravity=0.5,0,5"]))
         props = {"center_of_mass": [-0.05, 0.0, 5.9]}
         assert np.allclose(resolve_center_of_gravity(values, props), [0.5, 0.0, 5.0])
+
+    @staticmethod
+    def _kite_inputs(*cli):
+        parser = argparse.ArgumentParser()
+        add_common_arguments(parser)
+        args = parser.parse_args(list(cli))
+        props = load_config_from_folder(args.config_folder)
+        return parsed_common(args), props, build_system_model(args)
+
+    def test_kite_rigid_body_is_one_body(self):
+        """The trim mass is the system model's wing + KCU, counted once, and
+        the CG and inertia belong to that same mass (the aggregate's)."""
+        values, props, system_model = self._kite_inputs()
+        body = kite_rigid_body(values, props, system_model)
+        kite = system_model.kite
+        assert body["mass"] == pytest.approx(float(kite.mass_wing) + float(kite.mass_kcu))
+        assert body["mass"] == pytest.approx(props["mass"], rel=1e-3)
+        assert np.allclose(body["center_of_gravity"], props["center_of_mass"])
+        assert body["inertia_cg"].shape == (3, 3)
+
+    def test_kite_rigid_body_refuses_a_mass_its_cg_does_not_belong_to(self):
+        """The pre-fix stability script: the aggregate (KCU included) as the
+        wing mass, so the system model added the KCU a second time."""
+        values, props, _ = self._kite_inputs()
+        _, _, doubled = self._kite_inputs(f"--mass-wing={props['mass']}")
+        with pytest.raises(ValueError, match="structure aggregate"):
+            kite_rigid_body(values, props, doubled)
 
     def test_parsed_common_correct_shapes(self):
         """parsed_common returns arrays with correct shapes."""

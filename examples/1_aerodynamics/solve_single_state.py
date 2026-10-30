@@ -24,7 +24,7 @@ from common import (
     output_dir,
     parsed_common,
     print_trim_summary,
-    resolve_center_of_gravity,
+    kite_rigid_body,
     save_figure,
     write_json,
 )
@@ -48,8 +48,8 @@ def main() -> None:
     out_dir = output_dir(args, "single_state")
 
     body, body_props = build_body(args)
-    center_of_gravity = resolve_center_of_gravity(values, body_props)
     system_model = build_system_model(args)
+    center_of_gravity = kite_rigid_body(values, body_props, system_model)["center_of_gravity"]
 
     use_williams = isinstance(getattr(system_model, "tether", None), WilliamsTether)
 
