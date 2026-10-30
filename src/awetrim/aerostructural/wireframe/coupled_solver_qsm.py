@@ -24,6 +24,7 @@ from . import structural_wireframe
 from . import structural_wireframe
 from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking
 from awetrim import plotting
+from awetrim.aerostructural.case import air_density_at_case
 from .actuation import (
     steering_half_differences,
     update_power_tape_actuation,
@@ -45,6 +46,7 @@ from ..forces import distribute_total_force_by_particle_mass
 from ..mapping import (
     BilinearAeroToStructuralLoadMapper,
     LinearStructuralToAeroMapper,
+    StrutLeverAeroToStructuralLoadMapper,
     check_moment_preservation,
 )
 from ..protocols import AeroToStructureMap
@@ -57,6 +59,7 @@ from ..utils import (
 
 STRUCTURAL_TO_AERO_MAPPER = LinearStructuralToAeroMapper()
 AERO_TO_STRUCTURAL_LOAD_MAPPER = BilinearAeroToStructuralLoadMapper()
+STRUT_LEVER_LOAD_MAPPER = StrutLeverAeroToStructuralLoadMapper()
 
 
 def _map_structural_edges_to_aero(
@@ -105,20 +108,55 @@ def _bridle_node_pairs(bridle_line_specs, struc_nodes, body_aero):
     )
 
 
+def load_transfer_of(config) -> str:
+    """``aerodynamic.load_transfer``: ``bilinear`` (default) or ``strut_lever``."""
+    name = str((config.get("aerodynamic") or {}).get("load_transfer", "bilinear")).lower()
+    if name not in ("bilinear", "strut_lever"):
+        raise ValueError(f"aerodynamic.load_transfer must be bilinear or strut_lever, got {name!r}")
+    return name
+
+
 def _map_aero_loads_to_structure(
     f_aero_wing_vsm_format,
     struc_nodes,
-    panel_cp_locations,
+    results_aero,
     aero2struc_mapping,
+    config,
+    check=False,
 ):
-    """Return nodal aerodynamic loads from panel loads and a corner map."""
+    """Return nodal aerodynamic loads from panel loads and a corner map.
+
+    ``bilinear``: each panel force at VSM's per-panel centre of pressure,
+    bilinear weights onto its corner nodes (moment not conserved).
+    ``strut_lever``: the same force with its residual moment
+    ``M_i - (cp_i - ref) x F_i`` (what VSM's clamped centre of pressure leaves
+    out; ``ref`` = ``aerodynamic.reference_point``, about which VSM gives
+    ``M_distribution``), rigid-body onto the bay's struts -- force and moment
+    exact. ``check`` logs :func:`check_moment_preservation`.
+    """
     mapping = AeroToStructureMap(panel_corner_map=np.asarray(aero2struc_mapping))
-    return AERO_TO_STRUCTURAL_LOAD_MAPPER.map_loads(
-        f_aero_wing_vsm_format,
-        panel_cp_locations,
-        struc_nodes,
-        mapping,
-    )
+    forces = np.asarray(f_aero_wing_vsm_format, dtype=float)
+    cp = np.asarray(results_aero["panel_cp_locations"], dtype=float)
+    moments = None
+    if load_transfer_of(config) == "strut_lever":
+        if results_aero.get("M_distribution") is None:
+            raise ValueError(
+                "load_transfer strut_lever needs the trim's per-panel moments (M_distribution)"
+            )
+        ref = np.asarray(config["aerodynamic"].get("reference_point", [0.0, 0.0, 0.0]), dtype=float)
+        moments = np.asarray(results_aero["M_distribution"], dtype=float) - np.cross(cp - ref, forces)
+        nodal = STRUT_LEVER_LOAD_MAPPER.map_loads(forces, cp, struc_nodes, mapping, panel_moments=moments)
+    else:
+        nodal = AERO_TO_STRUCTURAL_LOAD_MAPPER.map_loads(forces, cp, struc_nodes, mapping)
+    if check:
+        check_moment_preservation(
+            panel_forces=forces,
+            panel_points=cp,
+            nodal_forces=nodal,
+            nodes=struc_nodes,
+            panel_moments=moments,
+        )
+    return nodal
 
 
 # Remove hardcoded values, when changing away from V3
@@ -208,6 +246,7 @@ def main(
     power_tape_index=None,
     ### STRUC
     psystem=None,
+    final_state=None,
 ):
     """
     Runs the aero-structural solver for the given input parameters.
@@ -216,6 +255,9 @@ def main(
         config (dict): Main configuration dictionary.
         PROJECT_DIR (Path): Path to the project directory.
         results_dir (Path): Path to the results directory.
+        final_state (dict or None): When given, filled with the FINAL trim's
+            ``body_aero`` (trimmed attitude, trim inflow set) and
+            ``results_aero``, as in ``coupled.coupled_solver.main``.
 
     Returns:
         tracking_data (dict): Dictionary containing time histories of positions, forces, etc.
@@ -368,7 +410,7 @@ def main(
 
     # The stiffnesses the elongation bound EARNED, if a neighbour is handing
     # them over. They are per-element and cannot be written back into
-    # struc_geometry.yaml (which stores one modulus per material), so without
+    # the structure file (which stores one modulus per material), so without
     # this a restart re-derives every one of them: at u_dp 0.18 that is 19-29
     # stiffening events, each costing `stiffness_settle_iters` before the next
     # is allowed -- most of the solve. Clipped to this geometry's own ceiling,
@@ -1008,20 +1050,14 @@ def main(
     struc_nodes = rotate_geometry(struc_nodes, angle_deg=[roll, pitch, yaw])
     if outer_acceleration == "anderson":
         _rotate_anderson_history(roll, pitch, yaw)
-    ### AERO --> STRUC
+    ### AERO --> STRUC (and the moment-preservation check, pre-loop)
     f_aero_wing = _map_aero_loads_to_structure(
         f_aero_wing_vsm_format,
         struc_nodes,
-        np.array(results_aero["panel_cp_locations"]),
+        results_aero,
         aero2struc_mapping,
-    )
-
-    # Check moment preservation of aero→struc mapping (pre-loop)
-    check_moment_preservation(
-        panel_forces=f_aero_wing_vsm_format,
-        panel_points=np.array(results_aero["panel_cp_locations"]),
-        nodal_forces=f_aero_wing,
-        nodes=struc_nodes,
+        config,
+        check=True,
     )
 
     ### BRIDLE AERO
@@ -1039,7 +1075,7 @@ def main(
             bridle_connectivity_arr,
             bridle_diameter_arr,
             vel_app,
-            config["rho"],
+            air_density_at_case(config),
             config["aerodynamic_bridle"]["cd_cable"],
             config["aerodynamic_bridle"]["cf_cable"],
             # With the body, the drag is taken at the TRIM's apparent wind
@@ -1406,22 +1442,16 @@ def main(
             struc_nodes = rotate_geometry(struc_nodes, angle_deg=[roll, pitch, yaw])
             if outer_acceleration == "anderson":
                 _rotate_anderson_history(roll, pitch, yaw)
-            ### AERO --> STRUC
+            ### AERO --> STRUC (moment check on the first coupling iteration
+            ### only, to limit log spam)
             f_aero_wing = _map_aero_loads_to_structure(
                 f_aero_wing_vsm_format,
                 struc_nodes,
-                np.array(results_aero["panel_cp_locations"]),
+                results_aero,
                 aero2struc_mapping,
+                config,
+                check=(i == 1),
             )
-
-            # Check moment preservation (only first coupling iteration to limit log spam)
-            if i == 1:
-                check_moment_preservation(
-                    panel_forces=f_aero_wing_vsm_format,
-                    panel_points=np.array(results_aero["panel_cp_locations"]),
-                    nodal_forces=f_aero_wing,
-                    nodes=struc_nodes,
-                )
 
             ### BRIDLE AERO
             if config["is_with_aero_bridle"]:
@@ -1430,7 +1460,7 @@ def main(
                     bridle_connectivity_arr,
                     bridle_diameter_arr,
                     vel_app,
-                    config["rho"],
+                    air_density_at_case(config),
                     config["aerodynamic_bridle"]["cd_cable"],
                     config["aerodynamic_bridle"]["cf_cable"],
                     body_aero=body_aero,
@@ -2053,37 +2083,8 @@ def main(
             )
 
     # print out the geometric angle of attack of the mid panel
-    panels = body_aero.panels
-
-    # Select middle panel
-    mid_idx = len(panels) // 2
-    panel = panels[mid_idx]
-
-    # Midpoints of leading and trailing edges
-    le_mid = 0.5 * (panel.LE_point_1 + panel.LE_point_2)
-    te_mid = 0.5 * (panel.TE_point_1 + panel.TE_point_2)
-
-    # Chord direction vector
-    vec_chord = te_mid - le_mid
-    vec_chord /= np.linalg.norm(vec_chord)
-
-    # Apparent wind direction (normalize)
-    vec_wind = body_aero.va
-    # Project onto plane of interest (optional: usually x-z plane)
-    # Remove spanwise component if needed
-    vec_chord_2d = np.array([vec_chord[0], vec_chord[2]])
-    vec_wind_2d = np.array([vec_wind[0], vec_wind[2]])
-
-    vec_chord_2d /= np.linalg.norm(vec_chord_2d)
-    vec_wind_2d /= np.linalg.norm(vec_wind_2d)
-
-    # Angle between vectors (signed)
-    dot = np.clip(np.dot(vec_chord_2d, vec_wind_2d), -1.0, 1.0)
-    # z-component of the 2-D cross product, written out: np.cross on
-    # 2-element vectors is deprecated since NumPy 2.0.
-    cross = vec_chord_2d[0] * vec_wind_2d[1] - vec_chord_2d[1] * vec_wind_2d[0]
-
-    angle = np.arctan2(cross, dot)
+    mid_idx = len(body_aero.panels) // 2
+    angle = aerodynamic_vsm.mid_span_chord_angle_of_attack(body_aero, body_aero.va)
     alpha_at_ac_mid = np.ravel(results_aero["alpha_at_ac"])[mid_idx]
 
     print(f"alpha = {np.degrees(angle):.2f}° (va vs mid-span chord)")
@@ -2344,6 +2345,11 @@ def main(
         "trim_results": _trim_results_summary(results_aero),
         "tether_force": float(tether_force),
         "rest_lengths": rest_lengths,
+        # The structure's own node positions at exit: what the next solve on
+        # the same structure starts from. NOT tracking positions[-1], which is
+        # that shape after the final trim rotation (a fraction of a degree, a
+        # few cm at the tips) -- the structure never receives it.
+        "structure_positions": np.asarray(psystem.positions, dtype=float).copy(),
         # --- solver state, for a continuation to pick up where this left off --
         # None of this is model state, and none of it can be reconstructed from
         # the snapshot: it is what the coupled loop LEARNED about its own
@@ -2389,6 +2395,9 @@ def main(
                 n_ever_stalled,
                 tracking_data["stall_mask"].shape[1],
             )
+
+    if final_state is not None:
+        final_state.update(body_aero=body_aero, results_aero=results_aero)
 
     return tracking_data, meta
 

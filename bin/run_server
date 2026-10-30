@@ -30,4 +30,4 @@ if ! "$VENV_PYTHON" -c "import fastapi, uvicorn" 2>/dev/null; then
     exit 1
 fi
 
-exec "$VENV_PYTHON" scripts/server/run_reelout_server.py "$@"
+exec "$VENV_PYTHON" examples/server/run_reelout_server.py "$@"

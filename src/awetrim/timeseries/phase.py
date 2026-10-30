@@ -41,6 +41,19 @@ START_STATE = {
     "speed_radial": 0,  # Positive for reel-out
 }
 
+# Floor of the smoothness term at the initial point in ``relative_reg_weight``:
+# a perfectly smooth warm start must not ask for an unbounded weight.
+REG_FLOOR = 1e-6
+
+
+def relative_reg_weight(opti, objective, reg, fraction):
+    """Weight that makes ``weight * reg`` equal ``fraction`` of ``|objective|``,
+    both evaluated at the NLP's initial point (sim_parameters.reg_fraction)."""
+    at_start = opti.initial() + opti.value_parameters()
+    objective0 = abs(float(opti.value(objective, at_start)))
+    reg0 = max(float(opti.value(reg, at_start)), REG_FLOOR)
+    return fraction * objective0 / reg0
+
 
 @dataclass
 class SimulationResult:
@@ -428,9 +441,20 @@ class Phase:
         # ridge the bare optimum is non-unique, so any solver-path change moves
         # the result; this term selects the smoothest equal-power trajectory,
         # pinning a unique, reproducible optimum. Weight is tunable per problem.
-        reg_weight = float(
-            self.pattern_config.get("sim_parameters", {}).get("reg_weight", 0.0)
-        )
+        sim_params = self.pattern_config.get("sim_parameters", {})
+        reg_weight = float(sim_params.get("reg_weight", 0.0))
+        reg_fraction = float(sim_params.get("reg_fraction", 0.0))
+        if not reg_weight and reg_fraction and objective_dict.get("reg") is not None:
+            # Relative weight: the term is ``reg_fraction`` of the objective
+            # at the NLP's initial point, so one setting carries over between
+            # kites and winds (a fixed weight is only right for one problem).
+            reg_weight = relative_reg_weight(
+                opti, total_objective, objective_dict["reg"], reg_fraction
+            )
+            print(
+                f"Smoothness regularizer: weight {reg_weight:.3g} "
+                f"({reg_fraction:g} of the initial objective)"
+            )
         if reg_weight and objective_dict.get("reg") is not None:
             total_objective = total_objective + reg_weight * objective_dict["reg"]
 
@@ -452,6 +476,10 @@ class Phase:
             total_objective = total_objective + self._trust_region_penalty(
                 self._opti_params, trust_region_weight
             )
+        # Proximal anchor on the per-node depower profile
+        # (sim_parameters.depower_anchor_weight; None when off).
+        if objective_dict.get("depower_anchor") is not None:
+            total_objective = total_objective + objective_dict["depower_anchor"]
 
         solution = self.run_opti(
             opti, total_objective, warm_start=warm_start, max_iter=max_iter

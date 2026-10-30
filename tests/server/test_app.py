@@ -16,6 +16,7 @@ from fastapi.testclient import TestClient
 import awetrim.server.session as session_mod
 from awetrim.server.app import create_app
 from awetrim.server.session import ReeloutSession
+from awetrim.utils.defaults import DEFAULT_OPTI_LIMITS
 
 N_NODES = 12  # must satisfy the InitRequest n_points >= 10 bound
 R0 = 200.0
@@ -83,7 +84,11 @@ def client(monkeypatch, tmp_path):
     monkeypatch.setattr(
         session_mod,
         "create_system_model_from_yaml",
-        lambda yaml_path: SimpleNamespace(wind=None),
+        lambda yaml_path, **kwargs: SimpleNamespace(
+            wind=None,
+            rho=1.225,
+            kite=SimpleNamespace(rho=1.225, air_density_model=None),
+        ),
     )
     monkeypatch.setattr(
         session_mod,
@@ -169,7 +174,11 @@ def test_init_selects_and_echoes_the_rom(client, monkeypatch, tmp_path):
     monkeypatch.setattr(
         session_mod,
         "create_system_model_from_yaml",
-        lambda yaml_path, **kw: calls.append(kw) or SimpleNamespace(wind=None),
+        lambda yaml_path, **kw: calls.append(kw) or SimpleNamespace(
+                wind=None,
+                rho=1.225,
+                kite=SimpleNamespace(rho=1.225, air_density_model=None),
+            ),
     )
 
     # Default: the ROM the system file names, built exactly as before.
@@ -452,10 +461,16 @@ def test_aero_forces_on_the_lei_v3_rom():
     body = reply.json()
     assert body["trimmed"]
     assert body["lift"] > body["drag"] > 0.0
-    # 1.58 m is below the flight-corrected ROM's band, inside the simulation one's
-    assert body["input_depower_validity"][0] > 1.58
-    assert not body["within_validity"]
-    assert body["rom_config"].endswith("flight_corrected.yaml")
+    assert body["within_validity"]
+    assert body["rom_config"].endswith("rom_config_aerostructural.yaml")
+
+    # below the default ROM's depower band, still trimmed but flagged
+    low = client.post(
+        "/aero_forces",
+        json={"input_depower": 1.25, "speed_apparent_wind": 15.3},
+    ).json()
+    assert low["input_depower_validity"][0] > 1.25
+    assert not low["within_validity"]
 
     fixed = client.post(
         "/aero_forces",
@@ -463,13 +478,13 @@ def test_aero_forces_on_the_lei_v3_rom():
             "input_depower": 1.58,
             "speed_apparent_wind": 15.3,
             "angle_of_attack": body["angle_of_attack"],
-            "rom_config_path": "rom_config_aerostructural.yaml",
+            "rom_config_path": "rom_config_aerostructural2.yaml",
         },
     ).json()
     assert not fixed["trimmed"]
     assert fixed["angle_of_attack"] == pytest.approx(body["angle_of_attack"])
     assert fixed["within_validity"]
-    assert fixed["rom_config"].endswith("rom_config_aerostructural.yaml")
+    assert fixed["rom_config"].endswith("rom_config_aerostructural2.yaml")
 
 
 def test_aero_forces_rejects_a_missing_rom():
@@ -483,3 +498,72 @@ def test_aero_forces_rejects_a_missing_rom():
         },
     )
     assert reply.status_code == 400
+
+
+def test_angle_of_attack_limits_round_trip_through_init_and_step(client):
+    payload = dict(client.init_payload)
+    payload["angle_of_attack_limits"] = {"min": -3.0}
+    reply = client.post("/init", json=payload)
+    assert reply.status_code == 200
+    assert reply.json()["angle_of_attack_limits"]["min"] == -3.0
+    phase = StubPhase.latest
+    override = phase.pattern_config["sim_parameters"]["opti_limits_override"]
+    # the omitted side keeps the default ceiling
+    assert override["angle_of_attack"] == pytest.approx(
+        [math.radians(-3.0), DEFAULT_OPTI_LIMITS["angle_of_attack"][1]]
+    )
+
+    phase.results.append(_fake_result())
+    phase.release.set()
+    step = client.post("/step", json={}).json()  # omitted -> kept
+    assert step["angle_of_attack_limits"]["min"] == -3.0
+
+    phase.results.append(_fake_result())
+    phase.release.set()
+    step = client.post("/step", json={"angle_of_attack_limits": {}}).json()
+    assert step["angle_of_attack_limits"] is None  # {} -> defaults
+    assert "opti_limits_override" not in phase.pattern_config["sim_parameters"]
+
+    assert client.post(
+        "/step", json={"angle_of_attack_limits": {"min": 5, "max": 2}}
+    ).status_code == 422
+    assert client.post(
+        "/step", json={"angle_of_attack_limits": {"max": 12, "stall_margin": 2}}
+    ).status_code == 422
+
+
+def test_angle_of_attack_stall_margin_uses_the_rom_stall_angle(client, monkeypatch):
+    alpha_stall = math.radians(15.5)
+    monkeypatch.setattr(
+        session_mod,
+        "create_system_model_from_yaml",
+        lambda yaml_path, **kwargs: SimpleNamespace(
+            wind=None,
+            rho=1.225,
+            kite=SimpleNamespace(
+                rho=1.225,
+                air_density_model=None,
+                aero_params={"angle_of_attack_stall": alpha_stall},
+            ),
+        ),
+    )
+    payload = dict(client.init_payload)
+    payload["angle_of_attack_limits"] = {"min": -5.0, "stall_margin": 2.0}
+    reply = client.post("/init", json=payload)
+    assert reply.status_code == 200
+    override = StubPhase.latest.pattern_config["sim_parameters"][
+        "opti_limits_override"
+    ]
+    assert override["angle_of_attack"] == pytest.approx(
+        [math.radians(-5.0), alpha_stall - math.radians(2.0)]
+    )
+    assert reply.json()["angle_of_attack_limits"] == {
+        "min": -5.0, "max": None, "stall_margin": 2.0
+    }
+
+
+def test_angle_of_attack_stall_margin_needs_a_rom_stall_angle(client):
+    payload = dict(client.init_payload)
+    payload["angle_of_attack_limits"] = {"stall_margin": 2.0}
+    # the fixture's system model has no kite ROM, so no stall angle
+    assert client.post("/init", json=payload).status_code == 400

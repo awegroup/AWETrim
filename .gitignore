@@ -177,7 +177,7 @@ cython_debug/
 
 # Winch data from PathEditor
 
-src/awetrim/kinematics/pp_ws6-9_GS3_KCU4.A_KiteV9.60.A.json
+src/awetrim/kinematics/pp_*.json
 src/awetrim/kinematics/winch_force_curve.py
 
 # Personal scripts (own private repo: ocayon/AWETrim-personal)
@@ -210,3 +210,6 @@ docs/billow/integration_new.pdf
 
 # One-off A/B probe variants of the as-flown system files
 data/LEI-V3-KITE/*_probe.yaml
+
+# Written by examples/4_trajectory_optimization/reelout/generate_spline_config.py
+data/*/cycle_configs/generated_spline.yaml

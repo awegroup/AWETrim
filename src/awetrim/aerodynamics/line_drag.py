@@ -19,15 +19,17 @@
 Why this module exists
 ----------------------
 The steering and depower "lines" of an LEI kite are not round Dyneema; they
-are flat webbing (LEI-V3: 12 x 1.5 mm). ``struc_geometry.yaml`` stores them
-with an AREA-EQUIVALENT round diameter --
+are flat webbing (LEI-V3: 12 x 1.5 mm). The structure file (awesIO
+``structure.yml``) stores their segments with an AREA-EQUIVALENT round
+``diameter`` --
 
     d_eq = sqrt(4 w t / pi)                       (LEI-V3: 4.787307 mm)
 
 -- which is exactly right for what it was introduced for, the structural
 cross-section: line mass ``rho A l0`` and stiffness ``E A / l0`` both depend on
-the area alone (``pss/structural_geometry_io.py``). But the same ``d`` is then
-handed to the bridle DRAG law as the reference width, and an area-equivalent
+the area alone (``awesio_structure.nodal_masses``, the structural readers).
+But the same ``d`` is then handed to the bridle DRAG law as the reference
+width, and an area-equivalent
 circle is the one equivalence that carries no information about drag: a bluff
 body's drag scales with its PROJECTED WIDTH, not with its cross-sectional area.
 A 12 x 1.5 mm tape presents up to 12 mm to the flow, 2.5x the 4.79 mm circle
@@ -128,6 +130,7 @@ __all__ = [
     "ROLL_ROUND",
     "ROLL_MODELS",
     "apply_bridle_drag_diameters",
+    "attach_bridle_lines",
     "bridle_drag_diameters",
     "cd_width_round",
     "lines_missing_width",
@@ -186,9 +189,9 @@ def tape_thickness_from_equivalent_diameter(
 ) -> float:
     """Tape thickness implied by its area-equivalent round diameter.
 
-    Inverts ``d_eq = sqrt(4 w t / pi)``, the convention ``struc_geometry.yaml``
+    Inverts ``d_eq = sqrt(4 w t / pi)``, the convention the structure file
     already uses for the tapes, so the thickness never has to be stated twice:
-    the structural ``d`` and the tape width ``w`` fix it.
+    the structural ``diameter`` and the ``tape_width`` fix it.
     """
     width = float(width)
     if width <= 0.0:
@@ -247,120 +250,119 @@ def drag_diameter_tape(
     return cd_width_tape(width, thickness, roll_model) / float(cd_cable)
 
 
-def _drag_diameter_of_row(
-    row: dict, roll_model: str, cd_cable: float
-) -> tuple[float, bool]:
-    """``(diameter, is_tape)`` for one ``bridle_lines`` row.
+def _bridle_segments(structure: Any) -> list[dict]:
+    """The bridle segments of ``structure`` (a :class:`Structure`, or anything
+    ``load_structure`` accepts); none for a missing or empty geometry."""
+    if structure is None or (isinstance(structure, dict) and not structure):
+        return []
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
 
-    A row is a flat tape when it carries a positive optional ``w`` (tape width
-    [m]); every other row keeps its structural diameter and the round law.
-    """
-    diameter = float(row["d"])
-    width = row.get("w")
+    return load_structure(structure).bridle_segments
+
+
+def _tape_width(segment: dict) -> float | None:
+    """The segment's flat-tape width [m], or None for a round line."""
+    width = segment.get("tape_width")
     if width in (None, "", 0) or float(width) <= 0.0:
-        return diameter, False
-    return (
-        drag_diameter_tape(diameter, float(width), roll_model, cd_cable),
-        roll_model != ROLL_ROUND,
-    )
+        return None
+    return float(width)
 
 
-def lines_missing_width(struc_geometry: dict) -> list[str]:
-    """``bridle_lines`` rows that look like a tape but declare no ``w``.
+def _drag_diameter_of_segment(
+    segment: dict, roll_model: str, cd_cable: float
+) -> float:
+    """Drag diameter of one bridle segment.
 
-    A name-based smell test, and deliberately only that: a geometry file
-    written before the ``w`` column existed still names its webbing
+    A segment is a flat tape when it carries a positive ``tape_width`` [m];
+    every other segment keeps its structural diameter and the round law.
+    """
+    diameter = float(segment["diameter"])
+    width = _tape_width(segment)
+    if width is None:
+        return diameter
+    return drag_diameter_tape(diameter, width, roll_model, cd_cable)
+
+
+def lines_missing_width(structure: Any) -> list[str]:
+    """Bridle lines that look like a tape but declare no ``tape_width``.
+
+    A name-based smell test, and deliberately only that: a geometry written
+    before the width column existed still names its webbing
     ``steering_tape``/``Power Tape``, and would otherwise be flown as a
     round cable of the area-equivalent diameter WITHOUT any sign in the
     logs. Deformed snapshots are the usual offender -- they are copies of
-    an older table. Fixing one means adding ``w`` to the geometry, never
-    guessing a width here.
+    an older table. Fixing one means adding ``tape_width`` to the geometry,
+    never guessing a width here.
     """
-    table = struc_geometry.get("bridle_lines")
-    if not table:
-        return []
-    headers = table["headers"][1:]
-    missing = []
-    for row in table["data"]:
-        spec = dict(zip(headers, row[1:]))
-        width = spec.get("w")
-        if "tape" in str(row[0]).lower() and (
-            width in (None, "", 0) or float(width) <= 0.0
-        ):
-            missing.append(str(row[0]))
+    missing: list[str] = []
+    for segment in _bridle_segments(structure):
+        name = str(segment["line"])
+        if "tape" in name.lower() and _tape_width(segment) is None:
+            if name not in missing:
+                missing.append(name)
     return missing
 
 
 def bridle_drag_diameters(
-    struc_geometry: dict,
+    structure: Any,
     roll_model: str = ROLL_AVERAGED,
     cd_cable: float = CD_CABLE_ROUND,
 ) -> list[float]:
     """Per-SEGMENT drag diameters, in the canonical bridle-line-system order.
 
-    Walks ``bridle_connections`` exactly as ``BodyAerodynamics.instantiate``
-    and ``aerostructural.aerodynamic_vsm.parse_bridle_line_specs`` do -- one
-    segment per row, plus a second one for a 3-node pulley row -- so the
+    One entry per ``Structure.bridle_segments`` row (a pulley's two arms
+    adjacent), the order ``Structure.bridle_line_system`` and
+    ``aerostructural.aerodynamic_vsm.parse_bridle_line_specs`` use, so the
     returned list aligns element-by-element with ``_bridle_line_system``.
-    Rows without a ``w`` column return their structural diameter unchanged.
+    Segments without a tape width return their structural diameter unchanged.
     """
     if roll_model not in ROLL_MODELS:
         raise ValueError(
             f"unknown tape roll model {roll_model!r}; expected one of {ROLL_MODELS}"
         )
-    if (
-        "bridle_connections" not in struc_geometry
-        or "bridle_lines" not in struc_geometry
-    ):
+    segments = _bridle_segments(structure)
+    if not segments:
         return []
-    missing = lines_missing_width(struc_geometry)
+    missing = lines_missing_width(structure)
     if missing and roll_model != ROLL_ROUND:
         logger.warning(
-            "bridle line(s) %s look like flat tape but declare no width "
-            '"w" -- they keep the round drag law of their area-equivalent '
-            "diameter. Add w [m] to the bridle_lines table.",
+            "bridle line(s) %s look like flat tape but declare no "
+            "tape_width -- they keep the round drag law of their "
+            "area-equivalent diameter. Add tape_width [m] to their segments.",
             ", ".join(missing),
         )
-    headers = struc_geometry["bridle_lines"]["headers"][1:]
-    lines = {
-        row[0]: dict(zip(headers, row[1:]))
-        for row in struc_geometry["bridle_lines"]["data"]
-    }
-    diameters: list[float] = []
-    for row in struc_geometry["bridle_connections"]["data"]:
-        diameter, _ = _drag_diameter_of_row(lines[row[0]], roll_model, cd_cable)
-        diameters.append(diameter)
-        if len(row) == 4:
-            diameters.append(diameter)
-    return diameters
+    return [
+        _drag_diameter_of_segment(segment, roll_model, cd_cable)
+        for segment in segments
+    ]
 
 
 def apply_bridle_drag_diameters(
     body_aero: Any,
-    struc_geometry: dict,
+    structure: Any,
     roll_model: str = ROLL_AVERAGED,
     cd_cable: float = CD_CABLE_ROUND,
 ) -> int:
     """Swap the drag diameters into a body's bridle-line system in place.
 
-    Call it once, right after the body is instantiated with bridles. Returns
-    the number of segments whose diameter changed (0 when the geometry has no
-    tapes, or under ``ROLL_ROUND``), so callers can report the correction.
-    Raises if the segment count disagrees with the geometry -- that would mean
-    the two parses have drifted apart and the diameters would land on the wrong
-    lines.
+    Call it once, right after the body is given its bridle lines (see
+    :func:`attach_bridle_lines`). Returns the number of segments whose
+    diameter changed (0 when the geometry has no tapes, or under
+    ``ROLL_ROUND``), so callers can report the correction. Raises if the
+    segment count disagrees with the geometry -- that would mean the two
+    lists have drifted apart and the diameters would land on the wrong lines.
     """
     line_system = getattr(body_aero, "_bridle_line_system", None)
     if not line_system:
         return 0
-    diameters = bridle_drag_diameters(struc_geometry, roll_model, cd_cable)
+    diameters = bridle_drag_diameters(structure, roll_model, cd_cable)
     if not diameters:
         return 0
     if len(diameters) != len(line_system):
         raise ValueError(
             f"bridle-line system has {len(line_system)} segments but the "
-            f"structural geometry yields {len(diameters)}; the connection "
-            "parses have drifted apart"
+            f"structural geometry yields {len(diameters)}; the segment "
+            "lists have drifted apart"
         )
     changed = 0
     for line, diameter in zip(line_system, diameters):
@@ -370,29 +372,50 @@ def apply_bridle_drag_diameters(
     return changed
 
 
+def attach_bridle_lines(
+    body_aero: Any,
+    structure: Any,
+    roll_model: str = ROLL_AVERAGED,
+    cd_cable: float = CD_CABLE_ROUND,
+) -> int:
+    """Give a VSM body the bridle of ``structure``, with tape drag diameters.
+
+    Sets ``body_aero._bridle_line_system`` to
+    ``Structure.bridle_line_system()`` -- what
+    ``BodyAerodynamics.instantiate(bridle_path=...)`` would pass to the
+    constructor, which derives nothing else from it -- then applies
+    :func:`apply_bridle_drag_diameters`. VSM's own ``bridle_path`` parse reads
+    only the retired geometry format, so every AWETrim builder goes through
+    here instead. Returns the number of tape segments changed.
+    """
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
+
+    structure = load_structure(structure)
+    body_aero._bridle_line_system = structure.bridle_line_system()
+    return apply_bridle_drag_diameters(body_aero, structure, roll_model, cd_cable)
+
+
 def tape_summary(
-    struc_geometry: dict,
+    structure: Any,
     roll_model: str = ROLL_AVERAGED,
     cd_cable: float = CD_CABLE_ROUND,
 ) -> list[dict]:
-    """One row per tape in ``bridle_lines`` -- for logging and provenance."""
-    if "bridle_lines" not in struc_geometry:
-        return []
-    headers = struc_geometry["bridle_lines"]["headers"][1:]
+    """One row per tape line (by ``line`` name) -- for logging and provenance."""
     rows = []
-    for row in struc_geometry["bridle_lines"]["data"]:
-        spec = dict(zip(headers, row[1:]))
-        width = spec.get("w")
-        if width in (None, "", 0) or float(width) <= 0.0:
+    seen = set()
+    for segment in _bridle_segments(structure):
+        width = _tape_width(segment)
+        if width is None or segment["line"] in seen:
             continue
-        diameter = float(spec["d"])
-        drag = drag_diameter_tape(diameter, float(width), roll_model, cd_cable)
+        seen.add(segment["line"])
+        diameter = float(segment["diameter"])
+        drag = drag_diameter_tape(diameter, width, roll_model, cd_cable)
         rows.append(
             {
-                "name": row[0],
-                "width_m": float(width),
+                "name": segment["line"],
+                "width_m": width,
                 "thickness_m": tape_thickness_from_equivalent_diameter(
-                    diameter, float(width)
+                    diameter, width
                 ),
                 "diameter_structural_m": diameter,
                 "diameter_drag_m": drag,

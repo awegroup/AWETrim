@@ -42,7 +42,31 @@ src/awetrim/aerodynamics/
   apparent_wind.py
   panel_kernels.py
   trim_casadi.py
+  vsm_settings.py
 ```
+
+`vsm_settings.py` (2026-10-28) is the ONE place AWETrim's VSM settings are
+stated: `VSM_SOLVER_DEFAULTS` (Solver kwargs) and `VSM_BODY_DEFAULTS`
+(`BodyAerodynamics.instantiate` kwargs). Build every VSM object through
+`make_vsm_solver(**overrides)` / `BodyAerodynamics.instantiate(...,
+**vsm_body_kwargs())`, never a bare `Solver()`, whose defaults follow the
+installed VSM (develop: `is_aoa_corrected=True`, automatic relaxation).
+The model (2026-10-28, VSM develop 1201f6f): 3/4-chord VSM, freestream force
+directions (`is_aoa_corrected=False`), the attached-trailed vortex force ON
+(`is_with_attached_trailed_vortex_force=True`), relaxation 0.01. Before that
+date AWETrim ran VSM 8825a12 without the attached-trailed force (built-shape
+polar: CL +2%, CD +4% at alpha 10 deg with it). An option the installed VSM
+lacks is dropped at its no-op value and refused otherwise. The aerostructural
+`aerodynamic:` block overrides any of the same keys.
+
+The CasADi trim mirrors that model: `panel_kernels.panel_forces` (drag along
+the section's own flow direction) plus `attached_trailed_geometry` /
+`attached_trailed_forces` / `boundary_shares` (one Kutta-Joukowski force per
+panel boundary, split half to either neighbour in `F_distribution`). The
+induction at the attached-trailed points is a numeric `(n+1, n)` matrix per
+axis, frozen per wake pass with the AIC (`CasadiTrim.compute_aic` returns six
+matrices), built ring by ring with VSM's `induced_velocity_at_points`.
+`CasadiTrimOptions.is_with_attached_trailed_vortex_force` switches it.
 
 `trim_casadi.py` (2026-09-15) solves the quasi-steady trim as ONE CasADi
 root-finding problem: unknowns = the 5 trim states + the panel circulations
@@ -58,7 +82,7 @@ result vocabulary plus `casadi_trim` diagnostics and the exact Jacobian
 (`jacobian`, `jacobian_layout`) for the stability work. LEI-V3, 27 panels:
 tetherless 0.08 s vs 5.5 s production (1.1 s with the casadi_newton inner
 loop), Williams 0.12 s vs 2.6 s; build 0.3 s once.
-`scripts/aerodynamics/compare_trim_solvers.py` is the comparison.
+`compare_trim_solvers.py` (available on request) is the comparison.
 
 Three things it made visible, all now pinned by
 `tests/aerodynamics/test_trim_casadi.py` / `test_panel_kernels.py`:
@@ -99,10 +123,12 @@ is what a cache keys on). `solve_with_body(x_guess, gamma_seed)` returns
 `(result, body)` in the aerostructural coupling's vocabulary: the body from
 `body_at_trim` (rotated to the trim attitude, world-frame inflow set through
 the VSM `va` setter so `apparent_wind.inflow_state_of` reads it) and
-`F_distribution` / `panel_cp_locations` / `alpha_at_ac` (VSM's
-aerodynamic-centre alpha, the stall-detection input) from one
+`F_distribution` / `M_distribution` / `panel_cp_locations` / `alpha_at_ac`
+(VSM's aerodynamic-centre alpha, the stall-detection input) from one
 `Solver.solve` at the converged circulation, plus the stalled-fraction and
-KCU fields. `panel_kernels.line_force` and `apparent_wind.apparent_wind_at`
+KCU fields. The two NumPy trims (`vsm_quasi_steady`) return
+`M_distribution` too (since 2026-10-28): the exact strut-lever load transfer
+of the aerostructural coupling needs each panel's moment. `panel_kernels.line_force` and `apparent_wind.apparent_wind_at`
 accept symbolic endpoints/stations for this; their NumPy paths are unchanged.
 
 **In the aerostructural coupling** (`aerostructural/aerodynamic_vsm.py`,
@@ -171,7 +197,7 @@ force at the kite, so it cannot call a point kernel at all. Both are CasADi.
 geometry origin): **both** halves of the KCU force — its inflow and its moment
 arm `station - r0` — are driven from that one symbol, so they cannot drift.
 `tests/aerodynamics/test_apparent_wind_kernel.py` locks that every shipped
-`struc_geometry*.yaml` really does put `bridle_point_node` there.
+`structure.yml` really does put its KCU point (`Structure.kcu`) there.
 
 `kcu_drag.py` owns a dependency-light (numpy only, **no VSM/CasADi**) bluff-body
 drag model for the **kite control unit**, treated as a finite cylinder hanging on
@@ -202,21 +228,32 @@ apparent wind (axis ⊥ the KCU/tether axis), so `from_dimensions`/
 `from_system_model` add the thrust area to the BROADSIDE (crossflow) slot only
 — the along-tether flow is shadowed by the KCU body, so the axial slot is
 untouched. Parameters ride on the kite as
-`diameter_turbine`/`thrust_coefficient_turbine`, read by `system/factory.py`
-from the optional `control_system.turbine` yaml block (absent = zeros = no
-turbine term; turbine MASS stays inside the KCU mass).
+`diameter_turbine`/`thrust_coefficient_turbine`: `system/factory.py` reads
+the rotor diameter from the optional awesIO `control_system.turbine.structure`
+block (`rotor_diameter`, `mass`, `position_KA`; absent = no turbine term) and
+always uses `CT_TURBINE_OPERATING`, since C_T is aerodynamic and not part of
+the hardware file. The turbine MASS is its own in the file;
+`utils.system_config.get_kcu_mass` adds it to the KCU body mass, and every
+KCU-mass reader goes through that function. `position_KA` (hub, origin at the
+KCU, -z = hanging) is not used: the turbine is lumped at the KCU.
 
 `line_drag.py` owns the **section** drag of bridle lines: the round-cable
 coefficient the crossflow law has always used, and the flat-tape model added
 2026-08-21 for the steering/depower webbing. It is numpy-free at the physics
 level (plain `math`) and knows nothing about VSM. The problem it solves:
-`struc_geometry.yaml` stores a 12 x 1.5 mm tape as an AREA-equivalent circle
-(`d_eq = sqrt(4wt/pi)` = 4.787307 mm on LEI-V3), which is correct for line mass
+the structure file (awesIO `structure.yml`) stores a 12 x 1.5 mm tape as an
+AREA-equivalent circle (`d_eq = sqrt(4wt/pi)` = 4.787307 mm on LEI-V3), which
+is correct for line mass
 and EA and meaningless for drag -- drag follows the projected WIDTH. Public API:
 `tape_thickness_from_equivalent_diameter`, `cd_width_round`, `cd_width_tape`,
-`drag_diameter_tape`, `bridle_drag_diameters(struc_geometry, roll_model,
-cd_cable)`, `apply_bridle_drag_diameters(body_aero, ...)` (in-place on
+`drag_diameter_tape`, `bridle_drag_diameters(structure, roll_model,
+cd_cable)` (one per `Structure.bridle_segments` row),
+`apply_bridle_drag_diameters(body_aero, structure, ...)` (in-place on
 `_bridle_line_system`, returns the number of segments changed),
+`attach_bridle_lines(body_aero, structure, ...)` (sets `_bridle_line_system`
+from `Structure.bridle_line_system()`, then applies the drag diameters: the ONE
+way every builder gives a VSM body its bridle, since VSM's own
+`instantiate(bridle_path=...)` parses only the retired geometry format),
 `lines_missing_width`, `tape_summary` and `settings_from_config` (the single
 source of the `aerodynamic_bridle.tape_roll_model` / `cd_cable` YAML key names).
 
@@ -226,11 +263,12 @@ Three things to know before touching it:
   line system's third slot, because `cd_cable` is baked into VSM's line-force
   call. `d_drag = cd_width / cd_cable`. It must never be written back into a
   structural table.
-- A tape is declared by an optional `w` column (width [m]) on a `bridle_lines`
-  row -- rows without it keep the round law, so kites whose tape width is
-  unknown (LEI-V9) are unaffected. `lines_missing_width` warns when a row is
-  *named* like a tape but declares no width, which is how legacy deformed
-  snapshots would otherwise regress silently.
+- A tape is declared by the optional `tape_width` column [m] of its
+  `segments` rows -- segments without it keep the round law, so kites whose
+  tape width is unknown (LEI-V9) are unaffected. `lines_missing_width` warns
+  when a `line` is *named* like a tape but declares no width, which is how
+  legacy deformed snapshots would otherwise regress silently. Every function
+  takes a `Structure` or anything `load_structure` accepts.
 - `roll_model` is a real modelling choice, not a tuning knob: the tape's roll
   angle about its own axis is not in the geometry and the broadside and edge-on
   limits differ by **18x**. `averaged` (default) is the uniform-roll mean,
@@ -318,7 +356,7 @@ Primitives kept here for AWEDesign (and general use):
   9-state fast subsystem, assembled directly from the governing equations
   (independent of `A_full`): `f(0)` is the trim equilibrium residual and
   central-differencing `f` cross-checks `A_full`.
-  Used by `scripts/personal/wes-quasi-steady/verify_linearization.py`.
+  Used by `verify_linearization.py` (available on request).
 - `vsm_quasi_steady.corotating_state_transform` — constant unipotent map `T`
   from the linearisation's native FROZEN stability axes to the co-rotating
   course axes (course axes at trim, carried by the body about B — the paper's
@@ -353,8 +391,8 @@ Primitives kept here for AWEDesign (and general use):
   `eps_position_lateral_used`, and the independent verification field
   `nonlinear_rhs_aug` / `nonlinear_rhs_aug_full` (12-state analogue of
   `nonlinear_rhs`, cross-checked by
-  `scripts/personal/wes-quasi-steady/verify_linearization.py
-  --position-states`). Consumers: `stability_common.linearise_trim`
+  `verify_linearization.py
+  --position-states` (available on request)). Consumers: `stability_common.linearise_trim`
   (`position_states=True` forwarded; adds `is_lat_aug`,
   `participation_aug`, `alpha_lon_aug`, `alpha_lat_aug`) and
   `run_modal_stability.py` (`--position-states`, default on: 10-vs-12
@@ -522,8 +560,8 @@ Primitives kept here for AWEDesign (and general use):
   `timeder_angle_course` sign convention as the course-rate block (see the
   sign note there — do not mix with `delta_chi = dv/u0`). A coordinated turn
   perturbation composes it with `omega_perturb = -delta_course_rate *
-  e_radial`. Consumer: `scripts/personal/wes-quasi-steady/
-  run_static_stability.py` (six-channel static-stability sweeps).
+  e_radial`. Consumer: `wes-quasi-steady/
+  run_static_stability.py` (available on request) (six-channel static-stability sweeps).
 
   `static_slopes_summary(stability)` — the cheap static-stability verdict
   (~20 warm VSM solves via `linearise_cg_eom`, no sweeps): six tangent
@@ -565,13 +603,13 @@ Primitives kept here for AWEDesign (and general use):
   aerodynamic neutral point / static margin; net inputs add the transport
   response to the tilted kite velocity (gravity/gyro arms do not respond
   to aoa at frozen attitude). The kite margin is the B one — consumer:
-  `scripts/personal/wes-quasi-steady/run_static_stability.py`.
+  `run_static_stability.py` (available on request).
   `eval_force_moment(..., with_contributions=True)` appends a 4th return
   element: the per-contributor B-point breakdown (F_aero/F_tether/
   F_gravity/F_transport/F_centripetal; M_aero_B/M_gravity_B/M_transport_B/
   M_gyro_B — the tether has no moment about B), consumed by the pivot-B
   static sweeps. Consumers:
-  `scripts/aerodynamics/compute_stability_derivatives.py` and the
+  `examples/1_aerodynamics/compute_stability_derivatives.py` and the
   wes-quasi-steady static pipeline.
 
   `linearise_cg_eom(stability)` linearises the CG form over `CG_STATE_NAMES`
@@ -612,7 +650,7 @@ Keep the top-level public import path stable through `vsm_quasi_steady.py`.
 ## Public Script Layout
 
 ```text
-scripts/aerodynamics/vsm_quasi_steady/
+vsm_quasi_steady/ (available on request)
   solve_single_state.py
   run_sweep.py
   profile_single_state.py
@@ -622,21 +660,21 @@ scripts/aerodynamics/vsm_quasi_steady/
 Case-specific scripts may live one level deeper, for example:
 
 ```text
-scripts/aerodynamics/vsm_quasi_steady/tudelft_v3/
+tudelft_v3/ (available on request)
 ```
 
 Parametric shape scripts (built on `parametric_geometry.py` for 3D planforms and
 `parametric_airfoil.py` for 2D sections) live in:
 
 ```text
-scripts/aerodynamics/parametric_shapes/
+parametric_shapes/ (available on request)
   generate_shape_variations.py
   optimize_lei_airfoil.py
 ```
 
 The swept-AWES design-tool scripts (`preview_geometry`, `place_wing`,
 `design_single_case`, `design_swept_awes`, `analyze_wing`, `sweep_design`) moved
-with the design layer to the **AWEDesign** repo (`scripts/` there). They build on
+with the design layer to the **AWEDesign** repo (`examples/` there). They build on
 `build_swept_wing` + `turn_radius_vs_steer_moment` from here plus `awedesign`'s
 own `design_stats` / `weight_model`.
 
@@ -702,7 +740,7 @@ Public functions should use these names:
   drag + half-weight, no ground closure; matches the ROM cycle model but
   overestimates tether drag). Both also take `gamma_loop` (default `"base"`),
   forwarded to
-  `_default_vsm_solver` → VSM `Solver(gamma_loop_type=...)`. `"anderson"` selects
+  `default_vsm_solver` → VSM `Solver(gamma_loop_type=...)`. `"anderson"` selects
   the Anderson-accelerated inner loop (~25× fewer inner iterations in attached
   flow), but **only use it with a tight `gamma_tolerance` (~1e-8)**: these trim
   solvers use a finite-difference outer Jacobian, and Anderson's superlinear
@@ -728,16 +766,22 @@ Public functions should use these names:
   loop carries a corner-averaged Jacobian and gate-aware step control -- a
   few deep-stall states seeded from a different sideslip still take the base
   fallback (3/64 warm-chained at 26 deg). Not the default anywhere yet;
-  `scripts/aerodynamics/compare_gamma_loops_polar.py` is the bake-off.
+  `compare_gamma_loops_polar.py` (available on request) is the bake-off.
   Both trim solvers additionally take `is_with_artificial_viscosity`
   (default `False`) and `artificial_viscosity_factor` (default `0.035`),
-  forwarded to `_default_vsm_solver` → VSM `Solver`: the parameter-free
+  forwarded to `default_vsm_solver` → VSM `Solver`: the parameter-free
   Li/Gaunaa spanwise artificial viscosity that stabilises the gamma loop
   around stall (same option the aerostructural side exposes via as_config
   `aerodynamic.is_with_artificial_viscosity`). Enable it for trims within
   ~1 deg of the stall margin, where the base loop can oscillate without
   converging and the unconverged gamma corrupts the outer trim residuals.
   Ignored when an explicit `solver` is passed.
+  `default_vsm_solver` (public since 2026-10-28; `_default_vsm_solver` is an
+  alias) is THE place AWETrim's VSM settings live (zero gamma seed, `base`
+  loop at 1e-6, AV off, `is_aoa_corrected=False`), stated rather than
+  inherited because VSM's defaults change between versions. Scripts that
+  solve VSM outside a trim (e.g. `examples/1_aerodynamics/compute_polars.py`)
+  build their solver with it so they share the trims' force law.
   **Attached-first VSM solve (2026-09-01, OPT-IN via `AV_ATTACHED_FIRST`, off by default -- it did not hold the attached family and cost 3.6x):** every VSM evaluation inside both trim solvers goes through `solve_vsm_attached_first`; when enabled: AV OFF first (seeded, capped at `ATTACHED_FIRST_MAX_ITERATIONS`); if it converges with every panel below its stall onset that IS the AV solution (AV is a no-op below the onset) and is returned with `av_stage = "attached"`; otherwise the AV solve runs seeded from that iterate (`av_stage = "stalled"`). This makes the solver land on the attached family whenever one exists instead of whichever family the seed was nearest to (the two-branched AV circulation made depower continuations alternate every row). The trim result carries `av_stage`. Both trim result dicts carry `stalled_fraction` (span-weighted share of the wing past its 2-D stall onset), `stalled_area_fraction`, `n_stalled_panels` / `n_panels` and `stall_margin_min_deg` (`stall_fraction_fields`, onset = first interior Cl peak of each panel polar, the VSM's own AV gate; added 2026-09-01). Both trim solvers take `gamma_seed` (optional, one circulation value per
   panel; the tetherless solver since 2026-08-31 — before that it silently
   lacked the parameter and callers cold-started): an initial guess passed to
@@ -777,7 +821,7 @@ Public functions should use these names:
 
 ## Stability Script Configuration
 
-`scripts/aerodynamics/compute_stability_derivatives.py` is the STATIC
+`examples/1_aerodynamics/compute_stability_derivatives.py` is the STATIC
 stability driver: trim → `compute_vsm_trim_stability_derivatives` (always
 course-frame `DEFAULT_AXES`, always `course_rate_state=True`) →
 `static_slopes_summary` verdict table + `J_full`/`J_course_rate` diagnostics

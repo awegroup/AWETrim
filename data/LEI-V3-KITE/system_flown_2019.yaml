@@ -1,7 +1,8 @@
 # As-flown configuration of the 2019-10-08 flight, per the hardware datasheet
 # (2026-09-02): wing 14.2 kg (11 kg canopy + 3.2 kg canopy-mounted equipment),
-# KCU 22.0 kg (19.2 kg KCU+cover + 2.8 kg onboard wind turbine), 10 mm tether.
-# Total airborne kite mass ~38.79 kg (wing 14.2 + bridle 2.5875 + KCU 22.0).
+# KCU 22.0 kg (19.2 kg KCU+cover + 2.8 kg onboard wind turbine, stated
+# separately in control_system.turbine), 10 mm tether.
+# Total airborne kite mass ~38.79 kg (wing 14.2 + bridle 2.5848 + KCU 22.0).
 # The 2025-10-09 flight used a different KCU and tether -- see
 # system_flown_2025.yaml. For optimization studies use system.yaml
 # (KCU 8.4 kg) instead.
@@ -35,49 +36,47 @@ components:
       type: LEI_soft_kite
       version: 3.0
       structure:
-        # Populated by populate_system_yml.py (mass overridden below)
+        # Geometry fields derived from structure.yml; the
+        # projected area is the EKF reference area (19.75 m2, the ROMs'
+        # too), the mass the as-flown one below.
         projected_surface_area: 19.75 # m²
-        span: 8.282                    # m
+        span: 8.3052                   # m
         # 11 kg canopy + 3.2 kg canopy-mounted equipment (datasheet); the
-        # geometry-derived canopy-only mass is 10.9926 kg, and the inertia
+        # geometry-derived canopy-only mass is 11.0 kg, and the inertia
         # tensor below is still that canopy-only estimate.
         mass: 14.2                     # kg
-        # Canopy-only (no bridle, KCU or canopy-mounted equipment): element masses
-        # lumped onto the 20 LE/TE nodes of struc_geometry.yaml. CG and inertia are
-        # in that frame: origin at the bridle point (KCU), x chordwise LE -> TE,
+        # Canopy-only (no bridle, KCU or canopy-mounted equipment), from
+        # structure.yml (awetrim.utils.system_yml_sync.
+        # compute_wing_stats). CG and inertia are in that file's
+        # frame: origin at the bridle point (KCU), x chordwise LE -> TE,
         # y spanwise, z up towards the wing. The inertia is about the CG, along
         # those axes (not principal axes), with products -sum(m x z).
         center_of_mass:                         # m
-        - -0.0413
+        - -0.0641
         - -0.0
-        - 10.3
+        - 10.3527
         inertia_tensor:
-        - - 84.6787
+        - - 87.7593
           - 0.0
-          - 0.8031
+          - 0.6692
         - - 0.0
-          - 18.6955
-          - 0.0
-        - - 0.8031
-          - 0.0
-          - 88.6081
-        side_projected_area: 0.2923
-        planform_surface_area: 21.0559
+          - 14.0092
+          - -0.0
+        - - 0.6692
+          - -0.0
+          - 87.1131
+        side_projected_area: 0.3487
+        planform_surface_area: 24.4223
     bridle:
       name: LEI-V3 Bridle
       type: LEI_soft_kite_bridle
       version: 1.0
       structure:
         bridle_point_node: [0, 0, 0]
-        # Populated by populate_system_yml.py
-        total_nominal_line_length: 79.522    # m, sum of unique bridle_line l0 values
-        avg_line_diameter: 0.00285           # m, connection-length-weighted average
-        material:
-          type: dyneema
-          density: 724.0           # kg/m³
-          youngs_modulus: 20.0e+9   # Pa
-          damping_per_stiffness: 0.0
-        mass: 2.5875                         # kg, lines + pulleys
+        # From structure.yml (system_yml_sync.compute_bridle_stats)
+        total_nominal_line_length: 86.548    # m, sum of unique bridle_line l0 values
+        avg_line_diameter: 0.00283           # m, connection-length-weighted average
+        mass: 2.5848                         # kg, lines + pulleys
     control_system:
       name: LEI-V3 KCU
       type: kite_control_unit
@@ -87,18 +86,26 @@ components:
         # Area-equivalent diameter of the datasheet's 0.25 m² KCU frontal
         # area (kcu_drag uses pi*(d/2)^2 as the frontal area): d = 0.5642 m.
         diameter: 0.5642 # m
-        mass: 22.0       # kg, 19.2 KCU+cover + 2.8 onboard wind turbine
+        mass: 19.2       # kg, KCU+cover WITHOUT the turbine (its mass is below)
         center_of_mass: [0.0, 0.0, 0.0]  # m, same as bridle_point_node
       # Onboard 4-bladed ram-air turbine (2019 flight ONLY -- the 2025 KCU
-      # carried none), DRAG only: its mass is inside the KCU mass above.
+      # carried none). awesIO keeps its mass separate; AWETrim lumps it into
+      # the KCU (utils.system_config.get_kcu_mass: 19.2 + 2.8 = 22.0 kg).
       # Mounted ON TOP of the KCU facing the apparent wind: its
-      # momentum-theory thrust C_T on the swept area joins the KCU CROSSFLOW
-      # drag; the along-tether flow is shadowed by the KCU body, so it adds
-      # nothing axially -- awetrim.aerodynamics.kcu_drag (added 2026-09-04;
-      # trim A/B: reel-out v_tau/F_t land ~on the flight).
+      # momentum-theory thrust (C_T = kcu_drag.CT_TURBINE_OPERATING, 0.85)
+      # on the swept area joins the KCU CROSSFLOW drag; the along-tether flow
+      # is shadowed by the KCU body, so it adds nothing axially --
+      # awetrim.aerodynamics.kcu_drag (added 2026-09-04; trim A/B: reel-out
+      # v_tau/F_t land ~on the flight).
       turbine:
-        diameter: 0.50            # m, rotor
-        thrust_coefficient: 0.85  # -, operating (Betz 0.89; freewheel ~1.2)
+        name: LEI-V3 KCU turbine
+        type: horizontal_axis_turbine
+        version: 1.0
+        structure:
+          rotor_diameter: 0.50       # m
+          number_of_blades: 4
+          mass: 2.8                  # kg, NOT in the KCU mass above
+          position_KA: [0.0, 0.0, 0.5]  # m, hub; ESTIMATE (top of the 1.0 m KCU), not measured
   tethers:
   - name: LEI-V3 Tether
     type: non_conductive_tether
@@ -119,10 +126,8 @@ components:
                            # density, explained the fit gap.
                            #  SK78 fibre itself is ~970)
       max_tether_force: 8400.0  # N
-      conductive: false
       material:
         type: Dyneema-SK78
-        youngs_modulus: 850.0e+6  # Pa (0.85 GPa)
   ground_station:
     name: LEI-V3 Ground Station
     type: pumping_ground_gen_station
@@ -136,14 +141,12 @@ components:
     - name: LEI-V3 Drum
       type: electric_winch
       max_tether_force: 8400.0  # N
-    gearboxes:
-    - name: LEI-V3 Gearbox
-      type: planetary
-      gear_ratio: 1.0
 
 # Reduced-order model this system runs with (awetrim.system.factory.
-# resolve_rom_config_path). The LEI-V3 has rom_config_aerostructural_flight_corrected.yaml (the default)
-# (flight-calibrated) and rom_config_aerostructural.yaml (simulation-only).
+# resolve_rom_config_path). The LEI-V3 default is rom_config_aerostructural.yaml
+# (simulation-only: FEM-reduced wireframe with canopy billowing, identified
+# 2026-10-29). rom_config_aerostructural_flight_corrected.yaml is its 2019
+# flight correction (theta_b, dC_D, the roll-gain scale; redone 2026-10-29).
 models:
   reduced_order:
-    aerodynamics: rom_config_aerostructural_flight_corrected.yaml
+    aerodynamics: rom_config_aerostructural.yaml

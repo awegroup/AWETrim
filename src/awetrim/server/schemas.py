@@ -98,6 +98,24 @@ class InflowConditions(BaseModel):
         description="Wind speeds [m/s] at heights, default [wind_speed]",
     )
 
+    air_density_law: Literal["constant", "exponential"] = Field(
+        default="constant",
+        description="constant = rho_zero everywhere; exponential = "
+        "rho_zero * exp(-(z + height_gnd)/8550) at the kite height z "
+        "(AtmosphericModels.jl calc_rho)",
+    )
+    rho_zero: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="Air density [kg/m3]: sea-level density for the "
+        "exponential law, the density itself for the constant one. "
+        "Default: the system file's value (1.225)",
+    )
+    height_gnd: float = Field(
+        default=0.0,
+        description="Ground altitude above sea level [m] (exponential law)",
+    )
+
     @model_validator(mode="after")
     def _check_samples(self):
         if (self.heights is None) != (self.speeds is None):
@@ -459,6 +477,51 @@ class PatternLimits(BaseModel):
         return self
 
 
+class AngleOfAttackLimits(BaseModel):
+    """Optional bounds on the kite's angle of attack, in DEGREES.
+
+    The angle is the ROM's own (``aerodynamics`` of the ROM file in use), so
+    a ROM that measures it from another reference chord trims at other values
+    for the same lift: the default box (0 <= alpha <= 14 deg) can then cut off
+    states the kite flies, e.g. the depowered ones of a ROM that trims below
+    0 deg there. ``stall_margin`` keeps alpha that far below the ROM's stall
+    angle (``aerodynamics.params.angle_of_attack_stall``) instead of a fixed
+    ceiling. Every field is optional; an omitted side keeps the default. On
+    /step the struct replaces the session's limits as a whole (send ``{}`` to
+    return to the defaults).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    min: Optional[float] = Field(
+        default=None,
+        gt=-90,
+        lt=90,
+        description="alpha stays >= this [deg] at every node",
+    )
+    max: Optional[float] = Field(
+        default=None,
+        gt=-90,
+        lt=90,
+        description="alpha stays <= this [deg] at every node",
+    )
+    stall_margin: Optional[float] = Field(
+        default=None,
+        ge=0,
+        description="alpha stays this far [deg] below the ROM's stall angle "
+        "at every node; replaces ``max`` (send one of the two). Needs a ROM "
+        "that states angle_of_attack_stall.",
+    )
+
+    @model_validator(mode="after")
+    def _check_bounds(self):
+        if self.max is not None and self.stall_margin is not None:
+            raise ValueError("send either max or stall_margin, not both")
+        if self.min is not None and self.max is not None and self.max <= self.min:
+            raise ValueError("max must be greater than min")
+        return self
+
+
 class InitRequest(BaseModel):
     # Unknown keys are rejected: a client still sending a removed name (e.g.
     # the old "distance_radial") gets a 422 instead of a silently ignored field.
@@ -543,6 +606,12 @@ class InitRequest(BaseModel):
         "an azimuth-amplitude floor, in degrees; omitted = the optimizer's "
         "defaults (plus whatever the cycle config sets).",
     )
+    angle_of_attack_limits: Optional[AngleOfAttackLimits] = Field(
+        default=None,
+        description="Optional bounds on the angle of attack [deg], or a "
+        "margin below the ROM's stall angle; omitted = the default box "
+        "0-14 deg.",
+    )
 
 
 class StepRequest(BaseModel):
@@ -581,6 +650,11 @@ class StepRequest(BaseModel):
         default=None,
         description="Updated pattern limits for this and later steps; omit to "
         "keep the current ones, send {} to clear them",
+    )
+    angle_of_attack_limits: Optional[AngleOfAttackLimits] = Field(
+        default=None,
+        description="Updated angle-of-attack limits for this and later steps; "
+        "omit to keep the current ones, send {} to return to the defaults",
     )
     max_iter: Optional[int] = Field(default=None, ge=1)
     wait: bool = Field(
@@ -663,6 +737,11 @@ class InitReply(BaseModel):
         default=None,
         description="Pattern limits in force [deg] (null = optimizer defaults)",
     )
+    angle_of_attack_limits: Optional[AngleOfAttackLimits] = Field(
+        default=None,
+        description="Angle-of-attack limits in force [deg] (null = the "
+        "default box)",
+    )
     state: str
     n_points: Optional[int] = None
     session_id: str = "default"
@@ -687,6 +766,11 @@ class StepReply(BaseModel):
         default=None,
         description="Pattern limits the path was optimized under [deg] "
         "(null = optimizer defaults)",
+    )
+    angle_of_attack_limits: Optional[AngleOfAttackLimits] = Field(
+        default=None,
+        description="Angle-of-attack limits the path was optimized under "
+        "[deg] (null = the default box)",
     )
     state: str
     step_index: int

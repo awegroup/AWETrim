@@ -20,7 +20,8 @@ import numpy as np
 import logging
 
 from ..utils import bridle_connection_rest_lengths, calculate_cg, calculate_inertia
-from awetrim.utils.system_config import get_kite
+from awetrim.utils.system_config import get_kcu_mass
+from awetrim.aerostructural.symmetry import warn_if_asymmetric
 
 
 def compute_wing_stats_from_pss(struc_geometry):
@@ -74,6 +75,22 @@ def compute_wing_stats_from_pss(struc_geometry):
         np.array([node_positions[n] for n in te_ids]) if te_ids else np.empty((0, 3))
     )
 
+    result = {
+        "mass": round(total_mass, 4),
+        "center_of_mass": [round(float(v), 4) for v in cg],
+        "inertia_tensor": [[round(float(v), 4) for v in row] for row in I],
+    }
+    result.update(wing_planform_stats(le_pts, te_pts))
+    return result
+
+
+def wing_planform_stats(le_pts, te_pts) -> dict:
+    """Span and areas [m, m2] of a wing given by its LE/TE points (one pair
+    per section, in span order): ``span``, ``projected_surface_area`` (x-y),
+    ``planform_surface_area`` (flat) and ``side_projected_area`` (y-z), each
+    only when it can be computed."""
+    le_pts = np.asarray(le_pts, dtype=float).reshape(-1, 3)
+    te_pts = np.asarray(te_pts, dtype=float).reshape(-1, 3)
     span_val = None
     projected_area_val = None
     side_area_val = None
@@ -140,13 +157,7 @@ def compute_wing_stats_from_pss(struc_geometry):
             side_area_val = float(S_side)
             flat_area_val = float(S_flat)
 
-    result = {
-        "mass": round(total_mass, 4),
-        "center_of_mass": [round(float(v), 4) for v in cg],
-        "inertia_tensor": [[round(float(v), 4) for v in row] for row in I],
-    }
-
-    # Include computed geometric fields when available
+    result = {}
     if span_val is not None:
         result["span"] = round(float(span_val), 4)
     if projected_area_val is not None:
@@ -155,7 +166,6 @@ def compute_wing_stats_from_pss(struc_geometry):
         result["planform_surface_area"] = round(float(flat_area_val), 4)
     if side_area_val is not None:
         result["side_projected_area"] = round(float(side_area_val), 4)
-
     return result
 
 
@@ -163,28 +173,27 @@ def _resolve_kcu_mass(struc_geometry, config=None, system_config=None):
     """Resolve KCU mass.
 
     The single source of truth is the system config
-    (``components.kites[0].control_system.structure.mass``, resolved via
-    ``get_kite``). ``struc_geometry`` must NOT carry a ``kcu_mass`` — it is only
-    honoured as a deprecated fallback.
+    (``components.kites[0].control_system.structure.mass`` plus the onboard
+    turbine's mass, resolved via ``get_kcu_mass``). ``struc_geometry`` must NOT
+    carry a ``kcu_mass`` — it is only honoured as a deprecated fallback.
 
     Priority:
-      1. system_config (awesIO): control_system.structure.mass
+      1. system_config (awesIO): control_system.structure.mass + turbine mass
       2. config (aerostructural YAML): kcu.mass or kcu_mass (per-run override)
       3. struc_geometry.kcu_mass (deprecated fallback; emits a warning)
     """
     if isinstance(system_config, dict):
-        kite = get_kite(system_config)
-        cs_struct = kite.get("control_system", {}).get("structure", {})
-        if "mass" in cs_struct:
+        mass_kcu = get_kcu_mass(system_config)
+        if mass_kcu is not None:
             if "kcu_mass" in struc_geometry:
                 logging.warning(
                     "KCU mass defined in both system_config (%.4f kg) and "
                     "struc_geometry (%.4f kg); using system_config and ignoring "
                     "struc_geometry. Remove kcu_mass from the structural geometry.",
-                    float(cs_struct["mass"]),
+                    mass_kcu,
                     float(struc_geometry["kcu_mass"]),
                 )
-            return float(cs_struct["mass"])
+            return mass_kcu
 
     if isinstance(config, dict):
         kcu_cfg = config.get("kcu", {})
@@ -344,8 +353,19 @@ def initialize_bridle_line_system(
         material = bridle_lines_dict[conn_name]["material"]
         cross_sectional_area = np.pi * (bridle_lines_dict[conn_name]["d"] / 2) ** 2
         m_line = struc_geometry[material]["density"] * cross_sectional_area * l0
-        m_arr[ci] += m_line / 2
-        m_arr[cj] += m_line / 2
+        if len(conn_data[1:]) == 3:
+            # A rope over a pulley: a quarter to each end, half to the pulley,
+            # as read_struc_geometry_yaml does. Until 2026-10-28 the whole rope
+            # went half to ci and half to cj, so the mass depended on the order
+            # the row was written in (LEI-V3 [M, 36, 38, 34] / [M, 34, 39, 37]:
+            # 77 g on node 36, 25 g on its mirror 37).
+            ck = int(conn_data[3])
+            m_arr[ci] += m_line / 4
+            m_arr[cj] += m_line / 2
+            m_arr[ck] += m_line / 4
+        else:
+            m_arr[ci] += m_line / 2
+            m_arr[cj] += m_line / 2
 
         # If there is third connections, this line is a pulley!
         # In here we will treat both ci-cj and cj-ck
@@ -634,6 +654,10 @@ def main(struc_geometry, config=None, system_config=None):
     struc_node_le_indices = np.array(struc_node_le_indices)
     struc_node_te_indices = np.array(struc_node_te_indices)
 
+    # An asymmetric input turns an unsteered kite; warn (see symmetry.py).
+    warn_if_asymmetric(
+        struc_nodes, kite_connectivity_arr, l0_arr, k_arr, linktype_arr, m_arr, config
+    )
     return (
         # node level
         struc_nodes,

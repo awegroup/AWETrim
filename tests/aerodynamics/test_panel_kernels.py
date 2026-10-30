@@ -15,7 +15,8 @@ import pytest
 casadi = pytest.importorskip("casadi")
 VSM_Wing = pytest.importorskip("VSM.core.WingGeometry").Wing
 from VSM.core.BodyAerodynamics import BodyAerodynamics  # noqa: E402
-from VSM.core.Solver import Solver  # noqa: E402
+from VSM.core.utils import induced_velocity_at_points  # noqa: E402
+from awetrim.aerodynamics.vsm_settings import make_vsm_solver  # noqa: E402
 
 from awetrim.aerodynamics import panel_kernels as pk  # noqa: E402
 from awetrim.aerodynamics.apparent_wind import apparent_wind_at  # noqa: E402
@@ -53,7 +54,7 @@ def solved_body():
         body_rates=float(np.linalg.norm(omega)), body_axis=omega / np.linalg.norm(omega),
         reference_point=np.zeros(3), rates_in_body_frame=True,
     )
-    solver = Solver(gamma_loop_type="casadi_newton", allowed_error=1e-10)
+    solver = make_vsm_solver(gamma_loop_type="casadi_newton", allowed_error=1e-10)
     results = solver.solve(body)
     assert results["gamma_converged"]
     return body, solver, results
@@ -70,7 +71,7 @@ def test_panel_forces_and_totals_match_vsm(solved_body, use_casadi):
     alpha, umag = pk.relative_flow(X(v_rel), X(s.x_airf_array), X(s.y_airf_array), X(s.z_airf_array), xp)
     alpha_np = np.asarray(alpha).ravel()
     # the kernel's alpha/umag ARE VSM's
-    alpha_vsm, umag_vsm, _, _ = s.compute_aerodynamic_quantities(gamma)
+    alpha_vsm, umag_vsm, _ = s.compute_aerodynamic_quantities(gamma)
     np.testing.assert_allclose(alpha_np, alpha_vsm, atol=1e-13)
     np.testing.assert_allclose(np.asarray(umag).ravel(), umag_vsm, atol=1e-12)
 
@@ -81,12 +82,33 @@ def test_panel_forces_and_totals_match_vsm(solved_body, use_casadi):
         X(s.x_airf_array), X(s.y_airf_array), X(s.z_airf_array),
         body.wings[0].spanwise_direction, s.rho, xp,
     )
-    np.testing.assert_allclose(np.asarray(force), np.asarray(res["F_distribution"]), atol=1e-11)
+    # attached-trailed legs: geometry, VSM's induction at their points, force
+    assert s.is_with_attached_trailed_vortex_force
+    f_at_vsm, p_at_vsm = body.compute_attached_trailed_vortex_forces(gamma, s.rho, s.core_radius_fraction, s.va_array)
+    panels = s.panels
+    p_at, legs = pk.attached_trailed_geometry(
+        [p.bound_point_1 for p in panels], [p.bound_point_2 for p in panels],
+        [p.TE_point_1 for p in panels], [p.TE_point_2 for p in panels],
+        body._aerodynamic_center_location, body._control_point_location,
+    )
+    np.testing.assert_allclose(p_at, p_at_vsm, atol=1e-14)
+    speeds = np.linalg.norm(s.va_array, axis=1)
+    wake_units, wake_speeds = body._wake_directions(speeds, s.va_array / speeds[:, None])
+    v_ind = induced_velocity_at_points(
+        p_at, *(np.ascontiguousarray([getattr(p, k) for p in panels]) for k in ("bound_point_1", "bound_point_2", "TE_point_1", "TE_point_2")),
+        gamma, wake_units, wake_speeds, s.core_radius_fraction,
+    )
+    f_at = pk.attached_trailed_forces(X(gamma), X(s.va_array), X(v_ind), legs, s.rho, xp)
+    np.testing.assert_allclose(np.asarray(f_at), f_at_vsm, atol=1e-11)
+    assert np.max(np.abs(f_at_vsm)) > 1e-3  # anhedral + twist: not trivially zero
+    force_dist = force + (casadi.mtimes(casadi.DM(pk.boundary_shares(len(panels))), f_at) if use_casadi
+                          else pk.boundary_shares(len(panels)) @ f_at)
+    np.testing.assert_allclose(np.asarray(force_dist), np.asarray(res["F_distribution"]), atol=1e-11)
 
     ac = np.array([p.aerodynamic_center for p in s.panels])
     f_tot, m_tot = pk.total_force_and_moment(force, moment_local, X(ac), xp)
-    f_tot = np.asarray(f_tot).ravel()
-    m_tot = np.asarray(m_tot).ravel()
+    f_tot = np.asarray(f_tot).ravel() + np.asarray(f_at).sum(axis=0)
+    m_tot = np.asarray(m_tot).ravel() + np.cross(p_at, np.asarray(f_at)).sum(axis=0)
     va_free, omega_b = np.asarray(body.va), np.asarray(body.body_rates)
     for line in body._bridle_line_system:
         p1, p2 = pk.order_line_endpoints(line[0], line[1])
@@ -106,6 +128,7 @@ def test_panel_forces_and_totals_match_vsm(solved_body, use_casadi):
         mid = 0.5 * (np.asarray(line[0]) + np.asarray(line[1]))
         va_seg = apparent_wind_at(va_free, omega_b, mid, np.zeros(3))
         bridle.append(pk.line_force(X(va_seg), p1, p2, line[2], s.rho, 1.1, 0.01, xp))
+    bridle += [X(row) for row in np.asarray(f_at)]
     lift, drag, side = pk.lift_drag_side_vsm(force, X(s.va_array), X(va_free), body.wings[0].spanwise_direction, xp, bridle)
     np.testing.assert_allclose([float(lift), float(drag), float(side)], [res["lift"], res["drag"], res["side"]], rtol=1e-12, atol=1e-9)
     assert abs(float(drag) - float(np.dot(f_tot, va_free / np.linalg.norm(va_free)))) > 1e-3 * abs(float(drag))

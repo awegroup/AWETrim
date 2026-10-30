@@ -195,7 +195,7 @@ class RigidLumpedTether(Tether):
             * self.drag_coefficient_tether
             * model.distance_radial
             * self.diameter_tether
-            * model.rho
+            * model.air_density
             * model.velocity_apparent_wind
             * ca.norm_2(model.velocity_apparent_wind)
         )
@@ -278,7 +278,7 @@ class DistributedDragTether(Tether):
 
         return (
             0.5
-            * model.rho
+            * model.air_density
             * self.diameter_tether
             * self.drag_coefficient_tether
             * np.array(
@@ -357,7 +357,7 @@ class FlexibleLumpedTether(Tether):
             * self.drag_coefficient_tether
             * model.distance_radial
             * self.diameter_tether
-            * model.rho
+            * model.air_density
             * model.velocity_apparent_wind
             * ca.norm_2(model.velocity_apparent_wind)
         )

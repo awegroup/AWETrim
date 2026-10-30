@@ -170,38 +170,39 @@ class RigidBodyAxes:
     panel: CentrePanelAxes
 
 
-def wing_le_te_indices(struc_geometry: dict) -> tuple[np.ndarray, np.ndarray]:
+def wing_le_te_indices(structure) -> tuple[np.ndarray, np.ndarray]:
     """Leading- and trailing-edge node indices of the wing, paired per strut.
 
-    Mirrors the PSM node ordering of
-    ``aerostructural.pss.structural_geometry_io``: node 0 is the KCU/bridle
-    point and the wing particles follow in id order, odd ids on the leading
-    edge and even ids on the trailing edge, so a node's array index equals its
-    id. ``le[k]`` and ``te[k]`` are the two ends of strut ``k``.
+    Read from the structure's spanwise stations (+y to -y, leading edge
+    first): a wireframe rib is a two-node station ``[front, rear]``, every one
+    a strut; in the full model only the strut stations (``Structure.struts``)
+    are taken, their first and last nodes. ``le[k]`` and ``te[k]`` are the two
+    ends of strut ``k``, as indices into ``Structure.positions``.
 
     Args:
-        struc_geometry: Parsed struc_geometry YAML as a Python dict.
+        structure: A :class:`~awetrim.aerostructural.coupled.awesio_structure.Structure`,
+            or anything ``load_structure`` accepts (path or loaded document).
 
     Returns:
-        Tuple ``(le_indices, te_indices)`` of integer arrays, spanwise-ordered
-        as the YAML lists them, one entry per strut.
+        Tuple ``(le_indices, te_indices)`` of integer arrays, spanwise-ordered.
     """
-    le_indices: list[int] = []
-    te_indices: list[int] = []
-    for row in struc_geometry["wing_particles"]["data"]:
-        node_idx = int(row[0])
-        if node_idx % 2 != 0:
-            le_indices.append(node_idx)
-        else:
-            te_indices.append(node_idx)
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
 
-    if len(le_indices) != len(te_indices):
+    structure = load_structure(structure)
+    stations = (
+        structure.stations
+        if structure.is_wireframe
+        else [strut["nodes"] for strut in structure.struts]
+    )
+    if any(len(station) < 2 for station in stations):
         raise ValueError(
-            "wing_particles must hold one leading-edge (odd id) and one "
-            f"trailing-edge (even id) node per strut; got {len(le_indices)} LE "
-            f"and {len(te_indices)} TE nodes."
+            "every strut station must hold one leading-edge and one "
+            "trailing-edge node"
         )
-    return np.asarray(le_indices, dtype=int), np.asarray(te_indices, dtype=int)
+    return (
+        np.asarray([station[0] for station in stations], dtype=int),
+        np.asarray([station[-1] for station in stations], dtype=int),
+    )
 
 
 def _unit(vec: np.ndarray) -> np.ndarray:
@@ -315,7 +316,7 @@ def compute_rigid_body_axes(
     le_indices: np.ndarray,
     te_indices: np.ndarray,
 ) -> RigidBodyAxes:
-    """CG, inertia tensor and centre-panel body axes of a PSM node cloud.
+    """CG, inertia tensor and centre-panel body axes of a structural node cloud.
 
     Steps:
     1. Compute CG as the mass-weighted average node position.
@@ -358,60 +359,59 @@ def compute_rigid_body_axes(
 
 
 def load_psm_nodes_and_masses(
-    struc_geometry: dict,
+    structure,
     system_config: dict | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Particle positions and lumped masses of the PSM node cloud.
+    """Node positions and lumped masses of the structure's node cloud.
 
-    Delegates to ``aerostructural.pss.structural_geometry_io.main`` -- the
-    single source for the node ordering, the element-to-node mass lumping
-    (wing tubes and canopy, bridle lines, pulleys) and the KCU-mass
-    resolution.
+    Positions are ``Structure.positions`` (KA frame), masses
+    ``Structure.masses`` -- awesIO's lumping of lines, canopy, tubes and
+    pulleys -- plus the KCU's. (The name predates the awesIO structure file;
+    any structure, wireframe or full, is read.)
 
-    ``system_config`` is the parsed ``system.yaml``, where the KCU mass lives
-    (``components ... control_system.structure.mass``). Without it the
-    resolver falls back to the deprecated ``struc_geometry.kcu_mass``, or to
-    0 kg with a warning, and the CG and inertia are then wrong by the whole
-    KCU. :func:`load_psm_geometry` finds the file for you.
+    ``system_config`` is the parsed ``system.yaml``, the single source of the
+    KCU mass (``utils.system_config.get_kcu_mass``). Without it the KCU
+    falls back to 0 kg with a warning, and the CG and inertia are then wrong
+    by the whole KCU. :func:`load_psm_geometry` finds the file for you.
 
     Args:
-        struc_geometry: Parsed struc_geometry YAML as a Python dict.
+        structure: A ``Structure``, or anything ``load_structure`` accepts.
         system_config: Parsed system.yaml as a Python dict, if available.
 
     Returns:
         Tuple ``(struc_nodes, m_arr)`` with shapes (n_nodes, 3) and (n_nodes,).
     """
-    from awetrim.aerostructural.wireframe.structural_geometry_io import (
-        main as pss_initialize,
-    )
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
+    from awetrim.aerostructural.utils import resolve_kcu_mass
 
-    result = pss_initialize(struc_geometry, system_config=system_config)
-    return np.asarray(result[0], dtype=float), np.asarray(result[1], dtype=float)
+    structure = load_structure(structure)
+    masses = structure.masses(kcu_mass=resolve_kcu_mass(system_config=system_config))
+    return np.asarray(structure.positions, dtype=float), np.asarray(masses, dtype=float)
 
 
 def load_psm_geometry(
     struc_geometry_path: Path | str,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Everything the body axes need, from a struc_geometry.yaml path.
+    """Everything the body axes need, from a structure file path.
 
     Reads ``system.yaml`` from the same directory when it is there -- the
     single source of the KCU mass, saved alongside every geometry snapshot --
-    and builds the cloud through the PSS initializer, so the node ordering,
-    the masses and the LE/TE indices all come from one place.
+    so the node ordering, the masses and the LE/TE indices all come from one
+    ``Structure``.
 
     Args:
-        struc_geometry_path: Path to a struc_geometry.yaml (deformed or not).
+        struc_geometry_path: Path to a ``structure.yml`` (deformed or not; a
+            retired-format file is converted by ``load_structure``).
 
     Returns:
         Tuple ``(struc_nodes, m_arr, le_indices, te_indices)``.
     """
     import yaml
-    from awetrim.aerostructural.wireframe.structural_geometry_io import (
-        main as pss_initialize,
-    )
+
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
 
     path = Path(struc_geometry_path)
-    struc_geometry = yaml.safe_load(path.read_text(encoding="utf-8"))
+    structure = load_structure(path)
     system_yaml = path.parent / "system.yaml"
     system_config = (
         yaml.safe_load(system_yaml.read_text(encoding="utf-8"))
@@ -420,15 +420,10 @@ def load_psm_geometry(
     )
     if system_config is None:
         logging.warning(
-            "No system.yaml next to %s; the KCU mass falls back to the "
-            "deprecated struc_geometry key (or 0 kg) and the CG and inertia "
-            "are off by the KCU.",
+            "No system.yaml next to %s; the KCU mass falls back to 0 kg and "
+            "the CG and inertia are off by the KCU.",
             path,
         )
-    result = pss_initialize(struc_geometry, system_config=system_config)
-    return (
-        np.asarray(result[0], dtype=float),
-        np.asarray(result[1], dtype=float),
-        np.asarray(result[2], dtype=int),
-        np.asarray(result[3], dtype=int),
-    )
+    nodes, masses = load_psm_nodes_and_masses(structure, system_config)
+    le_indices, te_indices = wing_le_te_indices(structure)
+    return nodes, masses, le_indices, te_indices

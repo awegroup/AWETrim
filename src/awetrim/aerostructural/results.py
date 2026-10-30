@@ -26,11 +26,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from awetrim.aerostructural.utils import (
-    BRIDLE_CONNECTION_REST_LENGTHS,
-    load_yaml,
-    save_results,
-)
+from awetrim.aerostructural.utils import load_yaml, save_results
 
 SAVE_GEOMETRY_SNAPSHOTS_KEY = "is_save_geometry_snapshots"
 
@@ -138,81 +134,65 @@ def save_input_snapshot(
 
 
 def build_deformed_struc_geometry(
-    struc_geometry: dict[str, Any],
+    structure,
     struc_nodes: np.ndarray,
     bridle_rest_lengths: np.ndarray | None = None,
-) -> dict[str, Any]:
-    """Return a copy of struc_geometry with node positions replaced by deformed values.
+):
+    """The deformed snapshot of ``structure``: its nodes moved to ``struc_nodes``.
 
-    Node indices in the YAML are used directly as row indices into struc_nodes,
-    matching the ordering established by structural_geometry_io.main().
+    ``structure`` is the run's geometry: an awesIO ``Structure`` (the full
+    model, or a wireframe) or the wireframe's PSM-format dict, which is
+    translated to awesIO first (``awesio_structure.wireframe_to_awesio``).
+    Point ``i`` takes row ``i`` of ``struc_nodes``; rows past the structure's
+    points (nodes a backend adds, e.g. Billow's canopy refinement) are left
+    out. Returns a new ``Structure``; the input is not modified.
 
     ``bridle_rest_lengths`` are the LIVE rest lengths of the bridle elements
-    (the readers' element order: bridle_connections rows, a pulley as two
-    arms). Without them every rest length is the INPUT geometry's, so a
-    snapshot written after a tape actuation recorded the tape as it was
-    before the step while its nodes are the solved shape after it. See
-    :func:`_write_bridle_rest_lengths`.
+    (the readers' element order: ``Structure.bridle`` connection by
+    connection, a pulley as two arms). Without them every rest length is the
+    INPUT geometry's, so a snapshot written after a tape actuation recorded the
+    tape as it was before the step while its nodes are the solved shape after
+    it. See :func:`_live_segment_rest_lengths`.
     """
-    sg = copy.deepcopy(struc_geometry)
+    from awetrim.aerostructural.coupled.awesio_structure import (
+        Structure,
+        wireframe_to_awesio,
+    )
 
-    # KCU attachment point (node 0)
-    if "bridle_point_node" in sg:
-        sg["bridle_point_node"] = struc_nodes[0].tolist()
-
-    # Wing particles
-    for row in sg["wing_particles"]["data"]:
-        nid = int(row[0])
-        row[1], row[2], row[3] = float(struc_nodes[nid, 0]), float(struc_nodes[nid, 1]), float(struc_nodes[nid, 2])
-
-    # Bridle particles (if present)
-    if "bridle_particles" in sg:
-        for row in sg["bridle_particles"]["data"]:
-            nid = int(row[0])
-            row[1], row[2], row[3] = float(struc_nodes[nid, 0]), float(struc_nodes[nid, 1]), float(struc_nodes[nid, 2])
-
-    if bridle_rest_lengths is not None:
-        _write_bridle_rest_lengths(sg, np.asarray(bridle_rest_lengths, dtype=float))
-    return sg
+    if not isinstance(structure, Structure):
+        structure = Structure(wireframe_to_awesio(structure))
+    struc_nodes = np.asarray(struc_nodes, dtype=float)
+    deformed = structure.with_positions(struc_nodes[: len(structure.positions)])
+    if bridle_rest_lengths is None:
+        return deformed
+    return deformed.with_rest_lengths(
+        _live_segment_rest_lengths(structure, np.asarray(bridle_rest_lengths, dtype=float))
+    )
 
 
-def _write_bridle_rest_lengths(sg: dict[str, Any], rest_lengths: np.ndarray) -> None:
-    """Write the live bridle rest lengths into ``sg`` in place.
+def _live_segment_rest_lengths(structure, rest_lengths: np.ndarray) -> dict[str, float]:
+    """``{segment name: live rest length}`` of the bridle's straight lines.
 
-    A line whose connections all carry one live value gets it in its
-    bridle_lines row. A line whose connections differ (the two steering tapes
-    of a steered state share one name) gets their mean in the row and each
-    connection in the :data:`BRIDLE_CONNECTION_REST_LENGTHS` block, which the
-    readers apply. Pulley ropes keep the input row: they are never actuated,
-    and the backends report their arms differently (the wireframe splits the
-    rope between the arms, Billow gives each arm the whole rope). ``NaN``
-    (an element the backend does not have) also keeps the row.
+    Every awesIO segment has its own rest length, so the two steering tapes of
+    a steered state (one line name) simply get theirs. Pulley ropes keep the
+    input's: they are never actuated, and the backends report their arms
+    differently (the wireframe splits the rope between the arms, Billow gives
+    each arm the whole rope). ``NaN`` (an element the backend does not have)
+    also keeps the input's.
     """
-    connections = sg["bridle_connections"]["data"]
-    is_pulley = [len(conn[1:]) == 3 for conn in connections]
-    n_elements = sum(2 if pulley else 1 for pulley in is_pulley)
+    bridle = structure.bridle
+    n_elements = sum(len(element["nodes"]) - 1 for element in bridle)
     if len(rest_lengths) != n_elements:
         raise ValueError(
             f"{len(rest_lengths)} bridle rest lengths for {n_elements} bridle elements"
         )
-    live_by_name: dict[str, list[tuple[int, float]]] = {}
-    element = 0
-    for row, (conn, pulley) in enumerate(zip(connections, is_pulley)):
-        if not pulley and np.isfinite(rest_lengths[element]):
-            live_by_name.setdefault(conn[0], []).append((row, float(rest_lengths[element])))
-        element += 2 if pulley else 1
-
-    l0_column = sg["bridle_lines"]["headers"].index("l0")
-    lines = {line[0]: line for line in sg["bridle_lines"]["data"]}
-    per_connection = []
-    for name, live in live_by_name.items():
-        values = np.array([l0 for _, l0 in live])
-        lines[name][l0_column] = float(values.mean())
-        if np.ptp(values) > 1e-12:
-            per_connection.extend([row, l0] for row, l0 in live)
-    sg.pop(BRIDLE_CONNECTION_REST_LENGTHS, None)
-    if per_connection:
-        sg[BRIDLE_CONNECTION_REST_LENGTHS] = {"headers": ["row", "l0"], "data": per_connection}
+    live = {}
+    element_index = 0
+    for element in bridle:
+        if len(element["nodes"]) == 2 and np.isfinite(rest_lengths[element_index]):
+            live[element["segments"][0]] = float(rest_lengths[element_index])
+        element_index += len(element["nodes"]) - 1
+    return live
 
 
 def _normalised_span(points: np.ndarray) -> np.ndarray:
@@ -306,12 +286,16 @@ def build_deformed_aero_geometry(
 
 def save_geometry_snapshot(
     config: dict[str, Any],
-    struc_geometry_deformed: dict[str, Any],
+    struc_geometry_deformed,
     aero_geometry_deformed: dict[str, Any],
     results_dir: Path,
     system_yaml_path: Path | str | None = None,
 ) -> None:
     """Save deformed geometry YAMLs when is_save_geometry_snapshots is True.
+
+    ``struc_geometry_deformed`` is the ``Structure`` of
+    :func:`build_deformed_struc_geometry`, written as awesIO to
+    ``case.SNAPSHOT_STRUC_GEOMETRY_FILENAME``.
 
     When ``system_yaml_path`` is given, also emit a ``system.yaml`` into
     ``results_dir`` whose mass, centre of gravity and inertia tensor are
@@ -321,10 +305,11 @@ def save_geometry_snapshot(
     """
     if not bool(config.get(SAVE_GEOMETRY_SNAPSHOTS_KEY, False)):
         return
+    from awetrim.aerostructural.case import SNAPSHOT_STRUC_GEOMETRY_FILENAME
+
     results_dir = Path(results_dir)
-    struc_path = results_dir / "struc_geometry.yaml"
-    with struc_path.open("w", encoding="utf-8") as f:
-        yaml.dump(struc_geometry_deformed, f, sort_keys=False)
+    struc_path = results_dir / SNAPSHOT_STRUC_GEOMETRY_FILENAME
+    struc_geometry_deformed.write(struc_path)
     with (results_dir / "aero_geometry.yaml").open("w", encoding="utf-8") as f:
         yaml.dump(aero_geometry_deformed, f, sort_keys=False)
 

@@ -20,7 +20,6 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import yaml
 
 from awetrim.aerodynamics.apparent_wind import (
     RigidInflowState,
@@ -28,6 +27,7 @@ from awetrim.aerodynamics.apparent_wind import (
     inflow_state_of,
 )
 from awetrim.aerodynamics.vsm_quasi_steady import DEFAULT_STATION_KCU
+from awetrim.aerostructural.coupled.awesio_structure import load_structure
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -117,7 +117,7 @@ def test_inflow_state_defaults_a_bare_object_to_rest_at_the_origin():
 
 @pytest.mark.parametrize(
     "geometry_path",
-    sorted((PROJECT_ROOT / "data").glob("*-KITE/struc_geometry*.yaml")),
+    sorted((PROJECT_ROOT / "data").glob("*-KITE/**/structure.yml")),
     ids=lambda p: p.parent.name + "/" + p.name,
 )
 def test_every_shipped_kite_hangs_its_kcu_at_the_assumed_station(geometry_path):
@@ -127,8 +127,8 @@ def test_every_shipped_kite_hangs_its_kcu_at_the_assumed_station(geometry_path):
     so a kite whose bridle point is elsewhere would be charged drag at the wrong
     place AND given the wrong moment arm. Fail here rather than there.
     """
-    geometry = yaml.safe_load(geometry_path.read_text(encoding="utf-8"))
-    bridle_point = np.asarray(geometry.get("bridle_point_node", [0.0, 0.0, 0.0]), float)
+    structure = load_structure(geometry_path)
+    bridle_point = structure.positions[structure.kcu]
     assert np.allclose(bridle_point, DEFAULT_STATION_KCU), (
         f"{geometry_path.name} puts the KCU at {bridle_point}, but the trim "
         f"assumes DEFAULT_STATION_KCU = {DEFAULT_STATION_KCU}"

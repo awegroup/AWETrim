@@ -1,6 +1,6 @@
 is_with_gravity: false
 is_with_aero_bridle: true
-is_with_aero_tether: false
+is_with_kcu_drag: true
 is_run_only_1_time_step: false
 is_with_initial_point_velocity: false
 is_with_forcing_symmetry: false
@@ -14,33 +14,36 @@ wind_speed_wind_ref: 7.0
 timeder_speed_tangential: 0.0
 timeder_speed_radial: 0.0
 power_tape_extension_step: 0.05
-power_tape_final_extension: 0.0
+power_tape_final_extension: 0.04
 steering_tape_extension_step: 0.05
 steering_tape_final_extension: 0.0
 is_with_initial_structure_plot: false
 is_with_coupling_plot_per_iteration: false
-is_with_struc_plot_per_iteration: true
+is_with_struc_plot_per_iteration: false
 is_with_aero_plot_per_iteration: false
 is_with_final_plot: false
 is_with_aero_frame_final_plot: false
 is_save_geometry_snapshots: true
 aerodynamic:
-  n_aero_panels_per_struc_section: 3
+  n_aero_panels_per_struc_section: 5
   spanwise_panel_distribution: uniform
   max_iterations: 1500
-  allowed_error: 2.0e-06
+  allowed_error: 1.0e-08
+  gamma_loop_type: anderson
+  anderson_max_iterations: 1000
+  anderson_fallback_to_base: false
   relaxation_factor: 0.025
   reference_point:
   - 0.0
   - 0.0
   - 0.0
-  is_with_artificial_viscosity: false
+  is_aoa_corrected: false
+  is_with_artificial_viscosity: true
   artificial_viscosity_factor: 0.035
 quasi_steady_trim:
-  moment_tolerance: 0.0001
-  force_residual_scale: 1.0
+  max_nfev: 8
   kite_speed_bounds_ms:
-  - 5.0
+  - -2.0
   - 50.0
   roll_bounds_deg:
   - -4.0
@@ -54,39 +57,55 @@ quasi_steady_trim:
   course_rate_bounds_rad_s:
   - -2.5
   - 2.5
+  pre_loop:
+    roll_bounds_deg:
+    - -15.0
+    - 15.0
+    pitch_bounds_deg:
+    - -15.0
+    - 15.0
+    yaw_bounds_deg:
+    - -15.0
+    - 15.0
 aerodynamic_bridle:
   cd_cable: 1.1
   cf_cable: 0.01
+  tape_roll_model: averaged
 structural_pss:
-  dt: 0.005
-  dt_max: 0.01
-  n_internal_time_steps: 100
-  abs_tol: 1.0e-50
-  rel_tol: 1.0e-05
-  max_iter: 500
+  nlp_tolerance: 1.0e-08
+  nlp_max_iterations: 1000
+  nlp_anchor_stiffness: 0.001
   fixed_point_indices:
   - 0
-  is_with_diagnostics: false
-  num_node_diagnostics: 34
+  update_stiffness: true
+  stiffness_update_scope: all
+  max_elongation: 0.01
+  stiffness_update_factor: 1.5
+  max_stiffness_factor: 9.0
+  stiffness_settle_iters: 5
+  stiffness_trigger_factor: 1.0
 aero2struc:
   coupling_method: NN
   eps: 1.0e-06
   power_for_inverse_weighting: 2.0
   cp_distribution_path: data/LEI-V3-KITE/cp_distributions/cp_AOA_8.dat
+  chordwise_distribution: cp_file
 aero_structural_solver:
-  max_iter: 100
-  it_check: 5
-  tol: 5.0
+  max_iter: 200
+  residual_tol_relative: 0.0001
+  stagnation_tol_relative: 4.0e-05
+  force_settle_rtol: 0.0001
   is_with_aitken_relaxation: true
   relaxation_factor: 0.05
   n_max_constant_residual_force: 10
-  stagnation_tol: 2.0
   qs_state_stagnation_decimals: 2
   qs_state_stagnation_n_iter: 30
-  aero_update_interval: 1
+  qs_speed_bound_patience: 3
   steering_actuation_interval_iters: 2
-  node_displacement_tol: 0.0001
-  aero_solve_type: qsm
+  steering_settle_iterations_after_update: 6
+  steering_realised_tol_m: 0.005
+  steering_realised_remaining_tol_m: 0.001
+  steering_realised_rate_floor_m: 2.0e-05
 grav_constant:
 - 0
 - 0
@@ -94,8 +113,28 @@ grav_constant:
 rho: 1.225
 mu: 1.789e-05
 tether:
+  include_in_trim: true
   model: williams
   n_elements: 10
   is_elastic: false
   cf: 0.01
   wind_model: uniform
+structural_billow:
+  canopy_stiffness: 493000.0
+  canopy_thickness: 0.0001232
+  canopy_poisson_ratio: 0.3
+  canopy_wrinkling: true
+  canopy_slack_stiffness_ratio: 0.0001
+  tube_stiffness_factor: 1.0
+  junction_frame: strut
+  relax_bridles: true
+  relax_pull_force: -100.0
+  relax_settle_force: -1.0
+  relax_move_limit: 0.25
+  move_limit: 0.25
+  max_rounds: 12
+  max_iterations: 400
+  tolerance: 1.0e-08
+  force_tolerance: 0.001
+  relative_force_tolerance: 1.0e-05
+  print_info: false

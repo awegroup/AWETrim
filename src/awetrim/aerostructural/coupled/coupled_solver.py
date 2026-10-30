@@ -40,6 +40,7 @@ from ..convergence import (
 from .. import aerodynamic_vsm, aerodynamic_bridle_line_drag, tracking
 from awetrim import plotting
 from awetrim.aerodynamics.apparent_wind import apparent_wind_at, inflow_state_of
+from awetrim.aerostructural.case import air_density_at_case
 
 from ..mapping import LinearStructuralToAeroMapper
 from ..utils import calculate_cg, rotate_geometry
@@ -291,7 +292,7 @@ def _shared_bridle_line_drag(
                 line,
                 cd_cable=config["aerodynamic_bridle"]["cd_cable"],
                 cf_cable=config["aerodynamic_bridle"]["cf_cable"],
-                rho=config["rho"],
+                rho=air_density_at_case(config),
             ),
             dtype=float,
         )
@@ -356,7 +357,7 @@ def _bridle_line_drag(
         bridle_connectivity_arr,
         bridle_diameter_arr,
         va,
-        config["rho"],
+        air_density_at_case(config),
         config["aerodynamic_bridle"]["cd_cable"],
         config["aerodynamic_bridle"]["cf_cable"],
     )
@@ -376,10 +377,11 @@ def _bridle_line_specs_for_vsm(body_aero, bridle_connectivity_arr):
     The indices come from the reader, which owns the structural array; the
     diameters from the body's own segments, which ``aerodynamic_vsm.initialize``
     has already replaced with the DRAG-equivalent ones (a flat tape's projected
-    width, not its area-equivalent circle). Both lists are the same parse of
-    ``bridle_connections`` in the same order -- verified on the LEI-V3
-    FEM_full geometry, where the two agree on all 87 segments to 7.6e-9 m --
-    and the count check below catches a geometry where that stops holding.
+    width, not its area-equivalent circle). Both lists are the structure's
+    bridle segments in document order (``Structure.bridle_segments``) --
+    verified on the LEI-V3 full model, where the two agree on all 87 segments
+    to 7.6e-9 m -- and the count check below catches a geometry where that
+    stops holding.
     """
     lines = getattr(body_aero, "_bridle_line_system", None)
     if not lines or bridle_connectivity_arr is None:
@@ -692,6 +694,7 @@ def main(
     billow_structure=None,
     canopy_sections=None,
     strut_sections=None,
+    final_state=None,
 ):
     """
     Runs the aero-structural solver for the given input parameters.
@@ -710,6 +713,12 @@ def main(
             converged state once the depower walk has arrived, and each
             followed by ``steering_settle_iterations_after_update`` iterations
             in which no convergence exit is allowed.
+        final_state (dict or None): When given, filled with the objects of
+            the FINAL trim that ``meta`` cannot store: ``body_aero`` (the VSM
+            body at the trimmed attitude, with the trim's inflow set) and
+            ``results_aero`` (the full trim result). Re-solving that body
+            reproduces the trim's aerodynamic force, which is what a
+            frozen-shape evaluation of the converged state needs.
 
     Returns:
         tracking_data (dict): Dictionary containing time histories of positions, forces, etc.
@@ -1439,38 +1448,8 @@ def main(
     ## END OF SIMULATION FOR LOOP
     ######################################################################
     # print out the geometric angle of attack of the mid panel
-    panels = body_aero.panels
-
-    # Select middle panel
-    mid_idx = len(panels) // 2
-    panel = panels[mid_idx]
-
-    # Midpoints of leading and trailing edges
-    le_mid = 0.5 * (panel.LE_point_1 + panel.LE_point_2)
-    te_mid = 0.5 * (panel.TE_point_1 + panel.TE_point_2)
-
-    # Chord direction vector
-    vec_chord = te_mid - le_mid
-    vec_chord /= np.linalg.norm(vec_chord)
-
-    # Apparent wind direction (normalize)
-    vec_wind = vel_app / np.linalg.norm(vel_app)
-
-    # Project onto plane of interest (optional: usually x-z plane)
-    # Remove spanwise component if needed
-    vec_chord_2d = np.array([vec_chord[0], vec_chord[2]])
-    vec_wind_2d = np.array([vec_wind[0], vec_wind[2]])
-
-    vec_chord_2d /= np.linalg.norm(vec_chord_2d)
-    vec_wind_2d /= np.linalg.norm(vec_wind_2d)
-
-    # Angle between vectors (signed)
-    dot = np.clip(np.dot(vec_chord_2d, vec_wind_2d), -1.0, 1.0)
-    # z-component of the 2-D cross product, written out: np.cross on
-    # 2-element vectors is deprecated since NumPy 2.0.
-    cross = vec_chord_2d[0] * vec_wind_2d[1] - vec_chord_2d[1] * vec_wind_2d[0]
-
-    angle = np.arctan2(cross, dot)
+    mid_idx = len(body_aero.panels) // 2
+    angle = aerodynamic_vsm.mid_span_chord_angle_of_attack(body_aero, vel_app)
 
     print(f"alpha = {np.degrees(angle):.2f}° (va vs mid-span chord)")
     print(
@@ -1552,5 +1531,7 @@ def main(
             dtype=np.int32,
         ),
     }
+    if final_state is not None:
+        final_state.update(body_aero=body_aero, results_aero=results_aero)
 
     return tracking_data, meta

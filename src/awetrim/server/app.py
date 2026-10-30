@@ -120,6 +120,9 @@ def create_app(
             pattern_limits=request.pattern_limits.model_dump()
             if request.pattern_limits is not None
             else None,
+            angle_of_attack_limits=request.angle_of_attack_limits.model_dump()
+            if request.angle_of_attack_limits is not None
+            else None,
             max_iter=request.max_iter,
         )
         try:

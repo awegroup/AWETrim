@@ -45,8 +45,7 @@ two floats per kite and never enter a symbolic graph -- which is why this
 module needs neither the ``xp`` math-namespace pattern of
 ``environment/profile_laws.py`` nor ``ca.interpolant``. Linear interpolation
 differs from the cubic spline of the reference implementation by 0.23 % (cdt)
-and 0.08 % (cdp) at the LEI-V3 fineness -- 0.23 %/0.16 % at the LEI-V9 one, and
-at worst 1.4 %/1.9 % anywhere in the tables' interpolation range -- well below
+and 0.08 % (cdp) at the LEI-V3 fineness, and at worst 1.4 %/1.9 % anywhere in the tables' interpolation range -- well below
 the uncertainty of a handbook bluff-body coefficient.
 
 Pairing note (2026-08-21)
@@ -181,7 +180,7 @@ def force_drag_kcu(
 
     ``xp`` is the math namespace: ``numpy`` (default; plain floats and arrays)
     or ``casadi`` (the CasADi trim builds this force into its graph; the axis
-    is then still numeric, only the apparent wind is symbolic). One formula
+    is then still numeric, the apparent wind and density may be symbolic). One formula
     serves both; the CasADi branch only skips the degenerate-input guards,
     which need numeric values.
     """
@@ -192,7 +191,7 @@ def force_drag_kcu(
         velocity_crossflow = velocity_apparent - velocity_axial
         return (
             0.5
-            * float(density_air)
+            * density_air  # may be symbolic (height-dependent density)
             * (
                 float(cd_area_axial)
                 * xp.norm_2(velocity_axial)

@@ -10,7 +10,7 @@ object so they run fast and deterministically -- no IPOPT, no kite data.
 import numpy as np
 import pytest
 
-from awetrim.timeseries.phase import Phase, SimulationResult
+from awetrim.timeseries.phase import Phase, SimulationResult, relative_reg_weight
 
 
 class _FakeSolution:
@@ -189,3 +189,27 @@ def test_persisted_depower_profile_wraps_to_node_zero_under_periodic_wrap(monkey
     assert profile.size == dep_opt.size + 1
     assert np.allclose(profile[:-1], dep_opt)
     assert profile[-1] == dep_opt[0]
+
+
+def test_relative_reg_weight_scales_the_term_to_the_fraction_at_the_start():
+    import casadi as ca
+
+    opti = ca.Opti()
+    x = opti.variable(2)
+    p = opti.parameter()
+    opti.set_value(p, 2.0)
+    opti.set_initial(x, [1.0, 3.0])
+    objective = -p * (x[0] + x[1])  # -8 at the start
+    reg = ca.sumsqr(ca.diff(x))  # 4 at the start
+    weight = relative_reg_weight(opti, objective, reg, 0.1)
+    assert weight == pytest.approx(0.1 * 8.0 / 4.0)
+
+
+def test_relative_reg_weight_floors_a_smooth_start():
+    import casadi as ca
+
+    opti = ca.Opti()
+    x = opti.variable(2)
+    opti.set_initial(x, [1.0, 1.0])
+    weight = relative_reg_weight(opti, -x[0], ca.sumsqr(ca.diff(x)), 0.1)
+    assert np.isfinite(weight) and weight > 0

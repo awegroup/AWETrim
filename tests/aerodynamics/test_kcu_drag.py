@@ -44,8 +44,8 @@ from awetrim.aerodynamics.kcu_drag import (
 
 #: LEI-V3 KCU envelope (data/LEI-V3-KITE/system.yaml control_system.structure).
 LEI_V3 = dict(length_kcu=1.0, diameter_kcu=0.48)
-#: LEI-V9 KCU envelope.
-LEI_V9 = dict(length_kcu=1.2, diameter_kcu=0.62)
+#: The 2025 LEI-V3 KCU (data/LEI-V3-KITE/system_flown_2025.yaml).
+LEI_V3_2025 = dict(length_kcu=0.95, diameter_kcu=0.46)
 
 
 def _model_v3() -> KcuDragModel:
@@ -76,12 +76,6 @@ def test_lei_v3_drag_areas():
     assert cd_area_broadside_kcu(**LEI_V3) == pytest.approx(0.3294, rel=3e-3)
 
 
-def test_lei_v9_drag_areas():
-    """Regression pin for the shipped LEI-V9 KCU (L/D = 1.935)."""
-    assert cd_area_axial_kcu(**LEI_V9) == pytest.approx(0.2514, rel=3e-3)
-    assert cd_area_broadside_kcu(**LEI_V9) == pytest.approx(0.5046, rel=3e-3)
-
-
 def test_linear_interpolation_tracks_the_reference_spline():
     """np.interp stands in for the reference implementation's cubic spline.
 
@@ -95,7 +89,7 @@ def test_linear_interpolation_tracks_the_reference_spline():
     spline_axial = interpolate.splrep(FINENESS_AXIAL, CD_AXIAL, s=0)
     spline_broadside = interpolate.splrep(FINENESS_BROADSIDE, CD_BROADSIDE, s=0)
 
-    for envelope in (LEI_V3, LEI_V9):
+    for envelope in (LEI_V3, LEI_V3_2025):
         fineness = envelope["length_kcu"] / envelope["diameter_kcu"]
         assert float(np.interp(fineness, FINENESS_AXIAL, CD_AXIAL)) == pytest.approx(
             float(interpolate.splev(fineness, spline_axial)), rel=5e-3
@@ -340,3 +334,13 @@ def test_public_signatures():
         "density_air",
         "xp",
     ]
+
+
+def test_casadi_branch_accepts_a_symbolic_density():
+    """A height-dependent density reaches the CasADi law as an expression."""
+    ca = pytest.importorskip("casadi")
+    rho = ca.MX.sym("rho")
+    va = ca.MX.sym("va", 3)
+    force = force_drag_kcu(va, [0.0, 0.0, 1.0], rho, 0.1, 0.4, xp=ca)
+    assert force.shape == (3, 1)
+    assert ca.depends_on(force, rho)

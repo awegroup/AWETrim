@@ -11,10 +11,18 @@ call contract the coupled driver relies on holds, and that actuation reaches
 the parameters it is supposed to reach.
 """
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
 from awetrim.aerostructural.billow import structural_billow as sb
+
+
+def structure_view(fixed, leading_edge_chain):
+    """What the adapter reads from an awesIO ``Structure``: its fixed points
+    and its leading-edge chain (the arrays come from ``Structure.resolved``)."""
+    return SimpleNamespace(fixed=list(fixed), leading_edge_chain=list(leading_edge_chain))
 
 
 # --------------------------------------------------------------------------
@@ -88,18 +96,8 @@ def toy_geometry():
     add(knot, pulley, rope, 1.0e4, 0.0, "pulley")
     add(pulley, grid[0][2], rope, 1.0e4, 0.0, "pulley")
 
-    struc_geometry = {
-        "fixed_point_indices": [kcu],
-        "leading_edge_tubes": {
-            "headers": ["name", "ci", "cj", "diameter"],
-            "data": [
-                ["le_1", grid[0][0], grid[1][0], 0.1],
-                ["le_2", grid[1][0], grid[2][0], 0.1],
-            ],
-        },
-    }
     return {
-        "struc_geometry": struc_geometry,
+        "structure": structure_view([kcu], [grid[0][0], grid[1][0], grid[2][0]]),
         "nodes": nodes,
         "connectivity": np.asarray(connectivity, dtype=int),
         "rest": np.asarray(rest, dtype=float),
@@ -125,7 +123,7 @@ def build(toy_geometry, **settings):
     defaults.update(settings)
     return sb.instantiate(
         {"structural_billow": defaults},
-        toy_geometry["struc_geometry"],
+        toy_geometry["structure"],
         toy_geometry["nodes"],
         toy_geometry["connectivity"],
         toy_geometry["rest"],
@@ -187,20 +185,11 @@ def test_canopy_triangles_tile_every_quad(toy_geometry):
     assert set(triangles.ravel().tolist()) == set(toy_geometry["grid"].ravel().tolist())
 
 
-def test_leading_edge_chain_walks_the_tube(toy_geometry):
-    chain = sb.leading_edge_chain(toy_geometry["struc_geometry"])
-    np.testing.assert_array_equal(chain, toy_geometry["grid"][:, 0])
-
-
-def test_leading_edge_chain_rejects_a_broken_tube():
-    geometry = {
-        "leading_edge_tubes": {
-            "headers": ["name", "ci", "cj", "diameter"],
-            "data": [["a", 0, 1, 0.1], ["b", 5, 6, 0.1]],
-        }
-    }
-    with pytest.raises(ValueError, match="one open chain"):
-        sb.leading_edge_chain(geometry)
+def test_beam_chains_lead_with_the_leading_edge(toy_geometry):
+    struts = [[0, 1, 2]]
+    chains = sb.beam_chains(toy_geometry["structure"], struts)
+    np.testing.assert_array_equal(chains[0], toy_geometry["grid"][:, 0])
+    assert chains[1:] == struts
 
 
 # --------------------------------------------------------------------------
@@ -360,7 +349,7 @@ def symmetric_wing_frames_input(strut_at=(1, 2), n_leading_edge=8):
         struts.append(section)
     beams = [[row[1], row[2]] for row in leading_edge]
     beams += [[s[i], s[i + 1]] for s in struts for i in range(len(s) - 1)]
-    geometry = {"leading_edge_tubes": {"data": leading_edge}}
+    geometry = structure_view([], list(range(n_leading_edge)))
     return np.asarray(nodes), np.asarray(beams), geometry, struts
 
 
@@ -408,7 +397,7 @@ def test_junction_frame_must_be_a_known_choice(toy_geometry):
         sb.build_frames(
             toy_geometry["nodes"],
             toy_geometry["connectivity"][:2],
-            toy_geometry["struc_geometry"],
+            toy_geometry["structure"],
             toy_geometry["strut_sections"],
             junction_frame="whatever",
         )

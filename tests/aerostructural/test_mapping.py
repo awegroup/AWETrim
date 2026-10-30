@@ -168,3 +168,94 @@ def test_bilinear_mapper_is_continuous_on_a_near_vertical_le_segment():
         loads.append(mapper.map_loads(panel_forces, panel_points, nodes, mapping))
     np.testing.assert_allclose(loads[0], loads[1], atol=0.05)
     np.testing.assert_allclose(np.sum(loads[1], axis=0), panel_forces[0])
+
+
+# -- strut-lever (rigid-body) load transfer -----------------------------------
+from awetrim.aerostructural.mapping import StrutLeverAeroToStructuralLoadMapper as _StrutLever
+
+
+def _warped_ribs(n_ribs=5, seed=0):
+    """Front/rear rib nodes of a warped wing: struts tilted, ribs off-plane."""
+    rng = np.random.default_rng(seed)
+    front = np.array([[0.1 * rng.normal(), 1.3 * r, 0.3 * rng.normal()] for r in range(n_ribs)])
+    rear = front + [2.4, 0.0, 0.0] + rng.normal(scale=0.3, size=(n_ribs, 3))
+    return front, rear
+
+
+def test_strut_lever_conserves_force_and_moment_on_a_warped_wing():
+    rng = np.random.default_rng(1)
+    front, rear = _warped_ribs()
+    nodes = np.vstack([front, rear])
+    n = 150
+    bays = rng.integers(0, len(front) - 1, size=n)
+    points = 0.5 * (front[bays] + rear[bays + 1]) + rng.normal(scale=0.3, size=(n, 3))
+    forces = rng.normal(scale=200.0, size=(n, 3))
+    moments = rng.normal(scale=30.0, size=(n, 3))
+    mapper = _StrutLever()
+    mapping = mapper.initialize(bays, np.arange(len(front)), np.arange(len(front), 2 * len(front)))
+    nodal = mapper.map_loads(forces, points, nodes, mapping, panel_moments=moments)
+    report = check_moment_preservation(forces, points, nodal, nodes, ref_point=[0.3, -2.0, 1.0],
+                                       panel_moments=moments)
+    assert report["dF_norm"] < 1e-9
+    assert report["dM_norm"] < 1e-9
+
+
+def test_strut_lever_is_the_bilinear_split_on_a_flat_bay():
+    front = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    rear = np.array([[2.0, 0.0, 0.0], [2.0, 1.0, 0.0]])
+    mapper = _StrutLever()
+    mapping = mapper.initialize([0], [0, 1], [2, 3])
+    force = np.array([[10.0, -3.0, 100.0]])
+    nodal = mapper.map_loads(force, [[0.5, 0.3, 0.0]], np.vstack([front, rear]), mapping)
+    xi, eta = 0.25, 0.3
+    weights = np.array([(1 - xi) * (1 - eta), (1 - xi) * eta, xi * (1 - eta), xi * eta])
+    np.testing.assert_allclose(nodal, weights[:, None] * force, atol=1e-12)
+
+
+def test_strut_lever_carries_a_twist_across_the_span():
+    """A moment about the chord axis cannot sit on one strut: it becomes a
+    couple between the two struts."""
+    front = np.array([[0.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+    rear = np.array([[2.0, 0.0, 0.0], [2.0, 1.0, 0.0]])
+    mapper = _StrutLever()
+    mapping = mapper.initialize([0], [0, 1], [2, 3])
+    nodal = mapper.map_loads(np.zeros((1, 3)), [[0.5, 0.5, 0.0]], np.vstack([front, rear]),
+                             mapping, panel_moments=[[40.0, 0.0, 0.0]])
+    strut_a, strut_b = nodal[[0, 2]].sum(axis=0), nodal[[1, 3]].sum(axis=0)
+    np.testing.assert_allclose(strut_a, [0.0, 0.0, -40.0], atol=1e-12)
+    np.testing.assert_allclose(strut_b, [0.0, 0.0, 40.0], atol=1e-12)
+
+
+def test_strut_lever_zero_load_is_zero():
+    front, rear = _warped_ribs(3)
+    mapper = _StrutLever()
+    mapping = mapper.initialize([0, 1], [0, 1, 2], [3, 4, 5])
+    nodal = mapper.map_loads(np.zeros((2, 3)), front[:2] + 0.5, np.vstack([front, rear]), mapping,
+                             panel_moments=np.zeros((2, 3)))
+    assert np.all(nodal == 0.0)
+
+
+def test_strut_lever_is_mirror_symmetric():
+    front = np.array([[0.1, 1.4, 0.3], [0.0, 0.0, 0.5], [0.1, -1.4, 0.3]])
+    rear = np.array([[2.4, 1.5, 0.2], [2.5, 0.0, 0.4], [2.4, -1.5, 0.2]])
+    nodes = np.vstack([front, rear])
+    S = np.diag([1.0, -1.0, 1.0])
+    point, force, moment = np.array([0.7, 0.6, 0.4]), np.array([5.0, 20.0, 300.0]), np.array([3.0, -40.0, 2.0])
+    mapper = _StrutLever()
+    mapping = mapper.initialize([0, 1], [0, 1, 2], [3, 4, 5])
+    nodal = mapper.map_loads(
+        np.array([force, S @ force]), np.array([point, S @ point]), nodes, mapping,
+        panel_moments=np.array([moment, np.diag([-1.0, 1.0, -1.0]) @ moment]),
+    )
+    # panel 0 in bay 0, its mirror image in bay 1: the nodal forces mirror too
+    single = mapper.map_loads(force[None], point[None], nodes, mapper.initialize([0], [0, 1, 2], [3, 4, 5]),
+                              panel_moments=moment[None])
+    mirror = (S @ single.T).T[[2, 1, 0, 5, 4, 3]]
+    np.testing.assert_allclose(nodal - single, mirror, atol=1e-10)
+
+
+def test_strut_lever_rejects_a_bay_outside_the_ribs():
+    import pytest
+
+    with pytest.raises(ValueError):
+        _StrutLever().initialize([0, 2], [0, 1, 2], [3, 4, 5])

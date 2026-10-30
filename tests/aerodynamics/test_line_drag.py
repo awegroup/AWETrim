@@ -27,6 +27,7 @@ they are written into.
 
 from __future__ import annotations
 
+import copy
 import inspect
 import logging
 from pathlib import Path
@@ -46,6 +47,7 @@ from awetrim.aerodynamics.line_drag import (
     ROLL_MODELS,
     ROLL_ROUND,
     apply_bridle_drag_diameters,
+    attach_bridle_lines,
     bridle_drag_diameters,
     cd_width_round,
     cd_width_tape,
@@ -55,21 +57,31 @@ from awetrim.aerodynamics.line_drag import (
     tape_summary,
     tape_thickness_from_equivalent_diameter,
 )
+from awetrim.aerostructural.coupled.awesio_structure import Structure, load_structure
 
-#: LEI-V3 steering/depower tape, as data/LEI-V3-KITE/struc_geometry.yaml holds it.
+#: LEI-V3 steering/depower tape, as data/LEI-V3-KITE/structure.yml holds it.
 WIDTH = 0.012
 THICKNESS = 0.0015
 DIAMETER_STRUCTURAL = 0.004787307
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-STRUC_GEOMETRY = PROJECT_ROOT / "data" / "LEI-V3-KITE" / "struc_geometry.yaml"
+STRUC_GEOMETRY = PROJECT_ROOT / "data" / "LEI-V3-KITE" / "structure.yml"
 
 
 @pytest.fixture(scope="module")
-def struc_geometry() -> dict:
+def struc_geometry() -> Structure:
     if not STRUC_GEOMETRY.exists():  # pragma: no cover - shipped with the repo
         pytest.skip(f"{STRUC_GEOMETRY} not available")
-    return yaml.safe_load(STRUC_GEOMETRY.read_text(encoding="utf-8"))
+    return load_structure(STRUC_GEOMETRY)
+
+
+def _without_tape_width(structure: Structure) -> Structure:
+    """A copy whose segments declare no ``tape_width`` -- a legacy geometry."""
+    document = copy.deepcopy(structure.document)
+    column = document["segments"]["headers"].index("tape_width")
+    for row in document["segments"]["data"]:
+        row[column] = None
+    return Structure(document)
 
 
 class _Body:
@@ -214,20 +226,22 @@ def test_lei_v3_geometry_still_declares_the_tape(struc_geometry):
 def test_structural_diameters_are_never_touched(struc_geometry):
     """Only the tapes' DRAG width moves; ``d`` stays the structural one.
 
-    ``d`` feeds line mass and EA (pss/structural_geometry_io), so a change
-    there would silently alter the structure, not just the aerodynamics.
+    ``diameter`` feeds line mass and EA, so a change there would silently
+    alter the structure, not just the aerodynamics.
     """
-    before = [row[2] for row in struc_geometry["bridle_lines"]["data"]]
+    before = copy.deepcopy(struc_geometry.document["segments"])
     bridle_drag_diameters(struc_geometry, ROLL_BROADSIDE)
-    after = [row[2] for row in struc_geometry["bridle_lines"]["data"]]
-    assert after == before
-    assert all(d == pytest.approx(DIAMETER_STRUCTURAL) for d in after[-2:])
+    assert struc_geometry.document["segments"] == before
+    tapes = [s for s in struc_geometry.bridle_segments if "tape" in s["line"]]
+    assert tapes and all(
+        float(s["diameter"]) == pytest.approx(DIAMETER_STRUCTURAL) for s in tapes
+    )
 
 
 def test_only_the_tape_segments_change(struc_geometry):
     round_d = bridle_drag_diameters(struc_geometry, ROLL_ROUND)
     tape_d = bridle_drag_diameters(struc_geometry, ROLL_AVERAGED)
-    assert len(round_d) == len(tape_d) == 45
+    assert len(round_d) == len(tape_d) == 87  # the FEM bridle, pulley rows expanded
     changed = [i for i, (a, b) in enumerate(zip(round_d, tape_d)) if a != b]
     # Two steering tapes + one depower tape.
     assert len(changed) == 3
@@ -242,11 +256,7 @@ def test_segment_order_matches_the_bridle_line_system(struc_geometry):
     system, so a drift in either walk would put a tape diameter on a bridle
     line. Reproduced here independently of the implementation.
     """
-    expected = []
-    for row in struc_geometry["bridle_connections"]["data"]:
-        expected.append(row[0])
-        if len(row) == 4:
-            expected.append(row[0])
+    expected = [s["line"] for s in struc_geometry.bridle_segments]
     diameters = bridle_drag_diameters(struc_geometry, ROLL_AVERAGED)
     assert len(diameters) == len(expected)
     tape_positions = {i for i, name in enumerate(expected) if "tape" in name}
@@ -298,15 +308,28 @@ def test_apply_raises_when_the_parses_disagree(struc_geometry):
         apply_bridle_drag_diameters(_Body([0.002] * 44), struc_geometry)
 
 
+def test_attach_gives_the_body_the_structure_line_system(struc_geometry):
+    """``attach_bridle_lines`` is what VSM's ``bridle_path`` parse did, plus the
+    drag diameters: the structure's segments, end points and all."""
+
+    class Bare:
+        pass
+
+    body = Bare()
+    assert attach_bridle_lines(body, struc_geometry, ROLL_AVERAGED) == 3
+    expected = struc_geometry.bridle_line_system()
+    assert len(body._bridle_line_system) == len(expected)
+    for got, want in zip(body._bridle_line_system, expected):
+        assert np.array_equal(got[0], want[0]) and np.array_equal(got[1], want[1])
+    assert [float(line[2]) for line in body._bridle_line_system] == (
+        bridle_drag_diameters(struc_geometry, ROLL_AVERAGED)
+    )
+
+
 # ------------------------------------------------------------- provenance
 def test_missing_width_is_detected_and_warned(struc_geometry, caplog):
     """A geometry written before the ``w`` column must not fail silently."""
-    legacy = yaml.safe_load(yaml.dump(struc_geometry))
-    legacy["bridle_lines"]["headers"] = [
-        h for h in legacy["bridle_lines"]["headers"] if h != "w"
-    ]
-    for row in legacy["bridle_lines"]["data"]:
-        del row[5:]
+    legacy = _without_tape_width(struc_geometry)
     assert sorted(lines_missing_width(legacy)) == ["depower_tape", "steering_tape"]
     with caplog.at_level(logging.WARNING, logger="awetrim.aerodynamics.line_drag"):
         diameters = bridle_drag_diameters(legacy, ROLL_AVERAGED)
@@ -364,7 +387,13 @@ def test_public_signatures():
     ]
     assert list(inspect.signature(apply_bridle_drag_diameters).parameters) == [
         "body_aero",
-        "struc_geometry",
+        "structure",
+        "roll_model",
+        "cd_cable",
+    ]
+    assert list(inspect.signature(attach_bridle_lines).parameters) == [
+        "body_aero",
+        "structure",
         "roll_model",
         "cd_cable",
     ]

@@ -30,6 +30,7 @@ from scipy.optimize import least_squares
 
 from awetrim.environment.profile_laws import LOG_BASED_MODELS
 from awetrim.aerodynamics.apparent_wind import apparent_wind_at
+from awetrim.aerodynamics.vsm_settings import make_vsm_solver
 from awetrim.aerodynamics.kcu_drag import (
     AXIS_MODEL_NONE,
     AXIS_MODEL_RADIAL,
@@ -51,8 +52,8 @@ DEFAULT_AXES = AxisDefinition(
 #: Station of the KCU in the VSM geometry frame.
 #:
 #: The KCU hangs at the BRIDLE POINT, which is the origin of the structural
-#: geometry -- ``bridle_point_node: [0, 0, 0]`` in every shipped
-#: ``struc_geometry*.yaml``, LEI-V3 and LEI-V9 alike. It is deliberately NOT
+#: geometry -- the KCU point (``Structure.kcu``) sits at the wing origin in
+#: every shipped ``structure.yml``, LEI-V3 and LEI-V9 alike. It is deliberately NOT
 #: written as ``reference_point``: the two coincide only because every shipped
 #: ``as_config`` also puts the moment reference at the origin, and the KCU does
 #: not move when that bookkeeping choice does.
@@ -79,7 +80,7 @@ DEFAULT_BOUNDS_LOWER = np.array([-2.0, -15.0, -15.0, -15.0, -5.0], dtype=float)
 DEFAULT_BOUNDS_UPPER = np.array([200.0, 15.0, 15.0, 15.0, 5.0], dtype=float)
 
 
-def _default_vsm_solver(
+def default_vsm_solver(
     reference_point: np.ndarray,
     allowed_error: float = 1e-6,
     gamma_loop_type: str = "base",
@@ -88,8 +89,26 @@ def _default_vsm_solver(
     anderson_max_iterations: int | None = None,
     is_aoa_corrected: bool = False,
 ) -> VsmSolver:
+    """The VSM ``Solver`` every AWETrim quasi-steady trim uses.
+
+    The settings are AWETrim's (:mod:`awetrim.aerodynamics.vsm_settings`),
+    never inherited from VSM, whose own defaults change between versions.
+    Build a VSM solver through this function whenever its result is compared
+    with a trim.
+
+    Args:
+        reference_point: point the moments are taken about [m].
+        allowed_error: inner circulation-loop tolerance.
+        gamma_loop_type: "base" (relaxed Picard), "anderson" or
+            "casadi_newton"; see the notes below.
+        is_with_artificial_viscosity: Li/Gaunaa spanwise artificial viscosity.
+        artificial_viscosity_factor: its factor.
+        anderson_max_iterations: cap of the Anderson attempt (None = AWETrim's).
+        is_aoa_corrected: force directions from the quarter-chord flow (True)
+            instead of the freestream (False, AWETrim's model).
+    """
     try:
-        from VSM.core.Solver import Solver
+        from VSM.core.Solver import Solver  # noqa: F401  (availability check)
     except ImportError as exc:  # pragma: no cover - depends on optional package
         raise ImportError(
             "VSM is required when no solver is supplied. Install or expose "
@@ -119,7 +138,7 @@ def _default_vsm_solver(
     #     same fixed point as "base", 3-10 inner iterations, ~5x faster trims,
     #     converges post-stall where anderson limit-cycles. Same tight-
     #     tolerance rule as anderson (1e-8) for the FD outer Jacobian. See
-    #     scripts/aerodynamics/compare_gamma_loops_polar.py.
+    #     compare_gamma_loops_polar.py. (available on request)
     # ``is_with_artificial_viscosity`` enables the parameter-free Li/Gaunaa
     # spanwise artificial viscosity in the gamma loop (same option the
     # aerostructural side exposes via as_config aerodynamic.*). It exists to
@@ -133,26 +152,24 @@ def _default_vsm_solver(
     # by 1000 in 0.3-0.4 s -- ~4x faster than the base loop, same fixed
     # point), and the 1e-8 Picard fallback then costs ~20x the base-1e-6
     # solve. Raise it (~1000) for post-stall anderson work; None keeps the
-    # VSM default.
+    # AWETrim default.
+    # Everything not set here is AWETrim's (awetrim.aerodynamics.vsm_settings).
     kwargs = {}
     if anderson_max_iterations is not None:
         kwargs["anderson_max_iterations"] = int(anderson_max_iterations)
-    return Solver(
+    return make_vsm_solver(
         reference_point=reference_point,
-        gamma_initial_distribution_type="zero",
         allowed_error=allowed_error,
         gamma_loop_type=gamma_loop_type,
         is_with_artificial_viscosity=is_with_artificial_viscosity,
         artificial_viscosity_factor=artificial_viscosity_factor,
-        # Force directions from the freestream (False, the model every
-        # AWETrim result is built on and what the CasADi panel kernels
-        # reproduce) or from the quarter-chord flow (True, VSM develop's own
-        # default since 2026-09-17). Stated rather than inherited, so the
-        # trim never silently follows the VSM checkout.
         is_aoa_corrected=bool(is_aoa_corrected),
         **kwargs,
     )
 
+
+# Former private name, kept for existing callers.
+_default_vsm_solver = default_vsm_solver
 
 def _as_3vector(value: Any) -> np.ndarray:
     vector = np.asarray(value, dtype=float).reshape(-1)
@@ -581,7 +598,7 @@ def solve_vsm_quasi_steady_trim(
         raise ValueError("Each lower bound must be smaller than its upper bound.")
 
     if solver is None:
-        solver = _default_vsm_solver(
+        solver = default_vsm_solver(
             reference_point,
             gamma_tolerance,
             gamma_loop,
@@ -1006,11 +1023,18 @@ def solve_vsm_quasi_steady_trim(
         "wind_vel_world": _as_3vector(kin.get("wind_velocity", np.zeros(3))),
         "kite_vel_world": _as_3vector(kin.get("kite_velocity", np.zeros(3))),
         "va_vel_world": _as_3vector(kin.get("apparent_velocity", va)),
+        # The transport rate the aero was evaluated at (rotational inflow
+        # about reference_point), as the CasADi trim reports it: with
+        # va_vel_world it reproduces the trim's inflow on a frozen body.
+        "omega_c_vsm": _as_3vector(kin["omega_c_vsm"]),
         "Umag": umag,
         "course_axis": axes.course,
         "radial_axis": axes.radial,
         "normal_axis": axes.normal,
         "F_distribution": res.get("F_distribution"),
+        # per-panel moments about the solver's reference point: the exact
+        # (strut_lever) aero-to-structure load transfer needs them
+        "M_distribution": res.get("M_distribution"),
         "panel_cp_locations": res.get("panel_cp_locations"),
         "alpha_at_ac": res.get("alpha_at_ac"),
         "gamma_distribution": res.get("gamma_distribution"),
@@ -1113,7 +1137,7 @@ def turn_radius_vs_steer_moment(
     x_guess = np.clip(_as_5vector(x_guess, "x_guess"), bounds_lower, bounds_upper)
     roll_axis = _as_3vector(axes.course)
     if solver is None:
-        solver = _default_vsm_solver(_as_3vector(reference_point))
+        solver = default_vsm_solver(_as_3vector(reference_point))
 
     def _solve_one(
         moment: float, warm: np.ndarray
@@ -1208,7 +1232,7 @@ def roll_angle_from_steering_delta(
     """Rigid-body roll angle [deg] from a steering line-length difference [m].
 
     Purely geometric bridle-steering model (the triangle from
-    ``scripts/personal/aerodynamics/calculate_max_roll.py``): the kite hangs
+    ``calculate_max_roll.py (available on request)``): the kite hangs
     from the KCU apex by two lines attached at the ends of a rigid segment of
     span ``steering_b`` whose midpoint sits ``steering_h`` above the KCU (both
     in the roll plane, i.e. y-z distances). A steering actuation making the
@@ -1296,7 +1320,7 @@ def turn_radius_vs_steering_delta(
     tip_midpoint = _as_3vector(tip_midpoint)
     course_axis = _as_3vector(axes.course)
     if solver is None:
-        solver = _default_vsm_solver(_as_3vector(reference_point))
+        solver = default_vsm_solver(_as_3vector(reference_point))
 
     def _solve_one(delta: float, warm: np.ndarray) -> tuple[dict[str, Any], np.ndarray]:
         theta = roll_angle_from_steering_delta(steering_h, steering_b, delta)
@@ -1612,7 +1636,7 @@ def solve_vsm_qs_trim_with_williams_tether(
     )
 
     if solver is None:
-        solver = _default_vsm_solver(
+        solver = default_vsm_solver(
             reference_point,
             gamma_tolerance,
             gamma_loop,
@@ -2040,6 +2064,7 @@ def solve_vsm_qs_trim_with_williams_tether(
             # acts on the (fixed) bridle node instead.
             "force_kcu": force_kcu,
             "va": va,
+            "omega_c_vsm": omega_c_vsm,
             "umag": umag,
             "res": res,
             "aoa_deg": aoa_deg,
@@ -2278,6 +2303,9 @@ def solve_vsm_qs_trim_with_williams_tether(
         "cd": payload["res"].get("cd"),
         "tether_force": float(tether_force),
         "va_vel_world": payload["va"],
+        # The rotational inflow of the trim, as solve_vsm_quasi_steady_trim
+        # reports it.
+        "omega_c_vsm": _as_3vector(payload["omega_c_vsm"]),
         "Umag": payload["umag"],
         "total_aero_force_vec": payload["total_aero_force"],
         "force_kite_resultant": F_kite_wind,
@@ -2305,6 +2333,7 @@ def solve_vsm_qs_trim_with_williams_tether(
             projected_area_cache.get("projected_area", 0.0),
         ),
         "F_distribution": payload["res"].get("F_distribution"),
+        "M_distribution": payload["res"].get("M_distribution"),
         "panel_cp_locations": payload["res"].get("panel_cp_locations"),
         "alpha_at_ac": payload["res"].get("alpha_at_ac"),
         "gamma_distribution": payload["res"].get("gamma_distribution"),
@@ -3619,7 +3648,7 @@ def compute_vsm_trim_stability_derivatives(
     reference_point = _as_3vector(reference_point)
     x_trim = _as_5vector(x_trim, "x_trim")
     if solver is None:
-        solver = _default_vsm_solver(reference_point)
+        solver = default_vsm_solver(reference_point)
 
     speed_tangential, roll0, pitch0, yaw0, course_rate0 = x_trim
     va_world = trim_result.get("va_vel_world")
@@ -5931,7 +5960,7 @@ def run_vsm_quasi_steady_sweep(
             solver = (
                 solver_factory(reference_point)
                 if solver_factory is not None
-                else _default_vsm_solver(_as_3vector(reference_point))
+                else default_vsm_solver(_as_3vector(reference_point))
             )
             result, body = solve_vsm_quasi_steady_trim(
                 body_aero=build_body(case_values),
@@ -6076,6 +6105,7 @@ __all__ = [
     "AxisDefinition",
     "compute_stability_derivatives",
     "compute_vsm_trim_stability_derivatives",
+    "default_vsm_solver",
     "plot_quasi_steady_sweep_dataframe",
     "plot_vsm_quasi_steady_sweep",
     "quasi_steady_sweep_rows_to_dataframe",

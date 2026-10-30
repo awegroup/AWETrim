@@ -17,19 +17,22 @@
 """The coupled solve itself: geometry, load transfer, and the fixed-point driver.
 
 Backend-agnostic. ``coupled_solver`` dispatches over the structural backends in
-``..wireframe`` and ``..billow``; ``read_struc_geometry_yaml`` is the one
-geometry reader both of them consume, and ``aero2struc`` is the one load
-transfer. A new backend is a branch in the driver, not a copy of it.
+``..wireframe`` and ``..billow``; ``awesio_structure`` is the one geometry
+reader both of them consume (an awesIO structure document, ``load_structure``;
+``read_struc_geometry_yaml`` only imports the retired format), and
+``aero2struc`` is the one load transfer. A new backend is a branch in the driver, not a copy of it.
 """
 
 from awetrim.aerostructural.coupled import (
     aero2struc,
+    awesio_structure,
     coupled_solver,
     read_struc_geometry_yaml,
 )
 
 __all__ = [
     "aero2struc",
+    "awesio_structure",
     "coupled_solver",
     "read_struc_geometry_yaml",
 ]

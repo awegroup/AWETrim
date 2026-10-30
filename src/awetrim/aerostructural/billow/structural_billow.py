@@ -419,35 +419,17 @@ def canopy_mesh(grid: Array, nodes: Array, pattern: str = "cross"):
     )
 
 
-def leading_edge_chain(struc_geometry: Mapping[str, Any]) -> list[int]:
-    """Node path along the leading-edge tube, walked from its element list."""
-    successor: dict[int, int] = {}
-    predecessors: set[int] = set()
-    for _name, ci, cj, _diameter in struc_geometry["leading_edge_tubes"]["data"]:
-        successor[int(ci)] = int(cj)
-        predecessors.add(int(cj))
-    starts = [node for node in successor if node not in predecessors]
-    if len(starts) != 1:
-        raise ValueError(
-            f"leading_edge_tubes must form one open chain; found {len(starts)} "
-            f"start nodes {sorted(starts)}"
-        )
-    chain = [starts[0]]
-    while chain[-1] in successor:
-        chain.append(successor[chain[-1]])
-    if len(chain) != len(successor) + 1:
-        raise ValueError("leading_edge_tubes chain is broken or branches")
-    return chain
-
-
-def beam_chains(struc_geometry, strut_sections) -> list[list[int]]:
+def beam_chains(structure, strut_sections) -> list[list[int]]:
     """The leading-edge chain plus one chain per strut, as node paths.
+
+    ``structure`` is the awesIO ``Structure`` (its ``leading_edge_chain``,
+    +y to -y).
 
     Frames live on nodes, so they have to be carried along something smooth.
     Each chain is a polyline; struts and the leading edge meet at shared nodes,
     and whichever chain is laid down last owns the frame there.
     """
-    return [leading_edge_chain(struc_geometry)] + [
+    return [list(structure.leading_edge_chain)] + [
         list(section) for section in strut_sections
     ]
 
@@ -471,7 +453,7 @@ def chain_tangents(points: Array) -> Array:
 def build_frames(
     struc_nodes: Array,
     beam_connectivity: Array,
-    struc_geometry,
+    structure,
     strut_sections,
     junction_frame: str = "strut",
 ) -> Array:
@@ -500,7 +482,7 @@ def build_frames(
         raise ValueError("junction_frame must be 'leading_edge' or 'strut'")
 
     # -- per-node tangents, the owning member having the last word ---------
-    chains = beam_chains(struc_geometry, strut_sections)
+    chains = beam_chains(structure, strut_sections)
     ordered = chains if junction_frame == "strut" else chains[1:] + chains[:1]
     tangents = np.zeros((len(struc_nodes), 3))
     for chain in ordered:
@@ -860,7 +842,7 @@ def _bridle_elements(
 
 def relax_bridle_nodes(
     config,
-    struc_geometry,
+    structure,
     struc_nodes,
     kite_connectivity_arr,
     l0_arr,
@@ -881,7 +863,7 @@ def relax_bridle_nodes(
     struc_nodes = np.asarray(struc_nodes, dtype=float)
     if not settings["relax_bridles"]:
         return struc_nodes.copy()
-    fixed_nodes = tuple(int(i) for i in struc_geometry.get("fixed_point_indices", [0]))
+    fixed_nodes = tuple(int(i) for i in structure.fixed)
     *_, cables, pulleys = _bridle_elements(
         np.asarray(kite_connectivity_arr, dtype=int),
         np.asarray(l0_arr, dtype=float),
@@ -927,7 +909,7 @@ def tube_axial_stiffness(diameters, pressure, config=None) -> Array:
 
 def instantiate(
     config,
-    struc_geometry,
+    structure,
     struc_nodes,
     kite_connectivity_arr,
     l0_arr,
@@ -941,10 +923,11 @@ def instantiate(
 ) -> BillowStructure:
     """Build the Billow model and compile its solver.
 
-    Takes the arrays ``fem.read_struc_geometry_yaml.main`` already returns, so
-    one geometry reader serves both structural backends. For the inflatable
-    beams that reader stores the tube diameter in ``k_arr`` and the inflation
-    pressure in ``c_arr``, which is how ``kite_fem`` receives them too.
+    Takes the arrays ``Structure.resolved`` returns (``structure`` is that
+    awesIO ``Structure``: its fixed points and leading-edge chain), so one
+    geometry serves both structural backends. For the inflatable beams those
+    arrays store the tube diameter in ``k_arr`` and the inflation pressure in
+    ``c_arr``.
     """
     settings = resolve_config(config.get("structural_billow"))
 
@@ -957,7 +940,7 @@ def instantiate(
     link_types = np.asarray([str(t).lower() for t in linktype_arr])
     n_elements = len(connectivity)
 
-    fixed_nodes = tuple(int(i) for i in struc_geometry.get("fixed_point_indices", [0]))
+    fixed_nodes = tuple(int(i) for i in structure.fixed)
     (
         grid, is_beam, is_canopy, is_cable, cable_elements, triplets, arm_pairs,
         cables, pulleys,
@@ -1001,7 +984,7 @@ def instantiate(
     frames = build_frames(
         struc_nodes,
         connectivity[beam_elements],
-        struc_geometry,
+        structure,
         strut_sections,
         junction_frame=str(settings["junction_frame"]),
     )

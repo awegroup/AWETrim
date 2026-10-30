@@ -26,8 +26,8 @@ src/awetrim/
                           aerostructural path via is_with_kcu_drag)
                          + bridle-line SECTION drag (line_drag.py): the
                          steering/depower lines are flat 12 mm tapes, not
-                         round cable; declared by a "w" column in
-                         struc_geometry bridle_lines and applied as a
+                         round cable; declared by a "tape_width" column
+                         on the structure's segments and applied as a
                          drag-equivalent diameter (as_config
                          aerodynamic_bridle.tape_roll_model)
                          + apparent_wind.py: THE single source of
@@ -51,8 +51,13 @@ src/awetrim/
     coupled/         ✅  The coupled solve itself, backend-agnostic.
                          coupled_solver.py dispatches over wireframe / billow,
                          so a new backend is a branch there, not a copy;
-                         read_struc_geometry_yaml.py is the ONE geometry reader
-                         both consume and aero2struc.py the ONE load transfer.
+                         awesio_structure.py is the ONE geometry reader
+                         (load_structure -> Structure, an awesIO
+                         structure document; Structure.resolved() is the
+                         full model's solver arrays) both consume, and
+                         aero2struc.py the ONE load transfer.
+                         read_struc_geometry_yaml.py now only imports the
+                         retired struc_geometry_FEM_full format.
                          aero2struc.chordwise_distribution offers
                          "moment_matched", which places each panel's load at
                          its own centre of pressure so the LOCAL pitching
@@ -66,8 +71,8 @@ src/awetrim/
     billow/          ✅  Adapter for Billow's FULL fidelity: inflatable
                          Timoshenko tube beams and wrinkling CST membrane
                          canopy on top of the same cables and pulleys. Reads
-                         struc_geometry_FEM_full.yaml (the only geometry with
-                         tubes and pressure). Converged on the LEI-V3
+                         the kite's structure.yml (awesIO; its tubes and
+                         pressure). Converged on the LEI-V3
                          unactuated baseline
   kinematics/        ✅  course-frame kinematics, B-spline path patterns
                          (+ the slanted up-loop figure eight of the
@@ -104,7 +109,27 @@ src/awetrim/
                          together, so with the mirror rows those rows are
                          dependent and their multipliers not unique; the
                          clean fix is elimination (declare only the first
-                         half as variables) -- open follow-up)
+                         half as variables) -- open follow-up.
+                         sim_parameters.fix_depower_profile: per-node depower
+                         held at its warm start (the full-cycle closing
+                         stage). sim_parameters.depower_anchor_weight: the
+                         soft alternative, w * mean(((l_dp - l_dp_warm) /
+                         depower bound width)^2) in the objective
+                         (objective_dict["depower_anchor"]); excludes the
+                         hold (the closing stage of a --continue-from run:
+                         its depower was optimal at another wind and in the
+                         rated region only depowering sheds the extra
+                         force). sim_parameters.parametric_speed_floor: the
+                         anti-hesitation floor sigma' >= f sigma_ref without a
+                         turn-radius constraint (the full-cycle seeds emit
+                         0.2; a collapsed sigma' is a spline cusp that breaks
+                         the node trim). The power objective's scale is
+                         floored at 0.25 mean|P| of the warm start.
+                         sim_parameters.reg_fraction: the control-smoothness
+                         term (reg) weighted to that fraction of |objective|
+                         at the NLP's initial point (phase.relative_reg_weight;
+                         an explicit reg_weight wins). All
+                         opt-in keys off = NLP unchanged)
   environment/       ✅  Wind (uniform / logarithmic / power_law / explog /
                          jet / tabulated). profile_laws.py is the ONLY place the
                          analytic formulas live (pure functions over an ``xp``
@@ -114,7 +139,14 @@ src/awetrim/
                          derives the other lazily. wind_factory.create_wind_model
                          builds fully numeric models; wind_profiles.py maps the
                          co-sim InflowConditions struct (laws 0-6, CUSTOM_* fits)
-                         onto create_wind_model kwargs.
+                         onto create_wind_model kwargs. profile_laws.air_density
+                         is the density law rho0 exp(-(z + h_gnd)/8550)
+                         (AtmosphericModels.jl calc_rho); Kite.rho stays the
+                         constant unless Kite.air_density_model = {height_gnd,
+                         scale_height?} is set, then lift/drag, KCU drag and the
+                         lumped tether drag use it at z = r sin(beta)
+                         (SystemModel.air_density) and the Williams tether
+                         per node (air_density_at_height)
   server/            ✅  REST API for reelout trajectory optimization
                          (FastAPI, optional [server] extra; endpoints
                          /init /status /step /trajectory /reset, plus the
@@ -130,7 +162,9 @@ src/awetrim/
                          DepowerParams {mode: fixed|optimize|profile, value},
                          InflowConditions {wind_speed @6 m, wind_direction
                          (compass, FROM), profile_law 0-6, alpha, z0,
-                         heights/speeds, turbulence (ignored)},
+                         heights/speeds, turbulence (ignored),
+                         air_density_law constant|exponential, rho_zero
+                         (default: the system file's rho), height_gnd},
                          InitParams, StepParams. Replies always echo the
                          depower the returned path assumes — it is not
                          flyable without it. Optional client-supplied
@@ -143,14 +177,24 @@ src/awetrim/
                          (init/step; echoed) -> opti_limits_override C_phi/
                          C_beta (B-spline hull) + sim_parameters.
                          min_azimuth_amplitude (one smooth row in opti_phase).
-                         Launcher: scripts/server/run_reelout_server.py
-  experimental/      ✅  EKF flight-data analysis pipeline (+ data_preprocessors/)
+                         Optional angle_of_attack_limits {min, max,
+                         stall_margin} [deg] (init/step; echoed) ->
+                         opti_limits_override angle_of_attack; stall_margin
+                         = the ROM's angle_of_attack_stall minus it.
+                         Launcher: examples/server/run_reelout_server.py
+  flight_data/       ✅  reader of EKF-AWE output (load_flight -> FlightData); raw-log
+                         processing and the EKF itself live in EKF-AWE
   plotting/          ✅  shared plotting helpers — see src/awetrim/plotting/AGENTS.md
   utils/             ✅  fitting, defaults, reference frames, control_metrics
                          (steering-reversal count / pairs outside a deadband,
                          seam pair counted on a periodic history)
-  identification/    🟡  ROM aero-coefficient identification: tidy dataset
-                         (aero_dataset.py, AS + EKF sources, shared schema),
+  identification/    🟡  ROM aero-coefficient identification: the
+                         aerostructural sweep dataset (aerostructural_dataset.py:
+                         trims.csv / polars.csv of run_identification_sweep.py,
+                         dimensional, vectors as _x/_y/_z in the trim frame;
+                         coefficient_tables -> CL/CD samples and the
+                         theta_b / phi_a trim samples of paper App. D), tidy
+                         dataset (aero_dataset.py, AS + EKF sources, shared schema),
                          BIC forward-stepwise polynomial fit with k-fold CV
                          (aero_polynomial.py → rom_config "coeffs"), control
                          conventions (controls.py), rigid_body_axes.py
@@ -160,29 +204,50 @@ src/awetrim/
                          (aero LUT guide is outdated and needs revising)
 ```
 
-ROM is **script-based**, not a `src/` module: see `scripts/reduced-order-model/`
+ROM is **script-based**, not a `src/` module: see `examples/4_trajectory_optimization/`
 (`optimization/`, `validation/`), configured via the ROM config the kite's
 `system.yaml` selects (`models.reduced_order.aerodynamics`, resolved by
 `system.factory.resolve_rom_config_path`; fallback a sibling `rom_config.yaml`).
-The LEI-V3 has two: `rom_config_aerostructural.yaml` (identified from the coupled
-Billow-wireframe centre-window simulations only, by
-`scripts/identification/identify_rom_aerostructural.py`) and
-`rom_config_aerostructural_flight_corrected.yaml` (the DEFAULT in every
-LEI-V3 system file: the aerostructural one with
+The LEI-V3 has two: `rom_config_aerostructural.yaml` (the DEFAULT in every
+LEI-V3 system file since 2026-10-29: identified from simulations only, by the
+public step 3 on the FEM-reduced wireframe with canopy billowing and the
+strut-lever load transfer (`fidelity: wireframe` of `identification.yaml`):
+`examples/3_rom_identification/run_identification_sweep.py` then
+`identify_rom_aerostructural.py`, both reading `data/<kite>/identification.yaml`,
+writing under `results/<kite>/identification/<fidelity>/`; band 1.30-2.60 m,
+tension floor `validity.min_tether_force_n` 602 N, roll gain k(u_p) quadratic;
+the factory clips the optimizer's depower box to `validity.input_depower`,
+its steering box to `validity.input_steering_abs_max` (0.143, the 0.20 m the
+steering chains reached) and raises the tension bound to the floor;
+`fit.fidelities.wireframe.flight_match` records the model tapes that reproduce
+the 2019 reel-out / reel-in, to be updated whenever the match is redone, and
+`identification.controls.flight_depower_match` reads it so flight depower is
+mapped onto the ROM's u_p (`flight_depower_to_power_tape_length(.., match)`,
+the match required: the flown tape is not known from the logs, the 1.7 / 2.1
+m that stood in `controls` until 2026-10-29 was the previous model's match;
+the cycle and flight scripts pass it, `cycle_profile.yaml` is stated in it) and
+`rom_config_aerostructural_flight_corrected.yaml` (NOT YET REVIEWED by the
+author -- provisional, check it thoroughly before relying on it: the 2019
+flight correction of that ROM, redone 2026-10-29 with the flight depower read through
+flight_match, on the 2019 EKF re-run with the bridle in the kite mass;
+hold-out cycles 60-67, median tension / v_tau error: reel-out +3.7 % / +1.0 %
+(uncorrected +3.8 % / +2.3 %), reel-in +30 % / +6 % (uncorrected +57 % /
++38 %); the roll gain is ONE scale on the whole k(u_p);
+the method:
 theta_b and a single-input dC_D(u_p, u_s^2) fitted to 2019 flight, cycles 60-67
 held out: `identify_rom_flight_correction.py` (equation error: theta_b from the
-flight LIFT, drag at equal lift) then `refine_rom_flight_output_error.py`
+flight LIFT, drag at equal lift) then `refine_rom_flight_output_error.py` (both
+in `examples/5_flight_data/`)
 (output error on the quasi-steady tension and v_tau, with the roll gain set by
 the turn-rate law -- the solved steering regressing 1:1 on the logged steering
 -- which edits the file in place; the equation-error values alone do not transfer to the rigid-tether
 quasi-steady solve)). The paper's semi-empirical ROM
 (`rom_config_semi_empirical.yaml`) was removed on 2026-10-07 after the
 comparison in `docs/identification/`; it lives in git history (last at
-commit bad8a9b) and `config_paths.LEI_V3_ROM_SEMI_EMPIRICAL_CONFIG` keeps its
-path so the comparison scripts run on a checkout of it.
+commit bad8a9b).
 
 Full-cycle optimisation scripts (`optimization/cycle/`): `fit_periodic_cycle_config.py`
-+ `run_full_cycle_opti.py` (multi-lobe cycle, `close_radial_cycle`). Studies
++ `run_full_cycle_opti.py` (multi-lobe cycle; closed through the `periodic_wrap` seam, the closing stage uses the one-sided `close_radial_cycle` pin; step boxes ±0.15 rad / ±50 m in the closing stage, 4x that in the power stage and polish; `--step-scale` scales the latter; the closing stage holds the depower profile, except on a `--continue-from` run, where it anchors it with `depower_anchor_weight` 0.05 so a wind continuation can depower into the rated region; the power stages carry the smoothness term at `REG_FRACTION` 0.1 of the objective, without which the reel-in of a kite steering at its band zigzags. Roll-gain assist (`march_with_roll_assist`, used by both scripts): when the seed does not trim at the kite's roll gain, it is marched at 1.25-2 x k(u_p) (`Kite.gain_roll_scale`, not a ROM parameter) and the optimizer inserts continuation stages that halve the excess back to 1 (midpoint retry on failure) before the power stages, so a kite with little roll authority (the bare LEI-V3 ROM, x1.75 at 6 m/s) still starts at the reel-in top). Studies
 built on them live in `optimization/studies/` (see its README), e.g.
 `run_uploop_eight_opti.py` + `plot_uploop_eight_comparison.py` (ONE slanted up-loop figure eight per period: low lobe
 + crossings reel out, high arc reels in; `periodic_wrap`, `free_speed`, free
@@ -198,7 +263,10 @@ first-class cycle metric next to the mean power in `cycle_comparison_plots`.
 **ROM parameter names** (`aerodynamics.params`, read by `system/kite.py`):
 `angle_pitch_tether_0` + `slope_angle_pitch_tether_depower` give the bridle
 pitch theta_b(u_p) in the PAPER sign, `alpha_w = alpha_b - theta_b`;
-`gain_roll_steering` is k_phi,s (`phi_a,w = k u_s`, asymmetric steering); both
+`gain_roll_steering` is k_phi,s (`phi_a,w = k u_s`, asymmetric steering), made
+depower-dependent by the optional `gain_roll_steering_depower: [k1, k2, ...]`
+(`k(u_p) = gain_roll_steering + k1 u_p + k2 u_p^2 ...`, `Kite.gain_roll_steering_for`;
+absent = the paper's constant gain); both
 angles are taken in the paper's App. D apparent-wind frame, which
 `Kite._force_in_wind_frame` builds from the v_a VECTOR (until 2026-10-06 an
 Euler-angle frame with a mirrored yaw sign put the bridle pitch 2-3 deg off
@@ -350,17 +418,17 @@ Common commands
 
 Scripts
 
- - Scripts live in `scripts/` and are executed from the project root, for example:
-   - python scripts/aerostructural/run_simulation_PSM.py
-   - python scripts/aerodynamics/solve_single_state.py
-   - python scripts/experimental/run_analysis_ekf.py
+ - Scripts live in `examples/` and are executed from the project root, for example:
+   - python examples/2_aerostructural/run_simulation_PSM.py
+   - python examples/1_aerodynamics/solve_single_state.py
+   - python run_analysis_ekf.py   (available on request)
 
 External dependencies referenced by `pyproject.toml` (VCS installs):
 
 | Package | Role | Install note |
 |---------|------|-------------|
-| `Vortex-Step-Method` | VSM aerodynamic solver | Installed from GitHub, **pinned to `8825a12`** in `pyproject.toml` (https://github.com/awegroup/Vortex-Step-Method). Later VSM changed the panel force interface (`compute_aerodynamic_quantities` returns 3 values, not 4) that `aerodynamics/panel_kernels.py` / `trim_casadi.py` mirror; unpin only together with adapting those (16 CasADi tests fail otherwise). An editable local VSM checkout on another branch silently overrides the pin |
-| `billow` | Minimum-energy structural solver, both fidelities | Installed from GitHub `@main` via `pyproject.toml` (https://github.com/awegroup/Billow). For local development: `pip install -e ../Billow` |
+| `Vortex-Step-Method` | VSM aerodynamic solver | Installed from GitHub, **pinned to develop `1201f6f`** in `pyproject.toml` (https://github.com/awegroup/Vortex-Step-Method; was `8825a12` until 2026-10-28). `aerodynamics/panel_kernels.py` / `trim_casadi.py` mirror its panel force law (drag along the local inner flow, attached-trailed vortex force) and its CasADi panel function; move the pin only together with them (`tests/aerodynamics/test_panel_kernels.py`). Every VSM object is built on AWETrim's own settings (`aerodynamics/vsm_settings.py`), never VSM's defaults. An editable local VSM checkout on another branch silently overrides the pin |
+| `billow` | Minimum-energy structural solver, both fidelities | Installed from GitHub, pinned to a commit in `pyproject.toml` (https://github.com/awegroup/Billow; move the pin deliberately). For local development: `pip install -e ../Billow` |
 | `awes-ekf` | Extended Kalman Filter for flight data | Installed from GitHub; repository used here: https://github.com/ocayon/EKF-AWE |
 | `awesIO` | IO helpers used by scripts | Installed from GitHub (https://github.com/awegroup/awesIO) |
 | `CasADi` | Symbolic computation in `system/` | Required; used heavily in `src/awetrim/system/` |
@@ -369,28 +437,30 @@ Notes
 
  - The `aerodynamics/` module uses the VSM solver via an adapter; see `src/awetrim/aerodynamics/AGENTS.md` for module-specific guidance.
  - `PSS` (Particle System Simulator) and `kite_fem` were removed on 2026-09-12. Billow replaced both; do not reintroduce either. `tests/aerostructural/test_wireframe_package.py` asserts that importing the package pulls in neither.
- - `awetrim.aerostructural.case` defines `CONFIG_DEFAULTS` and the case helpers used by the aerostructural drivers and scripts (`scripts/aerostructural/common.py` re-exports it); prefer importing it for consistent defaults.
- - `scripts/aerostructural/` is the public demonstrator: `run_simulation_PSM.py` / `run_simulation_BILLOW.py` (edit the Inputs block) and `plot_simulation.py` (trim table + 3-D viewer). Studies cited by `docs/billow/` live in `scripts/aerostructural/studies/`.
+ - `awetrim.aerostructural.case` defines `CONFIG_DEFAULTS` and the case helpers used by the aerostructural drivers and scripts (`examples/2_aerostructural/common.py` re-exports it); prefer importing it for consistent defaults.
+ - `examples/2_aerostructural/` is the public demonstrator: `run_simulation_PSM.py` / `run_simulation_BILLOW.py` (edit the Inputs block) and `plot_simulation.py` (trim table + 3-D viewer). Studies cited by `docs/billow/` live in `studies/` (available on request).
 
 ## Per-kite data layout
 
 Each kite under `data/<kite_name>/` should include at minimum the following files and folders so scripts and tools can locate inputs automatically:
 
-- `system.yaml` — hardware and system-level configuration (kite mass, KCU, tether properties, winch, mass/inertia). This is the primary source for `SystemModel` properties. **KCU mass is the single source of truth here** (`components.kite.control_system.structure.mass`); both the structural KCU node mass and the QSM `mass_kcu` are resolved from it. **The winch drive envelope is the single source of truth here too** (`components.ground_station.drums[0]`: `min_tether_speed` / `max_tether_speed` / `max_winch_acceleration` / `max_tether_force`); `factory._extract_hardware_limits` maps it onto the optimizer's `speed_radial` bounds and the `winch_acceleration` slew limit, so cycle configs must not restate it.
-- `struc_geometry.yaml` — structural geometry describing wing nodes, LE/TE positions, bridle nodes and connectivity, spring/rest-length definitions, pulley info. A `bridle_lines` row may carry an optional `w` (flat-tape width [m]); `d` then stays the AREA-equivalent diameter used for mass and EA, while the drag uses the projected width (`awetrim.aerodynamics.line_drag`). Does **not** carry `kcu_mass` (deprecated; ignored with a warning if present — set it in `system.yaml`). A deformed snapshot may carry an optional `bridle_connection_rest_lengths` block (per-connection rest lengths of actuated tapes, e.g. a steered state, where both steering tapes share one `bridle_lines` row); both geometry readers apply it.
+- `system.yaml` — hardware and system-level configuration (kite mass, KCU, tether properties, winch, mass/inertia). This is the primary source for `SystemModel` properties. The `SystemModel`'s point-mass wing is `wing.structure.mass` (canopy) PLUS `bridle.structure.mass` (since 2026-10-29; before, the bridle was missing from the trim); the geometry-derived wing/bridle fields are re-derived from `structure.yml` by `utils.system_yml_sync` (the flown files keep their as-flown wing mass and the EKF reference area 19.75 m2). **KCU mass is the single source of truth here** (`components.kite.control_system.structure.mass`, plus the separate `mass` of an optional onboard turbine, awesIO `control_system.turbine.structure` {`rotor_diameter`, `mass`, `position_KA`}); both the structural KCU node mass and the QSM `mass_kcu` are resolved from it through `utils.system_config.get_kcu_mass`, which adds the two -- never read `structure.mass` directly. **The winch drive envelope is the single source of truth here too** (`components.ground_station.drums[0]`: `min_tether_speed` / `max_tether_speed` / `max_winch_acceleration` / `max_tether_force`); `factory._extract_hardware_limits` maps it onto the optimizer's `speed_radial` bounds and the `winch_acceleration` slew limit, so cycle configs must not restate it.
+- `structure.yml` — THE structural geometry (`aerostructural.case.DEFAULT_STRUC_GEOMETRY_FILENAME`), an awesIO structure document (`structure_schema.yml`, awesIO 0.1.0) read with `aerostructural.coupled.awesio_structure.load_structure`: the FULLY RESOLVED model (every node, incl. strut padding and canopy chord nodes), tubes on one-point bodies (Breukels law, pressure in Pa), canopy faces, the full bridle as segments (a pulley = two arm segments, each with its own `rest_length`; the rope is their sum) and masses by awesIO's rule (lines and fabric derived by the reader, pulleys and tubes as extra mass). Billow full reads it; the wireframe reduces it on the fly (`wireframe.reduce_fem`); the step-1 aerodynamics take the bridle and the mass/inertia from it. AWETrim's own columns on `segments`: `line` (the bridle line; `depower_tape` / `steering_tape` are actuated), `linktype`, `tape_width` (flat-tape drag width [m]; `diameter` stays the AREA-equivalent one used for mass and EA, `awetrim.aerodynamics.line_drag`); the top-level `awetrim` block names `kcu_point` and `pulley_mass`. Does **not** carry the KCU mass (`system.yaml` is its single source; `Structure.resolved(kcu_mass=...)`). A deformed results folder holds a snapshot under the same name, a WIREFRAME document (wing members as segments with AWETrim's `stiffness` / `damping` / `mass` columns); `case.find_struc_geometry` finds it. Until 2026-10-29 the geometry was `struc_geometry_FEM_full.yaml` and snapshots PSM-format `struc_geometry.yaml`: `load_structure` converts both on the fly (DeprecationWarning); convert once with `python -m awetrim.aerostructural.coupled.awesio_structure OLD NEW`. Rest-length edits change a segment's `rest_length`; rewrite through `Structure.write` to refresh `metadata.connectivity_sha`.
 - `aero_geometry.yaml` — VSM aerodynamic geometry describing wing sections, paneling, and references to airfoil polars; may reference a subfolder with airfoil `.dat` or polar CSVs.
 - `as_config.yaml` (or `aerostructural_configs/config.yaml`) — aerostructural solver settings (time-step, tolerances, actuation options, initialisation flags).
-- `rom_config*.yaml` — reduced-order aerodynamic coefficient definitions (one file per ROM; `system.yaml` `models.reduced_order.aerodynamics` names the one in use, else a sibling `rom_config.yaml` is used) (plus ROM tether settings) used by ROM or identification flows. A `controls.input_depower: {powered, depowered}` block states the depower band the ROM was identified on, in the ROM's own `u_p` unit (`identification.controls.rom_depower_band`; absent = the V3 power-tape metres 1.7/2.1, but the full-cycle scripts require it). An optional `validity.angle_of_attack_deg: [lo, hi]` states the AoA range the ROM was identified on (the full-cycle optimizer's AoA bound).
-- `ekf_config/` — EKF configuration files and model-specific tuning parameters used by the `experimental` EKF pipeline.
+- `rom_config*.yaml` — reduced-order aerodynamic coefficient definitions (one file per ROM; `system.yaml` `models.reduced_order.aerodynamics` names the one in use, else a sibling `rom_config.yaml` is used) (plus ROM tether settings) used by ROM or identification flows. A `controls.input_depower: {powered, depowered}` block states the depower band the ROM was identified on, in the ROM's own `u_p` unit (`identification.controls.rom_depower_band`; required, there is no default). An optional `validity.angle_of_attack_deg: [lo, hi]` states the AoA range the ROM was identified on (the full-cycle optimizer's AoA bound).
+- `identification.yaml` — inputs of the ROM identification (step 3): a default `fidelity` (`billow` | `wireframe`); in each block, common keys plus a `fidelities:` entry per fidelity merged over them (`identification.aerostructural_dataset.identification_settings`). `sweep:` (system file, structural geometry, wireframe `bridle_modulus_factor`, as_config overrides with the centre-window flight state, wind speeds, depower targets and step, steering chains, stall stop, polar increments) for `run_identification_sweep.py`, and `fit:` (ROM `reference_area`, `steering_tape_per_unit_us`, fitted `depower_band`, the ROM's `controls` and `rom_tether` blocks) for `identify_rom_aerostructural.py`. Nothing kite-specific is hard-coded in those scripts.
+- `system_flown_<date>.yaml` — the as-flown hardware of each flight. AWETrim maintains these; EKF-AWE reads them (`load_config(..., system_file=...)`), its own EKF configuration (`ekf_config.yaml`) lives in EKF-AWE.
 
 Optional but recommended:
 
 - `flight_logs/` — raw flight CSVs for EKF and identification.
 - `cycle_configs/` — trajectory/pattern YAMLs for timeseries scripts (downloop, uploop, helix, etc.).
-- `cycle_profile.yaml` — inputs of the full-cycle scripts (`scripts/reduced-order-model/optimization/cycle/`, `--kite <folder>`): wind, winch force law and seed size (r0, duration prior, figure-eight/reel-in size), all required; see `cycle_kites.py` and the annotated LEI-V3 file. An optional `uploop_eight:` block (lobe centres/radii in rad, `sense`, depower window, the height band `min_height_m` / `max_height_m` (z = r sin β, the node-wise `height` rows — the binding vertical limit, shared with the `--baseline-seed` cycle; the C_beta hull stays loose), stall margin, turn-radius floor, `r0_max_m` (upper r0 bound; the tether length in system.yaml still caps r) and its OWN `wind`) feeds `run_uploop_eight_opti.py`; an optional `symmetric_eight:` block (az_center, az_offset, el_center, radius, sense; reelin/ramp fractions optional) is the level eight of its `--shape symmetric` (climbing at both sides, two reel-in windows, symmetric C_phi box; `--symmetric` adds the mirror rows). Data folders of kites whose data must stay private (e.g. `data/LEI-V9-KITE/`) are git-ignored; nothing kite-specific lives in code.
+- `cycle_profile.yaml` — inputs of the full-cycle scripts (`examples/4_trajectory_optimization/cycle/`, `--kite <folder>`): wind, winch force law and seed size (r0, duration prior, figure-eight/reel-in size), all required; see `cycle_kites.py` and the annotated LEI-V3 file. An optional `uploop_eight:` block (lobe centres/radii in rad, `sense`, depower window, the height band `min_height_m` / `max_height_m` (z = r sin β, the node-wise `height` rows — the binding vertical limit, shared with the `--baseline-seed` cycle; the C_beta hull stays loose), stall margin, turn-radius floor, `r0_max_m` (upper r0 bound; the tether length in system.yaml still caps r) and its OWN `wind`) feeds `run_uploop_eight_opti.py`; an optional `symmetric_eight:` block (az_center, az_offset, el_center, radius, sense; reelin/ramp fractions optional) is the level eight of its `--shape symmetric` (climbing at both sides, two reel-in windows, symmetric C_phi box; `--symmetric` adds the mirror rows). Data folders of kites whose data must stay private (e.g. `data/LEI-V9-KITE/`) are git-ignored; nothing kite-specific lives in code.
 
 Results layout (convention):
 
+- `results/<kite_name>/identification/<fidelity>/sweep/` — the step-3 dataset (`trims.csv`, `polars.csv`, `<chain>/step_<n>/sim_output.h5`); `identification/rom_aerostructural/` — the ROM it gives.
 - `results/<kite_name>/<analysis_type>/sim_output.h5` — aerostructural coupled-solver outputs.
 - `results/<kite_name>/ekf/` — EKF outputs and diagnostics.
 

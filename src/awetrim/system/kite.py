@@ -19,6 +19,7 @@ import warnings
 
 import casadi as ca
 from awetrim.aerodynamics.kcu_drag import CT_TURBINE_OPERATING, KcuDragModel, force_drag_kcu
+from awetrim.environment.profile_laws import air_density
 from awetrim.utils.utils import skew_symmetric
 from awetrim.utils.reference_frames import (
     transformation_C_from_W,
@@ -407,8 +408,9 @@ class Wing:
         ) / (va * va_tau + 1e-10)
         drag_direction = vec_va / (va + 1e-10)
         # Aerodynamic forces
-        D = 0.5 * self.rho * va_sq * self.area_wing * CD
-        L = 0.5 * self.rho * va_sq * self.area_wing * CL
+        rho = self.air_density_for(model)
+        D = 0.5 * rho * va_sq * self.area_wing * CD
+        L = 0.5 * rho * va_sq * self.area_wing * CL
 
         aero_forces = D * drag_direction + L * lift_direction
         return aero_forces
@@ -462,8 +464,8 @@ class Kite(Wing):
         self.diameter_kcu = float(diameter_kcu or 0.0)
         # Onboard wind turbine (mounted ON TOP of the KCU, facing the
         # apparent wind); only the KCU drag model reads these. 0.0 diameter =
-        # no turbine, and its mass is already inside mass_kcu -- these are
-        # DRAG parameters only.
+        # no turbine, and its mass is already inside mass_kcu (the factory's
+        # get_kcu_mass adds it) -- these are DRAG parameters only.
         self.diameter_turbine = float(diameter_turbine or 0.0)
         self.thrust_coefficient_turbine = float(thrust_coefficient_turbine or 0.0)
         # Explicit KCU bluff-body drag (awetrim.aerodynamics.kcu_drag, the
@@ -485,7 +487,10 @@ class Kite(Wing):
                 )
         self.steering_control = steering_control
         self.g = g  # Gravitational acceleration
-        self.rho = rho  # Air density
+        self.rho = rho  # Air density (sea-level reference if air_density_model)
+        # None = constant rho. A dict {height_gnd, scale_height} makes the
+        # density exponential in the kite height (profile_laws.air_density).
+        self.air_density_model = None
         self.center_aerodynamic_wing = (
             center_aerodynamic_wing  # Center of aerodynamic pressure
         )
@@ -513,6 +518,22 @@ class Kite(Wing):
             self.gain_roll_steering = gain
         else:
             self.gain_roll_steering = 1.0
+        # Depower dependence of that gain, k(u_p) = gain_roll_steering
+        # + k1 u_p + k2 u_p^2 ...: polynomial coefficients [k1, k2, ...] in
+        # u_p's own unit. The wing rolls less per unit steering when fully
+        # powered (LEI-V3 sweep: -19 deg per u_s at 1.40 m, -34 at 2.10 m).
+        # Absent/empty = the constant gain of the paper's Eq. 43. A CasADi
+        # coefficient is kept symbolic (a fit that scales the whole k(u_p)).
+        self.gain_roll_steering_depower = [
+            c if isinstance(c, (ca.MX, ca.SX)) else float(c)
+            for c in (self.aero_params.get("gain_roll_steering_depower") or [])
+        ]
+        # Scale on the WHOLE k(u_p), not a ROM parameter: 1 except during the
+        # roll-gain continuation of the full-cycle optimizer, which marches a
+        # seed the kite cannot turn through at an assisted gain and steps it
+        # back to 1 (examples/4_trajectory_optimization/cycle/
+        # run_full_cycle_opti.march_with_roll_assist).
+        self.gain_roll_scale = 1.0
         # Sideslip -> aerodynamic roll, phi_a,w += gain_roll_sideslip * beta_a
         # [rad per rad], beta_a = angle_sideslip_for(model): the restoring roll
         # (weathercock / sideforce) of a wing flying in sideslip, which the
@@ -522,6 +543,20 @@ class Kite(Wing):
         self.gain_roll_sideslip = float(self.aero_params.get("gain_roll_sideslip", 0.0) or 0.0)
 
         self._acceleration_total = None  # Cache for total acceleration
+
+    def air_density_at_height(self, height):
+        """Air density [kg/m3] at ``height`` above ground."""
+        if self.air_density_model is None:
+            return self.rho
+        return air_density(height, self.rho, xp=ca, **self.air_density_model)
+
+    def air_density_for(self, model):
+        """Air density [kg/m3] at the kite, z = r sin(beta)."""
+        if self.air_density_model is None:
+            return self.rho
+        return self.air_density_at_height(
+            model.distance_radial * ca.sin(model.angle_elevation)
+        )
 
     def force_drag_kcu_for(self, model):
         """KCU drag [N, C-frame], hanging on the tether (axis = e_r).
@@ -534,7 +569,7 @@ class Kite(Wing):
         return force_drag_kcu(
             model.velocity_apparent_wind,
             [0.0, 0.0, 1.0],
-            self.rho,
+            self.air_density_for(model),
             self.kcu_drag_model.cd_area_axial,
             self.kcu_drag_model.cd_area_broadside,
             xp=ca,
@@ -557,8 +592,17 @@ class Kite(Wing):
     def angle_roll_aerodynamic(self):
         return self.angle_roll_aerodynamic_for(self)
 
+    def gain_roll_steering_for(self, model):
+        """k(u_p) [rad per u_s]: the constant gain plus its depower polynomial."""
+        gain = self.gain_roll_steering
+        for power, coef in enumerate(self.gain_roll_steering_depower, start=1):
+            gain = gain + coef * model.input_depower**power
+        if self.gain_roll_scale != 1.0:
+            gain = self.gain_roll_scale * gain
+        return gain
+
     def angle_roll_aerodynamic_for(self, model):
-        roll = model.input_steering * self.gain_roll_steering
+        roll = model.input_steering * self.gain_roll_steering_for(model)
         if self.gain_roll_sideslip:
             roll = roll + self.gain_roll_sideslip * self.angle_sideslip_for(model)
         return roll

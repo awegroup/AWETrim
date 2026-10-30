@@ -2,7 +2,7 @@
 the LEI-V3 kite and march the parametrised quasi-steady phase along each.
 
 Mirrors the flow in
-``scripts/reduced-order-model/optimization/reelout/{generate_spline_config,helix_pattern}.py``:
+``examples/4_trajectory_optimization/reelout/{generate_spline_config,helix_pattern}.py``:
 generate path parameters from a named initial curve, drop them into the V3
 helix template config, build the V3 system model (rigid lumped tether), then
 run ``PhaseParameterized.run_simulation_phase``.
@@ -25,12 +25,20 @@ from awetrim.utils.config_paths import (
 )
 from awetrim.utils.utils import load_cycle_config_from_yaml
 
-# Initial-curve shape (matches the defaults in generate_spline_config.py).
+# Initial-curve shape (the NLP-building tests).
 _M = 10
 _R0 = 230.0
 _S_INIT = 0.0
 _S_FINAL = 2.0 * np.pi
 _CURVE_KWARGS = dict(az_amp0=0.32, beta0=0.3, beta_amp0=0.15, downloops=True)
+# The figure test_spline_phase_runs_quasi_steady FLIES node by node (also the
+# generate_spline_config.py default): one the
+# LEI-V3 can fly at 10 m/s inside its ROM's identified steering (|u_s| <= 0.143;
+# 0.133 at most on all three curves, lowest point 0.1 rad above the horizon).
+# The 0.32 / 0.15 rad one at 230 m above needs |u_s| up to 0.47 and post-stall
+# roots (2026-10-29).
+_FLOWN_R0 = 300.0
+_FLOWN_CURVE_KWARGS = dict(az_amp0=0.65, beta0=0.4, beta_amp0=0.30, downloops=True)
 
 pytestmark = pytest.mark.skipif(
     not LEI_V3_SYSTEM_CONFIG.exists() or not LEI_V3_HELIX_SPLINE_CONFIG.exists(),
@@ -38,25 +46,25 @@ pytestmark = pytest.mark.skipif(
 )
 
 
-def _spline_path_parameters(curve_type):
+def _spline_path_parameters(curve_type, r0=_R0, curve_kwargs=None):
     return make_bspline_path_parameters_from_named_curve(
         spline_type="periodic",
         M=_M,
-        r0=_R0,
+        r0=r0,
         s_init=_S_INIT,
         s_final=_S_FINAL,
         n_fit=200,
         curve_type=curve_type,
-        **_CURVE_KWARGS,
+        **(curve_kwargs or _CURVE_KWARGS),
     )
 
 
-def _reelout_config(curve_type, n_points):
+def _reelout_config(curve_type, n_points, r0=_R0, curve_kwargs=None):
     """V3 helix template config with its path swapped for a named-curve spline."""
     reelout_config, _ = load_cycle_config_from_yaml(LEI_V3_HELIX_SPLINE_CONFIG)
     reelout_config = copy.deepcopy(reelout_config)
     reelout_config["pattern_type"] = "spline_periodic"
-    reelout_config["path_parameters"] = _spline_path_parameters(curve_type)
+    reelout_config["path_parameters"] = _spline_path_parameters(curve_type, r0, curve_kwargs)
     sim = reelout_config["sim_parameters"]
     sim["start_angle"] = _S_INIT
     sim["end_angle"] = _S_FINAL
@@ -108,7 +116,9 @@ def test_spline_phase_runs_quasi_steady(curve_type):
     from awetrim.timeseries.phase_parametrized import PhaseParameterized
 
     n_points = 30
-    config = _reelout_config(curve_type, n_points=n_points)
+    config = _reelout_config(
+        curve_type, n_points=n_points, r0=_FLOWN_R0, curve_kwargs=_FLOWN_CURVE_KWARGS
+    )
     system_model = _v3_system_model()
 
     start_state = {
@@ -151,6 +161,11 @@ def test_spline_phase_runs_quasi_steady(curve_type):
     # Tether stays in tension and the kite stays above the horizon.
     assert np.all(phase.return_variable("tension_tether_ground") > 0.0)
     assert np.all(phase.return_variable("angle_elevation") > 0.0)
+
+    # The pattern is flown inside the steering the ROM was identified on (the
+    # factory clips the optimizer's box to it; the forward solve is unbounded).
+    u_s_max = system_model.hardware_limits["input_steering"][1]
+    assert np.max(np.abs(phase.return_variable("input_steering"))) <= u_s_max
 
 
 # --- slow: per-node depower-profile optimization ---------------------------
@@ -732,6 +747,43 @@ def test_periodic_wrap_guards():
     )
     with pytest.raises(ValueError, match="period"):
         phase.opti_phase(start_state=start, opti_params={})
+
+
+@pytest.mark.slow
+def test_depower_anchor_is_an_objective_term_only():
+    """``depower_anchor_weight`` adds no constraint rows; it returns a convex
+    quadratic in the depower profile, diagonal with the stated weight over the
+    bound width squared and n_points, zero at the warm start. Off it is None,
+    and it refuses to be combined with the ``fix_depower_profile`` hold."""
+    import casadi as ca
+
+    from awetrim.utils.defaults import DEFAULT_OPTI_LIMITS
+
+    n_points = 12
+    base = dict(_WRAP_FORMULATIONS["free_speed+depower"][0])
+    base["input_depower_profile"] = [1.6] * (n_points + 1)
+    phase_off, start = _wrap_phase(n_points, dict(base))
+    opti_off, _, obj_off = phase_off.opti_phase(start_state=start, opti_params={})
+    phase_on, start = _wrap_phase(n_points, {**base, "depower_anchor_weight": 0.5})
+    opti_on, vars_on, obj_on = phase_on.opti_phase(start_state=start, opti_params={})
+
+    assert obj_off["depower_anchor"] is None
+    assert opti_on.g.numel() == opti_off.g.numel()
+    u = vars_on["input_depower"]
+    H = ca.Function("H", [u], [ca.hessian(obj_on["depower_anchor"], u)[0]])(
+        np.full(n_points, 1.6)
+    )
+    # the RESOLVED band (the system file's KCU range), not the generic default
+    lo, hi = phase_on._resolve_opti_limits()["input_depower"]
+    assert (lo, hi) != tuple(DEFAULT_OPTI_LIMITS["input_depower"])
+    expected = 2.0 * 0.5 / (hi - lo) ** 2 / n_points
+    np.testing.assert_allclose(np.asarray(H), expected * np.eye(n_points), rtol=1e-12)
+
+    phase_both, start = _wrap_phase(
+        n_points, {**base, "depower_anchor_weight": 0.5, "fix_depower_profile": True}
+    )
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        phase_both.opti_phase(start_state=start, opti_params={})
 
 
 # --- slow: mirror symmetry (half-period mirror rows) -------------------------

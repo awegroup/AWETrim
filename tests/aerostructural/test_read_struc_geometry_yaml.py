@@ -1,4 +1,8 @@
-"""Tests for the full-model geometry reader (coupled/read_struc_geometry_yaml.py)."""
+"""Tests for the RETIRED full-model geometry reader (coupled/read_struc_geometry_yaml.py).
+
+It only imports old-format files now (``awesio_structure.to_awesio``), so it
+is tested on a legacy fixture, not on the kite's data.
+"""
 
 import copy
 from pathlib import Path
@@ -11,11 +15,12 @@ from awetrim.aerostructural.coupled import read_struc_geometry_yaml
 from awetrim.utils.system_config import get_kite
 
 KITE_DIR = Path(__file__).resolve().parents[2] / "data" / "LEI-V3-KITE"
+LEGACY_DIR = Path(__file__).resolve().parents[1] / "data" / "legacy"
 
 
 @pytest.fixture(scope="module")
 def fem_full_geometry():
-    path = KITE_DIR / "struc_geometry_FEM_full.yaml"
+    path = LEGACY_DIR / "struc_geometry_FEM_full.yaml"
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 

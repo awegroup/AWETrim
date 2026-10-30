@@ -49,22 +49,14 @@ FLIGHT_STEERING_KCU_NORM: float = FLIGHT_STEERING_KCU_NORM_2019
 # tape offset since 2026-09-13).
 FLIGHT_STEERING_ZERO_OFFSET_2019: float = -0.01645 / 1.4
 
+# The 2019 KCU depower signal at the powered (reel-out) and depowered
+# (reel-in) states. Which power-tape length these are is NOT known from the
+# logs: it is the model tape that reproduces the flight, recorded per kite in
+# identification.yaml (fit: flight_match, :func:`flight_depower_match`) and
+# redone with every identification. (Until 2026-10-29 a fixed 1.7 / 2.1 m
+# stood here -- the match of the previous model, not a flown value.)
 FLIGHT_DEPOWER_POWERED_KCU: float = 22.0
-FLIGHT_DEPOWER_POWERED_LDP_M: float = 1.7
 FLIGHT_DEPOWER_DEPOWERED_KCU: float = 30.0
-FLIGHT_DEPOWER_DEPOWERED_LDP_M: float = 2.1
-
-# AS/QSM structural geometry baseline has depower tape l_dp = 1.5 m, so the
-# 2019 powered/depowered states correspond to +0.2 m / +0.6 m actuation.
-AS_POWER_TAPE_BASELINE_LDP_M: float = 1.5
-AS_2019_POWERED_EXTENSION_M: float = (
-    FLIGHT_DEPOWER_POWERED_LDP_M - AS_POWER_TAPE_BASELINE_LDP_M
-)
-AS_2019_DEPOWERED_EXTENSION_M: float = (
-    FLIGHT_DEPOWER_DEPOWERED_LDP_M - AS_POWER_TAPE_BASELINE_LDP_M
-)
-ROM_POWERED_INPUT_DEPOWER: float = FLIGHT_DEPOWER_POWERED_LDP_M
-ROM_DEPOWERED_INPUT_DEPOWER: float = FLIGHT_DEPOWER_DEPOWERED_LDP_M
 ROM_NEUTRAL_INPUT_STEERING: float = 0.0
 
 
@@ -82,9 +74,8 @@ def rom_depower_band(rom_config=None) -> tuple[float, float]:
             powered: 0.1
             depowered: 0.9
 
-    ``rom_config`` is that file's path or its loaded dict. Without the
-    section (or with ``None``) the V3 power-tape constants are returned, so
-    every existing caller keeps its behaviour.
+    ``rom_config`` is that file's path or its loaded dict; a ROM without the
+    section raises (there is no kite-independent default).
     """
     cfg = rom_config
     if cfg is not None and not isinstance(cfg, dict):
@@ -93,9 +84,11 @@ def rom_depower_band(rom_config=None) -> tuple[float, float]:
         with open(cfg, "r", encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
     band = ((cfg or {}).get("controls") or {}).get("input_depower") or {}
-    powered = band.get("powered", ROM_POWERED_INPUT_DEPOWER)
-    depowered = band.get("depowered", ROM_DEPOWERED_INPUT_DEPOWER)
-    return float(powered), float(depowered)
+    if "powered" not in band or "depowered" not in band:
+        raise ValueError(
+            "the ROM states no controls.input_depower {powered, depowered} band"
+        )
+    return float(band["powered"]), float(band["depowered"])
 
 
 def flight_steering_to_us(
@@ -111,17 +104,49 @@ def flight_steering_to_us(
     return -np.asarray(kcu_actual_steering, dtype=float) / float(norm)
 
 
-def flight_depower_to_power_tape_length(kcu_actual_depower):
-    """Map flight ``kcu_actual_depower`` to absolute power-tape length [m]."""
+def flight_depower_match(kite_dir, flight=None) -> tuple[float, float] | None:
+    """``(reel_out, reel_in)``: the model power-tape lengths [m] that
+    reproduce a flight's powered / depowered states, as the kite's
+    ``identification.yaml`` records them (``fit: flight_match``, the
+    default fidelity's). ``None`` without such a record, or when ``flight``
+    (a year) is given and the record is of another flight.
+    """
+    from pathlib import Path
+
+    from awetrim.identification.aerostructural_dataset import identification_settings
+
+    path = Path(kite_dir) / "identification.yaml"
+    if not path.exists():
+        return None
+    match = identification_settings(path, "fit")[1].get("flight_match")
+    if not match or (flight is not None and str(match.get("flight")) != str(flight)):
+        return None
+    return float(match["reel_out"]), float(match["reel_in"])
+
+
+def flight_depower_to_power_tape_length(kcu_actual_depower, match):
+    """Map flight ``kcu_actual_depower`` to the ROM's power-tape length [m].
+
+    ``match = (reel_out, reel_in)`` (:func:`flight_depower_match`): the model
+    tapes that reproduce the flight's powered and depowered states; the KCU
+    signal maps linearly through them.
+    """
+    if match is None:
+        raise ValueError(
+            "no flight_match for this flight: identification.yaml must record the "
+            "model tapes that reproduce it (fit: flight_match)"
+        )
+    powered, depowered = float(match[0]), float(match[1])
     kcu = np.asarray(kcu_actual_depower, dtype=float)
-    slope = (FLIGHT_DEPOWER_DEPOWERED_LDP_M - FLIGHT_DEPOWER_POWERED_LDP_M) / (
+    slope = (depowered - powered) / (
         FLIGHT_DEPOWER_DEPOWERED_KCU - FLIGHT_DEPOWER_POWERED_KCU
     )
-    return FLIGHT_DEPOWER_POWERED_LDP_M + (kcu - FLIGHT_DEPOWER_POWERED_KCU) * slope
+    return powered + (kcu - FLIGHT_DEPOWER_POWERED_KCU) * slope
 
 
-def flight_dataframe_depower_to_power_tape_length(flight_data):
-    """Map a flight-data table to ROM depower input ``u_p = l_dp`` [m].
+def flight_dataframe_depower_to_power_tape_length(flight_data, match):
+    """Map a flight-data table to ROM depower input ``u_p = l_dp`` [m]
+    (``match``: see :func:`flight_depower_to_power_tape_length`).
 
     Prefer measured KCU depower. Fall back to the setpoint only if the measured
     column is unavailable. The legacy ``up`` column is intentionally not used:
@@ -129,9 +154,9 @@ def flight_dataframe_depower_to_power_tape_length(flight_data):
     power-tape length used by the identified ROM.
     """
     if "kcu_actual_depower" in flight_data:
-        return flight_depower_to_power_tape_length(flight_data["kcu_actual_depower"])
+        return flight_depower_to_power_tape_length(flight_data["kcu_actual_depower"], match)
     if "kcu_set_depower" in flight_data:
-        return flight_depower_to_power_tape_length(flight_data["kcu_set_depower"])
+        return flight_depower_to_power_tape_length(flight_data["kcu_set_depower"], match)
     raise KeyError(
         "Need kcu_actual_depower or kcu_set_depower to build physical ROM depower."
     )
@@ -160,9 +185,7 @@ def steering_extension_to_us(steering_extension_m, ref_travel_m: float = 1.0):
     return np.asarray(steering_extension_m, dtype=float) / float(ref_travel_m)
 
 
-def power_tape_extension_to_length(
-    power_tape_extension_m,
-    baseline_ldp_m: float = AS_POWER_TAPE_BASELINE_LDP_M,
-):
-    """Map AS power-tape extension [m] to absolute power-tape length [m]."""
+def power_tape_extension_to_length(power_tape_extension_m, baseline_ldp_m: float):
+    """Map AS power-tape extension [m] to absolute power-tape length [m], from
+    the tape the structural geometry is built at (``baseline_ldp_m``)."""
     return float(baseline_ldp_m) + np.asarray(power_tape_extension_m, dtype=float)

@@ -84,6 +84,7 @@ from awetrim.aerodynamics import panel_kernels as pk
 from awetrim.aerodynamics.apparent_wind import apparent_wind_at
 from awetrim.aerodynamics.kcu_drag import KcuDragModel
 from awetrim.aerodynamics.protocols import AWETrimSystemModel, AxisDefinition
+from awetrim.aerodynamics.vsm_settings import VSM_SOLVER_DEFAULTS, make_vsm_solver
 from awetrim.aerodynamics.vsm_quasi_steady import (
     DEFAULT_AXES,
     DEFAULT_BOUNDS_LOWER,
@@ -121,13 +122,17 @@ class CasadiTrimOptions:
     #: sections (see the module docstring). ``wake_tolerance`` ends the outer
     #: wake-direction passes once the residual after an AIC rebuild is below
     #: it; the Newton solve itself converges to ``tolerance``.
-    polar_interpolation: str = "linear"
-    is_with_artificial_viscosity: bool = False
-    artificial_viscosity_factor: float = 0.035
+    polar_interpolation: str = VSM_SOLVER_DEFAULTS["polar_interpolation"]
+    is_with_artificial_viscosity: bool = VSM_SOLVER_DEFAULTS["is_with_artificial_viscosity"]
+    artificial_viscosity_factor: float = VSM_SOLVER_DEFAULTS["artificial_viscosity_factor"]
     #: The panel kernels implement the freestream-direction force law only;
     #: ``True`` (VSM develop's quarter-chord directions) is refused at build
     #: time rather than silently solved with the wrong law.
-    is_aoa_corrected: bool = False
+    is_aoa_corrected: bool = VSM_SOLVER_DEFAULTS["is_aoa_corrected"]
+    #: Kutta-Joukowski force on the attached trailed vortex legs (VSM's
+    #: ``is_with_attached_trailed_vortex_force``); its induction at the legs
+    #: is frozen per wake pass with the AIC.
+    is_with_attached_trailed_vortex_force: bool = VSM_SOLVER_DEFAULTS["is_with_attached_trailed_vortex_force"]
     include_gravity: bool = False
     tolerance: float = 1e-8
     max_iterations: int = 100
@@ -137,9 +142,9 @@ class CasadiTrimOptions:
     wake_tolerance: float = 1e-7
     bridle_rotates_with_body: bool = True
     moment_tolerance: float = 1e-2
-    rho: float = 1.225
-    core_radius_fraction: float = 0.05
-    aerodynamic_model_type: str = "VSM"
+    rho: float = VSM_SOLVER_DEFAULTS["rho"]
+    core_radius_fraction: float = VSM_SOLVER_DEFAULTS["core_radius_fraction"]
+    aerodynamic_model_type: str = VSM_SOLVER_DEFAULTS["aerodynamic_model_type"]
     cd_cable: float = 1.1
     cf_cable: float = 0.01
 
@@ -203,8 +208,6 @@ class CasadiTrim:
         tether_length_bounds: tuple[float, float] | None = None,
         options: CasadiTrimOptions | None = None,
     ) -> None:
-        from VSM.core.Solver import Solver
-
         self.options = options or CasadiTrimOptions()
         opt = self.options
         if opt.tether_model not in (None, "williams"):
@@ -229,7 +232,7 @@ class CasadiTrim:
         panels = self.body.panels
 
         # --- VSM's own CasADi panel function (circulation residual + polars) --
-        self.vsm = Solver(
+        self.vsm = make_vsm_solver(
             gamma_loop_type="casadi_newton",
             allowed_error=opt.tolerance,
             is_with_artificial_viscosity=opt.is_with_artificial_viscosity,
@@ -240,9 +243,9 @@ class CasadiTrim:
             core_radius_fraction=opt.core_radius_fraction,
             aerodynamic_model_type=opt.aerodynamic_model_type,
             # The panel kernels are the uncorrected (freestream-direction)
-            # force law; VSM develop defaults to the corrected one since
-            # 2026-09-17, so pin it.
+            # force law.
             is_aoa_corrected=False,
+            is_with_attached_trailed_vortex_force=opt.is_with_attached_trailed_vortex_force,
         )
         if opt.is_aoa_corrected:
             raise ValueError(
@@ -260,9 +263,11 @@ class CasadiTrim:
         self.polar_key = self.vsm._casadi_newton_key(*self.vsm._polar_tables())
         if opt.is_with_artificial_viscosity:
             self.stall_angles = self.vsm._panel_stall_angles()
+            self.stall_angles_neg = self.vsm._panel_negative_stall_angles()
             self.laplacian = self.vsm._build_spanwise_laplacian()
         else:
             self.stall_angles = np.full(self.n, np.inf)
+            self.stall_angles_neg = np.full(self.n, -np.inf)
             self.laplacian = np.zeros((self.n, self.n))
 
         self.mass_total = _system_model_mass_total(system_model)
@@ -320,10 +325,12 @@ class CasadiTrim:
         ("bridle_p1", ("m", 3)),
         ("bridle_p2", ("m", 3)),
         ("bridle_diameter", ("m", 1)),
+        ("at_points", ("b", 3)),
+        ("at_legs", ("b", 3)),
     )
 
     def _geometry_shapes(self) -> list[tuple[str, tuple[int, int]]]:
-        sizes = {"n": self.n, "m": self.n_bridle}
+        sizes = {"n": self.n, "m": self.n_bridle, "b": self.n + 1}
         return [
             (name, tuple(sizes.get(d, d) for d in shape)) for name, shape in self.GEOMETRY_LAYOUT
         ]
@@ -377,6 +384,11 @@ class CasadiTrim:
         # The unrotated sections, for :meth:`body_at_trim` (the same baseline
         # the NumPy trims rotate from).
         self._baseline_sections, self._baseline_spanwise = _baseline_geometry(body)
+        self.at_points, self.at_legs = pk.attached_trailed_geometry(
+            [p.bound_point_1 for p in panels], [p.bound_point_2 for p in panels],
+            [p.TE_point_1 for p in panels], [p.TE_point_2 for p in panels],
+            body._aerodynamic_center_location, body._control_point_location,
+        )
         values = {
             "control_points": self.control_points,
             "aero_centers": self.aero_centers,
@@ -392,6 +404,8 @@ class CasadiTrim:
             "bridle_p1": np.array([s[0] for s in self.bridle_segments], dtype=float).reshape(-1, 3),
             "bridle_p2": np.array([s[1] for s in self.bridle_segments], dtype=float).reshape(-1, 3),
             "bridle_diameter": np.array([s[2] for s in self.bridle_segments], dtype=float),
+            "at_points": self.at_points,
+            "at_legs": self.at_legs,
         }
         parts = []
         for name, shape in self._geometry_shapes():
@@ -459,10 +473,15 @@ class CasadiTrim:
         aic_x = ca.MX.sym("aic_x", n, n)
         aic_y = ca.MX.sym("aic_y", n, n)
         aic_z = ca.MX.sym("aic_z", n, n)
+        at_x = ca.MX.sym("at_x", n + 1, n)
+        at_y = ca.MX.sym("at_y", n + 1, n)
+        at_z = ca.MX.sym("at_z", n + 1, n)
         p = ca.MX.sym("p_geometry", int(self._p.size))
         g = self._unpack_geometry(p)
         v_tau, roll, pitch, yaw, chi_dot = (x[i] for i in range(5))
-        keep = {x.name(), gamma.name(), length.name(), aic_x.name(), aic_y.name(), aic_z.name(), p.name()}
+        keep = {x.name(), gamma.name(), length.name(), p.name()} | {
+            m.name() for m in (aic_x, aic_y, aic_z, at_x, at_y, at_z)
+        }
 
         T = ca.DM(self.transformation)
         va_c, omega_c, accel_c, gravity_c = self._system_expressions(x)
@@ -480,11 +499,25 @@ class CasadiTrim:
         va_panels = pk.tile_vector(va_b, n, ca) - pk.cross_rows(pk.tile_vector(omega_b, n, ca), arm_cp, ca)
         v_rel = va_panels + ca.horzcat(ca.mtimes(aic_x, gamma), ca.mtimes(aic_y, gamma), ca.mtimes(aic_z, gamma))
 
-        out = self.panel_fn(
-            v_rel, va_panels, g["x_airf"], g["y_airf"], g["z_airf"],
-            g["chord"], g["width"], ca.DM(self.stall_angles), ca.mtimes(ca.DM(self.laplacian), gamma),
-        )
-        h, _dh, mu, alpha, umag, gate, h_avg, cl, cd, cm, cl_avg, cd_avg, cm_avg = out
+        out = self.panel_fn.call(dict(
+            v_rel=v_rel, x_airf=g["x_airf"], y_airf=g["y_airf"], z_airf=g["z_airf"],
+            chord=g["chord"], width=g["width"],
+            stall_angles=ca.DM(self.stall_angles), stall_angles_neg=ca.DM(self.stall_angles_neg),
+            l_gamma=ca.mtimes(ca.DM(self.laplacian), gamma),
+        ))
+        h, mu, alpha, umag, gate, h_avg = (out[k] for k in ("h", "mu", "alpha", "umag", "gate", "h_avg"))
+        cl, cd, cm, cl_avg, cd_avg, cm_avg = (out[k] for k in ("cl", "cd", "cm", "cl_avg", "cd_avg", "cm_avg"))
+
+        # Attached-trailed legs: Kutta-Joukowski force at the boundaries, the
+        # induction at the leg points frozen with the AIC (numeric per pass).
+        if opt.is_with_attached_trailed_vortex_force:
+            v_ind_at = ca.horzcat(ca.mtimes(at_x, gamma), ca.mtimes(at_y, gamma), ca.mtimes(at_z, gamma))
+            f_at = pk.attached_trailed_forces(gamma, va_panels, v_ind_at, g["at_legs"], opt.rho, ca)
+            m_at = ca.sum1(pk.cross_rows(g["at_points"] - pk.tile_vector(r0, n + 1, ca), f_at, ca)).T
+            at_forces = [f_at[j, :].T for j in range(n + 1)]
+        else:
+            f_at, m_at, at_forces = ca.MX.zeros(n + 1, 3), ca.MX.zeros(3), []
+        shares = ca.DM(pk.boundary_shares(n))
 
         speed = ca.norm_2(va_w)
         max_chord = g["max_chord"]
@@ -502,6 +535,8 @@ class CasadiTrim:
                 spanwise, opt.rho, ca,
             )
             f_tot, m_tot = pk.total_force_and_moment(force_b, moment_local, g["aero_centers"] - r0_rows, ca)
+            f_tot = f_tot + ca.sum1(f_at).T
+            m_tot = m_tot + m_at
             bridle_forces = []
             if opt.bridle_rotates_with_body:
                 va_seg_free, omega_seg = va_b, omega_b
@@ -545,7 +580,8 @@ class CasadiTrim:
                 moment = moment - pk.cross3(omega_w, ca.mtimes(inertia_w, omega_w), ca)
             net_force = f_aero_w + inertial + gravity_w + f_kcu
             extras = dict(
-                force_panels_b=force_b, f_aero_w=f_aero_w, m_aero_w=m_aero_w, f_aero_b=f_aero_b,
+                force_panels_b=force_b + ca.mtimes(shares, f_at),
+                force_sections_b=force_b, f_aero_w=f_aero_w, m_aero_w=m_aero_w, f_aero_b=f_aero_b,
                 inertial=inertial, gravity=gravity_w, f_kcu=f_kcu, net_force=net_force,
                 moment_total=moment, cg_arm=cg_arm, bridle_forces=bridle_forces,
             )
@@ -595,7 +631,7 @@ class CasadiTrim:
             ["tether_length"] if self.williams else []
         )
 
-        params = [aic_x, aic_y, aic_z, p]
+        params = [aic_x, aic_y, aic_z, at_x, at_y, at_z, p]
         res_free, res_avg_free = self._substitute_numeric([residual[rows], residual_avg[rows]], keep)
         args = [x, gamma, length, *params]
         self._kin_fn = ca.Function("trim_kinematics", [x], self._substitute_numeric([va_w, omega_w, R], keep))
@@ -606,7 +642,7 @@ class CasadiTrim:
         # Reported coefficients: VSM's own bookkeeping (each panel in its
         # local inflow frame, projected on the reference directions).
         lift, drag, side = pk.lift_drag_side_vsm(
-            extras["force_panels_b"], va_panels, va_b, spanwise, ca, extras["bridle_forces"]
+            extras["force_sections_b"], va_panels, va_b, spanwise, ca, extras["bridle_forces"] + at_forces
         )
         outputs = dict(
             residual=residual,
@@ -647,13 +683,42 @@ class CasadiTrim:
         )
 
     def compute_aic(self, x: np.ndarray):
-        """Numeric induction matrices for the wake direction of trim state ``x``."""
+        """Numeric induction matrices for the wake direction of trim state
+        ``x``: the three control-point AIC matrices ``(n, n)`` and the three
+        attached-trailed-point ones ``(n+1, n)`` (zero when that force is off)."""
         self._set_body_inflow(x)
         va = np.array([p.va for p in self.body.panels], dtype=float)
         norms = np.linalg.norm(va, axis=1)
-        return tuple(self.body.compute_AIC_matrices(
-            self.options.aerodynamic_model_type, self.options.core_radius_fraction, norms, va / norms[:, None]
+        units = va / norms[:, None]
+        aic = tuple(self.body.compute_AIC_matrices(
+            self.options.aerodynamic_model_type, self.options.core_radius_fraction, norms, units
         ))
+        n = self.n
+        if not self.options.is_with_attached_trailed_vortex_force:
+            return aic + tuple(np.zeros((n + 1, n)) for _ in range(3))
+        from VSM.core.utils import induced_velocity_at_points
+
+        panels = self.body.panels
+        geometry = tuple(
+            np.ascontiguousarray([getattr(p, k) for p in panels], dtype=float)
+            for k in ("bound_point_1", "bound_point_2", "TE_point_1", "TE_point_2")
+        )
+        wake_units, wake_speeds = self.body._wake_directions(norms, units)
+        points = np.ascontiguousarray(self.at_points)
+        # VSM's induction is a sum over rings, linear in each ring's gamma:
+        # column j is ring j ALONE at unit circulation (handing VSM the one
+        # ring rather than all rings with a unit vector is n times cheaper).
+        core = float(self.options.core_radius_fraction)
+        one = np.ones(1)
+        columns = [
+            induced_velocity_at_points(
+                points, *(a[j : j + 1] for a in geometry), one,
+                wake_units[j : j + 1], wake_speeds[j : j + 1], core,
+            )
+            for j in range(n)
+        ]
+        at = np.stack(columns, axis=1)  # (n+1, n, 3)
+        return aic + (at[:, :, 0].copy(), at[:, :, 1].copy(), at[:, :, 2].copy())
 
     def initial_circulation(self, x: np.ndarray) -> np.ndarray:
         """A converged VSM circulation at trim state ``x`` (the ``casadi_newton``

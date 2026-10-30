@@ -26,6 +26,8 @@ callers don't have to branch on the schema version.
 
 from __future__ import annotations
 
+import warnings
+
 
 def get_kite(system_config: dict) -> dict:
     """Return the primary kite component dict.
@@ -39,6 +41,47 @@ def get_kite(system_config: dict) -> dict:
     if isinstance(kites, list) and kites:
         return kites[0]
     return components.get("kite", components)
+
+
+def get_control_system(system_config: dict) -> dict:
+    """Return the primary kite's ``control_system`` dict (empty dict if none)."""
+    return get_kite(system_config).get("control_system", {}) or {}
+
+
+def get_turbine(system_config: dict) -> dict:
+    """Return the ``structure`` of the KCU's onboard turbine (empty dict if none).
+
+    awesIO ``control_system.turbine``: ``rotor_diameter``, ``mass`` and
+    ``position_KA`` (hub in the kite's KA frame, origin at the KCU).
+
+    The pre-awesIO flat block ``turbine: {diameter, thrust_coefficient}``
+    (before 2026-10-29) is still read, with a DeprecationWarning, as a rotor
+    diameter alone: its mass was inside the KCU mass, and C_T is the model's.
+    """
+    turbine = get_control_system(system_config).get("turbine") or {}
+    if "structure" not in turbine and "diameter" in turbine:
+        warnings.warn(
+            "control_system.turbine {diameter, thrust_coefficient} is the "
+            "pre-awesIO layout; write turbine.structure {rotor_diameter, mass, "
+            "position_KA} and take the turbine mass out of the KCU mass.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return {"rotor_diameter": turbine["diameter"]}
+    return turbine.get("structure", {}) or {}
+
+
+def get_kcu_mass(system_config: dict) -> float | None:
+    """Return the mass lumped at the KCU [kg], or None if the file states none.
+
+    Everything the control unit carries: its own ``structure.mass`` plus the
+    onboard turbine's ``mass``, which awesIO keeps separate (each component's
+    mass is its own). The turbine is lumped at the KCU wherever it is mounted.
+    """
+    cs_struct = get_control_system(system_config).get("structure", {}) or {}
+    if "mass" not in cs_struct:
+        return None
+    return float(cs_struct["mass"]) + float(get_turbine(system_config).get("mass", 0.0) or 0.0)
 
 
 def get_tether(system_config: dict) -> dict:

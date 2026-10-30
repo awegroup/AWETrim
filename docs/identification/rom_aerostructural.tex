@@ -2,7 +2,7 @@
 % SPDX-License-Identifier: Apache-2.0
 %
 % Numbers, tables and figures come from generated/ and figures/, written by
-%   python scripts/identification/report_rom_aerostructural.py
+%   python report_rom_aerostructural.py   (available on request)
 % Rebuild:  latexmk -pdf rom_aerostructural.tex   (in docs/identification/)
 \documentclass[11pt,a4paper]{article}
 
@@ -1184,17 +1184,17 @@ tether length and the last element's angles. The reel-in fold remains.}
 \section{Reproduction}
 From the repository root:
 \begin{enumerate}
-  \item \path{scripts/personal/wes-quasi-steady/run_center_sweep_alpha_polar.py}
+  \item \path{run_center_sweep_alpha_polar.py} (available on request)
         (pinned VSM) for the frozen-shape polars;
-  \item \path{scripts/identification/identify_rom_aerostructural.py}, which
+  \item \path{examples/3_rom_identification/identify_rom_aerostructural.py}, which
         writes the ROM file and the tidy datasets;
-  \item \path{scripts/identification/validate_rom_aerostructural.py} and
+  \item \path{validate_rom_aerostructural.py} (available on request) and
         \path{plot_rom_comparison.py};
-  \item \path{scripts/reduced-order-model/validation/validate_quasi_steady_state_v3.py}
+  \item \path{examples/5_flight_data/validate_quasi_steady_state_v3.py}
         with \path{--rom <rom> --steering solved|measured}, then
         \path{plot_rom_flight_validation.py};
   \item for the flight correction:
-        \path{scripts/identification/identify_rom_flight_correction.py}
+        \path{examples/5_flight_data/identify_rom_flight_correction.py}
         (steps 1--2, writes the ROM file); the validator with
         \path{--rom aerostructural_flight --steering solved --out}
         on training cycles 20--27, 40--47 and 75--82, into
@@ -1205,7 +1205,7 @@ From the repository root:
         \path{plot_rom_turn_rate_law.py}; the same with
         \path{--rom semi_empirical} (training CSVs under
         \path{output_error_semi_empirical/}) recalibrates the paper's ROM;
-  \item \path{scripts/identification/report_rom_aerostructural.py}, then
+  \item \path{report_rom_aerostructural.py} (available on request), then
         \path{latexmk -pdf} in \path{docs/identification/}.
 \end{enumerate}
 

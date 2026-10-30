@@ -212,6 +212,7 @@ class ReeloutSession:
         self.last_step_started: Optional[datetime] = None
         self.last_step_finished: Optional[datetime] = None
         self._inflow: Optional[dict] = None
+        self._rho_system: float = 1.225
         self._wind_spec: Optional[dict] = None
         self._optimization_params: List[str] = []
         self._target: str = "power"
@@ -311,11 +312,16 @@ class ReeloutSession:
         )
         self._apply_min_turn_radius(sim_parameters, config.get("min_turn_radius"))
         self._apply_pattern_limits(sim_parameters, config.get("pattern_limits"))
+        self._apply_angle_of_attack_limits(
+            sim_parameters, config.get("angle_of_attack_limits"), system_model
+        )
 
         inflow = config.get("inflow_conditions")
         wind_spec = self._resolve_wind_spec(inflow)
         system_model.wind = self._build_wind(wind_spec)
         sim_parameters["expand_nlp"] = wind_spec["model_type"] != "tabulated"
+        rho_system = float(system_model.rho)
+        self._apply_air_density(system_model, inflow, rho_system)
 
         start_state = {
             "t": 0,
@@ -339,6 +345,7 @@ class ReeloutSession:
                 raise SessionBusyError("cannot re-initialize while a solve is running")
             self._clear()
             self.system_model = system_model
+            self._rho_system = rho_system
             self.phase = phase
             self._inflow = dict(inflow) if inflow else None
             self._wind_spec = wind_spec
@@ -367,6 +374,25 @@ class ReeloutSession:
                 turbulence,
             )
         return wind_kwargs_from_inflow(inflow)
+
+    @staticmethod
+    def _apply_air_density(
+        system_model: Any, inflow: Optional[Dict[str, Any]], rho_system: float
+    ) -> None:
+        """InflowConditions density fields -> ``Kite.rho`` + density model.
+
+        ``rho_system`` (the system file's value) is the fallback ``rho_zero``,
+        so a step that drops the fields returns to it.
+        """
+        inflow = inflow or {}
+        rho_zero = inflow.get("rho_zero")
+        system_model.kite.rho = float(rho_system if rho_zero is None else rho_zero)
+        if inflow.get("air_density_law", "constant") == "exponential":
+            system_model.kite.air_density_model = {
+                "height_gnd": float(inflow.get("height_gnd") or 0.0)
+            }
+        else:
+            system_model.kite.air_density_model = None
 
     @staticmethod
     def _build_wind(spec: Dict[str, Any]) -> Any:
@@ -594,6 +620,69 @@ class ReeloutSession:
         else:
             sim_parameters.pop("max_climb_angle", None)
 
+    @staticmethod
+    def _apply_angle_of_attack_limits(
+        sim_parameters: Dict[str, Any],
+        limits: Optional[Dict[str, Any]],
+        system_model: Any,
+    ) -> None:
+        """Map the degree-valued ``AngleOfAttackLimits`` struct onto the
+        optimizer's ``opti_limits_override["angle_of_attack"]`` [rad].
+
+        ``None`` (field omitted) leaves the current setting; a dict replaces
+        it as a whole (``{}`` returns to ``DEFAULT_OPTI_LIMITS``). A missing
+        side falls back to the default; ``stall_margin`` sets the upper bound
+        to the ROM's ``angle_of_attack_stall`` minus the margin. The request
+        itself is kept as ``sim_parameters["angle_of_attack_limits_deg"]`` so
+        the replies echo what the client sent. Other override entries are
+        untouched.
+        """
+        if limits is None:
+            return
+        override = dict(sim_parameters.get("opti_limits_override") or {})
+        requested = {k: float(v) for k, v in limits.items() if v is not None}
+        if not requested:
+            override.pop("angle_of_attack", None)
+            sim_parameters.pop("angle_of_attack_limits_deg", None)
+        else:
+            lb_default, ub_default = DEFAULT_OPTI_LIMITS["angle_of_attack"]
+            lb = np.radians(requested["min"]) if "min" in requested else lb_default
+            ub = np.radians(requested["max"]) if "max" in requested else ub_default
+            if "stall_margin" in requested:
+                if "max" in requested:
+                    raise ValueError("send either max or stall_margin, not both")
+                kite = getattr(system_model, "kite", None)
+                alpha_stall = (getattr(kite, "aero_params", None) or {}).get(
+                    "angle_of_attack_stall"
+                )
+                if alpha_stall is None:
+                    raise ValueError(
+                        "stall_margin needs a ROM that states "
+                        "aerodynamics.params.angle_of_attack_stall"
+                    )
+                ub = float(alpha_stall) - np.radians(requested["stall_margin"])
+            if ub <= lb:
+                raise ValueError(
+                    "the angle-of-attack upper bound "
+                    f"({np.degrees(ub):.2f} deg) must exceed the lower bound "
+                    f"({np.degrees(lb):.2f} deg)"
+                )
+            override["angle_of_attack"] = [float(lb), float(ub)]
+            sim_parameters["angle_of_attack_limits_deg"] = requested
+        if override:
+            sim_parameters["opti_limits_override"] = override
+        else:
+            sim_parameters.pop("opti_limits_override", None)
+
+    def angle_of_attack_limits(self) -> Optional[Dict[str, Any]]:
+        """The angle-of-attack limits in force, as the client sent them
+        (None when unset -- the default box applies)."""
+        if self.phase is None:
+            return None
+        sim_parameters = self.phase.pattern_config.get("sim_parameters", {})
+        requested = sim_parameters.get("angle_of_attack_limits_deg")
+        return dict(requested) if requested else None
+
     def pattern_limits(self) -> Optional[Dict[str, Any]]:
         """The pattern limits in force, as the degree-valued struct
         (None when none of them is set -- optimizer defaults apply)."""
@@ -819,6 +908,7 @@ class ReeloutSession:
         depower: Optional[Dict[str, Any]] = None,
         min_turn_radius: Optional[float] = None,
         pattern_limits: Optional[Dict[str, Any]] = None,
+        angle_of_attack_limits: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Validate, apply the updated inputs and transition to SOLVING."""
         with self._lock:
@@ -834,6 +924,9 @@ class ReeloutSession:
                 self.system_model.wind = self._build_wind(wind_spec)
                 sim_parameters["expand_nlp"] = (
                     wind_spec["model_type"] != "tabulated"
+                )
+                self._apply_air_density(
+                    self.system_model, inflow_conditions, self._rho_system
                 )
                 self._wind_spec = wind_spec
                 self._inflow = dict(inflow_conditions)
@@ -861,6 +954,9 @@ class ReeloutSession:
 
             self._apply_min_turn_radius(sim_parameters, min_turn_radius)
             self._apply_pattern_limits(sim_parameters, pattern_limits)
+            self._apply_angle_of_attack_limits(
+                sim_parameters, angle_of_attack_limits, self.system_model
+            )
 
             if distance_radial is not None:
                 path_parameters = pattern_config["path_parameters"]
@@ -892,11 +988,12 @@ class ReeloutSession:
         depower: Optional[Dict[str, Any]] = None,
         min_turn_radius: Optional[float] = None,
         pattern_limits: Optional[Dict[str, Any]] = None,
+        angle_of_attack_limits: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Launch one warm-started re-optimization in a background thread."""
         step_index = self._prepare_step(
             distance_radial, winch_params, trajectory, inflow_conditions,
-            depower, min_turn_radius, pattern_limits,
+            depower, min_turn_radius, pattern_limits, angle_of_attack_limits,
         )
         self._thread = threading.Thread(
             target=self._solve, args=(step_index, max_iter), daemon=True
@@ -914,6 +1011,7 @@ class ReeloutSession:
         depower: Optional[Dict[str, Any]] = None,
         min_turn_radius: Optional[float] = None,
         pattern_limits: Optional[Dict[str, Any]] = None,
+        angle_of_attack_limits: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """One warm-started re-optimization, solved in the calling thread.
 
@@ -925,7 +1023,7 @@ class ReeloutSession:
         """
         step_index = self._prepare_step(
             distance_radial, winch_params, trajectory, inflow_conditions,
-            depower, min_turn_radius, pattern_limits,
+            depower, min_turn_radius, pattern_limits, angle_of_attack_limits,
         )
         self._solve(step_index, max_iter)
         with self._lock:
@@ -942,6 +1040,7 @@ class ReeloutSession:
             "depower": self.depower_state(),
             "min_turn_radius": self.min_turn_radius(),
             "pattern_limits": self.pattern_limits(),
+            "angle_of_attack_limits": self.angle_of_attack_limits(),
             "state": state,
             "step_index": step_index,
             "metrics": metrics,
@@ -1174,6 +1273,7 @@ class ReeloutSession:
             "rom_config": self._rom_config,
             "min_turn_radius": self.min_turn_radius(),
             "pattern_limits": self.pattern_limits(),
+            "angle_of_attack_limits": self.angle_of_attack_limits(),
             "state": self.state.value,
             "n_points": self._n_points,
             "session_id": self.session_id,

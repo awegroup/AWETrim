@@ -38,4 +38,19 @@ clickableItems.forEach(element => {
   });
 });
 
+const lightbox = document.getElementById("lightbox");
+const lightboxImage = document.getElementById("lightboxImage");
+const lightboxCaption = document.getElementById("lightboxCaption");
+
+panelImage.addEventListener("click", () => {
+  lightboxImage.src = panelImage.src;
+  lightboxImage.alt = panelImage.alt;
+  lightboxCaption.textContent = panelCaption.textContent;
+  lightbox.hidden = false;
+});
+lightbox.addEventListener("click", () => { lightbox.hidden = true; });
+document.addEventListener("keydown", event => {
+  if (event.key === "Escape") lightbox.hidden = true;
+});
+
 renderPanel("awetrim");

@@ -960,6 +960,7 @@ def design_reelin_spline(
         "changed": False,
         "converged": bool(kap0[i0] <= k_lim_unit),
         "max_path_move": 0.0,
+        "solver_status": None,
     }
     if not limit or report["converged"]:
         return pp, report
@@ -1034,9 +1035,12 @@ def design_reelin_spline(
     new_phi, new_beta = C_phi.copy(), C_beta.copy()
     new_phi[sel] += moves[: len(sel)]
     new_beta[sel] += moves[len(sel):]
-    # Keep the design only if it actually improved the worst curvature (a
-    # failed solve returns its last iterate).
-    if kappa_unit(new_phi, new_beta).max() < kap0.max():
+    # Keep the design only if IPOPT converged AND it improved the worst
+    # curvature. A failed solve returns its last iterate, which can lower the
+    # curvature while tangling the reel-in (extra loops, the path moved by
+    # max_move); the sketch plus the caller's fairing is the safer fallback.
+    report["solver_status"] = solver.stats()["return_status"]
+    if solver.stats()["success"] and kappa_unit(new_phi, new_beta).max() < kap0.max():
         C_phi_new = np.round(new_phi, int(precision))
         C_beta_new = np.round(new_beta, int(precision))
     else:

@@ -1,6 +1,6 @@
 % Newton or Lagrange for the quasi-steady trim -- why the Lagrangian form is
 % not faster. Markdown twin: lagrangian_formulation.md. Numbers from
-% scripts/reduced-order-model/optimization/studies/compare_lagrangian_residual.py
+% compare_lagrangian_residual.py (available on request)
 % Build: latexmk -pdf lagrangian_formulation.tex
 \documentclass[11pt,a4paper]{article}
 \usepackage[margin=2.4cm]{geometry}
@@ -29,7 +29,7 @@ Lagrangian make the trajectory NLP cheaper?
 \paragraph{Answer.} No. The Lagrangian derivation yields the same three
 equations, the inertia terms are \SI{0.3}{\percent} of each node function, and
 function evaluations are a quarter of IPOPT's wall time. The numbers below come
-from \path{scripts/reduced-order-model/optimization/studies/compare_lagrangian_residual.py}
+from \path{compare_lagrangian_residual.py} (available on request)
 (LEI-V3, periodic B-spline reel-out, $M=10$, flight-corrected aerostructural
 ROM).
 
@@ -175,7 +175,7 @@ the cost of the model.
 \code{--kinematics-cache} and \code{--exact-hessian} of
 {\small
 \begin{verbatim}
-python scripts/reduced-order-model/optimization/studies/compare_lagrangian_residual.py --nlp
+python compare_lagrangian_residual.py --nlp   (available on request)
 \end{verbatim}
 }
 

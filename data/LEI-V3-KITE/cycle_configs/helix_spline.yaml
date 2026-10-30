@@ -29,7 +29,7 @@ reelout:
     start_angle: 0
     end_angle: 6.283185307179586
     n_points: 200
-    input_depower: 1.7
+    input_depower: 1.940  # model tape (identification.yaml flight_match)
 
 
 # Reel-in Phase Configuration
@@ -37,9 +37,9 @@ reelin:
   # Path Parameters
   path_parameters:
     elevation_start_ri: 0.5235987755982988    # 30 degrees in radians
-    elevation_start_riro: 1.417304763960306  # 70 degrees in radians
+    elevation_start_riro: 1.417304763960306  # 81.2 degrees in radians
     elevation_start_ro: 0.5235987755982988    # 30 degrees in radians
-    distance_radial_start: 430                # Starting radial distance in m
+    distance_radial_start: 360                # Starting radial distance in m
     distance_radial_end: 230                  # Ending radial distance in m
   
   # Radial Control Parameters

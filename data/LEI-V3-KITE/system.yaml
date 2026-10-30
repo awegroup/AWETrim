@@ -28,46 +28,41 @@ components:
       type: LEI_soft_kite
       version: 3.0
       structure:
-        # Populated by populate_system_yml.py
-        projected_surface_area: 17.2119 # m²
-        span: 8.282                    # m
-        mass: 10.9926                  # kg
-        # Canopy-only (no bridle, KCU or canopy-mounted equipment): element masses
-        # lumped onto the 20 LE/TE nodes of struc_geometry.yaml. CG and inertia are
-        # in that frame: origin at the bridle point (KCU), x chordwise LE -> TE,
+        projected_surface_area: 19.5902 # m², of the FEM edges
+        span: 8.3052                   # m
+        mass: 11.0                     # kg
+        # Canopy-only (no bridle, KCU or canopy-mounted equipment), from
+        # structure.yml (awetrim.utils.system_yml_sync.
+        # compute_wing_stats). CG and inertia are in that file's
+        # frame: origin at the bridle point (KCU), x chordwise LE -> TE,
         # y spanwise, z up towards the wing. The inertia is about the CG, along
         # those axes (not principal axes), with products -sum(m x z).
         center_of_mass:                         # m
-        - -0.0413
+        - -0.0641
         - -0.0
-        - 10.3
+        - 10.3527
         inertia_tensor:
-        - - 84.6787
+        - - 87.7593
           - 0.0
-          - 0.8031
+          - 0.6692
         - - 0.0
-          - 18.6955
-          - 0.0
-        - - 0.8031
-          - 0.0
-          - 88.6081
-        side_projected_area: 0.2923
-        planform_surface_area: 21.0559
+          - 14.0092
+          - -0.0
+        - - 0.6692
+          - -0.0
+          - 87.1131
+        side_projected_area: 0.3487
+        planform_surface_area: 24.4223
     bridle:
       name: LEI-V3 Bridle
       type: LEI_soft_kite_bridle
       version: 1.0
       structure:
         bridle_point_node: [0, 0, 0]
-        # Populated by populate_system_yml.py
-        total_nominal_line_length: 79.522    # m, sum of unique bridle_line l0 values
-        avg_line_diameter: 0.00285           # m, connection-length-weighted average
-        material:
-          type: dyneema
-          density: 724.0           # kg/m³
-          youngs_modulus: 20.0e+9   # Pa
-          damping_per_stiffness: 0.0
-        mass: 2.5875                         # kg, lines + pulleys
+        # From structure.yml (system_yml_sync.compute_bridle_stats)
+        total_nominal_line_length: 86.548    # m, sum of unique bridle_line l0 values
+        avg_line_diameter: 0.00283           # m, connection-length-weighted average
+        mass: 2.5848                         # kg, lines + pulleys
     control_system:
       name: LEI-V3 KCU
       type: kite_control_unit
@@ -88,7 +83,10 @@ components:
           range: [-0.175, 0.175]  # u_s [-]
           rate: [-0.145, 0.145]   # d(u_s)/dt [1/s] (2019 flight max ~29 kcu/s)
         depower:
-          range: [1.1, 2.1]      # power-tape length l_dp [m]
+          # power-tape length l_dp [m]: the band identified with gust margins
+          # (identification.yaml fit validity: 1.30 stall margin, 2.60 the
+          # depowered end), which the ROM's validity band also states
+          range: [1.30, 2.60]
           rate: [-0.2, 0.2]      # d(l_dp)/dt [m/s]
   tethers:
   - name: LEI-V3 Tether
@@ -110,16 +108,8 @@ components:
                            # the SK78 fibre (970): with the rope's own diameter it
                            # is the rope's mass per metre that has to come out right
       max_tether_force: 8400.0  # N
-      conductive: false
       material:
         type: Dyneema-SK78
-        youngs_modulus: 55.0e+9   # Pa (55 GPa) — matches SimpleKiteControllers.jl's
-                                  # e_tether (data/settings_reelout_150m.yaml), cited
-                                  # to Ruppert; was 850e6 (0.85 GPa), a 65x mismatch.
-                                  # Changed 2026-08-26 to test whether it explains the
-                                  # power_ratio regression (1.0 -> 0.92 at 6 m/s) that
-                                  # appeared after doubling the tether diameter to 8mm.
-                                  # Revert to 850.0e+6 if this breaks something else.
   ground_station:
     name: LEI-V3 Ground Station
     type: pumping_ground_gen_station
@@ -133,8 +123,9 @@ components:
     - name: LEI-V3 Drum
       type: electric_winch
       max_tether_force: 8400.0  # N — drum rating; matches the tether rating above
-      # Winch drive envelope (Kitepower ground station, as specified by
-      # U. Fechner). Read by awetrim.system.factory._extract_hardware_limits
+      # Winch drive envelope: a representative one, not a specific ground
+      # station's. The 3.5 m/s reel-out limit is conservative, leaving a real
+      # drive margin for gusts. Read by awetrim.system.factory._extract_hardware_limits
       # and mapped onto the trajectory optimizer's radial limits:
       #   min/max_tether_speed   -> DEFAULT_OPTI_LIMITS["speed_radial"] bounds
       #   max_winch_acceleration -> the +/- slew-rate limit on v_r used by the
@@ -143,18 +134,12 @@ components:
       min_tether_speed: -8.0        # m/s (max reel-in speed)
       max_tether_speed: 3.5         # m/s (max reel-out speed)
       max_winch_acceleration: 4.0   # m/s²
-      drum_diameter: 0.323          # m (0.1615 m radius)
-      # Not modelled by the quasi-steady winch (a force law T(v_r, l_dp) with no
-      # drum dynamics), so deliberately not stored here: total drive inertia
-      # 0.408 kg m², Coulomb friction 244 N, viscous friction 61.2 N s/m.
-    gearboxes:
-    - name: LEI-V3 Gearbox
-      type: planetary
-      gear_ratio: 6.2
 
 # Reduced-order model this system runs with (awetrim.system.factory.
-# resolve_rom_config_path). The LEI-V3 has rom_config_aerostructural_flight_corrected.yaml (the default)
-# (flight-calibrated) and rom_config_aerostructural.yaml (simulation-only).
+# resolve_rom_config_path). The LEI-V3 default is rom_config_aerostructural.yaml
+# (simulation-only: FEM-reduced wireframe with canopy billowing, identified
+# 2026-10-29). rom_config_aerostructural_flight_corrected.yaml is its 2019
+# flight correction (theta_b, dC_D, the roll-gain scale; redone 2026-10-29).
 models:
   reduced_order:
-    aerodynamics: rom_config_aerostructural_flight_corrected.yaml
+    aerodynamics: rom_config_aerostructural.yaml

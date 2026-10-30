@@ -232,13 +232,17 @@ def test_depower_box_is_clipped_to_the_rom_validity_band():
     from awetrim.utils.config_paths import LEI_V3_SYSTEM_CONFIG
     from awetrim.system.factory import resolve_rom_config_path
 
+    from awetrim.utils.system_config import get_kite
+
     model = create_system_model_from_yaml(LEI_V3_SYSTEM_CONFIG)
     with open(resolve_rom_config_path(LEI_V3_SYSTEM_CONFIG), encoding="utf-8") as f:
         band = yaml.safe_load(f)["validity"]["input_depower"]
+    with open(LEI_V3_SYSTEM_CONFIG, encoding="utf-8") as f:
+        box = get_kite(yaml.safe_load(f))["control_system"]["structure"]["depower"]["range"]
     lo, hi = model.hardware_limits["input_depower"]
 
-    assert lo == pytest.approx(max(1.1, min(band)))
-    assert hi == pytest.approx(min(2.1, max(band)))
+    assert lo == pytest.approx(max(min(box), min(band)))
+    assert hi == pytest.approx(min(max(box), max(band)))
 
 
 def test_intersect_depower_validity_rules():
@@ -249,6 +253,46 @@ def test_intersect_depower_validity_rules():
     assert hw["input_depower"] == (1.6, 2.1)
     with pytest.raises(ValueError):
         intersect_depower_validity({"input_depower": (1.1, 1.3)}, (1.6, 2.2))
+
+
+def test_intersect_steering_validity_rules():
+    from awetrim.system.factory import intersect_steering_validity
+
+    assert intersect_steering_validity({"a": 1}, None) == {"a": 1}
+    hw = intersect_steering_validity({"input_steering": (-0.175, 0.175)}, 0.1429)
+    assert hw["input_steering"] == (-0.1429, 0.1429)
+    hw = intersect_steering_validity({"input_steering": (-0.1, 0.1)}, 0.1429)
+    assert hw["input_steering"] == (-0.1, 0.1)
+
+
+def test_wing_point_mass_carries_the_bridle():
+    import yaml
+
+    from awetrim.utils.config_paths import LEI_V3_SYSTEM_CONFIG
+    from awetrim.utils.system_config import get_kite
+
+    kite = get_kite(yaml.safe_load(open(LEI_V3_SYSTEM_CONFIG, encoding="utf-8")))
+    model = create_system_model_from_yaml(LEI_V3_SYSTEM_CONFIG)
+    assert model.kite.mass_wing == pytest.approx(
+        kite["wing"]["structure"]["mass"] + kite["bridle"]["structure"]["mass"]
+    )
+
+
+def test_apply_tension_floor_rules():
+    from awetrim.system.factory import apply_tension_floor
+    from awetrim.utils.defaults import DEFAULT_OPTI_LIMITS
+
+    assert apply_tension_floor({"a": 1}, None) == {"a": 1}
+    hw = apply_tension_floor({}, 602.0)
+    assert hw["tension_tether_ground"] == (
+        602.0, DEFAULT_OPTI_LIMITS["tension_tether_ground"][1]
+    )
+    # a floor below the existing bound leaves it alone
+    assert apply_tension_floor({"tension_tether_ground": (800.0, 1e5)}, 602.0) == {
+        "tension_tether_ground": (800.0, 1e5)
+    }
+    with pytest.raises(ValueError):
+        apply_tension_floor({"tension_tether_ground": (300.0, 500.0)}, 602.0)
 
 
 def test_legacy_config_yields_empty_hardware_limits(tmp_path):

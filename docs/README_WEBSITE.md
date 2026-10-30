@@ -12,7 +12,7 @@ one rounded AWETrim frame, with arrows between them. Top to bottom:
   wind system models), down into trajectory optimisation; flight-data processing
   and the shared kinematics as notes at the bottom of the frame
 - Experimental reconstruction (dashed "validation and model identification"
-  arrow up into the frame) and Outputs and applications (arrow out of the frame),
+  arrow up into the frame) and Applications (arrow out of the frame),
   side by side
 
 Each block is clickable. Clicking a block updates the information panel on the right.

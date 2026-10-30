@@ -224,3 +224,77 @@ class TestCalculateMomentsOfInertia:
         # About the mass location the moments collapse to zero.
         assert np.allclose(about_point, [0.0, 0.0, 0.0])
         assert about_origin[0] > about_point[0]
+
+
+# ============================================================================
+# The awesIO structure: KCU mass, solver arrays, aggregate, line report
+# ============================================================================
+
+import logging  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+import yaml  # noqa: E402
+
+from awetrim.aerostructural.utils import (  # noqa: E402
+    compute_kite_aggregate,
+    printing_rest_lengths,
+    resolve_kcu_mass,
+    resolve_structure,
+)
+
+KITE_DIR = Path(__file__).resolve().parents[2] / "data" / "LEI-V3-KITE"
+
+
+@pytest.fixture(scope="module")
+def lei_v3_system():
+    return yaml.safe_load((KITE_DIR / "system.yaml").read_text(encoding="utf-8"))
+
+
+def test_kcu_mass_prefers_the_system_file(lei_v3_system):
+    from awetrim.utils.system_config import get_kcu_mass
+
+    expected = get_kcu_mass(lei_v3_system)
+    assert resolve_kcu_mass({"kcu": {"mass": 1.0}}, lei_v3_system) == pytest.approx(expected)
+    assert resolve_kcu_mass({"kcu": {"mass": 1.0}}) == 1.0
+    assert resolve_kcu_mass({"kcu_mass": 2.0}) == 2.0
+
+
+def test_kcu_mass_defaults_to_zero_with_a_warning(caplog):
+    with caplog.at_level(logging.WARNING):
+        assert resolve_kcu_mass() == 0.0
+    assert "KCU mass" in caplog.text
+
+
+def test_resolve_structure_puts_the_kcu_mass_on_the_kcu(lei_v3_system):
+    light = resolve_structure(KITE_DIR / "structure.yml", config={"kcu": {"mass": 1.0}})
+    heavy = resolve_structure(KITE_DIR / "structure.yml", config={"kcu": {"mass": 3.0}})
+    assert heavy[1][0] - light[1][0] == pytest.approx(2.0)
+    np.testing.assert_allclose(heavy[1][1:], light[1][1:])
+
+
+def test_resolve_structure_ignores_strut_padding_with_a_warning(caplog):
+    with caplog.at_level(logging.WARNING):
+        resolve_structure(KITE_DIR / "structure.yml", config={"kcu_mass": 0.0, "strut_padding": "legacy"})
+    assert "strut_padding" in caplog.text
+
+
+def test_kite_aggregate_weighs_the_structure_and_the_kcu(lei_v3_system):
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
+    from awetrim.utils.system_config import get_kcu_mass
+
+    structure = load_structure(KITE_DIR / "structure.yml")
+    aggregate = compute_kite_aggregate(structure, lei_v3_system)
+    expected = structure.masses().sum() + get_kcu_mass(lei_v3_system)
+    assert aggregate["mass"] == pytest.approx(expected, abs=1e-4)
+    assert np.asarray(aggregate["inertia_tensor"]).shape == (3, 3)
+
+
+def test_printing_rest_lengths_reports_every_line(capsys):
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
+
+    structure = load_structure(KITE_DIR / "structure.yml")
+    positions = np.stack([structure.positions, structure.positions])
+    printing_rest_lengths({"positions": positions}, structure)
+    out = capsys.readouterr().out
+    for name in {e["name"] for e in structure.bridle}:
+        assert name in out

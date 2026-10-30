@@ -997,7 +997,15 @@ def main(
         cp_distribution_path = config_aer2struc.get("cp_distribution_path")
 
     t_vals = np.linspace(0.0, 1.0, n_chordwise_nodes)
-    if cp_distribution_path is not None and Path(cp_distribution_path).exists():
+    if cp_distribution_path is not None:
+        # a stated file that is missing must not quietly become a uniform
+        # load: the chordwise shape is the panel's pitching moment
+        if not Path(cp_distribution_path).exists():
+            raise FileNotFoundError(
+                f"aero2struc.cp_distribution_path {cp_distribution_path} not found "
+                "(relative paths resolve against the project root: "
+                "aerostructural.case.resolve_config_paths)"
+            )
         chordwise_weights = chordwise_weights_from_cp_file(cp_distribution_path, t_vals)
     else:
         chordwise_weights = np.full(n_chordwise_nodes, 1.0 / n_chordwise_nodes)
@@ -1055,11 +1063,8 @@ def main(
         vsm_wing_forces_distributed_chordwise
     )
 
-    if is_with_delta_cp_and_weights_plot:
-        plot_delta_cp_and_weights(
-            Path("data/TUDELFT_V3_KITE/cp_distributions/cp_AOA_8.dat"),
-            n_bins=10,
-        )
+    if is_with_delta_cp_and_weights_plot and cp_distribution_path is not None:
+        plot_delta_cp_and_weights(Path(cp_distribution_path), n_bins=10)
 
     # mapping the distributed aerodynamic forces to the structural nodes
     # Element-consistent transfer when the caller knows the canopy elements.

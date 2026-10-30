@@ -1,10 +1,12 @@
 # Full-cycle optimisation profile of the LEI-V3, read by
-# scripts/reduced-order-model/optimization/cycle/cycle_kites.py (--kite).
+# examples/4_trajectory_optimization/cycle/cycle_kites.py (--kite).
 #
 # Hardware (mass, tether, drum envelope, KCU ranges) is in system.yaml; the
-# ROM and its depower band (controls.input_depower) are in rom_config.yaml.
+# ROM and its depower band (controls.input_depower) are in the ROM file system.yaml names.
 # This file carries only what the cycle scripts need on top. Depower values
-# are in the ROM's own u_p unit -- here the power-tape length in metres.
+# are in the ROM's own u_p unit -- here the power-tape length in metres,
+# the MODEL tape: the 2019 flight reads as reel-out 1.94 / reel-in 2.40
+# (identification.yaml flight_match).
 
 # REQUIRED. The constant wind profile the seed is checked at and the cycle
 # optimized in: model_type is any law of awetrim.environment.profile_laws
@@ -29,10 +31,10 @@ wind:
 winch_law:
   slope_winch_ro: 5380.8             # N s/m
   offset_winch_ro: 0.412             # m/s, zero-force reel speed at winch_depower_ref
-  winch_offset_depower_gain: -10.931 # m/s per unit u_p
-  winch_depower_ref: 1.7             # u_p
+  winch_offset_depower_gain: -9.5052  # m/s per unit u_p
+  winch_depower_ref: 1.94            # u_p, the matched reel-out
   min_tether_force: 865.4            # N
-  max_tether_force: 8400.4           # N; fallback only, the drum rating in system.yaml wins
+  max_tether_force: 8400.0           # N; fallback only, the drum rating in system.yaml wins
 
 # REQUIRED. The synthetic seed (fit_periodic_cycle_config.py, --auto tunes it
 # further until it trims and closes). Angles in rad.
@@ -58,7 +60,7 @@ flight:
   year: "2019"
   month: "10"
   day: "08"
-  kite_model: LEI-V3-Kite
+  kite_model: LEI-V3 Kite
   cycle_id: 62
 
 # Optional:

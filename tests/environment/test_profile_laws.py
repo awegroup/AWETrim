@@ -190,3 +190,15 @@ class TestAmplitude:
                 model, 100.0, u_ref=U_REF, z_ref=Z_REF, z0=Z0, alpha=ALPHA, **JET
             )
             assert float(f(U_REF)) == pytest.approx(float(want))
+
+
+def test_air_density_matches_atmospheric_models_calc_rho():
+    from awetrim.environment.profile_laws import SCALE_HEIGHT_AIR, air_density
+
+    assert air_density(0.0, 1.225) == pytest.approx(1.225)
+    assert air_density(200.0, 1.225, height_gnd=100.0) == pytest.approx(
+        1.225 * math.exp(-300.0 / SCALE_HEIGHT_AIR)
+    )
+    z = ca.MX.sym("z")
+    rho = air_density(z, 1.225, xp=ca)
+    assert ca.depends_on(rho, z)

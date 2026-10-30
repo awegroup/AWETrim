@@ -516,7 +516,11 @@ def build_rom_aerodynamics(
             for pm, coef in fit.terms
         ]
     if extra_params:
-        params.update({k: float(v) for k, v in extra_params.items()})
+        # scalars, or coefficient lists (e.g. gain_roll_steering_depower)
+        params.update({
+            k: [float(x) for x in v] if isinstance(v, (list, tuple)) else float(v)
+            for k, v in extra_params.items()
+        })
     return {"model": "coeffs", "params": params, "coefficients": coefficients}
 
 

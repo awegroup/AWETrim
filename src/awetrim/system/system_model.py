@@ -221,6 +221,14 @@ class SystemModel(KiteKinematics):
         self.kite.rho = value
 
     @property
+    def air_density(self):
+        """Air density at the kite height (``rho`` if no density model)."""
+        return self.kite.air_density_for(self)
+
+    def air_density_at_height(self, height):
+        return self.kite.air_density_at_height(height)
+
+    @property
     def override_gravity(self):
         return self._override_gravity
 
@@ -604,7 +612,7 @@ class SystemModel(KiteKinematics):
         assembled separately inside ``solve_quasi_steady``, where the numeric
         ``state_dict`` is available — keeping this method side-effect free
         for callers that build their own NLPs (see
-        ``scripts/.../solve_single_state.py``).
+        ``examples/1_aerodynamics/solve_single_state.py``).
         """
         lbx = []
         ubx = []

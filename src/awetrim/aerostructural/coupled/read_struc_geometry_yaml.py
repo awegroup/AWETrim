@@ -14,28 +14,39 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+"""Importer of the RETIRED full-model geometry format (``struc_geometry_FEM_full.yaml``).
+
+The structural geometry is an awesIO structure document (``structure.yml``,
+read by ``awesio_structure.load_structure``; the solver arrays come from
+``Structure.resolved``). This reader is kept only to convert a file in the
+old authoring format -- whose strut padding, canopy chord nodes and tube
+masses it generates -- and is called by ``awesio_structure.to_awesio`` alone
+(``load_structure`` of an old file, ``convert_file``). New code must not call
+:func:`main`.
+"""
+
 import numpy as np
 import logging
 
 from awetrim.aerostructural.utils import bridle_connection_rest_lengths
-from awetrim.utils.system_config import get_kite
+from awetrim.utils.system_config import get_kcu_mass
+from awetrim.aerostructural.symmetry import warn_if_asymmetric
 
 
 def _resolve_kcu_mass(struc_geometry, config=None, system_config=None):
     """Resolve KCU mass.
 
     Single source of truth is the system config
-    (``components.kites[0].control_system.structure.mass``, resolved via
-    ``get_kite``). ``struc_geometry`` must NOT carry a ``kcu_mass`` — it is only
-    honoured as a deprecated fallback.
+    (``components.kites[0].control_system.structure.mass`` plus the onboard
+    turbine's mass, resolved via ``get_kcu_mass``). ``struc_geometry`` must NOT
+    carry a ``kcu_mass`` — it is only honoured as a deprecated fallback.
 
     Priority: system_config -> config (per-run override) -> struc_geometry.
     """
     if isinstance(system_config, dict):
-        kite = get_kite(system_config)
-        cs_struct = kite.get("control_system", {}).get("structure", {})
-        if "mass" in cs_struct:
-            return float(cs_struct["mass"])
+        mass_kcu = get_kcu_mass(system_config)
+        if mass_kcu is not None:
+            return mass_kcu
 
     if isinstance(config, dict):
         kcu_cfg = config.get("kcu", {})
@@ -968,6 +979,10 @@ def main(struc_geometry, config=None, system_config=None):
     struc_node_le_indices = np.array(struc_node_le_indices)
     struc_node_te_indices = np.array(struc_node_te_indices)
 
+    # An asymmetric input turns an unsteered kite; warn (see symmetry.py).
+    warn_if_asymmetric(
+        struc_nodes, kite_connectivity_arr, l0_arr, k_arr, linktype_arr, m_arr, config
+    )
     return (
         # node level
         struc_nodes,

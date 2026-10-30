@@ -22,6 +22,8 @@ from awetrim.identification.rigid_body_axes import (
     load_psm_nodes_and_masses,
     wing_le_te_indices,
 )
+from awetrim.aerostructural.coupled.awesio_structure import load_structure
+from awetrim.utils.system_config import get_kcu_mass
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 KITE_DIR = PROJECT_ROOT / "data" / "LEI-V3-KITE"
@@ -213,32 +215,25 @@ def test_single_sided_wing_is_rejected():
         compute_centre_panel_axes(nodes, le, te)
 
 
-def test_wing_le_te_indices_follows_the_psm_id_convention():
-    struc_geometry = {
-        "wing_particles": {
-            "headers": ["id", "x", "y", "z"],
-            "data": [
-                [1, -1.0, 3.0, 10.0],
-                [2, 1.0, 3.0, 10.0],
-                [3, -1.0, -3.0, 10.0],
-                [4, 1.0, -3.0, 10.0],
-            ],
-        }
-    }
-    le, te = wing_le_te_indices(struc_geometry)
-    np.testing.assert_array_equal(le, [1, 3])
-    np.testing.assert_array_equal(te, [2, 4])
+def test_wing_le_te_indices_reads_the_wireframe_ribs(wireframe):
+    """A wireframe rib is a two-node station [front, rear], every one a strut."""
+    le, te = wing_le_te_indices(wireframe)
+    np.testing.assert_array_equal(le, [s[0] for s in wireframe.stations])
+    np.testing.assert_array_equal(te, [s[1] for s in wireframe.stations])
+    # The snapshot keeps the PSM numbering: odd ids front, even ids rear.
+    assert all(i % 2 == 1 for i in le) and all(i % 2 == 0 for i in te)
 
 
-def test_wing_le_te_indices_rejects_unpaired_nodes():
-    struc_geometry = {
-        "wing_particles": {
-            "headers": ["id", "x", "y", "z"],
-            "data": [[1, -1.0, 3.0, 10.0], [3, -1.0, -3.0, 10.0]],
-        }
-    }
-    with pytest.raises(ValueError, match="one leading-edge"):
-        wing_le_te_indices(struc_geometry)
+def test_wing_le_te_indices_takes_only_the_struts_of_the_full_model(full_model):
+    """In the full model the canopy sections are stations too; only struts count."""
+    le, te = wing_le_te_indices(full_model)
+    struts = full_model.struts
+    assert len(le) == len(te) == len(struts) < len(full_model.stations)
+    np.testing.assert_array_equal(le, [s["nodes"][0] for s in struts])
+    np.testing.assert_array_equal(te, [s["nodes"][-1] for s in struts])
+    # Leading edge forward of the trailing edge (structural x is aft).
+    pos = full_model.positions
+    assert np.all(pos[le, 0] < pos[te, 0])
 
 
 # --------------------------------------------------------------------------
@@ -246,48 +241,66 @@ def test_wing_le_te_indices_rejects_unpaired_nodes():
 # --------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")
-def kite_files():
-    struc = KITE_DIR / "struc_geometry.yaml"
+def full_model():
+    path = KITE_DIR / "structure.yml"
+    if not path.exists():  # pragma: no cover
+        pytest.skip(f"{path} not available")
+    return load_structure(path)
+
+
+@pytest.fixture(scope="module")
+def wireframe():
+    path = KITE_DIR / "deformed_results" / "powered_2019" / "structure.yml"
+    if not path.exists():  # pragma: no cover
+        pytest.skip(f"{path} not available")
+    return load_structure(path)
+
+
+@pytest.fixture(scope="module")
+def kite_files(tmp_path_factory):
+    """A deformed wireframe snapshot beside the kite's system.yaml."""
+    struc_src = KITE_DIR / "deformed_results" / "powered_2019" / "structure.yml"
     system = KITE_DIR / "system.yaml"
-    if not struc.exists() or not system.exists():  # pragma: no cover
+    if not struc_src.exists() or not system.exists():  # pragma: no cover
         pytest.skip(f"{KITE_DIR} not available")
-    return struc, system
+    folder = tmp_path_factory.mktemp("lei_v3")
+    struc = folder / "structure.yml"
+    struc.write_text(struc_src.read_text(encoding="utf-8"), encoding="utf-8")
+    (folder / "system.yaml").write_text(system.read_text(encoding="utf-8"), encoding="utf-8")
+    return struc, folder / "system.yaml"
 
 
-def test_load_psm_geometry_matches_the_pss_initializer(kite_files):
-    """The path helper must agree with the dict API plus the sibling system.yaml."""
+def test_load_psm_geometry_matches_the_structure(kite_files):
+    """The path helper must agree with the Structure plus the sibling system.yaml."""
     struc, system = kite_files
-    struc_geometry = yaml.safe_load(struc.read_text(encoding="utf-8"))
+    structure = load_structure(struc)
     system_config = yaml.safe_load(system.read_text(encoding="utf-8"))
 
     nodes, masses, le, te = load_psm_geometry(struc)
     nodes_ref, masses_ref = load_psm_nodes_and_masses(
-        struc_geometry, system_config=system_config
+        structure, system_config=system_config
     )
     np.testing.assert_allclose(nodes, nodes_ref)
     np.testing.assert_allclose(masses, masses_ref)
-
-    # The indices the initializer hands back are the ones wing_le_te_indices
-    # reproduces from the id convention.
-    le_ref, te_ref = wing_le_te_indices(struc_geometry)
+    np.testing.assert_allclose(
+        masses_ref, structure.masses(kcu_mass=get_kcu_mass(system_config))
+    )
+    le_ref, te_ref = wing_le_te_indices(structure)
     np.testing.assert_array_equal(le, le_ref)
     np.testing.assert_array_equal(te, te_ref)
 
 
 def test_loaded_masses_carry_the_kcu_and_the_bridle(kite_files):
-    """The lumping is the initializer's: wing tubes and canopy, bridle, KCU."""
+    """The lumping is awesIO's: wing members, bridle, pulleys, plus the KCU."""
     struc, system = kite_files
-    struc_geometry = yaml.safe_load(struc.read_text(encoding="utf-8"))
+    structure = load_structure(struc)
     system_config = yaml.safe_load(system.read_text(encoding="utf-8"))
-    kcu_mass = float(
-        system_config["components"]["kites"][0]["control_system"]["structure"]["mass"]
-    )
+    kcu_mass = get_kcu_mass(system_config)
 
     _, masses, _, _ = load_psm_geometry(struc)
-    mass_col = struc_geometry["wing_elements"]["headers"].index("m")
     wing_mass = sum(
-        float(row[mass_col]) for row in struc_geometry["wing_elements"]["data"]
+        float(s["mass"]) for s in structure.segments if s.get("line") is None
     )
 
-    assert masses[0] >= kcu_mass  # KCU node also carries a bridle share
+    assert masses[structure.kcu] >= kcu_mass  # KCU node also carries a bridle share
     assert masses.sum() > wing_mass + kcu_mass  # bridle lines are in there too

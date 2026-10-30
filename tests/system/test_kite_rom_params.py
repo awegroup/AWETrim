@@ -136,6 +136,33 @@ def test_explicit_roll_gain_wins_over_side_force_coefficient():
     assert kite.k_steering == kite.gain_roll_steering
 
 
+def test_roll_gain_without_depower_terms_ignores_the_depower():
+    kite = _kite({"gain_roll_steering": -0.5})
+    model = _model(kite)
+    roll = kite.angle_roll_aerodynamic_for(model)
+    assert not ca.depends_on(roll, model.input_depower)
+
+
+def test_roll_gain_depower_polynomial():
+    kite = _kite({"gain_roll_steering": -0.5, "gain_roll_steering_depower": [0.2, -0.05]})
+    model = _model(kite)
+    roll = kite.angle_roll_aerodynamic_for(model)
+    f = ca.Function("roll", [model.input_steering, model.input_depower], [roll])
+    u_s, u_p = 0.1, 2.0
+    expected = u_s * (-0.5 + 0.2 * u_p - 0.05 * u_p**2)
+    assert float(f(u_s, u_p)) == pytest.approx(expected)
+
+
+def test_roll_gain_scale_multiplies_the_whole_gain():
+    kite = _kite({"gain_roll_steering": -0.5, "gain_roll_steering_depower": [0.2, -0.05]})
+    kite.gain_roll_scale = 1.5
+    model = _model(kite)
+    f = ca.Function("roll", [model.input_steering, model.input_depower],
+                    [kite.angle_roll_aerodynamic_for(model)])
+    u_s, u_p = 0.1, 2.0
+    assert float(f(u_s, u_p)) == pytest.approx(1.5 * u_s * (-0.5 + 0.2 * u_p - 0.05 * u_p**2))
+
+
 def test_reference_area_overrides_the_system_area():
     assert _kite({}).area_wing == pytest.approx(5.0)
     assert _kite({}, reference_area=17.2119).area_wing == pytest.approx(17.2119)

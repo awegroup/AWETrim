@@ -24,13 +24,13 @@ aerostructural/
   fem/aero2struc.py                      the load mapping, SHARED
   aerodynamic_vsm.py                     the trim, SHARED
   billow/structural_billow.py            NEW -- the only new physics-facing code
-scripts/aerostructural/
+examples/2_aerostructural/
   run_simulation_BILLOW.py               NEW -- the driver script
 ```
 
 (Since 2026-10-07 the driver itself is `aerostructural/billow/driver.py`;
 `run_simulation_BILLOW.py` only sets the inputs, and the study scripts below
-live in `scripts/aerostructural/studies/`.)
+live in `studies/` (available on request).)
 
 The coupled solver in `fem/` is, despite its location, not FEM-specific: it
 already dispatched on `config["structural_solver"]` between `pss` and
@@ -617,7 +617,7 @@ large powered to u_dp 0.25 (71.2 mm). The convergence tolerance was already rule
 out (inner tolerance bit-identical from 1.3e-2 to 1e-4 N; the structure alone,
 under an exactly symmetric load, converged to 2.4e-6 N and was still 18.8 mm off).
 
-**The decisive test** (`scripts/aerostructural/studies/check_symmetric_equilibrium.py`)
+**The decisive test** (`check_symmetric_equilibrium.py` (available on request))
 takes the structure alone under the exactly mirror-symmetric first-iteration load
 (2253 N, symmetric to 4e-14 N) and solves it four ways with the same numerics:
 free from the built state, constrained to the mirror-symmetric subspace
@@ -729,7 +729,7 @@ Roughly in priority order.
 ## 7. Running it
 
 ```bash
-python scripts/aerostructural/run_simulation_BILLOW.py
+python examples/2_aerostructural/run_simulation_BILLOW.py
 ```
 
 Results land in `results/<kite>/aerostructural/billow/<case>/` as
@@ -745,15 +745,15 @@ are rejected rather than ignored.
 Two diagnostics:
 
 ```bash
-python scripts/aerostructural/studies/plot_billow_geometry.py            # 3-D shape, canopy by regime
-python scripts/aerostructural/studies/plot_chordwise_moment_matching.py  # §4, before and after
+python plot_billow_geometry.py            # 3-D shape, canopy by regime   (available on request)
+python plot_chordwise_moment_matching.py  # §4, before and after   (available on request)
 ```
 
 A depower sweep is a pair of continuation chains per wind:
 
 ```bash
-python scripts/aerostructural/studies/run_chain_depower_BILLOW.py --wind 2.6 3.4 4.2
-python scripts/aerostructural/studies/plot_billow_depower_chains.py
+python run_chain_depower_BILLOW.py --wind 2.6 3.4 4.2   (available on request)
+python plot_billow_depower_chains.py   (available on request)
 ```
 
 That writes `chains.csv` and one `sim_output.h5` per chain under

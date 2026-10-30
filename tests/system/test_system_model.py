@@ -618,3 +618,15 @@ def test_tangential_speed_stability_holds_frozen_unknowns_fixed():
     f = ca.Function("S", [v, u, b], [S])
     # u fixed: dF/dv = -2v + 3 * db/dv = -2v + 6
     assert float(f(1.0, 0.0, 0.0)) == pytest.approx(4.0)
+
+
+def test_air_density_constant_by_default(v3_system):
+    assert v3_system.air_density is v3_system.rho
+
+
+def test_air_density_model_depends_on_kite_height(v3_system):
+    v3_system.kite.air_density_model = {"height_gnd": 0.0}
+    rho = v3_system.air_density
+    assert ca.depends_on(rho, v3_system.distance_radial)
+    assert ca.depends_on(rho, v3_system.angle_elevation)
+    v3_system.kite.air_density_model = None

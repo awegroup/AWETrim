@@ -2,7 +2,7 @@
 
 Kite paths, config defaults, the actuation case-folder name, the initial
 geometry rotation and the SystemModel the coupled trim runs on. Lived in
-``scripts/aerostructural/common.py`` until 2026-10-07; that file now only
+``examples/2_aerostructural/common.py`` until 2026-10-07; that file now only
 re-exports this module so existing scripts keep importing ``common``.
 """
 
@@ -14,14 +14,26 @@ from pathlib import Path
 import numpy as np
 
 from awetrim.aerostructural.utils import load_sim_output
+from awetrim.environment.profile_laws import air_density
 from awetrim.system.factory import create_system_model_from_yaml
 from awetrim.system.system_model import SystemModel
 
 DEFAULT_KITE_NAME = "LEI-V3-KITE"
 
-# Default structural geometry for the PSM/PSS aerostructural simulations
-# (awetrim.aerostructural.wireframe.driver and the sweeps). See data/<kite>/README_struc_files.md.
-DEFAULT_STRUC_GEOMETRY_FILENAME = "struc_geometry_PSM_reduced_photogrammetry_adjusted.yaml"
+# THE structural geometry of a kite: an awesIO structure document
+# (structure_schema.yml, read with coupled.awesio_structure.load_structure)
+# that Billow's full model reads and the wireframe is reduced from
+# (wireframe.reduce_fem), so both fidelities start from one input file. A
+# deformed snapshot in a results folder has the same name. See
+# data/<kite>/README_struc_files.md.
+DEFAULT_STRUC_GEOMETRY_FILENAME = "structure.yml"
+SNAPSHOT_STRUC_GEOMETRY_FILENAME = DEFAULT_STRUC_GEOMETRY_FILENAME
+#: The retired AWETrim formats' names (a full FEM geometry; a PSM-format
+#: snapshot). find_struc_geometry still finds them, and load_structure
+#: converts them on the fly, so private kites and old results keep working.
+LEGACY_STRUC_GEOMETRY_FILENAMES = ("struc_geometry_FEM_full.yaml", "struc_geometry.yaml")
+#: The per-case wireframe reduction (wireframe.driver).
+WIREFRAME_STRUC_GEOMETRY_FILENAME = "structure_wireframe.yml"
 
 # Single source of truth for config defaults used across all aerostructural scripts.
 CONFIG_DEFAULTS: dict = {
@@ -42,7 +54,34 @@ CONFIG_DEFAULTS: dict = {
     "initial_geometry_rotation_deg": 0.0,
     "initial_geometry_rotation_point": [0.0, 0.0, 0.0],
     "initial_geometry_rotation_axes": ["x", "y", "z"],
+    # Air density: "constant" = rho everywhere; "exponential" = rho is the
+    # sea-level density of profile_laws.air_density, evaluated at the kite
+    # height r sin(beta) above a ground at height_gnd [m] (air_density_at_case).
+    "rho": 1.225,
+    "air_density_law": "constant",
+    "height_gnd": 0.0,
 }
+
+
+def air_density_at_case(config: dict) -> float:
+    """Air density [kg/m3] at the case's kite position.
+
+    The ONE value every aerostructural consumer (VSM, bridle drag, the system
+    model's tether) uses for a case: ``rho`` itself, or with
+    ``air_density_law: exponential`` the density at z = r sin(beta).
+    """
+    rho = float(config.get("rho", CONFIG_DEFAULTS["rho"]))
+    law = config.get("air_density_law", CONFIG_DEFAULTS["air_density_law"])
+    if law == "constant":
+        return rho
+    if law != "exponential":
+        raise ValueError(f"unknown air_density_law {law!r}")
+    elevation = np.deg2rad(
+        float(config.get("angle_elevation_deg", CONFIG_DEFAULTS["angle_elevation_deg"]))
+    )
+    distance = float(config.get("distance_radial", CONFIG_DEFAULTS["distance_radial"]))
+    height_gnd = float(config.get("height_gnd", CONFIG_DEFAULTS["height_gnd"]))
+    return float(air_density(distance * np.sin(elevation), rho, height_gnd=height_gnd))
 
 
 def resolve_kite_paths(
@@ -53,7 +92,7 @@ def resolve_kite_paths(
 
     Returns:
         (config_path, aero_geometry_path, struc_geometry_path)
-        where struc_geometry_path is the default PSM structural geometry
+        where struc_geometry_path is the kite's awesIO structure document
         (DEFAULT_STRUC_GEOMETRY_FILENAME).
     """
     project_dir = Path(project_dir).resolve()
@@ -66,6 +105,28 @@ def resolve_kite_paths(
     struc_geometry_path = geometry_dir / DEFAULT_STRUC_GEOMETRY_FILENAME
 
     return config_path, aero_geometry_path, struc_geometry_path
+
+
+def resolve_config_paths(config: dict, project_dir: Path | str) -> dict:
+    """``config`` with its relative file paths made absolute against the
+    project root (``aero2struc.cp_distribution_path``), in place and returned:
+    a path relative to the working directory silently changed the physics
+    whenever a script ran from elsewhere."""
+    aero2struc = config.get("aero2struc") or {}
+    cp = aero2struc.get("cp_distribution_path")
+    if cp and not Path(cp).is_absolute():
+        aero2struc["cp_distribution_path"] = str(Path(project_dir) / cp)
+    return config
+
+
+def find_struc_geometry(folder: Path | str) -> Path | None:
+    """The structural geometry in ``folder`` (awesIO ``structure.yml``, else a
+    file in a retired format), else None."""
+    folder = Path(folder)
+    for name in (DEFAULT_STRUC_GEOMETRY_FILENAME, *LEGACY_STRUC_GEOMETRY_FILENAMES):
+        if (folder / name).exists():
+            return folder / name
+    return None
 
 
 def format_length_tag(value_m: float) -> str:
@@ -227,6 +288,10 @@ def configure_system_model_from_config(system_model: SystemModel, config: dict) 
     system_model.timeder_speed_radial = float(
         config.get("timeder_speed_radial", CONFIG_DEFAULTS["timeder_speed_radial"])
     )
+    # The trim's tether sees the same density as the VSM wing and bridle: the
+    # position is fixed per case, so the kite-height value is a constant.
+    system_model.rho = air_density_at_case(config)
+    system_model.kite.air_density_model = None
 
 
 def resolve_starting_struc_nodes(

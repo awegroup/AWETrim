@@ -96,7 +96,11 @@ def patched_session(monkeypatch, tmp_path):
     monkeypatch.setattr(
         session_mod,
         "create_system_model_from_yaml",
-        lambda yaml_path: SimpleNamespace(wind=None),
+        lambda yaml_path, **kwargs: SimpleNamespace(
+            wind=None,
+            rho=1.225,
+            kite=SimpleNamespace(rho=1.225, air_density_model=None),
+        ),
     )
     monkeypatch.setattr(
         session_mod,
@@ -889,3 +893,19 @@ def test_winch_mode_defaults_to_unset_and_is_threaded_through(patched_session):
     config["winch_params"] = dict(base, winch_mode="nonsense")
     with pytest.raises(ValueError, match="winch_mode"):
         sess.init(config)
+
+
+def test_apply_air_density_exponential_then_back_to_constant():
+    from types import SimpleNamespace
+
+    model = SimpleNamespace(kite=SimpleNamespace(rho=1.225, air_density_model=None))
+    ReeloutSession._apply_air_density(
+        model,
+        {"air_density_law": "exponential", "rho_zero": 1.2, "height_gnd": 50.0},
+        1.225,
+    )
+    assert model.kite.rho == 1.2
+    assert model.kite.air_density_model == {"height_gnd": 50.0}
+    ReeloutSession._apply_air_density(model, {"wind_speed": 8.0}, 1.225)
+    assert model.kite.rho == 1.225
+    assert model.kite.air_density_model is None

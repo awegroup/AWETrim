@@ -2,7 +2,7 @@
 % SPDX-License-Identifier: Apache-2.0
 %
 % Numbers, tables and figures come from generated/ and figures/, written by
-%   python scripts/reduced-order-model/optimization/cycle/report_cycle_optimisation.py
+%   python report_cycle_optimisation.py   (available on request)
 % Rebuild:  latexmk -pdf cycle_optimisation.tex   (in docs/cycle_optimisation/)
 \documentclass[11pt,a4paper]{article}
 
@@ -107,7 +107,7 @@ and Sect.~\ref{sec:seed} is the core of this note.
 The physics of the ROM is that of Cayon, van Deursen and
 Schmehl~\cite{cayon2026rom}; the trajectory-optimisation framing follows
 Cayon and Schmehl~\cite{cayon2026torque}. The code lives in
-\path{scripts/reduced-order-model/optimization/cycle/}
+\path{examples/4_trajectory_optimization/cycle/}
 (\code{fit\_periodic\_cycle\_config.py}, \code{run\_full\_cycle\_opti.py}) and
 \path{src/awetrim/kinematics/parametrized_patterns.py} (path constructions,
 spline design and fairing) and \path{src/awetrim/timeseries/phase_parametrized.py}
@@ -611,10 +611,11 @@ each violation in $s$, and the location selects the lever:
         \SI{0.1}{rad};
   \item steering beyond the slack is handled according to where it occurs
         (Table~\ref{tab:levers});
-  \item an open cycle is closed by the depower depth,
-        $\delta\leftarrow\delta+\Delta r/(\SI{40}{m})$ (measured
-        $\partial\Delta r/\partial\delta\approx\SI{-40}{m}$), and, once fully
-        depowered, by shortening the reel-out fraction $f$.
+  \item an open cycle is \emph{not} a symptom: the seed marches its own
+        force law, which the \code{free\_speed} optimizer drops, and the
+        optimizer's first stage closes the cycle (until 2026-10-28 the tuner
+        chased the gap through the depower depth and the reel-out fraction,
+        levers that barely move it and disturb the trim).
 \end{itemize}
 
 \begin{table}[H]
@@ -742,10 +743,10 @@ IPOPT reports success.
 
 From the project root:
 \begin{enumerate}
-  \item \path{python scripts/reduced-order-model/optimization/cycle/fit_periodic_cycle_config.py --kite LEI-V3-KITE --auto}
+  \item \path{python examples/4_trajectory_optimization/cycle/fit_periodic_cycle_config.py --kite LEI-V3-KITE --auto}
         (lobe seed), or \code{--reelin dubins --loops 7 --check} (Dubins seed);
-  \item \path{python scripts/reduced-order-model/optimization/cycle/run_full_cycle_opti.py --kite LEI-V3-KITE};
-  \item \path{python scripts/reduced-order-model/optimization/cycle/report_cycle_optimisation.py --run lobe=<kite dir> --run dubins=<kite dir> --logs <dir>},
+  \item \path{python examples/4_trajectory_optimization/cycle/run_full_cycle_opti.py --kite LEI-V3-KITE};
+  \item \path{python report_cycle_optimisation.py --run lobe=<kite dir> --run dubins=<kite dir> --logs <dir>} (available on request),
         then \code{latexmk -pdf} in \path{docs/cycle_optimisation/}.
 \end{enumerate}
 The seed is written to \path{<kite>/cycle_configs/full_cycle_periodic_from_exp.yaml}

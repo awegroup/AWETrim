@@ -6,7 +6,8 @@ import io
 import numpy as np
 import pytest
 
-from awetrim.system.factory import create_system_model_from_yaml
+from awetrim.identification.controls import rom_depower_band
+from awetrim.system.factory import create_system_model_from_yaml, resolve_rom_config_path
 from awetrim.system.state import State
 from awetrim.utils.config_paths import LEI_V3_SYSTEM_FLOWN_2019_CONFIG
 
@@ -19,12 +20,17 @@ def _model():
     return model
 
 
+# mid-band depower of the system's ROM: a state the ROM flies at every wind
+# here, whatever tape coordinate the ROM uses
+DEPOWER = float(sum(rom_depower_band(resolve_rom_config_path(LEI_V3_SYSTEM_FLOWN_2019_CONFIG))) / 2)
+
+
 def _solve(model, wind_speed):
     model.wind.speed_wind_ref = wind_speed
     state = State(
         distance_radial=200.0, angle_elevation=np.deg2rad(30.0), angle_azimuth=0.0,
         angle_course=np.pi / 2, speed_radial=0.0, timeder_speed_radial=0.0,
-        timeder_speed_tangential=0.0, input_depower=1.7, input_steering=0.0,
+        timeder_speed_tangential=0.0, input_depower=DEPOWER, input_steering=0.0,
         speed_tangential=4.0 * wind_speed, timeder_angle_course=0.0,
         tension_tether_ground=3000.0,
     )

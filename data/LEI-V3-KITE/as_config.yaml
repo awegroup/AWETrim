@@ -1,6 +1,4 @@
 ## case settings
-# kcu_mass and tether.diameter are now defined in system.yml (awesIO format)
-# starting_from_sim_subdir: depower_p0000mm_steer_p0000mm
 is_with_gravity: !!bool false
 is_with_aero_bridle: !!bool true
 # KCU bluff-body drag in the trim (finite cylinder on the tether axis,
@@ -8,7 +6,6 @@ is_with_aero_bridle: !!bool true
 # control_system.structure). Set false to reproduce a result from before
 # 2026-08-21, when the trim chain had no KCU drag at all.
 is_with_kcu_drag: !!bool true
-is_with_aero_tether: !!bool true
 is_run_only_1_time_step: !!bool false
 is_with_initial_point_velocity: !!bool false
 is_with_forcing_symmetry: !!bool false
@@ -41,9 +38,10 @@ is_save_geometry_snapshots: !!bool true
 
 ## aerodynamic
 aerodynamic:
-  # 5 x 9 structural sections = 45 panels (2026-08-31, was 3 = 27): cost
-  # parity with 27 after the numba AIC JIT, and the coupled answer is
-  # branch-consistent and mesh-converged across 27/36/45 (v_tau +/-0.2%).
+  # Panels per structural section: on the FEM geometry's 27 sections, 5 =
+  # 135 panels, the identification mesh (Billow full flies 2 per section,
+  # its own BILLOW_CONFIG_DEFAULTS). Chosen 2026-08-31 on the PSM ribs
+  # (mesh-converged across 27/36/45 panels, v_tau +/-0.2%).
   n_aero_panels_per_struc_section: !!int 5
   spanwise_panel_distribution: !!str 'uniform'
   max_iterations: !!int 1500
@@ -78,14 +76,9 @@ aerodynamic:
   is_with_artificial_viscosity: !!bool true
   artificial_viscosity_factor: !!float 0.035
 
-## quasi-steady trim optimization (used by aero_structural_solver with aero_solve_type='qsm')
+## quasi-steady trim (the coupled loop's least-squares trim, aerodynamic_vsm)
 # Controls the convergence and search criteria for finding trim equilibrium
 quasi_steady_trim:
-  # Moment balance tolerance [N·m]. Trim is achieved when moments are below this.
-  # Tighter = more accurate trim but slower optimization.
-  # Typical range: 1e-5 (very tight) to 1e-3 (loose)
-  moment_tolerance: !!float 1e-4
-
   # Cap on trim residual evaluations per coupled iteration (scipy
   # least_squares max_nfev). 8 = roughly one warm-started Gauss-Newton step:
   # the trim and the geometry then converge TOGETHER instead of the trim
@@ -98,11 +91,6 @@ quasi_steady_trim:
   # inside the coupled loop's warm restarts).
   max_nfev: !!int 8
 
-  # Force residual scaling factor for optimization objective.
-  # The course and normal forces are divided by this factor before optimization.
-  # Smaller values (0.001) make forces more important in trim; larger values (0.1) de-weight them.
-  # Typical range: 0.001 (forces critical) to 0.1 (moments critical)
-  force_residual_scale: !!float 1
 
 
   # Search bounds for quasi-steady variables [physical units as noted]
@@ -131,8 +119,8 @@ aerodynamic_bridle:
   cd_cable: !!float 1.1
   cf_cable: !!float 0.01
   # How the unknown roll angle of a FLAT TAPE about its own axis is
-  # treated (steering/depower tapes; lines with a "w" column in
-  # struc_geometry.yaml). averaged = uniform-roll mean of the broadside
+  # treated (steering/depower tapes; lines with a "w" column in the
+  # structural geometry). averaged = uniform-roll mean of the broadside
   # and edge-on limits; broadside|edge_on = that bracket; round =
   # pre-2026-08-21 behaviour, the area-equivalent circle.
   # See awetrim.aerodynamics.line_drag.
@@ -153,8 +141,6 @@ structural_pss:
   nlp_max_iterations: !!int 1000       # IPOPT iteration cap
   nlp_anchor_stiffness: !!float 1.0e-3 # [N/m] pins force-free fully-slack nodes
   fixed_point_indices: [0] #this is the bridle point / KCU
-  is_with_diagnostics: !!bool false
-  num_node_diagnostics: !!int 34
   # --- Element elongation bound (Poland & Schmehl) -- ON ------------------
   # Stiffen only the elements stretching more than `max_elongation`, each
   # capped at its OWN modulus ceiling (k_max = max_stiffness_factor *
@@ -167,12 +153,11 @@ structural_pss:
   # bridle stretching several percent is not the kite that was measured, and
   # the stretch moves the trim. It costs about the baseline wall time
   # (~166 s/point vs 164 s across u_dp 0.18-0.42).
-  # See scripts/personal/wes-quasi-steady/FINDINGS_bridle_stiffness.md.
   update_stiffness: !!bool true
   stiffness_update_scope: !!str 'all'    # 'wing' | 'bridle' | 'all'
   max_elongation: !!float 0.01           # the 1% gate
   stiffness_update_factor: !!float 1.5
-  max_stiffness_factor: !!float 9.0      # 9x10 GPa = 90 GPa effective rope
+  max_stiffness_factor: !!float 9.0      # x each element's initial modulus
   stiffness_settle_iters: !!int 5
   stiffness_trigger_factor: !!float 1.0  # step only from residual <= tol
   #
@@ -186,17 +171,20 @@ structural_pss:
   # modulus_stall_iters: !!int 25
   # modulus_max_halvings: !!int 2
 
-## aero2struc
+## aero2struc: the panel-to-node load transfer of Billow's FULL fidelity
+## (coupled/aero2struc.py). The wireframe maps panel corners onto its ribs
+## (aerodynamic.load_transfer) and reads none of this.
 aero2struc:
   coupling_method: !!str 'NN'
   eps: !!float 1e-6
   power_for_inverse_weighting: !!float 2.0
+  # relative to the project root (aerostructural.case.resolve_config_paths)
   cp_distribution_path: data/LEI-V3-KITE/cp_distributions/cp_AOA_8.dat
   # Where the chordwise weights put a panel's resultant IS its local pitching
   # moment, and the wing's trim is a moment balance.
   #   cp_file        one measured Delta C_p shape for every panel, so the
   #                  resultant sits at 0.291 c regardless of the panel's own
-  #                  C_m. Reproduces every stored FEM result.
+  #                  C_m. The default.
   #   moment_matched keeps that shape as a prior and tilts it onto the centre
   #                  of pressure VSM computes from the panel's own F and M, so
   #                  force AND moment are both conserved.
@@ -205,7 +193,6 @@ aero2struc:
 ## coupled
 aero_structural_solver:
   max_iter: !!int 200 # was 100; the realised-steering gate holds steered rows to ~50-90 iterations (2026-09-23)
-  it_check: !!int 5
   # Coupled gate: the DIMENSIONLESS ||f_int + f_ext|| / |sum f_ext|, the nodal
   # force residual over the tether load, for BOTH drivers (wireframe/PSM and
   # Billow). Since 2026-10-12 the only gate in this file. It replaced the
@@ -234,14 +221,11 @@ aero_structural_solver:
   qs_state_stagnation_decimals: !!int 2 # stop if opt_x is unchanged at this rounding
   qs_state_stagnation_n_iter: !!int 30 # consecutive unchanged iterations required to stop (0 disables)
   qs_speed_bound_patience: !!int 3 # runaway stop: trim pinned on its kite-speed bound this many iterations in a row -> not converged (0 disables)
-  aero_update_interval: !!int 1 # run aero every N structural iterations (1 = every iter, 5 = every 5th)
   steering_actuation_interval_iters: !!int 2 # apply steering actuation every N coupled iterations
   steering_settle_iterations_after_update: !!int 6 # no convergence exit this many iterations after a steering tape update: the rolled/turning equilibrium grows out of a mm-level asymmetry whose residual sits below the gate (u_s 0.025/0.05 rows froze symmetric in 3 iterations on 2026-09-01)
   steering_realised_tol_m: !!float 5.0e-3 # realised-actuation gate (2026-09-23): no exit while the tape endpoint half-difference is further than this [m] from the commanded rest-length half-difference (0 disables)
   steering_realised_remaining_tol_m: !!float 1.0e-3 # ... or with more creep than this [m] still to come (geometric tail of the realised value since the last steering step): Billow rows u_s 0.075-0.125 exited 15-25 mm short and creeping 1 mm/it on 2026-09-13
   steering_realised_rate_floor_m: !!float 2.0e-5 # a realised value moving less than this [m] per iteration counts as arrived whatever the tail estimator says (nanometre noise on a residual limit cycle reads as a non-decaying tail)
-  node_displacement_tol: !!float 0.0001 # stop if max nodal displacement < this [m] (0 = disabled, e.g. 1e-4)
-  aero_solve_type: !!str 'qsm' # 'qsm' = quasi-steady optimization with system_model; 'level_1' = direct VSM with va_vector
 
 ## Physical constants
 grav_constant: !!seq [0, 0, -9.81]
@@ -316,134 +300,3 @@ structural_billow:
   force_tolerance: !!float 1.0e-3
   relative_force_tolerance: !!float 1.0e-5
   print_info: !!bool false
-
-
-# tether.diameter is now defined in system.yml (awesIO format)
-#   density: !!float 1.0    # <-- NOT USED
-
-# power_tape_index:
-# # Stifnesses and damping
-# # va ~10 1e4 #2024/03/24
-# # va ~20 5e4 #2024/02/24
-# # va ~30 6e5
-# # va ~40 6.5e5
-
-# tubular_frame_stiffness: !!float 2e3 #5e4
-# bridle_line_stiffness: !!float 2e3 #5e4
-# trailing_edge_stiffness: !!float 2e3 #5e4
-# canopy_stiffness: !!float 1e3
-# tubular_frame_damping: !!float 0.0
-# bridle_line_damping: !!float 0.0
-# trailing_edge_damping: !!float 0.0
-# canopy_damping: !!float 0.0
-
-##TODO:
-# - write this as material
-# - where the material has properties like EA, and damping propertional to EA, and density
-# - Then you only have to specify: name, l0, d, material
-# - And then get EA, and rho from [material][EA], [material][rho]
-
-# fixed_node_indices: !!seq [0, 9,10,11,12]
-
-# # KCU
-# # N.Gechiere     --> CD: 0.47, Diameter: 0.38
-# # M.Schelbergen  --> CD: 1.0, Area: 0.25 (would be diam: .565m)
-# kcu:
-#   drag_coefficient: !!float 0.47
-#   diameter: !!float 0.38
-#   index: !!int 0
-#   mass: !!float 8.4
-
-# # Masses [kg]
-# pulley_mass: !!float 0.1
-# wing_mass: !!float 11
-
-# sim_name, straight/crosswind/circular
-# sim_name: !!str "straight"  # <-- NOT USED
-
-## Actuation
-##TODO: remove these old ones (first 3) you don't actually use them
-# depower
-# u_p: !!float 1.0  # <-- NOT USED
-# power_tape_extension_percentage: !!float 8.0  # <-- NOT USED
-# steering
-# delta_ls_ini: !!float 0.00  # <-- NOT USED
-# ## NEW - in meters
-
-
-
-# crosswind_max_iter: !!int 50
-# crosswind_tol: !!float 0.01
-# crosswind_relax_factor: !!float 0.5
-
-
-
-## output_settings:
-# is_print_mid_results: !!bool true
-
-# is_with_plotly_plot: !!bool false
-# is_with_aero_geometry: !!bool false
-# is_with_printing: !!bool false
-
-## plotting
-# is_with_plotting: !!bool false
-# plot_format: !!str "png"
-# plot_elev: !!seq [9.14, 9.14]
-# plot_azim: !!seq [90, 230]
-
-## animation
-# is_with_animation: !!bool false
-# animation_fps: !!int 10
-# animation_dpi: !!int 100
-# animation_bitrate: !!int 2000
-# animation_elev: !!float 9.14
-# animation_azim: !!float 230.0
-
-## simulation_settings
-# is_with_velocity_initialisation: !!bool false
-# n_vel_initialisation_steps: !!int 10
-# coupling_method: !!str "NN"
-# is_from_filename: !!bool false
-# is_with_initial_point_velocity: !!bool false
-# is_billowing_on: !!bool true
-# is_with_gravity: !!bool true
-# is_with_aero_bridle: !!bool true
-# is_with_aero_tether: !!bool true
-# bridle_initial_compression_factor: !!float 1.0
-# geometric_scaling_factor: !!float 1.0
-
-#TODO: these are now hardcoded in "solver_utils"
-## crosswind flight settings
-# tol_fx_ratio_to_fz: !!float 0.0  # <-- NOT USED
-
-# settings needed for crosswind & circular case here set to default values
-# tol_fx_ratio_to_fz: !!float 0  # <-- NOT USED
-# tol_vk_optimization: !!float 0  # <-- NOT USED
-# vk_x_initial_guess_factor_of_vw: !!float 0  # <-- NOT USED
-# is_with_varying_va: !!bool false  # <-- NOT USED
-# r_0_initial: !!float 0  # <-- NOT USED
-
-# Straight case
-# is_with_vk_optimization: false  # <-- NOT USED
-# is_circular_case: false         # <-- NOT USED
-# is_print_intermediate_results: true  # <-- NOT USED
-# is_with_gravity: false          # <-- NOT USED
-# ### inflow conditions
-# vel_wind: !!seq [12, 0, 2]
-# vel_kite: !!seq [0, 0, 0]
-# acc_kite: !!seq [0, 0, 0]
-
-# # Crosswind case
-# is_with_vk_optimization: true
-# is_circular_case: false
-# is_print_intermediate_results: false
-# is_with_gravity: false
-# ### inflow conditions
-# vel_wind: !!seq [0,0,4]
-# # This is an initial guess for the kite velocity
-# vel_kite: !!seq [-20, 0, 0]
-# acc_kite: !!seq [0, 0, 0]
-# ### other
-# tol_fx_ratio_to_fz: !!float 0.005
-# tol_vk_optimization: !!float 0.1
-# vk_x_initial_guess_factor_of_vw: !!float -5.0

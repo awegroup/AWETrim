@@ -1,14 +1,17 @@
-"""Reduce the full FEM geometry to a wireframe (PSM-format) geometry.
+"""Reduce the full structure to a wireframe (PSM-format) geometry.
 
-``struc_geometry_FEM_full.yaml`` describes the kite at the resolution Billow's
-full model needs: 28 canopy sections, strut tubes with intermediate chord
-nodes, and the complete bridle down to the individual a/b/c/d lines that fan
-onto each strut. A wireframe has none of that. It needs one rib per strut with
-two wing nodes -- where the front and the rear bridle attach -- and the lines
-between them, which is what ``struc_geometry_PSM_reduced.yaml`` is. That file
-is an exact reduction of the full one, and this module performs the same
-reduction from the full geometry, so a wireframe and a Billow run start from
-one input file.
+The kite's awesIO ``structure.yml`` (``coupled.awesio_structure``) describes it
+at the resolution Billow's full model needs: 28 canopy sections, strut tubes
+with intermediate chord nodes, and the complete bridle down to the individual
+a/b/c/d lines that fan onto each strut. A wireframe has none of that. It needs
+one rib per strut with two wing nodes -- where the front and the rear bridle
+attach -- and the lines between them, which is what
+``struc_geometry_PSM_reduced.yaml`` was (removed 2026-10-29, in v0.1.0). That
+file was an exact reduction of the full one, and this module performs the
+same reduction from the full structure, so a wireframe and a Billow run start
+from one input file. The result is the PSM-format dict
+``wireframe.structural_geometry_io`` reads (an in-memory intermediate; written
+to disk it goes through ``awesio_structure.wireframe_to_awesio``).
 
 **Bridle.** Rules read off the two files, not invented:
 
@@ -33,7 +36,13 @@ model uses, so the wing deforms little:
 
 * ``le`` / ``strut``: compressive axial springs, ``k = EA / L`` with ``EA`` from
   Billow's inflatable-tube law at the file's tube diameters and pressure
-  (``structural_billow.tube_axial_stiffness``);
+  (``structural_billow.tube_axial_stiffness``). A strut's diameter is the
+  length-weighted mean of its tube elements (exactly the old file's
+  ``(strut_diam_le + strut_diam_te) / 2``: the elements tile a linear taper);
+  the leading edge's at a rib is the strut station's ``le_diameter`` column
+  (carried over from the retired FEM file: the tubes do not determine it, and
+  on the LEI-V3 it is up to 7 mm above the mean of the elements meeting the
+  strut, the fallback for a file without the column);
 * ``te``: tension-only, the canopy strip of half the chord, ``k = E t (b/2) / a``;
 * diagonals: tension-only, the canopy's in-plane shear, ``k = G t d^2 / (2 a b)``
   with ``G = E / (2 (1 + nu))`` -- an X-brace storing the energy the membrane
@@ -43,15 +52,14 @@ model uses, so the wing deforms little:
 ``canopy_poisson_ratio``); ``a`` is the bay span, ``b`` its chord, ``d`` the
 diagonal.
 
-**Mass.** The full model's nodal masses (reader masses, canopy and tubes
-included) are lumped onto the nearest reduced wing node; the bridle carries the
-mass the PSM reader computes for the reduced lines, and the wing absorbs the
-difference, so the total matches the full model.
+**Mass.** The full model's nodal masses (``Structure.masses``: awesIO's rule,
+canopy and tubes included) are lumped onto the nearest reduced wing node; the
+bridle carries the mass the PSM reader computes for the reduced lines, and the
+wing absorbs the difference, so the total matches the full model.
 """
 
 from __future__ import annotations
 
-import copy
 from collections import deque
 from typing import Any, Mapping
 
@@ -60,27 +68,46 @@ import numpy as np
 #: Membrane values used when the config does not carry a structural_billow block.
 _DEFAULT_CANOPY_STIFFNESS = 4.93e5  # E*t [N/m]
 _DEFAULT_CANOPY_POISSON = 0.3
+#: Two rest lengths of one line closer than this are the same length: a
+#: pulley rope comes back from awesIO as the sum of its two arms.
+_SAME_LENGTH = 1e-9
 
 
-def _positions(fem: Mapping[str, Any], nodes=None) -> dict[int, np.ndarray]:
-    """YAML node id -> position; ``nodes`` (indexed by id) overrides the YAML."""
-    positions = {0: np.asarray(fem.get("bridle_point_node", [0, 0, 0]), dtype=float)}
-    for key in ("wing_particles", "bridle_particles"):
-        for row in fem[key]["data"]:
-            positions[int(row[0])] = np.asarray(row[1:4], dtype=float)
-    if nodes is not None:
-        nodes = np.asarray(nodes, dtype=float)
-        for node in positions:
-            positions[node] = nodes[node].copy()
-    return positions
+def _ribs(structure, positions):
+    """Strut ribs, +y first: ``{name, nodes (chain LE->TE), diameter, le_diameter}``.
 
-
-def _ribs(fem, positions):
-    """Strut ribs as ``(name, chord node chain LE->TE, strut row)``, +y first."""
-    rows = fem["strut_tubes"]["data"]
-    headers = fem["strut_tubes"]["headers"]
-    ribs = [dict(zip(headers, row)) for row in rows]
-    ribs.sort(key=lambda rib: -positions[int(rib["node_indices"][0])][1])
+    ``diameter`` is the strut's mean diameter (its elements' length-weighted
+    mean), ``le_diameter`` the leading edge's at the strut: the station's own
+    ``le_diameter`` column where the file states it, else the mean of the
+    leading-edge tube elements meeting the strut. Both are taken on
+    the structure's own (built) positions: they are properties of the file.
+    """
+    built = structure.positions
+    strut_links = {
+        frozenset(link)
+        for strut in structure.struts
+        for link in zip(strut["nodes"][:-1], strut["nodes"][1:])
+    }
+    leading_edge = [t for t in structure.tubes if frozenset(t["nodes"]) not in strut_links]
+    ribs = []
+    for strut in structure.struts:
+        nodes = [int(n) for n in strut["nodes"]]
+        lengths = np.linalg.norm(np.diff(built[nodes], axis=0), axis=1)
+        meeting = [t["diameter"] for t in leading_edge if nodes[0] in t["nodes"]]
+        if not meeting:
+            raise ValueError(f"no leading-edge tube meets strut {strut['name']!r}")
+        ribs.append(
+            {
+                "name": strut["name"],
+                "nodes": nodes,
+                "diameter": float(np.dot(lengths, strut["diameters"]) / lengths.sum()),
+                "le_diameter": float(
+                    strut["le_diameter"] if strut.get("le_diameter") is not None
+                    else np.mean(meeting)
+                ),
+            }
+        )
+    ribs.sort(key=lambda rib: -positions[rib["nodes"][0]][1])
     return ribs
 
 
@@ -92,15 +119,25 @@ def _chord_fraction(point, le, te):
 class _Bridle:
     """The bridle as a list of elements: lines ``[a, b]`` and pulleys ``[a, sheave, b]``."""
 
-    def __init__(self, fem):
-        lines = {row[0]: row for row in fem["bridle_lines"]["data"]}
-        self.headers = list(fem["bridle_lines"]["headers"])
-        self.elements = []
-        for row in fem["bridle_connections"]["data"]:
-            props = dict(zip(self.headers, lines[row[0]]))
-            self.elements.append(
-                {"name": row[0], "nodes": [int(n) for n in row[1:]], **props}
-            )
+    def __init__(self, structure):
+        bridle = structure.bridle
+        # the PSM ``bridle_lines`` columns; ``w`` (flat-tape width) only when a
+        # line has one
+        self.headers = ["name", "l0", "d", "material", "linktype"]
+        if any(e.get("tape_width") is not None for e in bridle):
+            self.headers.append("w")
+        self.elements = [
+            {
+                "name": e["name"],
+                "nodes": [int(n) for n in e["nodes"]],
+                "l0": float(e["rest_length"]),
+                "d": float(e["diameter"]),
+                "material": e["material"],
+                "linktype": e["linktype"],
+                "w": None if e.get("tape_width") is None else float(e["tape_width"]),
+            }
+            for e in bridle
+        ]
 
     def edges(self):
         for index, element in enumerate(self.elements):
@@ -140,14 +177,16 @@ def _path_to(graph, start, target=0):
     return path[::-1]
 
 
-def reduce_bridle(fem, positions, wing_attachment_rib):
-    """Apply the bridle rules; returns ``(elements, groups)``.
+def reduce_bridle(structure, positions, wing_attachment_rib, kcu=0):
+    """Apply the bridle rules; returns ``(elements, headers, keep)``.
 
     ``wing_attachment_rib`` maps every node a bridle line may attach to on the
-    wing to ``(rib index, x/c)``. ``groups`` maps ``(rib, "front"|"rear")`` to
-    the attachment node the reduced wing keeps for it.
+    wing to ``(rib index, x/c)``. ``elements`` are the reduced bridle elements
+    (PSM ``bridle_lines`` columns ``headers`` plus ``nodes``); ``keep`` maps
+    ``(rib, "front"|"rear")`` to the attachment node the reduced wing keeps
+    for it. ``kcu`` is the KCU's node, where every line path ends.
     """
-    bridle = _Bridle(fem)
+    bridle = _Bridle(structure)
 
     # -- 1. lines into a bare pulley sheave are absorbed into the pulley ----
     for index, element in list(enumerate(bridle.elements)):
@@ -188,13 +227,13 @@ def reduce_bridle(fem, positions, wing_attachment_rib):
 
     # -- 3. collapse each group's fan into one equivalent line --------------
     graph = bridle.adjacency()
-    paths = {key: [_path_to(graph, n) for n in nodes] for key, nodes in groups.items()}
+    paths = {key: [_path_to(graph, n, kcu) for n in nodes] for key, nodes in groups.items()}
     reached = {key: {n for p in ps for n in p} for key, ps in paths.items()}
     removed: set[int] = set()
     added = []
     for key, nodes in groups.items():
         others = set().union(*(r for k, r in reached.items() if k != key))
-        knot = next(n for n in paths[key][0] if n in others or n == 0)
+        knot = next(n for n in paths[key][0] if n in others or n == kcu)
         fan_nodes = set()
         for path in paths[key]:
             fan_nodes.update(path[: path.index(knot)] if knot in path else path)
@@ -225,21 +264,24 @@ def reduce_bridle(fem, positions, wing_attachment_rib):
 
 
 def reduce_fem_geometry(
-    fem: Mapping[str, Any],
+    structure: Any,
     *,
     nodes=None,
     masses=None,
     config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """The wireframe (PSM-format) geometry of a full FEM geometry.
+    """The wireframe (PSM-format) geometry of the full structure.
 
-    ``nodes`` / ``masses``: the full model's node positions and masses as the
-    coupled reader returns them (``coupled.read_struc_geometry_yaml.main``,
-    ids 0..N-1, the YAML's ids first), ideally after Billow's bridle
-    relaxation (``structural_billow.relax_bridle_nodes``) so both models start
-    from one shape. Without ``nodes`` the YAML positions are used; without
-    ``masses`` the wing gets the file's ``mass_without_bridles``. ``config``
-    supplies the ``structural_billow`` material block.
+    ``structure`` is the full model: a ``coupled.awesio_structure.Structure``
+    or anything its ``load_structure`` accepts (a path, an awesIO dict, or --
+    converted with a DeprecationWarning -- a retired-format FEM dict).
+    ``nodes`` / ``masses``: the full model's node positions and masses indexed
+    like the structure's points (``Structure.resolved``), ideally after
+    Billow's bridle relaxation (``structural_billow.relax_bridle_nodes``) so
+    both models start from one shape. Without ``nodes`` the structure's
+    positions are used; without ``masses`` its awesIO masses
+    (``Structure.masses``; the KCU's never enters). ``config`` supplies the
+    ``structural_billow`` material block.
 
     The result reads with ``wireframe.structural_geometry_io.main``: wing nodes
     1..2R (odd = front attachment, even = rear, rib order +y to -y), bridle
@@ -251,30 +293,38 @@ def reduce_fem_geometry(
         resolve_config,
         tube_axial_stiffness,
     )
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
 
     config = dict(config or {})
-    positions = _positions(fem, nodes)
-    ribs = _ribs(fem, positions)
+    structure = load_structure(structure)
+    if structure.is_wireframe:
+        raise ValueError("the structure is already a wireframe (it has no tubes)")
+    kcu = structure.kcu
+    positions = np.array(
+        structure.positions if nodes is None else np.asarray(nodes, dtype=float)[: len(structure.positions)],
+        dtype=float,
+    )
+    ribs = _ribs(structure, positions)
 
     # -- which wing node each bridle attachment belongs to -----------------
     attachment_rib: dict[int, tuple[int, float]] = {}
-    wing_ids = {int(row[0]) for row in fem["wing_particles"]["data"]}
+    wing_ids = set(structure.leading_edge) | set(structure.trailing_edge)
     for r, rib in enumerate(ribs):
-        chain = [int(n) for n in rib["node_indices"]]
+        chain = rib["nodes"]
         le, te = positions[chain[0]], positions[chain[-1]]
         for node in chain:
             attachment_rib[node] = (r, _chord_fraction(positions[node], le, te))
     for node in wing_ids - set(attachment_rib):
         # a wing node off the strut ribs (a leading-edge run node at the tip):
         # the rib nearest in span, on its leading-edge side when it is a LE node
-        r = int(np.argmin([abs(positions[node][1] - positions[int(rib["node_indices"][0])][1])
+        r = int(np.argmin([abs(positions[node][1] - positions[rib["nodes"][0]][1])
                            for rib in ribs]))
-        chain = [int(n) for n in ribs[r]["node_indices"]]
+        chain = ribs[r]["nodes"]
         attachment_rib[node] = (
             r, _chord_fraction(positions[node], positions[chain[0]], positions[chain[-1]])
         )
 
-    elements, headers, keep = reduce_bridle(fem, positions, attachment_rib)
+    elements, headers, keep = reduce_bridle(structure, positions, attachment_rib, kcu)
 
     n_ribs = len(ribs)
     missing = [(r, s) for r in range(n_ribs) for s in ("front", "rear") if (r, s) not in keep]
@@ -282,7 +332,7 @@ def reduce_fem_geometry(
         raise ValueError(f"ribs without a bridle attachment: {missing}")
 
     # -- renumber: KCU 0, wing 1..2R, bridle after ------------------------
-    new_id = {0: 0}
+    new_id = {kcu: 0}
     for r in range(n_ribs):
         new_id[keep[(r, "front")]] = 2 * r + 1
         new_id[keep[(r, "rear")]] = 2 * r + 2
@@ -298,18 +348,15 @@ def reduce_fem_geometry(
     billow = resolve_config(config.get("structural_billow"))
     et = float(billow.get("canopy_stiffness", _DEFAULT_CANOPY_STIFFNESS))
     nu = float(billow.get("canopy_poisson_ratio", _DEFAULT_CANOPY_POISSON))
-    pressure = float(fem.get("pressure", 0.3))
+    pressure = structure.pressure_bar
     front = [keep[(r, "front")] for r in range(n_ribs)]
     rear = [keep[(r, "rear")] for r in range(n_ribs)]
 
     def dist(a, b):
         return float(np.linalg.norm(positions[a] - positions[b]))
 
-    def strut_diameter(rib):
-        return 0.5 * (float(rib["strut_diam_le"]) + float(rib["strut_diam_te"]))
-
-    ea_strut = tube_axial_stiffness([strut_diameter(rib) for rib in ribs], pressure, config)
-    ea_le = tube_axial_stiffness([float(rib["le_diameter"]) for rib in ribs], pressure, config)
+    ea_strut = tube_axial_stiffness([rib["diameter"] for rib in ribs], pressure, config)
+    ea_le = tube_axial_stiffness([rib["le_diameter"] for rib in ribs], pressure, config)
 
     wing_conn, wing_elem = [], []
 
@@ -340,7 +387,9 @@ def reduce_fem_geometry(
         row[headers.index("l0")] = float(element["l0"])
         key = (element["name"], row[headers.index("l0")])
         name = element["name"]
-        if name in seen and seen[name] != key:
+        if name in seen and (
+            seen[name][0] != key[0] or abs(seen[name][1] - key[1]) > _SAME_LENGTH
+        ):
             name = f"{name}_{len(seen)}"
             row[0] = name
         seen.setdefault(name, key)
@@ -350,8 +399,11 @@ def reduce_fem_geometry(
 
     reduced = {
         "bridle_point_node": [float(v) for v in positions[0]],
-        "pulley_mass": fem.get("pulley_mass", 0.0),
-        "dyneema": copy.deepcopy(fem["dyneema"]),
+        "pulley_mass": structure.pulley_mass,
+        **{
+            material: {**structure.materials[material]["parameters"], "damping_per_stiffness": 0.0}
+            for material in sorted({e["material"] for e in elements})
+        },
         "fixed_point_indices": [0],
         "wing_particles": {
             "headers": ["id", "x", "y", "z"],
@@ -374,17 +426,20 @@ def reduce_fem_geometry(
     wing_new = list(range(1, 2 * n_ribs + 1))
     target = np.zeros(len(wing_new))
     bridle_mass = _reduced_bridle_mass(reduced)
-    if masses is not None:
-        full_nodes = np.asarray(nodes if nodes is not None else [positions[i] for i in sorted(positions)])
-        masses = np.asarray(masses, dtype=float)
-        anchors = np.array([positions[old_of[n]] for n in wing_new])
-        for node, mass in enumerate(masses[1:], start=1):  # node 0 is the KCU
-            nearest = int(np.argmin(np.linalg.norm(anchors - full_nodes[node], axis=1)))
-            target[nearest] += mass
-        wing_total = float(masses[1:].sum()) - bridle_mass
-    else:
-        wing_total = float(fem.get("mass_without_bridles", 0.0))
-        target[:] = 1.0
+    masses = structure.masses() if masses is None else np.asarray(masses, dtype=float)
+    masses = masses[: len(positions)]
+    anchors = np.array([positions[old_of[n]] for n in wing_new])
+    for node, mass in enumerate(masses):
+        if node == kcu:  # the KCU's mass stays on the KCU
+            continue
+        # split evenly over equidistant anchors: a node on the centreline (a
+        # knot of the centre bridle) is as near to a rib as to its mirror, and
+        # argmin alone put it all on one side (an 83 g left/right imbalance on
+        # the LEI-V3 tip trailing edges until 2026-10-29)
+        distance = np.linalg.norm(anchors - positions[node], axis=1)
+        nearest = np.flatnonzero(distance <= distance.min() + 1e-9)
+        target[nearest] += mass / len(nearest)
+    wing_total = float(masses.sum() - masses[kcu]) - bridle_mass
     target *= wing_total / target.sum()
     incidence = np.zeros((len(wing_new), len(wing_elem)))
     for e, (_, ci, cj) in enumerate(wing_conn):
@@ -394,7 +449,8 @@ def reduce_fem_geometry(
     for row, m in zip(wing_elem, element_mass):
         row[4] = float(m)
     reduced["reduction"] = {
-        "source": "struc_geometry_FEM_full (wireframe.reduce_fem)",
+        "source": f"{structure.document['metadata'].get('name', '')} awesIO structure "
+        "(wireframe.reduce_fem)",
         "wing_mass": float(element_mass.sum()),
         "bridle_mass": bridle_mass,
         "original_node_ids": {int(n): int(o) for n, o in old_of.items()},

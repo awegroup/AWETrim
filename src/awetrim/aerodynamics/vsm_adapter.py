@@ -42,7 +42,10 @@ class VSMAeroModelAdapter:
     ----------
     config_folder:
         Path to the kite data folder containing ``system.yaml``,
-        ``aero_geometry.yaml``, and optionally ``struc_geometry.yaml``.
+        ``aero_geometry.yaml``, and optionally a structural geometry
+        (``awetrim.aerostructural.case.find_struc_geometry``: the kite's
+        awesIO ``structure.yml``, or a results folder's deformed snapshot) for
+        the bridle.
     n_panels:
         Number of VSM panels per half-span.
     center_of_gravity:
@@ -86,7 +89,9 @@ class VSMAeroModelAdapter:
         self.spanwise_panel_distribution = spanwise_panel_distribution
 
         self.aero_geometry_path = self.config_folder / "aero_geometry.yaml"
-        self.struc_geometry_path = self.config_folder / "struc_geometry.yaml"
+        from awetrim.aerostructural.case import find_struc_geometry
+
+        self.struc_geometry_path = find_struc_geometry(self.config_folder)
 
         # Read mass from system.yaml via factory
         from awetrim.system.factory import create_system_model_from_yaml
@@ -193,6 +198,8 @@ class VSMAeroModelAdapter:
         """Instantiate a VSM ``BodyAerodynamics`` from ``aero_geometry.yaml``."""
         from VSM.core.BodyAerodynamics import BodyAerodynamics
 
+        from awetrim.aerodynamics.vsm_settings import vsm_body_kwargs
+
         with open(self.aero_geometry_path, "r", encoding="utf-8") as f:
             body_config = yaml.safe_load(f)
 
@@ -205,30 +212,22 @@ class VSMAeroModelAdapter:
             tmp_path = tmp.name
 
         try:
-            bridle = (
-                str(self.struc_geometry_path)
-                if self.struc_geometry_path.exists()
-                else None
-            )
             body = BodyAerodynamics.instantiate(
                 n_panels=self.n_panels,
                 file_path=tmp_path,
                 spanwise_panel_distribution=self.spanwise_panel_distribution,
-                bridle_path=bridle,
+                **vsm_body_kwargs(),
             )
         finally:
             Path(tmp_path).unlink(missing_ok=True)
 
-        # Flat tapes (steering/depower) are stored as an area-equivalent
-        # circle, which says nothing about their drag -- substitute the
+        # The bridle comes from the awesIO structure (VSM's own bridle_path
+        # parse reads only the retired format), with the flat tapes'
         # drag-equivalent diameters (awetrim.aerodynamics.line_drag).
-        if bridle is not None:
-            from awetrim.aerodynamics.line_drag import (
-                apply_bridle_drag_diameters,
-            )
+        if self.struc_geometry_path is not None:
+            from awetrim.aerodynamics.line_drag import attach_bridle_lines
 
-            with open(bridle, "r", encoding="utf-8") as f:
-                apply_bridle_drag_diameters(body, yaml.safe_load(f))
+            attach_bridle_lines(body, self.struc_geometry_path)
 
         return body
 

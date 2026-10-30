@@ -118,9 +118,10 @@ def relative_flow(v_rel, x_airf, y_airf, z_airf, xp=np):
     return alpha, umag
 
 
-def circulation_target(umag, umagw, cl, chord):
-    """VSM's fixed-point target ``0.5 (umag^2 / umagw) cl chord``."""
-    return 0.5 * (umag**2 / umagw) * cl * chord
+def circulation_target(umag, cl, chord):
+    """VSM's fixed-point target ``0.5 umag cl chord`` (Gaunaa, Li & Pirrung
+    2026, Eq. 4: the circulation from the section's own inner speed)."""
+    return 0.5 * umag * cl * chord
 
 
 def panel_forces(
@@ -143,14 +144,18 @@ def panel_forces(
     ``compute_results`` with ``is_aoa_corrected=False`` and no viscous drag
     correction: the 2-D lift ``cl q c`` acts normal to the section's own
     relative-flow direction ``cos(alpha) y_airf + sin(alpha) x_airf`` (in the
-    plane normal to ``z_airf``), the 2-D drag ``cd q c`` along
-    ``spanwise x lift_direction``, both scaled by the panel width; the 2-D
-    moment ``cm q c^2`` is a vector along ``z_airf`` times the width.
-    ``q = 0.5 rho umag^2`` with the SECTION speed, not the freestream.
+    plane normal to ``z_airf``), the 2-D drag ``cd q c`` ALONG that direction
+    (the local inner flow, not the global span axis), both scaled by the
+    panel width; the 2-D moment ``cm q c^2`` is a vector along ``z_airf``
+    times the width. ``q = 0.5 rho umag^2`` with the SECTION speed, not the
+    freestream. ``spanwise_direction`` is no longer used by the force law and
+    is kept for the call signature.
+
+    The attached-trailed vortex force is NOT included here; see
+    :func:`attached_trailed_forces`.
 
     Returns ``(force (n, 3), moment_local (n, 3))``.
     """
-    n = x_airf.shape[0]
     q_chord = 0.5 * rho * umag**2 * chord
     lift = cl * q_chord
     drag = cd * q_chord
@@ -159,13 +164,67 @@ def panel_forces(
     dir_flow = scale_rows(xp.cos(alpha), y_airf, xp) + scale_rows(xp.sin(alpha), x_airf, xp)
     dir_flow = unit_rows(dir_flow, xp)
     dir_lift = unit_rows(cross_rows(dir_flow, z_airf, xp), xp)
-    span = tile_vector(spanwise_direction, n, xp)
-    dir_drag = unit_rows(cross_rows(span, dir_lift, xp), xp)
 
-    force_2d = scale_rows(lift, dir_lift, xp) + scale_rows(drag, dir_drag, xp)
+    force_2d = scale_rows(lift, dir_lift, xp) + scale_rows(drag, dir_flow, xp)
     force = scale_rows(width, force_2d, xp)
     moment_local = scale_rows(moment * width, z_airf, xp)
     return force, moment_local
+
+
+# ---------------------------------------------------- attached trailed vortices
+def attached_trailed_geometry(bound_point_1, bound_point_2, te_point_1, te_point_2,
+                              aerodynamic_center_location: float, control_point_location: float):
+    """Legs and force points of the attached trailed (AT) vortex segments,
+    VSM ``BodyAerodynamics.compute_attached_trailed_vortex_forces``.
+
+    Boundary ``j = 0..n`` between panels carries one chordwise leg from the
+    bound vortex to the trailing edge; its force acts at the section's
+    control-point station on that leg. Numeric (geometry), ``(n+1, 3)`` each.
+    """
+    bound = np.vstack([np.asarray(bound_point_1, dtype=float), np.asarray(bound_point_2, dtype=float)[-1:]])
+    te = np.vstack([np.asarray(te_point_1, dtype=float), np.asarray(te_point_2, dtype=float)[-1:]])
+    legs = te - bound
+    t = (control_point_location - aerodynamic_center_location) / (1.0 - aerodynamic_center_location)
+    return bound + t * legs, legs
+
+
+def boundary_shares(n: int) -> np.ndarray:
+    """``(n, n+1)`` map from boundary loads to panel loads, VSM's split: each
+    inner boundary half to either neighbour, the tip boundaries whole."""
+    shares = np.zeros((n, n + 1))
+    for j in range(n + 1):
+        if j == 0:
+            shares[0, 0] = 1.0
+        elif j == n:
+            shares[n - 1, n] = 1.0
+        else:
+            shares[j - 1, j] = shares[j, j] = 0.5
+    return shares
+
+
+def attached_trailed_forces(gamma, va_panels, v_induced, legs, rho: float, xp=np):
+    """Kutta-Joukowski force on the AT legs (Gaunaa, Li & Pirrung 2026, Sec. 3),
+    VSM ``compute_attached_trailed_vortex_forces``:
+    ``rho (gamma_j - gamma_{j-1}) (v_rel_j x l_j)``, ``gamma_{-1} = gamma_n = 0``,
+    with ``v_rel_j`` the mean of the neighbouring panels' inflow plus
+    ``v_induced`` (the full vortex system's induction at the AT points,
+    ``(n+1, 3)``). Returns ``(n+1, 3)``.
+    """
+    n = va_panels.shape[0]
+    to_boundary = np.zeros((n + 1, n))  # gamma_net = D gamma
+    to_boundary[np.arange(n), np.arange(n)] += 1.0
+    to_boundary[np.arange(1, n + 1), np.arange(n)] -= 1.0
+    mean = np.abs(to_boundary) * np.where(
+        (np.arange(n + 1) > 0) & (np.arange(n + 1) < n), 0.5, 1.0
+    )[:, None]
+    if _is_casadi(xp):
+        gamma_net = xp.mtimes(xp.DM(to_boundary), gamma)
+        va_boundary = xp.mtimes(xp.DM(mean), va_panels)
+    else:
+        gamma_net = to_boundary @ np.asarray(gamma, dtype=float).ravel()
+        va_boundary = mean @ va_panels
+    legs = xp.DM(legs) if _is_casadi(xp) and isinstance(legs, np.ndarray) else legs
+    return scale_rows(rho * gamma_net, cross_rows(va_boundary + v_induced, legs, xp), xp)
 
 
 def total_force_and_moment(force, moment_local, arm, xp=np):

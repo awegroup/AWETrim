@@ -61,6 +61,26 @@ LOG_BASED_MODELS = ("logarithmic", "explog", "jet")
 ALL_MODELS = ANALYTIC_MODELS + ("tabulated",)
 
 
+#: Density scale height [m] of the isothermal atmosphere (AtmosphericModels.jl).
+SCALE_HEIGHT_AIR = 8550.0
+
+
+def air_density(
+    z: Any,
+    rho_zero: Any,
+    height_gnd: Any = 0.0,
+    scale_height: Any = SCALE_HEIGHT_AIR,
+    xp: Any = np,
+) -> Any:
+    """Exponential density ``rho_zero * exp(-(z + height_gnd)/scale_height)``.
+
+    ``z`` is the height above ground, ``height_gnd`` the ground altitude above
+    sea level and ``rho_zero`` the sea-level density (AtmosphericModels.jl
+    ``calc_rho``).
+    """
+    return rho_zero * xp.exp(-(z + height_gnd) / scale_height)
+
+
 def log_law(z: Any, u_ref: Any, z_ref: Any, z0: Any, xp: Any = np) -> Any:
     """Logarithmic profile ``u_ref * ln(z/z0) / ln(z_ref/z0)``."""
     return u_ref * xp.log(z / z0) / xp.log(z_ref / z0)

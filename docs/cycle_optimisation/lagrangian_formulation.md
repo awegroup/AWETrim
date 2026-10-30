@@ -8,7 +8,7 @@ deriving the same model from a Lagrangian make the trajectory NLP cheaper?
 **Answer.** No. The Lagrangian derivation yields the same three equations,
 the inertia terms are 0.3 % of each node function, and function evaluations
 are a quarter of IPOPT's wall time. The numbers below come from
-`scripts/reduced-order-model/optimization/studies/compare_lagrangian_residual.py`
+`compare_lagrangian_residual.py` (available on request)
 (LEI-V3, periodic B-spline reel-out, M = 10, flight-corrected aerostructural
 ROM). A typeset twin is `lagrangian_formulation.pdf` (rebuild with
 `latexmk -pdf lagrangian_formulation.tex` in this folder).
@@ -138,5 +138,5 @@ and `--exact-hessian` of the script below.
 Reproduce with
 
 ```
-python scripts/reduced-order-model/optimization/studies/compare_lagrangian_residual.py --nlp
+python compare_lagrangian_residual.py --nlp   (available on request)
 ```
