@@ -1048,6 +1048,9 @@ def main(
     gamma_seed_prev = results_aero.get("gamma_distribution", gamma_seed_prev)
     roll, pitch, yaw = results_aero["opt_x"][1:4]
     struc_nodes = rotate_geometry(struc_nodes, angle_deg=[roll, pitch, yaw])
+    # As in coupled_solver: positions[0] is the geometry BEFORE this rotation,
+    # so composing trim_state rows 0..n recovers the kite's attitude.
+    tracking_data["trim_state"][0] = np.ravel(results_aero["opt_x"])[:5]
     if outer_acceleration == "anderson":
         _rotate_anderson_history(roll, pitch, yaw)
     ### AERO --> STRUC (and the moment-preservation check, pre-loop)
@@ -1578,6 +1581,7 @@ def main(
                 struc_nodes,
                 f_ext_flat,
                 f_residual,
+                trim_state=results_aero["opt_x"],
             )
             tracking.update_aero_tracking(
                 tracking_data,

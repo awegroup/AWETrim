@@ -117,7 +117,11 @@ src/awetrim/aerostructural/
                                    one table over both drivers' meta layouts,
                                    lift/drag from trim_results'
                                    total_aero_force_vec, CL/CD only with their
-                                   area)
+                                   area; roll/pitch/yaw are the ATTITUDE vs
+                                   the built shape, attitude_deg off the
+                                   positions (rigid_rotation, Kabsch), not the
+                                   trim's opt_x, which is the last
+                                   per-iteration increment)
   tracking.py                      setup_tracking_arrays, update_tracking_arrays
   utils.py                         rotate_geometry, calculate_cg, calculate_inertia, load_yaml,
                                    resolve_kcu_mass (system.yaml, then config
@@ -914,7 +918,12 @@ rest lengths through `_rest_length` / `_set_rest_length`, the one getter/setter
 pair for all three backends. Tracking gains `steering_half_difference` and
 `trim_state` (the trim's `[kite_speed, roll, pitch, yaw, course_rate]` per
 iteration; the attitude entries are INCREMENTS the geometry is rotated by, so
-read the kite's attitude off the positions, not the last row). Script:
+read the kite's attitude off the positions, not the last row:
+`case_view.attitude_deg`, which the trim table uses since 2026-10-30; before,
+the table printed the last row as "Roll/Pitch/Yaw (trim rotation)", ~0 at
+convergence). The wireframe solver (`coupled_solver_qsm`) records
+`trim_state` too since 2026-10-30 (row 0 = the pre-loop trim); earlier
+wireframe files hold NaN there. Script:
 `run_steering_BILLOW.py` (available on request).
 
 A gravity-only load case is NOT a valid smoke test: the KCU is pinned below the
