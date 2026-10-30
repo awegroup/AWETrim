@@ -162,8 +162,9 @@ def to_awesio(
     Args:
         struc_geometry: A loaded file in the retired ``struc_geometry_FEM_full`` format (not modified).
         kcu_mass: Extra mass on the KCU point [kg]. ``system.yaml`` is its
-            single source (``utils.system_config.get_kcu_mass``); 0 leaves it
-            out of the document.
+            single source (``utils.system_config.get_kcu_mass``); keep the
+            default 0, AWETrim's readers refuse a KCU in the document
+            (:func:`kcu_point`).
         strut_padding: The reader's strut padding, which fixes the mesh.
         height_kcu: Height of the KCU above the tether exit point [m]. The
             schema places the kite straight above it, so positions are the
@@ -388,6 +389,25 @@ def to_awesio(
     return document
 
 
+def kcu_point(document: dict) -> str:
+    """The name of the point the readers add the KCU mass at.
+
+    ``system.yaml`` is the KCU mass's single source (control unit plus its
+    turbine, ``utils.system_config.get_kcu_mass``), so a structure carries
+    none: an ``extra_mass`` on this point would be a second KCU, which every
+    reader would then add on top of ``system.yaml``'s. It raises instead.
+    """
+    name = (document.get("awetrim") or {}).get("kcu_point", "0")
+    point = next(p for p in _rows(document["points"]) if p["name"] == name)
+    if float(point.get("extra_mass") or 0.0) != 0.0:
+        raise ValueError(
+            f"structure point {name!r} (the KCU) carries extra_mass "
+            f"{float(point['extra_mass'])} kg: the KCU mass belongs in system.yaml "
+            "(control_system), the structure is the kite without it"
+        )
+    return name
+
+
 def nodal_masses(document: dict) -> np.ndarray:
     """Mass of every point, by awesIO's rule, in ``points`` row order [kg].
 
@@ -455,7 +475,7 @@ def from_awesio(document: dict, kcu_mass: float = 0.0) -> tuple:
         raise ValueError("only a wing at the schema's zenith pose (Q_KA2ENU = 1) is read")
     m_arr = nodal_masses(document)
     # system.yaml is the KCU mass's single source; the document carries none.
-    m_arr[index[(document.get("awetrim") or {}).get("kcu_point", "0")]] += float(kcu_mass)
+    m_arr[index[kcu_point(document)]] += float(kcu_mass)
     point_on = {p["body"]: index[p["name"]] for p in points if p["body"] is not None}
 
     materials = {m["name"]: m for m in _rows(document.get("materials"))}
@@ -652,7 +672,7 @@ class Structure:
         self.positions = np.array([p["pos_ENU"] for p in points], dtype=float) - self.origin
         self.fixed = [i for i, p in enumerate(points) if p["fixed"]]
         tool = document.get("awetrim") or {}
-        self.kcu = self.index[tool.get("kcu_point", "0")]
+        self.kcu = self.index[kcu_point(document)]
         self.pulley_mass = float(tool.get("pulley_mass", 0.0))
         self.materials = {m["name"]: m for m in _rows(document.get("materials"))}
         self.stations = [

@@ -31,9 +31,7 @@ def reader(fem_full_geometry):
 @pytest.fixture(scope="module")
 def written(fem_full_geometry, tmp_path_factory):
     """The document as a reader sees it: written to YAML and loaded back."""
-    document = awesio_structure.to_awesio(
-        fem_full_geometry, kcu_mass=KCU_MASS, height_kcu=200.0, name="LEI-V3"
-    )
+    document = awesio_structure.to_awesio(fem_full_geometry, height_kcu=200.0, name="LEI-V3")
     path = tmp_path_factory.mktemp("awesio") / "structure.yml"
     awesio_structure.write_awesio(document, path)
     return path, yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -69,7 +67,7 @@ def test_the_written_sha_hashes_the_written_connectivity(written):
 
 
 def test_the_round_trip_rebuilds_the_readers_model(reader, written):
-    rebuilt = awesio_structure.from_awesio(written[1])
+    rebuilt = awesio_structure.from_awesio(written[1], kcu_mass=KCU_MASS)
 
     np.testing.assert_allclose(rebuilt[0], np.asarray(reader[0]), atol=1e-12)
     for k in (2, 3, 4, 5, 6, 7, 8, 10, 11, 17):
@@ -87,10 +85,20 @@ def test_the_round_trip_rebuilds_the_readers_model(reader, written):
 def test_the_mass_total_is_the_readers(reader, written):
     masses = awesio_structure.nodal_masses(written[1])
     # The reader weighs a line at its rest length BEFORE the strut projection.
-    assert masses.sum() == pytest.approx(np.sum(reader[1]), rel=1e-9)
+    # The reader's total holds the KCU; the document carries none (system.yaml's).
+    assert masses.sum() + KCU_MASS == pytest.approx(np.sum(reader[1]), rel=1e-9)
     assert masses.min() >= 0.0
-    # The KCU node also carries half of each tape ending on it.
-    assert written[1]["points"]["data"][0][4] == pytest.approx(KCU_MASS)
+    assert written[1]["points"]["data"][0][4] == 0.0
+
+
+def test_a_kcu_in_the_structure_is_refused(fem_full_geometry):
+    """system.yaml is the KCU mass's single source: a KCU written into the
+    structure would be added twice, so every reader refuses it."""
+    document = awesio_structure.to_awesio(fem_full_geometry, kcu_mass=KCU_MASS, name="LEI-V3")
+    with pytest.raises(ValueError, match="belongs in system.yaml"):
+        awesio_structure.Structure(document)
+    with pytest.raises(ValueError, match="belongs in system.yaml"):
+        awesio_structure.from_awesio(document, kcu_mass=KCU_MASS)
 
 
 def test_flat_tapes_keep_their_drag_width(fem_full_geometry, written):

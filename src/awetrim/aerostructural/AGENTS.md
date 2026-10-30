@@ -204,7 +204,12 @@ src/awetrim/aerostructural/
                                    linktype, tape_width; tool block awetrim
                                    (kcu_point). Masses follow awesIO, not the
                                    reader: same total, nodes differ by <= 58 g,
-                                   CG 6.5 mm on the LEI-V3.
+                                   CG 6.5 mm on the LEI-V3. kcu_point(document)
+                                   resolves that point for Structure and
+                                   from_awesio and RAISES when it carries an
+                                   extra_mass: the KCU mass is system.yaml's
+                                   (get_kcu_mass), the readers add it there, so
+                                   one in the structure would count twice.
 
   # -- Wireframe fidelity ----------------------------------------------------
   wireframe/                       (was pss/ until 2026-09-12)
