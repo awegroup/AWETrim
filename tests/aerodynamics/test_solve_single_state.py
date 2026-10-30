@@ -8,6 +8,7 @@ Tests the orchestration of VSM aerodynamic trim solving, including:
 - Plot generation without errors
 """
 
+import argparse
 import json
 import sys
 import tempfile
@@ -24,11 +25,13 @@ if str(SCRIPTS_AERODYNAMICS_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPTS_AERODYNAMICS_DIR))
 
 from common import (
+    add_common_arguments,
     build_body,
     build_system_model,
     output_dir,
     parsed_common,
     print_trim_summary,
+    resolve_center_of_gravity,
     write_json,
     csv_vector,
 )
@@ -101,6 +104,22 @@ class TestCommonHelpers:
         assert "x_guess" in result
         assert "bounds_lower" in result
         assert "bounds_upper" in result
+
+    def test_center_of_gravity_defaults_to_kite_cg(self):
+        """Without --center-of-gravity the trim uses build_body's CG."""
+        parser = argparse.ArgumentParser()
+        add_common_arguments(parser)
+        values = parsed_common(parser.parse_args([]))
+        assert values["center_of_gravity"] is None
+        props = {"center_of_mass": [-0.05, 0.0, 5.9]}
+        assert np.allclose(resolve_center_of_gravity(values, props), [-0.05, 0.0, 5.9])
+
+    def test_center_of_gravity_flag_overrides_kite_cg(self):
+        parser = argparse.ArgumentParser()
+        add_common_arguments(parser)
+        values = parsed_common(parser.parse_args(["--center-of-gravity=0.5,0,5"]))
+        props = {"center_of_mass": [-0.05, 0.0, 5.9]}
+        assert np.allclose(resolve_center_of_gravity(values, props), [0.5, 0.0, 5.0])
 
     def test_parsed_common_correct_shapes(self):
         """parsed_common returns arrays with correct shapes."""

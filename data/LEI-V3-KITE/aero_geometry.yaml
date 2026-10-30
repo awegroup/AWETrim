@@ -369,7 +369,8 @@ wing_airfoils:
   #           Average wind tunnel: 9   (standard "e^9 method")
   #           Dirty wind tunnel:   4–8
   #   - polars:
-  #       csv_file_path: Path to polar CSV file (columns: alpha [rad], cl, cd, cm)
+  #       csv_file_path: Path to polar CSV file (columns: alpha, cl, cd, cm; alpha in deg or rad:
+  #         VSM reads it as deg when max|alpha| > 2 pi, so a deg table must reach beyond 6.3 deg)
   #   - masure_regression:
   #       t, eta, kappa, delta, lambda, phi: Regression parameters
   #   - inviscid:

@@ -51,6 +51,7 @@ from common import (
     output_dir,
     parsed_common,
     print_trim_summary,
+    resolve_center_of_gravity,
     save_figure,
     write_json,
     DEFAULT_OUTPUT_ROOT,
@@ -385,10 +386,6 @@ def main() -> None:
     # Load body and properties from config folder
     body, props = build_body(args)
 
-    mass_wing = (
-        args.mass_wing if args.mass_wing is not None else props.get("mass", 30.0)
-    )
-
     # Inertia: full CG tensor from system.yaml unless explicitly overridden.
     # --inertia-xx/yy/zz replace individual diagonal entries; the products of
     # inertia (off-diagonals, geometry basis) are kept and passed through.
@@ -406,7 +403,7 @@ def main() -> None:
             inertia_cg[_i, _i] = float(_diag_override)
     inertia_xx, inertia_yy, inertia_zz = (float(v) for v in np.diag(inertia_cg))
 
-    center_of_gravity = values["center_of_gravity"]
+    center_of_gravity = resolve_center_of_gravity(values, props)
     trim_axes = DEFAULT_AXES
     rigid_body = None  # RigidBodyAxes result when --rigid-body-result is given
     deformed_aero_path: Path | None = None  # set below when deformed geometry is found
@@ -492,7 +489,11 @@ def main() -> None:
     print("  trim axes:          course")
     print("  linearisation axes: course (always)")
 
-    system_model = build_system_model(args, mass_wing=mass_wing)
+    # Wing mass from system.yaml (or --mass-wing), as in solve_single_state.
+    # Not props["mass"]: that structure aggregate already holds the KCU, which
+    # the system model adds again.
+    system_model = build_system_model(args)
+    mass_wing = float(system_model.kite.mass_wing)
     # Linearisation mass must be the mass the trim balanced: wing + KCU (the
     # system.yaml KCU mass joins mass_wing inside the system model). Passing
     # mass_wing alone leaves the KCU weight/inertial force out of the

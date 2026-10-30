@@ -49,7 +49,7 @@ output file. EKF-AWE ships the raw LEI-V3 flight logs; run it on the
 ## Conventions
 
 - Everything about a kite comes from the YAML files in `data/<kite>/`
-  (`system.yaml`, `aero_geometry.yaml`, `struc_geometry_FEM_full.yaml`,
+  (`system.yaml`, `aero_geometry.yaml`, `structure.yml`,
   `as_config.yaml`, `identification.yaml`, the ROM files, `cycle_profile.yaml`,
   `cycle_configs/`).
   `system.yaml` selects which ROM file the trajectory steps use.
