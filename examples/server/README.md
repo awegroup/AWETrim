@@ -447,6 +447,38 @@ Plus `spline` (the B-spline coefficients defining the same curve continuously),
 (or on azimuth/elevation), **not** on `t` — `t` restarts at zero and the pattern
 is periodic in `s`.
 
+## Lift and drag at one state (`POST /aero_forces`)
+
+To compare another kite model with the ROM, `POST /aero_forces` returns the ROM's
+lift and drag at one power-tape length and apparent wind speed. It is stateless:
+no `/init` needed, and it answers while a solve runs.
+
+```json
+{"input_depower": 1.76, "speed_apparent_wind": 15.3}
+```
+
+| field | unit | meaning |
+|---|---|---|
+| `input_depower` | m | power-tape length l_dp (u_p) |
+| `speed_apparent_wind` | m/s | apparent wind speed v_a |
+| `angle_of_attack` | **deg** | optional; omitted = the ROM's gravity-free trim |
+| `input_steering`, `rho` | –, kg/m³ | optional; default 0 and the kite's density |
+| `system_config_path`, `rom_config_path` | | optional, resolved as in `/init` |
+
+Without `angle_of_attack` the wing angle comes from the ROM's own trim with no
+weight and no inertia: the bridle resultant balances the wing force, so
+`alpha = atan2(C_D, C_L) - theta_b(u_p)`. That is the centre-window state the
+LEI-V3 ROMs were identified on; a kite carrying its weight flies at another
+angle, so pass that angle to compare at the same state.
+
+The reply has `lift`/`drag` [N] (the wing's, bridle lines included; lift
+perpendicular to v_a, drag along it), `lift_kcu`/`drag_kcu` (the KCU, added
+when the ROM keeps it out of C_D), `lift_total`/`drag_total`, the coefficients,
+`angle_of_attack`, `angle_pitch_bridle` and `angle_pitch_tether` [deg], the ROM
+file in use, its validity bands and `within_validity`. The default
+flight-corrected LEI-V3 ROM is valid from 1.628 m of tape only;
+`"rom_config_path": "rom_config_aerostructural.yaml"` reaches down to 1.33 m.
+
 ## Ready-made clients
 
 - **Python**: [`client_example.py`](client_example.py) — the shared structs
@@ -468,6 +500,7 @@ is periodic in `s`.
 | `/step` while a solve is running | `409` — wait for `/status` to finish |
 | `/step` before `/init` | `409` |
 | `/trajectory` before any success | `404` |
+| `/aero_forces` without a trim below the stall, or a missing file | `400` |
 | solve failed | `/status` → `"state": "failed"` + `last_error`; previous trajectory still served |
 
 ## Low-level API

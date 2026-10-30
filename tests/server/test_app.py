@@ -450,6 +450,56 @@ def test_pattern_limits_round_trip_through_init_and_step(client):
     ).status_code == 422
 
 
+def test_aero_forces_on_the_lei_v3_rom():
+    """/aero_forces is stateless: no /init, the real LEI-V3 system and ROM."""
+    client = TestClient(create_app())
+    reply = client.post(
+        "/aero_forces",
+        json={"input_depower": 1.58, "speed_apparent_wind": 15.3},
+    )
+    assert reply.status_code == 200, reply.text
+    body = reply.json()
+    assert body["trimmed"]
+    assert body["lift"] > body["drag"] > 0.0
+    assert body["within_validity"]
+    assert body["rom_config"].endswith("rom_config_aerostructural.yaml")
+
+    # below the default ROM's depower band, still trimmed but flagged
+    low = client.post(
+        "/aero_forces",
+        json={"input_depower": 1.25, "speed_apparent_wind": 15.3},
+    ).json()
+    assert low["input_depower_validity"][0] > 1.25
+    assert not low["within_validity"]
+
+    fixed = client.post(
+        "/aero_forces",
+        json={
+            "input_depower": 1.58,
+            "speed_apparent_wind": 15.3,
+            "angle_of_attack": body["angle_of_attack"],
+            "rom_config_path": "rom_config_aerostructural2.yaml",
+        },
+    ).json()
+    assert not fixed["trimmed"]
+    assert fixed["angle_of_attack"] == pytest.approx(body["angle_of_attack"])
+    assert fixed["within_validity"]
+    assert fixed["rom_config"].endswith("rom_config_aerostructural2.yaml")
+
+
+def test_aero_forces_rejects_a_missing_rom():
+    client = TestClient(create_app())
+    reply = client.post(
+        "/aero_forces",
+        json={
+            "input_depower": 1.6,
+            "speed_apparent_wind": 10.0,
+            "rom_config_path": "no_such_rom.yaml",
+        },
+    )
+    assert reply.status_code == 400
+
+
 def test_angle_of_attack_limits_round_trip_through_init_and_step(client):
     payload = dict(client.init_payload)
     payload["angle_of_attack_limits"] = {"min": -3.0}

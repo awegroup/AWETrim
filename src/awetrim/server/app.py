@@ -26,6 +26,8 @@ Endpoints (see ``schemas.py`` for units and reference-frame conventions):
 - ``GET /status`` — session state machine + last solve metrics.
 - ``GET /trajectory`` — dense guidance table from the last successful solve
   (kept available while a new solve runs and after a failed one).
+- ``POST /aero_forces`` — the ROM's lift and drag at one power tape and
+  apparent wind speed (stateless, independent of the session).
 - ``POST /reset``, ``GET /health``.
 
 Run with a single worker process — the session lives in process memory.
@@ -36,7 +38,10 @@ from typing import Callable, Union
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse
 
+from awetrim.server.aero_forces import evaluate_aero_forces
 from awetrim.server.schemas import (
+    AeroForcesReply,
+    AeroForcesRequest,
     InitReply,
     InitRequest,
     StatusResponse,
@@ -159,6 +164,16 @@ def create_app(
                 status_code=500, detail=f"re-simulation failed: {exc}"
             )
         return TrajectoryResponse(**payload)
+
+    @app.post("/aero_forces", response_model=AeroForcesReply)
+    def aero_forces(request: AeroForcesRequest) -> AeroForcesReply:
+        """Lift and drag of the ROM at a power-tape length and apparent wind
+        speed; without an angle of attack at the ROM's gravity-free trim.
+        Does not touch the optimization session."""
+        try:
+            return AeroForcesReply(**evaluate_aero_forces(request.model_dump()))
+        except (FileNotFoundError, ValueError, KeyError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
 
     @app.post("/reset", response_model=StatusResponse)
     def reset() -> StatusResponse:

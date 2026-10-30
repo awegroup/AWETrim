@@ -16,6 +16,11 @@ src/awetrim/
   system/            ✅  Wing, Kite, SystemModel, Winch, Tether variants
                          (rigid/flexible link, rigid/flexible lumped,
                           Williams discretised distributed-mass)
+                         + rom_forces.py: ROM lift/drag at one (u_p, v_a),
+                         at a given alpha or the gravity-free trim
+                         (served by /aero_forces);
+                         Wing.aerodynamic_force_coefficients_at is the one
+                         place the ROM coefficient terms are evaluated
   aerodynamics/      ✅  VSM quasi-steady trim + KCU bluff-body drag
                          (kcu_drag.py, single-sourced, on by default in the
                           aerostructural path via is_with_kcu_drag)
@@ -142,7 +147,8 @@ src/awetrim/
                          per node (air_density_at_height)
   server/            ✅  REST API for reelout trajectory optimization
                          (FastAPI, optional [server] extra; endpoints
-                         /init /status /step /trajectory /reset; one
+                         /init /status /step /trajectory /reset, plus the
+                         stateless /aero_forces (aero_forces.py); one
                          warm-started re-solve per /step for co-simulation
                          clients, e.g. an external kite simulator).
                          Co-sim structs: WinchParams {mode, k_v, f_min,
