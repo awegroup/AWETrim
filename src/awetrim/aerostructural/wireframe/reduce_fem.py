@@ -273,8 +273,7 @@ def reduce_fem_geometry(
     """The wireframe (PSM-format) geometry of the full structure.
 
     ``structure`` is the full model: a ``coupled.awesio_structure.Structure``
-    or anything its ``load_structure`` accepts (a path, an awesIO dict, or --
-    converted with a DeprecationWarning -- a retired-format FEM dict).
+    or anything its ``load_structure`` accepts (a path or an awesIO dict).
     ``nodes`` / ``masses``: the full model's node positions and masses indexed
     like the structure's points (``Structure.resolved``), ideally after
     Billow's bridle relaxation (``structural_billow.relax_bridle_nodes``) so

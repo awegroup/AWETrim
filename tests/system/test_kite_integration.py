@@ -85,7 +85,7 @@ def simple_kite():
             "CD0": 0.05,
             "aspect_ratio": 10,
             "oswald_efficiency": 1,
-            "angle_pitch_depower_0": 0,
+            "angle_pitch_tether_0": 0,
         },
     }
     return Kite(
@@ -225,14 +225,13 @@ class TestControlSurfaceEffects:
         assert params["CD_us"] == 0.02
 
     def test_steering_control_asymmetric_vs_roll(self):
-        """Asymmetric vs roll steering control affects k_steering."""
+        """Asymmetric vs roll steering control sets the roll gain."""
         aero_input = {
             "model": "coeffs",
-            "params": {"CD0": 0.05, "CL0": 0.1},
+            "params": {"CD0": 0.05, "CL0": 0.1, "gain_roll_steering": -0.05},
             "coefficients": {
                 "CL": [{"var": "alpha", "power": 1, "coef": 0.1}],
                 "CD": [{"var": "u_s", "power": 1, "coef": 0.02}],
-                "CS": [{"var": "u_s", "power": 1, "coef": 0.05}],
             },
         }
 
@@ -249,10 +248,9 @@ class TestControlSurfaceEffects:
             steering_control="roll",
         )
 
-        # Asymmetric should have negative k_steering (from CS term)
-        # Roll should have k_steering = 1.0
-        assert kite_asym.k_steering != 1.0 or kite_asym.k_steering is not None
-        assert kite_roll.k_steering == 1.0
+        # Asymmetric takes the ROM's gain; roll takes u_s as the roll angle.
+        assert kite_asym.gain_roll_steering == pytest.approx(-0.05)
+        assert kite_roll.gain_roll_steering == 1.0
 
 
 # ============================================================================

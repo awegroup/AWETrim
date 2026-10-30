@@ -69,12 +69,6 @@ class TestRotateGeometryBehaviour:
         out = rotate_geometry(nodes, angle_deg=[45.0, 10.0, 90.0], point=pivot)
         assert np.allclose(out[0], pivot)
 
-    def test_legacy_scalar_angle_rotates_about_y(self):
-        # Backward-compatible single scalar => rotation about +Y only.
-        nodes = np.array([[1.0, 0.0, 0.0]])
-        out = rotate_geometry(nodes, angle_deg=90.0)
-        assert np.allclose(out, [[0.0, 0.0, -1.0]], atol=1e-12)
-
     def test_radians_matches_degrees(self):
         nodes = np.array([[1.0, 2.0, -3.0]])
         deg = rotate_geometry(nodes, angle_deg=[10.0, 20.0, 30.0])
@@ -92,6 +86,11 @@ class TestRotateGeometryErrors:
         nodes = np.array([[1.0, 0.0, 0.0]])
         with pytest.raises(ValueError, match="exactly one"):
             rotate_geometry(nodes, angle_deg=[0, 0, 0], angle_rad=[0, 0, 0])
+
+    def test_rejects_a_scalar_angle(self):
+        nodes = np.array([[1.0, 0.0, 0.0]])
+        with pytest.raises(ValueError, match="exactly 3 values"):
+            rotate_geometry(nodes, angle_deg=90.0)
 
     def test_rejects_wrong_node_shape(self):
         nodes = np.array([1.0, 0.0, 0.0])  # 1-D, not (n, 3)

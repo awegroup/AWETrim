@@ -82,7 +82,7 @@ src/awetrim/
   flight_data/     Reader for flights reconstructed by EKF-AWE (workflow step 5)
   identification/  ROM aero-parameter and turn-rate-law identification
   plotting/        Shared kite + tether plotting helpers
-  utils/           Reference frames, fitting, default bounds and limits
+  utils/           Reference frames, default bounds and limits
 
 data/<kite>/       Per-kite configs (system, geometry, aerostructural, ROM, EKF)
 examples/          Runnable examples, one folder per workflow step (see examples/README.md)

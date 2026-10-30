@@ -428,7 +428,7 @@ def compute_kite_aggregate(struc_geometry, system_config) -> dict:
     deformed snapshot) rather than from the per-component summaries.
     ``system_config`` is the awesIO system config (used for the KCU mass);
     ``struc_geometry`` is an awesIO structure (path, document or
-    ``Structure``; a retired-format dict is converted with a warning). The
+    ``Structure``). The
     nodal masses follow awesIO's rule (``Structure.masses``).
 
     Returns a dict with ``mass`` (kg), ``center_of_mass`` ([x, y, z] m), and
@@ -489,30 +489,11 @@ def _resolve_rotation_angles(angle_deg, angle_rad, axes):
     if (angle_deg is None) == (angle_rad is None):
         raise ValueError("Provide exactly one of `angle_deg` or `angle_rad`.")
 
-    # Backward compatibility with previous API that used one Y-axis angle.
-    if angle_deg is not None and np.isscalar(angle_deg):
-        angle_vec_rad = np.radians(np.array([0.0, float(angle_deg), 0.0]))
-        axes_norm = (
-            np.array([1.0, 0.0, 0.0]),
-            np.array([0.0, 1.0, 0.0]),
-            np.array([0.0, 0.0, 1.0]),
-        )
-    elif angle_rad is not None and np.isscalar(angle_rad):
-        angle_vec_rad = np.array([0.0, float(angle_rad), 0.0], dtype=float)
-        axes_norm = (
-            np.array([1.0, 0.0, 0.0]),
-            np.array([0.0, 1.0, 0.0]),
-            np.array([0.0, 0.0, 1.0]),
-        )
+    if angle_deg is not None:
+        angle_vec_rad = np.radians(_to_3_vector(angle_deg, "angle_deg"))
     else:
-        if angle_deg is not None:
-            angle_vec_rad = np.radians(_to_3_vector(angle_deg, "angle_deg"))
-        else:
-            angle_vec_rad = _to_3_vector(angle_rad, "angle_rad")
-
-        axes_norm = _normalize_axes(axes)
-
-    return angle_vec_rad, axes_norm
+        angle_vec_rad = _to_3_vector(angle_rad, "angle_rad")
+    return angle_vec_rad, _normalize_axes(axes)
 
 
 def rotation_matrix_from_angles(
@@ -554,8 +535,6 @@ def rotate_geometry(
 
     Notes:
         - Exactly one of `angle_deg` or `angle_rad` must be provided.
-        - For backward compatibility, a single scalar angle is still accepted and
-          interpreted as a rotation about +Y only (legacy behavior).
     """
     rotation = rotation_matrix_from_angles(
         angle_deg=angle_deg, angle_rad=angle_rad, axes=axes

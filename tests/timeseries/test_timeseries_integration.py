@@ -37,8 +37,8 @@ from awetrim import State
 
 _MINIMAL_AERO_INPUT = {
     "params": {
-        "angle_pitch_depower_0": 0.0,
-        "delta_pitch_depower": 0.0,
+        "angle_pitch_tether_0": 0.0,
+        "slope_angle_pitch_tether_depower": 0.0,
         "CD0": 0.05,
     }
 }

@@ -12,8 +12,8 @@ _AERO_INPUT = {
         "oswald_efficiency": 0.8,
         "aspect_ratio": 6.0,
         "CD0": 0.05,
-        "angle_pitch_depower_0": 0.05,
-        "delta_pitch_depower": 0.05,
+        "angle_pitch_tether_0": -0.05,
+        "slope_angle_pitch_tether_depower": -0.05,
     },
 }
 

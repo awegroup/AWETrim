@@ -28,10 +28,6 @@ DEFAULT_KITE_NAME = "LEI-V3-KITE"
 # data/<kite>/README_struc_files.md.
 DEFAULT_STRUC_GEOMETRY_FILENAME = "structure.yml"
 SNAPSHOT_STRUC_GEOMETRY_FILENAME = DEFAULT_STRUC_GEOMETRY_FILENAME
-#: The retired AWETrim formats' names (a full FEM geometry; a PSM-format
-#: snapshot). find_struc_geometry still finds them, and load_structure
-#: converts them on the fly, so private kites and old results keep working.
-LEGACY_STRUC_GEOMETRY_FILENAMES = ("struc_geometry_FEM_full.yaml", "struc_geometry.yaml")
 #: The per-case wireframe reduction (wireframe.driver).
 WIREFRAME_STRUC_GEOMETRY_FILENAME = "structure_wireframe.yml"
 
@@ -120,13 +116,9 @@ def resolve_config_paths(config: dict, project_dir: Path | str) -> dict:
 
 
 def find_struc_geometry(folder: Path | str) -> Path | None:
-    """The structural geometry in ``folder`` (awesIO ``structure.yml``, else a
-    file in a retired format), else None."""
-    folder = Path(folder)
-    for name in (DEFAULT_STRUC_GEOMETRY_FILENAME, *LEGACY_STRUC_GEOMETRY_FILENAMES):
-        if (folder / name).exists():
-            return folder / name
-    return None
+    """The structural geometry in ``folder`` (awesIO ``structure.yml``), else None."""
+    path = Path(folder) / DEFAULT_STRUC_GEOMETRY_FILENAME
+    return path if path.exists() else None
 
 
 def format_length_tag(value_m: float) -> str:

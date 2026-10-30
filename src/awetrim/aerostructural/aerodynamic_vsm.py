@@ -497,8 +497,7 @@ def initialize(
         aero_geometry_path: Path to aerodynamic geometry file.
         config (dict): Main ASKITE configuration dictionary.
         n_panels_aero (int): Number of aerodynamic panels.
-        bridle_path: Optional structure file (awesIO ``structure.yml``; a
-            retired-format file is converted by ``load_structure``), or a
+        bridle_path: Optional structure file (awesIO ``structure.yml``), or a
             loaded :class:`Structure`, whose bridle lines the body carries.
 
     Returns:

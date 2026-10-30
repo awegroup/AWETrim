@@ -26,8 +26,6 @@ callers don't have to branch on the schema version.
 
 from __future__ import annotations
 
-import warnings
-
 
 def get_kite(system_config: dict) -> dict:
     """Return the primary kite component dict.
@@ -52,22 +50,17 @@ def get_turbine(system_config: dict) -> dict:
     """Return the ``structure`` of the KCU's onboard turbine (empty dict if none).
 
     awesIO ``control_system.turbine``: ``rotor_diameter``, ``mass`` and
-    ``position_KA`` (hub in the kite's KA frame, origin at the KCU).
-
-    The pre-awesIO flat block ``turbine: {diameter, thrust_coefficient}``
-    (before 2026-10-29) is still read, with a DeprecationWarning, as a rotor
-    diameter alone: its mass was inside the KCU mass, and C_T is the model's.
+    ``position_KA`` (hub in the kite's KA frame, origin at the KCU). The
+    pre-awesIO flat block ``turbine: {diameter, thrust_coefficient}`` was
+    removed after v1.0.0 and is rejected.
     """
     turbine = get_control_system(system_config).get("turbine") or {}
     if "structure" not in turbine and "diameter" in turbine:
-        warnings.warn(
+        raise ValueError(
             "control_system.turbine {diameter, thrust_coefficient} is the "
-            "pre-awesIO layout; write turbine.structure {rotor_diameter, mass, "
-            "position_KA} and take the turbine mass out of the KCU mass.",
-            DeprecationWarning,
-            stacklevel=2,
+            "removed pre-awesIO layout; write turbine.structure {rotor_diameter, "
+            "mass, position_KA} and take the turbine mass out of the KCU mass."
         )
-        return {"rotor_diameter": turbine["diameter"]}
     return turbine.get("structure", {}) or {}
 
 

@@ -4,7 +4,7 @@ import casadi as ca
 import pytest
 
 from awetrim.environment.Wind import Wind
-from awetrim.system.kite import Kite, canonical_aero_params
+from awetrim.system.kite import Kite, check_aero_params
 from awetrim.system.system_model import SystemModel
 
 
@@ -26,20 +26,10 @@ def _model(kite: Kite) -> SystemModel:
     return SystemModel(kite=kite, quasi_steady=True, wind_model=wind)
 
 
-def test_legacy_pitch_keys_map_to_paper_sign():
-    with pytest.warns(DeprecationWarning):
-        params = canonical_aero_params(
-            {"angle_pitch_depower_0": 0.4, "delta_pitch_depower": -0.3}
-        )
-    assert params == {
-        "angle_pitch_tether_0": -0.4,
-        "slope_angle_pitch_tether_depower": 0.3,
-    }
-
-
-def test_both_spellings_of_one_parameter_are_rejected():
-    with pytest.raises(ValueError):
-        canonical_aero_params({"angle_pitch_depower_0": 0.1, "angle_pitch_tether_0": -0.1})
+def test_retired_pitch_keys_are_rejected():
+    for key in ("angle_pitch_depower_0", "delta_pitch_depower"):
+        with pytest.raises(ValueError, match="was removed"):
+            check_aero_params({key: 0.1})
 
 
 def _evaluate(expr, seed=0):
@@ -111,29 +101,24 @@ def test_bridle_angles_are_taken_in_the_apparent_wind_frame():
         assert roll_of(lift) == pytest.approx(roll + roll_steer, abs=1e-6)
 
 
-def test_legacy_and_new_files_build_the_same_angle_of_attack():
-    with pytest.warns(DeprecationWarning):
-        legacy = _model(_kite({"angle_pitch_depower_0": 0.4,
-                               "delta_pitch_depower": -0.3}))
-    new = _model(_kite({"angle_pitch_tether_0": -0.4,
-                        "slope_angle_pitch_tether_depower": 0.3}))
-    for model in (legacy, new):
-        theta_b = ca.Function("t", [model.input_depower],
-                              [model.kite.angle_pitch_tether_for(model)])
-        assert float(theta_b(1.7)) == pytest.approx(-0.4 + 0.3 * 1.7)
-        alpha = model.kite.angle_of_attack_for(model)
-        offset = alpha - model.kite.pitch_bridle_for(model)
-        assert _evaluate(ca.substitute(offset, model.input_depower, ca.MX(1.7))) == (
-            pytest.approx(0.4 - 0.3 * 1.7)
-        )
+def test_theta_b_is_linear_in_the_depower():
+    model = _model(_kite({"angle_pitch_tether_0": -0.4,
+                          "slope_angle_pitch_tether_depower": 0.3}))
+    theta_b = ca.Function("t", [model.input_depower],
+                          [model.kite.angle_pitch_tether_for(model)])
+    assert float(theta_b(1.7)) == pytest.approx(-0.4 + 0.3 * 1.7)
+    alpha = model.kite.angle_of_attack_for(model)
+    offset = alpha - model.kite.pitch_bridle_for(model)
+    assert _evaluate(ca.substitute(offset, model.input_depower, ca.MX(1.7))) == (
+        pytest.approx(0.4 - 0.3 * 1.7)
+    )
 
 
-def test_explicit_roll_gain_wins_over_side_force_coefficient():
-    coefficients = {"CS": [{"var": "u_s", "coef": 0.34}]}
-    assert _kite({}, coefficients).gain_roll_steering == pytest.approx(-0.34)
-    kite = _kite({"gain_roll_steering": 0.15}, coefficients)
-    assert kite.gain_roll_steering == pytest.approx(0.15)
-    assert kite.k_steering == kite.gain_roll_steering
+def test_roll_gain_is_the_param_and_cs_terms_are_rejected():
+    assert _kite({"gain_roll_steering": 0.15}).gain_roll_steering == pytest.approx(0.15)
+    assert _kite({}).gain_roll_steering == 0.0
+    with pytest.raises(ValueError, match="'CS' coefficients were removed"):
+        _kite({}, {"CS": [{"var": "u_s", "coef": 0.34}]})
 
 
 def test_roll_gain_without_depower_terms_ignores_the_depower():

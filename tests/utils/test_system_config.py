@@ -34,7 +34,7 @@ def test_no_turbine_block_is_an_empty_structure():
     assert get_turbine(_system({"structure": {"mass": 8.4}})) == {}
 
 
-def test_legacy_flat_turbine_block_keeps_its_drag_and_adds_no_mass():
+def test_the_removed_flat_turbine_block_is_rejected():
     """Pre-awesIO ``turbine: {diameter, thrust_coefficient}``, mass in the KCU."""
     system = _system(
         {
@@ -42,10 +42,8 @@ def test_legacy_flat_turbine_block_keeps_its_drag_and_adds_no_mass():
             "turbine": {"diameter": 0.5, "thrust_coefficient": 0.85},
         }
     )
-    with pytest.warns(DeprecationWarning):
-        assert get_turbine(system) == {"rotor_diameter": 0.5}
-    with pytest.warns(DeprecationWarning):
-        assert get_kcu_mass(system) == pytest.approx(22.0)
+    with pytest.raises(ValueError, match="pre-awesIO"):
+        get_turbine(system)
 
 
 def test_flown_2019_kcu_keeps_its_22_kg_with_the_turbine_split_out():

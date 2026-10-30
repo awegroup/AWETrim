@@ -113,7 +113,7 @@ def _load_rigid_body_axes_from_result(result_path: Path, struc_override: Path | 
     Priority (same as plot_body_axes.py):
       1. struc_override (explicit --rigid-body-struc)
       2. the structure in {result_path} (``find_struc_geometry``: the deformed
-         structure.yml saved by save_geometry_snapshot, or a retired-format one)
+         structure.yml saved by save_geometry_snapshot)
       3. HDF5 positions + data/{kite}/deformed_results/powered_2019/structure.yml
          (fallback, a wireframe with the same node numbering)
 

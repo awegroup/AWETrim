@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+Legacy readers and unused modules removed. Files in the old formats raise a
+`ValueError` naming the replacement; convert them with v1.0.0.
+
+- **System file.** Only awesIO system files (`components`) are read; the flat
+  `lei_v3_system_config.yaml` format and the `aero_coeffs_rom.yaml` fallback
+  are gone. The pre-awesIO `control_system.turbine {diameter,
+  thrust_coefficient}` block is rejected.
+- **ROM parameters.** `angle_pitch_depower_0` / `delta_pitch_depower` (state
+  `angle_pitch_tether_0` / `slope_angle_pitch_tether_depower`, opposite sign)
+  and the `CS: u_s` roll gain (state `params.gain_roll_steering`) are
+  rejected. `Kite.k_steering` is removed (use `gain_roll_steering`), and
+  `canonical_aero_params` is now `check_aero_params`.
+- **Structure files.** `read_struc_geometry_yaml`, `awesio_structure.to_awesio`
+  / `convert_file` and its command line, and the retired file names in
+  `case.find_struc_geometry` are removed: `load_structure` reads awesIO files
+  only (an in-memory PSM wireframe dict is still translated).
+- **`rotate_geometry`** no longer takes a single scalar angle about +y.
+- **Removed modules:** `utils.fitting`, `utils.sparsity_analysis`,
+  `utils.talmar_equations`, `timeseries.cycle_phase`,
+  `aerostructural.logging_config`.
+
 ## v1.0.0 (2026-10-29)
 
 The first stable release. Since v0.1.0, AWETrim has a new structural solver,

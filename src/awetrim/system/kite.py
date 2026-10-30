@@ -15,7 +15,6 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import logging
-import warnings
 
 import casadi as ca
 from awetrim.aerodynamics.kcu_drag import CT_TURBINE_OPERATING, KcuDragModel, force_drag_kcu
@@ -27,41 +26,30 @@ from awetrim.utils.reference_frames import (
     transformation_C_from_K,
 )
 
-#: Pre-2026-10 ROM parameter keys, in the code's old sign convention
-#: ``alpha_w = alpha_b + angle_pitch_depower`` (i.e. angle_pitch_depower =
-#: -theta_b), mapped onto the paper-sign keys ``alpha_w = alpha_b - theta_b``
-#: (Cayon, van Deursen, Schmehl 2026, Eqs. 1-2). Each maps to (new key, sign).
-LEGACY_AERO_PARAM_KEYS = {
-    "angle_pitch_depower_0": ("angle_pitch_tether_0", -1.0),
-    "delta_pitch_depower": ("slope_angle_pitch_tether_depower", -1.0),
+#: ROM parameter keys removed after v1.0.0 (pre-2026-10 files, opposite sign:
+#: ``alpha_w = alpha_b + angle_pitch_depower``), with the key that replaced
+#: each. They are rejected rather than ignored: an ignored pitch key would
+#: silently leave theta_b symbolic.
+RETIRED_AERO_PARAM_KEYS = {
+    "angle_pitch_depower_0": "angle_pitch_tether_0",
+    "delta_pitch_depower": "slope_angle_pitch_tether_depower",
 }
 
 
-def canonical_aero_params(params):
-    """ROM ``aerodynamics.params`` with legacy keys translated.
+def check_aero_params(params):
+    """ROM ``aerodynamics.params`` as a dict, retired keys rejected.
 
     The geometric pitch ``theta_b`` between the bridle resultant and the wing
     chord is ``angle_pitch_tether_0 + slope_angle_pitch_tether_depower * u_p``
-    [rad, rad per u_p unit]. Legacy files state ``angle_pitch_depower_0`` /
-    ``delta_pitch_depower`` with the opposite sign; they are converted here
-    with a DeprecationWarning. A file carrying both spellings of one
-    parameter is ambiguous and rejected.
+    [rad, rad per u_p unit] (Cayon, van Deursen, Schmehl 2026, Eqs. 1-2).
     """
     params = dict(params)
-    for old, (new, sign) in LEGACY_AERO_PARAM_KEYS.items():
-        if old not in params:
-            continue
-        if new in params:
+    for old, new in RETIRED_AERO_PARAM_KEYS.items():
+        if old in params:
             raise ValueError(
-                f"aerodynamics.params states both {old!r} (legacy) and {new!r}"
+                f"ROM parameter {old!r} was removed; state {new!r} = -{old} "
+                "(paper sign, alpha_w = alpha_b - theta_b)"
             )
-        warnings.warn(
-            f"ROM parameter {old!r} is deprecated; state {new!r} = "
-            f"{sign:+.0f} x {old} instead (paper sign, alpha_w = alpha_b - theta_b)",
-            DeprecationWarning,
-            stacklevel=3,
-        )
-        params[new] = sign * params.pop(old)
     return params
 
 
@@ -112,7 +100,7 @@ class Wing:
         self.input_depower = ca.MX.sym("input_depower")
         # Geometric pitch theta_b(u_p) between the bridle resultant and the
         # wing chord (paper Eq. 2): alpha_w = alpha_b - theta_b.
-        params = canonical_aero_params(aero_input.get("params", {}))
+        params = check_aero_params(aero_input.get("params", {}))
         self.angle_pitch_tether_0 = params.get(
             "angle_pitch_tether_0", ca.MX.sym("angle_pitch_tether_0")
         )
@@ -211,7 +199,7 @@ class Wing:
             C_D = C_L0**2 / (ca.pi * e * AR) + CD0
             # Decompose the wing lift into lift/side components when rolled;
             # both must come from the unrotated C_L0, not the rotated C_L.
-            roll = variables["u_s"] * self.k_steering
+            roll = variables["u_s"] * self.gain_roll_steering
             C_L = C_L0 * ca.cos(roll)
             C_S = C_L0 * ca.sin(roll)
             return C_L, C_D, C_S
@@ -220,7 +208,6 @@ class Wing:
         elif aero_input["model"] == "coeffs":
             C_L = self.aero_params.get("CL0", 0)
             C_D = self._cd0_param
-            C_S = self.aero_params.get("CS0", 0)
 
             # Loop over defined terms per coefficient
             for coeff_key, terms in aero_input.get("coefficients", {}).items():
@@ -256,8 +243,6 @@ class Wing:
                         C_L += coef * value
                     elif coeff_key == "CD":
                         C_D += coef * value
-                    elif coeff_key == "CS":
-                        C_S += coef * value
             return C_L, C_D
 
         else:
@@ -504,18 +489,17 @@ class Kite(Wing):
         self._override_coriolis = False
 
         # Steering -> aerodynamic roll gain, phi_a,w = gain_roll_steering * u_s
-        # [rad per u_s] (paper Eq. 43, k_phi,s), for asymmetric steering: an
-        # explicit parameter wins, legacy files carry it as minus the CS
-        # coefficient of u_s. Roll steering takes u_s as the roll angle itself.
+        # [rad per u_s] (paper Eq. 43, k_phi,s), for asymmetric steering
+        # (absent = 0, no roll). Roll steering takes u_s as the roll angle
+        # itself. Pre-2026-10 files stated the gain as minus a CS coefficient
+        # of u_s; that is rejected rather than read as no roll.
+        if aero_input.get("coefficients", {}).get("CS"):
+            raise ValueError(
+                "ROM 'CS' coefficients were removed; state the roll gain as "
+                "params.gain_roll_steering = -(CS coefficient of u_s)"
+            )
         if self.steering_control == "asymmetric":
-            gain = self.aero_params.get("gain_roll_steering")
-            if gain is None:
-                cs_terms = aero_input.get("coefficients", {}).get("CS", [])
-                gain = -next(
-                    (term["coef"] for term in cs_terms if term.get("var") == "u_s"),
-                    0.0,
-                )
-            self.gain_roll_steering = gain
+            self.gain_roll_steering = self.aero_params.get("gain_roll_steering", 0.0)
         else:
             self.gain_roll_steering = 1.0
         # Depower dependence of that gain, k(u_p) = gain_roll_steering
@@ -578,11 +562,6 @@ class Kite(Wing):
     def force_aerodynamic(self, model):
         """Wing aerodynamic force plus the explicit KCU drag [N, C-frame]."""
         return self.force_aerodynamic_wing(model) + self.force_drag_kcu_for(model)
-
-    @property
-    def k_steering(self):
-        """Deprecated alias of :attr:`gain_roll_steering`."""
-        return self.gain_roll_steering
 
     @property
     def angle_roll(self):

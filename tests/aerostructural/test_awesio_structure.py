@@ -8,48 +8,18 @@ import numpy as np
 import pytest
 import yaml
 
-from awetrim.aerostructural.coupled import awesio_structure, read_struc_geometry_yaml
+from awetrim.aerostructural.coupled import awesio_structure
 
 KITE_DIR = Path(__file__).resolve().parents[2] / "data" / "LEI-V3-KITE"
 LEGACY_DIR = Path(__file__).resolve().parents[1] / "data" / "legacy"
 KCU_MASS = 8.4
 
 
-@pytest.fixture(scope="module")
-def fem_full_geometry():
-    path = LEGACY_DIR / "struc_geometry_FEM_full.yaml"
-    return yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
-@pytest.fixture(scope="module")
-def reader(fem_full_geometry):
-    return read_struc_geometry_yaml.main(
-        copy.deepcopy(fem_full_geometry), config={"kcu": {"mass": KCU_MASS}}
-    )
-
-
-@pytest.fixture(scope="module")
-def written(fem_full_geometry, tmp_path_factory):
-    """The document as a reader sees it: written to YAML and loaded back."""
-    document = awesio_structure.to_awesio(
-        fem_full_geometry, kcu_mass=KCU_MASS, height_kcu=200.0, name="LEI-V3"
-    )
-    path = tmp_path_factory.mktemp("awesio") / "structure.yml"
-    awesio_structure.write_awesio(document, path)
-    return path, yaml.safe_load(path.read_text(encoding="utf-8"))
-
-
-def test_the_document_validates_against_the_schema(written):
+def test_the_kites_file_validates_against_the_schema():
     validator = pytest.importorskip("awesio.validator")
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        validator.validate(written[0])
-
-
-def test_the_input_geometry_is_not_modified(fem_full_geometry):
-    before = copy.deepcopy(fem_full_geometry)
-    awesio_structure.to_awesio(fem_full_geometry)
-    assert fem_full_geometry == before
+        validator.validate(KITE_DIR / "structure.yml")
 
 
 def test_the_connectivity_preimage_is_the_schemas_example():
@@ -63,45 +33,6 @@ def test_the_connectivity_preimage_is_the_schemas_example():
     assert awesio_structure.connectivity_preimage(three_in_a_row) == "3;1,2;2,3;2;1,2;1;1,2,3;"
 
 
-def test_the_written_sha_hashes_the_written_connectivity(written):
-    document = written[1]
-    assert awesio_structure.connectivity_sha(document) == document["metadata"]["connectivity_sha"]
-
-
-def test_the_round_trip_rebuilds_the_readers_model(reader, written):
-    rebuilt = awesio_structure.from_awesio(written[1])
-
-    np.testing.assert_allclose(rebuilt[0], np.asarray(reader[0]), atol=1e-12)
-    for k in (2, 3, 4, 5, 6, 7, 8, 10, 11, 17):
-        np.testing.assert_array_equal(np.asarray(rebuilt[k]), np.asarray(reader[k]))
-    np.testing.assert_allclose(rebuilt[12], reader[12])  # bridle diameters
-    np.testing.assert_allclose(rebuilt[13], reader[13], atol=1e-12)  # rest lengths
-    np.testing.assert_allclose(rebuilt[14], reader[14], rtol=1e-6)  # stiffness
-    np.testing.assert_allclose(rebuilt[15], reader[15])  # damping / pressure
-    assert list(rebuilt[16]) == list(reader[16])  # linktypes
-    assert rebuilt[18].keys() == reader[18].keys()
-    for key, pair in reader[18].items():
-        np.testing.assert_allclose(rebuilt[18][key], pair, atol=1e-8)
-
-
-def test_the_mass_total_is_the_readers(reader, written):
-    masses = awesio_structure.nodal_masses(written[1])
-    # The reader weighs a line at its rest length BEFORE the strut projection.
-    assert masses.sum() == pytest.approx(np.sum(reader[1]), rel=1e-9)
-    assert masses.min() >= 0.0
-    # The KCU node also carries half of each tape ending on it.
-    assert written[1]["points"]["data"][0][4] == pytest.approx(KCU_MASS)
-
-
-def test_flat_tapes_keep_their_drag_width(fem_full_geometry, written):
-    widths = {
-        row[0]: row[5] for row in fem_full_geometry["bridle_lines"]["data"] if len(row) > 5
-    }
-    segments = awesio_structure._rows(written[1]["segments"])
-    for segment in segments:
-        assert segment["tape_width"] == widths.get(segment["line"])
-
-
 # --- the Structure view the drivers use --------------------------------------
 
 
@@ -110,35 +41,38 @@ def structure():
     return awesio_structure.load_structure(KITE_DIR / "structure.yml")
 
 
-def test_the_kites_file_is_the_converted_legacy_model(structure, reader):
-    resolved = structure.resolved(kcu_mass=KCU_MASS)
-    np.testing.assert_allclose(resolved[0], np.asarray(reader[0]), atol=1e-9)
-    for k in (2, 3, 4, 5, 6, 7, 8, 10, 11, 17):
-        np.testing.assert_array_equal(np.asarray(resolved[k]), np.asarray(reader[k]))
-    np.testing.assert_allclose(resolved[13], reader[13], atol=1e-9)
-    # masses follow awesIO's rule: the same total, shared differently
-    assert np.sum(resolved[1]) == pytest.approx(np.sum(reader[1]), rel=1e-9)
-    assert resolved[1][structure.kcu] >= KCU_MASS
+def test_the_stored_sha_hashes_the_connectivity(structure):
+    document = structure.document
+    assert awesio_structure.connectivity_sha(document) == document["metadata"]["connectivity_sha"]
 
 
-def test_the_structure_accessors(structure, reader):
+def test_the_masses_follow_awesios_rule(structure):
+    masses = structure.masses(kcu_mass=KCU_MASS)
+    assert masses.min() >= 0.0
+    assert masses.sum() == pytest.approx(
+        awesio_structure.nodal_masses(structure.document).sum() + KCU_MASS
+    )
+    assert structure.resolved(kcu_mass=KCU_MASS)[1][structure.kcu] >= KCU_MASS
+
+
+def test_the_structure_accessors(structure):
     assert structure.kcu == 0 and structure.fixed == [0]
     assert not structure.is_wireframe
-    assert len(structure.stations) == len(reader[2])  # one station per rib
-    assert structure.leading_edge == list(reader[2])
-    assert structure.trailing_edge == list(reader[3])
-    assert structure.leading_edge_chain == list(reader[2])
-    assert [s["nodes"] for s in structure.struts] == sorted(
-        (list(s) for s in reader[8]), key=lambda s: s[0]
-    )
-    assert structure.pressure_bar == pytest.approx(float(reader[15][0]))
-    # one bridle element per old bridle_connections row, a pulley as one
+    assert len(structure.stations) == len(structure.leading_edge)  # one per rib
+    assert len(structure.trailing_edge) == len(structure.leading_edge)
+    assert structure.leading_edge_chain == structure.leading_edge
+    assert structure.pressure_bar > 0.0
+    # a pulley is one bridle element of two segments
     bridle = structure.bridle
-    assert sum(len(e["nodes"]) - 1 for e in bridle) == len(reader[11])
-    assert len(structure.bridle_line_system()) == len(reader[11])
+    assert len(structure.bridle_line_system()) == sum(len(e["nodes"]) - 1 for e in bridle)
     pulleys = [e for e in bridle if len(e["nodes"]) == 3]
-    assert all(len(e["segments"]) == 2 for e in pulleys)
+    assert pulleys and all(len(e["segments"]) == 2 for e in pulleys)
     assert [e["name"] for e in bridle].count("steering_tape") == 2
+
+
+def test_flat_tapes_carry_a_drag_width(structure):
+    tapes = [s for s in structure.bridle_segments if s["line"] in ("depower_tape", "steering_tape")]
+    assert tapes and all(s.get("tape_width") for s in tapes)
 
 
 def test_with_positions_moves_points_and_bodies(structure):
@@ -172,11 +106,16 @@ def test_written_structure_reads_back(structure, tmp_path):
     )
 
 
-def test_a_legacy_file_is_converted_with_a_warning(structure):
-    with pytest.warns(DeprecationWarning, match="retired"):
-        converted = awesio_structure.load_structure(LEGACY_DIR / "struc_geometry_FEM_full.yaml")
-    np.testing.assert_allclose(converted.positions, structure.positions, atol=1e-9)
-    assert converted.bridle_segments == structure.bridle_segments
+def test_a_retired_format_file_is_rejected(tmp_path):
+    path = tmp_path / "struc_geometry_FEM_full.yaml"
+    path.write_text(yaml.safe_dump({"strut_tubes": {}}), encoding="utf-8")
+    with pytest.raises(ValueError, match="not an awesIO"):
+        awesio_structure.load_structure(path)
+
+
+def test_an_in_memory_wireframe_dict_is_translated(legacy_wireframe):
+    structure = awesio_structure.load_structure(copy.deepcopy(legacy_wireframe))
+    assert structure.is_wireframe
 
 
 # --- the wireframe -----------------------------------------------------------
@@ -184,6 +123,7 @@ def test_a_legacy_file_is_converted_with_a_warning(structure):
 
 @pytest.fixture(scope="module")
 def legacy_wireframe():
+    """A PSM-format wireframe, the wireframe's in-memory geometry."""
     path = LEGACY_DIR / "struc_geometry_wireframe_powered_2019.yaml"
     return yaml.safe_load(path.read_text(encoding="utf-8"))
 

@@ -20,8 +20,8 @@ _INVISCID_INPUT = {
         "oswald_efficiency": 0.9,
         "aspect_ratio": 8.0,
         "CD0": 0.05,
-        "angle_pitch_depower_0": 0.0,
-        "delta_pitch_depower": 0.0,
+        "angle_pitch_tether_0": 0.0,
+        "slope_angle_pitch_tether_depower": 0.0,
     },
 }
 
@@ -44,7 +44,7 @@ def test_inviscid_side_force_uses_unrotated_lift():
     model = SystemModel(kite=kite, quasi_steady=True, wind_model=wind)
 
     C_L, _C_D, C_S = model.kite.aerodynamic_force_coefficients_for(model)
-    roll = model.input_steering * model.kite.k_steering
+    roll = model.input_steering * model.kite.gain_roll_steering
     residual = C_L * ca.sin(roll) - C_S * ca.cos(roll)
 
     syms = ca.symvar(residual)

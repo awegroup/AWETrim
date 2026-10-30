@@ -57,9 +57,8 @@ name, `structure.yml` (a wireframe: its wing is spring members with
 
 Until 2026-10-29 the geometry was `struc_geometry_FEM_full.yaml` (an AWETrim
 authoring format the reader expanded on every run) and the snapshots were
-PSM-format `struc_geometry.yaml`. Both are in git history.
-`load_structure` still reads them, converting on the fly with a
-DeprecationWarning; convert a file once with
+PSM-format `struc_geometry.yaml`. Both are in git history. Their reader
+was removed after v1.0.0; convert a file with AWETrim v1.0.0:
 
     python -m awetrim.aerostructural.coupled.awesio_structure OLD.yaml structure.yml
 

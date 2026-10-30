@@ -400,8 +400,7 @@ def load_psm_geometry(
     ``Structure``.
 
     Args:
-        struc_geometry_path: Path to a ``structure.yml`` (deformed or not; a
-            retired-format file is converted by ``load_structure``).
+        struc_geometry_path: Path to a ``structure.yml`` (deformed or not).
 
     Returns:
         Tuple ``(struc_nodes, m_arr, le_indices, te_indices)``.

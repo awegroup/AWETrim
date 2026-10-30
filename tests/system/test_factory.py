@@ -9,29 +9,41 @@ from awetrim.system import create_system_model_from_yaml
 
 
 def _write_config(path, wind):
+    """An awesIO system file at ``path`` and its sibling ``rom_config.yaml``."""
+    (path.parent / "rom_config.yaml").write_text(
+        """
+aerodynamics:
+  model: coeffs
+  params:
+    CD0: 0.1
+    CL0: 0.0
+    angle_pitch_tether_0: 0.1
+    slope_angle_pitch_tether_depower: 0.2
+    gain_roll_steering: -0.15
+  coefficients:
+    CL: []
+    CD: []
+""",
+        encoding="utf-8",
+    )
     path.write_text(
         f"""
-wing:
-  mass: 15
-  area: 19.75
-  aerodynamics:
-    model: coeffs
-    params:
-      CD0: 0.1
-      CL0: 0.0
-      angle_pitch_depower_0: -0.1
-      delta_pitch_depower: -0.2
-    coefficients:
-      CL: []
-      CD: []
-      CS:
-        - var: u_s
-          power: 1
-          coef: 0.15
-kcu:
-  mass: 10
-tether:
-  diameter: 0.01
+metadata:
+  name: test-kite
+  awesIO_version: 0.1.0
+  schema: system_schema.yml
+components:
+  kites:
+    - wing:
+        structure:
+          mass: 15
+          projected_surface_area: 19.75
+      control_system:
+        structure:
+          mass: 10
+  tethers:
+    - structure:
+        diameter: 0.01
 wind:
 {wind}
 """,
@@ -295,13 +307,11 @@ def test_apply_tension_floor_rules():
         apply_tension_floor({"tension_tether_ground": (300.0, 500.0)}, 602.0)
 
 
-def test_legacy_config_yields_empty_hardware_limits(tmp_path):
-    # The legacy format has no actuator-limit block -> the optimizer falls back
-    # entirely to DEFAULT_OPTI_LIMITS.
-    config_path = tmp_path / "kite.yaml"
-    _write_config(config_path, "  model: uniform\n  direction_wind: 0\n  speed_wind_ref: 8\n")
-    model = create_system_model_from_yaml(config_path)
-    assert model.hardware_limits == {}
+def test_a_flat_legacy_system_file_is_rejected(tmp_path):
+    config_path = tmp_path / "lei_v3_system_config.yaml"
+    config_path.write_text("wing:\n  mass: 15\n  area: 19.75\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="not an awesIO system file"):
+        create_system_model_from_yaml(config_path)
 
 
 def test_resolve_opti_limits_merges_hardware_over_defaults():

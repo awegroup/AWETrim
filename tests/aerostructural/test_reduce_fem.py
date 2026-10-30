@@ -139,20 +139,3 @@ def test_tube_stiffness_comes_from_the_tubes(structure, reduced):
     a, b = ends["strut_5"]
     ea = tube_axial_stiffness([old_mean], structure.pressure_bar)[0]
     assert k["strut_5"] == pytest.approx(ea / np.linalg.norm(pos[a] - pos[b]), rel=1e-9)
-
-
-def test_a_retired_fem_file_still_reduces_the_same(reduced):
-    """The old struc_geometry_FEM_full.yaml converts on the fly (with a warning)."""
-    import yaml
-
-    legacy = Path(__file__).resolve().parents[1] / "data" / "legacy" / "struc_geometry_FEM_full.yaml"
-    with legacy.open(encoding="utf-8") as handle:
-        fem = yaml.safe_load(handle)
-    with pytest.warns(DeprecationWarning):
-        again = reduce_fem_geometry(fem)
-    assert again["bridle_connections"] == reduced["bridle_connections"]
-    np.testing.assert_allclose(
-        [r[1:] for r in again["wing_particles"]["data"]],
-        [r[1:] for r in reduced["wing_particles"]["data"]],
-        atol=1e-9,
-    )

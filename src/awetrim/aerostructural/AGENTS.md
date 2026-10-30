@@ -139,7 +139,6 @@ src/awetrim/aerostructural/
                                    reader does (it put half on ci and half on cj,
                                    so the mass followed the row's node order:
                                    LEI-V3 nodes 36 / 37 had 77 / 25 g)
-  logging_config.py                Package-level logging setup
   aerodynamic_vsm.py               VSM body initialisation and run_vsm_package wrapper (shared).
                                    run_frozen_alpha_polar_about_trim: the alpha
                                    polar of a TRIMMED body on its frozen shape
@@ -183,10 +182,6 @@ src/awetrim/aerostructural/
                                    raises (it used to fall back to uniform
                                    weights); relative paths resolve against the
                                    project root (case.resolve_config_paths).
-    read_struc_geometry_yaml.py    Importer of the RETIRED struc_geometry_FEM_full
-                                   format only (used by awesio_structure.to_awesio);
-                                   the solvers get its tuple from
-                                   utils.resolve_structure -> Structure.resolved
     awesio_structure.py            The geometry as an awesIO structure document
                                    (structure_schema.yml, awesIO 0.1.0).
                                    to_awesio writes the reader's RESOLVED model
@@ -234,8 +229,7 @@ src/awetrim/aerostructural/
                                    run_simulation_PSM.py until 2026-10-07.
                                    build_case / solve_deformation take a
                                    wireframe structure file (awesIO, a deformed
-                                   snapshot; a retired PSM file is converted by
-                                   load_structure) and keep it as
+                                   snapshot) and keep it as
                                    WireframeCase.structure; WITHOUT one they are
                                    build_case_reduced_fem /
                                    solve_deformation_reduced_fem (the kite's
@@ -572,7 +566,8 @@ Four things the adapter has to do that are not obvious:
   set `strut_padding: legacy` for that. Since 2026-10-29 the mesh is IN the
   awesIO structure.yml (written with bisect_longest), so the config key is
   ignored with a warning (`utils.resolve_structure`); a legacy mesh needs a
-  file converted with `to_awesio(..., strut_padding="legacy")`.
+  file converted with v1.0.0's `to_awesio(..., strut_padding="legacy")`
+  (removed after v1.0.0).
   One more trap: `initialize_particles` appends the YAML's OWN `node_indices`
   list to `strut_indices` and the padding loop inserts into it. That aliasing
   is load-bearing — it is how the padding nodes reach

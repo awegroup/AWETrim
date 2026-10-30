@@ -129,8 +129,7 @@ def update_from_geometry(
     output_path: Path | str | None = None,
 ) -> dict:
     """Update kite, wing, and bridle fields in system.yml from a structure file
-    (awesIO ``structure.yml``, full model or wireframe; a retired-format file
-    is converted by ``load_structure``).
+    (awesIO ``structure.yml``, full model or wireframe).
 
     Reads both files once, computes all derived fields, and writes the result,
     preserving comments and formatting via ruamel.yaml.

@@ -53,7 +53,6 @@ PLOT_LABELS = {
     "angle_roll": "$\\phi_a$ ($^\\circ$)",
     "dchi_ds": "$d\\chi / ds$",
     "distance_radial": "$r$ (m)",
-    "force_tether_talmar": "$F_{t, \\mathrm{Talmar}}}$",
     "input_steering": "$u_s$",
     "phi_unwrapped": "$\\phi_a$ ($^\\circ$)",
     "ratio_kinematic": "$\\kappa$",

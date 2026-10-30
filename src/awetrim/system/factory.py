@@ -127,8 +127,8 @@ def resolve_rom_config_path(
 
     Resolution order: an explicit ``rom_config_path`` (relative paths are
     taken against the system file's folder), the system file's
-    ``models.reduced_order.aerodynamics``, then a sibling ``rom_config.yaml``
-    (legacy ``aero_coeffs_rom.yaml``). A kite with several ROMs (e.g. the
+    ``models.reduced_order.aerodynamics``, then a sibling ``rom_config.yaml``.
+    A kite with several ROMs (e.g. the
     LEI-V3 ``rom_config_aerostructural_flight_corrected.yaml`` and
     ``rom_config_aerostructural.yaml``) names its default in the system file.
     """
@@ -156,9 +156,6 @@ def _resolve_aero_config_path(
         sibling = config_path.parent / "rom_config.yaml"
         if sibling.exists():
             return sibling
-        legacy = config_path.parent / "aero_coeffs_rom.yaml"
-        if legacy.exists():
-            return legacy
 
     return None
 
@@ -168,17 +165,14 @@ def load_aero_input(
     config_path: Union[str, Path, None] = None,
     aero_yaml_path: Union[str, Path, None] = None,
 ) -> dict:
-    """Return ROM aerodynamic input from a standalone file or legacy inline config."""
+    """Return ROM aerodynamic input from a standalone file or the system file's
+    wing structure."""
     base_path = Path(config_path) if config_path is not None else None
     aero_path = _resolve_aero_config_path(cfg, base_path, aero_yaml_path)
     if aero_path is not None:
         aero_cfg = _load_yaml(aero_path)
         return aero_cfg.get("aerodynamics", aero_cfg)
-
-    if "components" in cfg:
-        kite = get_kite(cfg)
-        return kite["wing"]["structure"].get("aerodynamics", {})
-    return cfg.get("wing", {}).get("aerodynamics", {})
+    return get_kite(cfg).get("wing", {}).get("structure", {}).get("aerodynamics", {})
 
 
 def load_rom_validity(
@@ -392,86 +386,41 @@ def _extract_hardware_limits(
     return hw
 
 
-def _extract_params_legacy(cfg: dict) -> tuple:
-    """Extract model parameters from the legacy lei_v3_system_config.yaml format."""
-    wing = cfg.get("wing", {})
-    kcu_cfg = cfg.get("kcu", {})
-    tether_cfg = cfg.get("tether", {})
-    wind_cfg = cfg.get("wind", {})
-
-    mass_wing = wing.get("mass", 20.0)
-    area_wing = wing.get("area", 20.0)
-    aero_cfg = wing.get("aerodynamics", {})
-    mass_kcu = kcu_cfg.get("mass", 0.0)
-    tether_diameter = tether_cfg.get("diameter", 0.006)
-    tether_density = tether_cfg.get("density", 970.0)
-
-    # The legacy format carries no KCU envelope -> no KCU drag.
-    return (
-        mass_wing,
-        area_wing,
-        aero_cfg,
-        mass_kcu,
-        0.0,
-        0.0,
-        tether_diameter,
-        tether_density,
-        wind_cfg,
-    )
-
-
 def create_system_model_from_yaml(
     yaml_path: Union[str, Path],
     steering_control: str = "asymmetric",
     aero_yaml_path: Union[str, Path, None] = None,
     tether_config: dict | None = None,
 ):
-    """Create a SystemModel from a YAML configuration.
+    """Create a SystemModel from an awesIO system.yml.
 
-    Accepts either the awesIO system.yml format (auto-detected by the presence of a
-    ``components`` key) or the legacy ``lei_v3_system_config.yaml`` format.
-
-    awesIO format (preferred):
-        metadata / assembly / components.kites[0].wing.structure.{projected_surface_area,
-        mass} / components.kites[0].control_system.structure.mass /
-        components.tethers[0].structure.{diameter, density}. The kite and tether are
-        resolved via ``awetrim.utils.system_config.get_kite`` / ``get_tether``, which
-        also accept the legacy singular ``components.kite`` / ``components.tether``
-        layout. ROM aerodynamics are loaded from ``aero_yaml_path`` or from a sibling
-        ``rom_config.yaml`` file (legacy: ``aero_coeffs_rom.yaml``).
-
-    Legacy format:
-        wing.{mass, area, aerodynamics} / kcu.mass / tether.{diameter, density}
+    metadata / assembly / components.kites[0].wing.structure.{projected_surface_area,
+    mass} / components.kites[0].control_system.structure.mass /
+    components.tethers[0].structure.{diameter, density}. The kite and tether are
+    resolved via ``awetrim.utils.system_config.get_kite`` / ``get_tether``, which
+    also accept the singular ``components.kite`` / ``components.tether``
+    layout. ROM aerodynamics are loaded from ``aero_yaml_path``, the file the
+    system file names, or a sibling ``rom_config.yaml``.
     """
     config_path = Path(yaml_path)
     cfg = _load_yaml(config_path)
+    if "components" not in cfg:
+        raise ValueError(
+            f"{config_path} is not an awesIO system file (no 'components'); the "
+            "flat lei_v3_system_config.yaml format was removed after v1.0.0"
+        )
 
-    if "components" in cfg:
-        (
-            mass_wing,
-            area_wing,
-            mass_kcu,
-            length_kcu,
-            diameter_kcu,
-            tether_diameter,
-            tether_density,
-            wind_cfg,
-            hardware_limits,
-        ) = _extract_params_awesio(cfg)
-    else:
-        (
-            mass_wing,
-            area_wing,
-            aero_cfg,
-            mass_kcu,
-            length_kcu,
-            diameter_kcu,
-            tether_diameter,
-            tether_density,
-            wind_cfg,
-        ) = _extract_params_legacy(cfg)
-        # Legacy format carries no actuator-limit block -> all-default limits.
-        hardware_limits = {}
+    (
+        mass_wing,
+        area_wing,
+        mass_kcu,
+        length_kcu,
+        diameter_kcu,
+        tether_diameter,
+        tether_density,
+        wind_cfg,
+        hardware_limits,
+    ) = _extract_params_awesio(cfg)
 
     print(
         f"Creating SystemModel with mass_wing={mass_wing}, area_wing={area_wing}, mass_kcu={mass_kcu}, tether_diameter={tether_diameter}, tether_density={tether_density}"
@@ -479,25 +428,24 @@ def create_system_model_from_yaml(
     # 0.0 here means the system file carries no KCU envelope, so the trims
     # will run without KCU drag -- worth seeing in a run log.
     print(f"  KCU envelope: length={length_kcu} m, diameter={diameter_kcu} m")
-    if "components" in cfg:
-        aero_cfg = load_aero_input(
+    aero_cfg = load_aero_input(
+        cfg, config_path=config_path, aero_yaml_path=aero_yaml_path
+    )
+    hardware_limits = intersect_depower_validity(
+        hardware_limits,
+        load_rom_depower_validity(
             cfg, config_path=config_path, aero_yaml_path=aero_yaml_path
-        )
-        hardware_limits = intersect_depower_validity(
-            hardware_limits,
-            load_rom_depower_validity(
-                cfg, config_path=config_path, aero_yaml_path=aero_yaml_path
-            ),
-        )
-        validity = load_rom_validity(
-            cfg, config_path=config_path, aero_yaml_path=aero_yaml_path
-        )
-        hardware_limits = intersect_steering_validity(
-            hardware_limits, validity.get("input_steering_abs_max")
-        )
-        hardware_limits = apply_tension_floor(
-            hardware_limits, validity.get("min_tether_force_n")
-        )
+        ),
+    )
+    validity = load_rom_validity(
+        cfg, config_path=config_path, aero_yaml_path=aero_yaml_path
+    )
+    hardware_limits = intersect_steering_validity(
+        hardware_limits, validity.get("input_steering_abs_max")
+    )
+    hardware_limits = apply_tension_floor(
+        hardware_limits, validity.get("min_tether_force_n")
+    )
 
     tether = create_tether_from_config(
         tether_config, diameter=tether_diameter, density=tether_density
@@ -511,7 +459,7 @@ def create_system_model_from_yaml(
     # Absent -> zero diameter -> the KCU drag model adds no turbine term.
     # The thrust coefficient is aerodynamic, not hardware, so it is the
     # model's operating value (kcu_drag.CT_TURBINE_OPERATING).
-    turbine_struct = get_turbine(cfg) if "components" in cfg else {}
+    turbine_struct = get_turbine(cfg)
     diameter_turbine = float(turbine_struct.get("rotor_diameter", 0.0) or 0.0)
     if turbine_struct:
         print(
@@ -545,5 +493,5 @@ def load_aero_input_from_system_config(
     config_path: Union[str, Path, None] = None,
     aero_yaml_path: Union[str, Path, None] = None,
 ) -> dict:
-    """Return the ROM aerodynamic input from system metadata or legacy inline config."""
+    """Return the ROM aerodynamic input from the ROM file or the system file."""
     return load_aero_input(cfg, config_path=config_path, aero_yaml_path=aero_yaml_path)
