@@ -943,8 +943,14 @@ def fem_wing(structure, positions, le_nodes, te_nodes, contraction: float):
     the built wing, which is NOT ``billow_wing(p=0)``: that one still draws
     every inner bay's trailing edge as a circular arc, up to 23 mm off the
     built canopy points on the LEI-V3.
+
+    Both carry the aerodynamic tip: each tip section's leading-edge point is
+    moved along the leading-edge tube's constant length until the tip bay is
+    a valid lifting-line bay (:func:`wing_tip.correct_tip_bays`). The
+    structure's own nodes are untouched.
     """
     from awetrim.aerostructural.billowing import billow_wing
+    from awetrim.aerostructural.wing_tip import correct_tip_bays
 
     positions = np.asarray(positions, dtype=float)
     fem_le, fem_te = np.asarray(le_nodes, dtype=int), np.asarray(te_nodes, dtype=int)
@@ -954,6 +960,10 @@ def fem_wing(structure, positions, le_nodes, te_nodes, contraction: float):
         raise ValueError(f"the struts do not follow the FEM sections: {sections}")
     le, te = positions[fem_le], positions[fem_te]
     wing = billow_wing(le, te, sections, contraction) if contraction > 0.0 else None
+    # billowing keeps the leading edge, so one corrected edge serves both
+    le = correct_tip_bays(le, te if wing is None else wing.trailing_edge)
+    if wing is not None:
+        wing.leading_edge = le.copy()
     return le, te, sections, wing
 
 

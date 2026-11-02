@@ -123,8 +123,11 @@ fidelities, the full-chord aerodynamic mesh (no area factor), and:
   (1 - p) of the CAD one; the canopy between two struts is the circular arc of
   the bay's built fabric length (sin(theta)/theta = c/L_f), each section at its
   own fabric fraction. The two tip bays cannot contract by rotating the 0.35 m
-  tip chord; they ride rigidly with the outer strut (Haanen also sees the least
-  change there). The reduced ribs move with their struts and the wing members
+  tip chord; they keep their leading edge and the tube's end (the tip chord,
+  where the leading-edge tube runs into the trailing edge), and their trailing
+  edge takes the outer strut's shift, fading to zero at the tip (Haanen also
+  sees the least change there). Until 2026-11 they rode rigidly with the
+  outer strut, which lifted the tube's tip by up to 0.24 m. The reduced ribs move with their struts and the wing members
   rest at the new distances, so the structure holds the contraction the aero
   mesh is drawn with; the bridle keeps its lengths. The arc is built once into
   the reference mesh and carried by the skin mapper (static billowing). At
@@ -132,6 +135,20 @@ fidelities, the full-chord aerodynamic mesh (no area factor), and:
   198-235 mm, and the outer strut rotates 9 deg.
 - **Exact load transfer** (`aerodynamic.load_transfer: strut_lever`), see
   `strut_lever_load_transfer.md`.
+- **The tip bay as a lifting-line bay** (`aerostructural/wing_tip.py`, since
+  2026-11). The FEM tip bay is the curled tube: a side-facing fin whose
+  leading edge runs nearly along the chord, 64-66 deg of panel sweep. VSM
+  finds three circulations per tip panel there (attached, at the C_l-max
+  corner, stalled) and the quasi-steady trim cycles between them: 2 of 12
+  realistic states converged, every tip panel stalled. The aerodynamic mesh
+  keeps the tube length (leading edge from the outer section to the tip plus
+  the tip chord, 1.092 m) and slides only the tube's corner forward until the
+  bay is swept at most 55 deg: tip chord 0.35 -> 0.76 m (billowed), area
+  0.167 -> 0.164 m2, the tip attached up to about 14 deg of wing incidence on
+  a continued polar. The structure is not changed. Remeshing the bay finer,
+  merging it into one panel, VSM's quarter-chord force directions with the
+  curved bound-vortex correction and streamwise attached legs all leave the
+  tip stalled.
 
 **Mesh convergence** (rigid VSM, wing only, v_a 20 m/s, VSM develop 1201f6f;
 CL and CD on 19.75 m2; change against 12 sections per FEM section = 324 panels):

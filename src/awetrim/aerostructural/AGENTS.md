@@ -83,12 +83,30 @@ src/awetrim/aerostructural/
                                    length, sin(theta)/theta = c/L_f (Cayon 2022
                                    Sec. 5.3: inextensible membrane, constant
                                    pressure -> constant tension -> circle); tip
-                                   bays ride rigidly with the outer strut.
+                                   bays keep their LE and the tube end (tip
+                                   chord), their TE takes the outer strut's
+                                   shift fading to zero at the tip (until
+                                   2026-11 they rode rigidly with the strut,
+                                   moving the tube up to 0.24 m). The LE never
+                                   moves (checked).
                                    refine_billowed_wing (sections on the arc),
                                    panel_bays. p from photogrammetry (LEI-V3:
                                    0.05, Haanen 2026 Table 9.2). Billow full
                                    resolves billowing itself: never add it there.
                                    docs/aerostructural/lei_v3_wing_corrections.md
+  wing_tip.py                      The curled LEI tip as a lifting-line bay.
+                                   panel_sweep_deg(le, te): quarter-chord line
+                                   off the normal to the mean chord;
+                                   MAX_PANEL_SWEEP_DEG = 55 (LEI-V3 FEM tip bay
+                                   64-66: VSM finds 3 circulations per panel,
+                                   2/12 trims converged). correct_tip_bays(le,
+                                   te): slides each tip section's LE point along
+                                   the constant tube length (outer LE -> corner
+                                   -> tip TE) in the tube's plane until the bay
+                                   is <= the limit (LEI-V3: tip chord 0.35 ->
+                                   0.76-0.81 m, area 0.167 -> 0.164 m2); warns
+                                   about any bay still beyond it. Aero mesh
+                                   only; fem_wing applies it.
   forces.py                        distribute_total_force_by_particle_mass
   convergence.py                   check_convergence, resolve_residual_tolerances,
                                    set_absolute_residual_gate, force_settle_state,
@@ -297,7 +315,9 @@ src/awetrim/aerostructural/
                                    carried rigidly). fem_wing(structure,
                                    positions, le, te, p) -> (le, te,
                                    strut_sections, BillowedWing | None) is
-                                   that wing; wing_edges(structure, p, n)
+                                   that wing, its tip bays corrected
+                                   (wing_tip.correct_tip_bays, both le and
+                                   the BillowedWing's); wing_edges(structure, p, n)
                                    its refined edges on the BUILT positions
                                    (p = 0: linear between the FEM sections,
                                    NOT billow_wing(0), which draws arcs up to

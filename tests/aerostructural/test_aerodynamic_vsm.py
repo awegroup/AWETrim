@@ -61,12 +61,6 @@ def test_casadi_trim_returns_the_coupled_vocabulary(lei_v3):
     assert np.asarray(body.va).shape == (3,)
 
 
-@pytest.mark.xfail(
-    reason="no attached state on the FEM-section mesh: its two tip pieces "
-    "(0.21 / 0.32 m chord at the curled tip) see ~31 deg, 19 deg past their "
-    "stall onset, at every trim (2026-11-02); under review with the CasADi trim",
-    strict=False,
-)
 def test_attached_first_at_the_trim_level(lei_v3):
     """AV on + attached_first: the unsteered LEI-V3 trims attached, the
     predictor is accepted, and the returned body carries the ORIGINAL polars
