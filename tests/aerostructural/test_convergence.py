@@ -214,10 +214,10 @@ def test_set_absolute_residual_gate_makes_newtons_the_live_measure():
 def test_the_lei_v3_as_config_ships_the_relative_gate_only():
     # One criterion in the shipped file: a dead `tol` next to the live
     # relative key is how the Billow driver's silent absolute gate went unseen.
-    from awetrim.aerostructural.utils import load_yaml
+    from awetrim.aerostructural.case import load_as_config
     from awetrim.utils.config_paths import REPO_ROOT
 
-    solver = load_yaml(REPO_ROOT / "data" / "LEI-V3-KITE" / "as_config.yaml")[
+    solver = load_as_config(REPO_ROOT / "data" / "LEI-V3-KITE" / "as_config.yaml")[
         "aero_structural_solver"
     ]
     assert "tol" not in solver
@@ -264,10 +264,10 @@ def test_force_settle_accepts_a_negligible_limit_cycle_only():
 
 
 def test_the_lei_v3_as_config_ships_the_force_settle_rule():
-    from awetrim.aerostructural.utils import load_yaml
+    from awetrim.aerostructural.case import load_as_config
     from awetrim.utils.config_paths import REPO_ROOT
 
-    solver = load_yaml(REPO_ROOT / "data" / "LEI-V3-KITE" / "as_config.yaml")[
+    solver = load_as_config(REPO_ROOT / "data" / "LEI-V3-KITE" / "as_config.yaml")[
         "aero_structural_solver"
     ]
     assert solver["force_settle_rtol"] == pytest.approx(1e-4)

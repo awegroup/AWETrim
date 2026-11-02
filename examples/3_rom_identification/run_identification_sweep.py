@@ -65,6 +65,7 @@ import copy
 import os
 import time
 from contextlib import contextmanager
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -72,14 +73,14 @@ import numpy as np
 import pandas as pd
 
 from awetrim.aerostructural import aerodynamic_vsm
-from awetrim.aerostructural.billow.driver import merge_config
 from awetrim.aerostructural.case import (
     DEFAULT_STRUC_GEOMETRY_FILENAME,
+    Case,
     air_density_at_case,
     resolve_kite_paths,
+    runtime_config,
 )
 from awetrim.aerostructural.results import save_sim_output
-from awetrim.aerostructural.utils import load_yaml
 from awetrim.identification import aerostructural_dataset as ds
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -152,6 +153,28 @@ def build_chains(spec: dict, built_tape_length: float) -> list[Chain]:
     return chains
 
 
+def sweep_case(spec: dict) -> Case:
+    """The sweep's flight state (``sweep.case``) at the first wind speed and
+    the built tape lengths; each solve changes the wind and the tapes (:func:`_at`)."""
+    state = dict(spec["case"])
+    wind = {**state.pop("wind"), "speed_wind_ref": float(min(spec["wind_speeds"]))}
+    return Case(**state, wind=wind, power_tape_extension=0.0, steering_tape_extension=0.0)
+
+
+def _at(config: dict, *, wind_speed=None, power_tape=None, steering=None) -> dict:
+    """``config`` at another wind speed [m/s] and tape command [m]: the case
+    keys change together, through the Case."""
+    case = Case.from_config(config)
+    changes = {}
+    if wind_speed is not None:
+        changes["wind"] = {**case.wind, "speed_wind_ref": float(wind_speed)}
+    if power_tape is not None:
+        changes["power_tape_extension"] = float(power_tape)
+    if steering is not None:
+        changes["steering_tape_extension"] = float(steering)
+    return dataclasses.replace(case, **changes).apply(config)
+
+
 def open_case(fidelity: str, spec: dict, kite: str):
     """``(driver, case)``: the fidelity's driver module and its built case."""
     kite_dir = PROJECT_DIR / "data" / kite
@@ -160,14 +183,14 @@ def open_case(fidelity: str, spec: dict, kite: str):
         from awetrim.aerostructural.billow import driver
 
         case = driver.build_case(
-            spec.get("config_overrides"), kite_name=kite, project_dir=PROJECT_DIR,
+            sweep_case(spec), spec.get("overrides"), kite_name=kite, project_dir=PROJECT_DIR,
             system_config_path=system_path,
         )
     else:
         from awetrim.aerostructural.wireframe import driver
 
         config_path, _, _ = resolve_kite_paths(PROJECT_DIR, kite)
-        config = merge_config(load_yaml(config_path), spec.get("config_overrides"))
+        config = runtime_config(sweep_case(spec), config_path, spec.get("overrides"))
         # the wireframe reduced from the full structure (one structural file
         # for both fidelities), its aero mesh the full geometry's (billowed
         # when aerodynamic.billowing.contraction > 0)
@@ -215,19 +238,16 @@ def solve_base_states(driver, case, spec: dict, out: Path) -> None:
         print(f"base states: done, skipped ({done})", flush=True)
         return
     winds = sorted(float(w) for w in spec["wind_speeds"])
-    config = copy.deepcopy(case.config)
-    config["power_tape_final_extension"] = 0.0
+    config = _at(copy.deepcopy(case.config), wind_speed=winds[0], power_tape=0.0, steering=0.0)
     config["power_tape_extension_step"] = float(spec["depower"]["step"])
-    config["steering_tape_final_extension"] = 0.0
     config["steering_tape_extension_step"] = float(spec["steering"]["step"])
-    config["wind_speed_wind_ref"] = winds[0]
     prepared = prepare(driver, case, spec, config)
     latest = {}
     for n_pass in range(max_passes):
         order = winds if n_pass % 2 == 0 else winds[::-1]
         for wind in order[1:] if n_pass else order:  # a turn re-solves no wind twice
             started = time.perf_counter()
-            config["wind_speed_wind_ref"] = wind
+            config = _at(config, wind_speed=wind)
             tracking, meta = driver.solve_step(case, prepared, config, final_state={})
             path = base_state_path(out, wind)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -299,11 +319,9 @@ def repolar_chain(driver, case, chain: Chain, spec: dict, out: Path) -> int:
         if len(have) and have.min() <= d_alpha.min() + 1e-9 and have.max() >= d_alpha.max() - 1e-9:
             continue
         started = time.perf_counter()
-        config = copy.deepcopy(case.config)
-        config["wind_speed_wind_ref"] = float(chain.wind_speed)
-        config["power_tape_final_extension"] = 0.0
+        config = _at(copy.deepcopy(case.config), wind_speed=chain.wind_speed,
+                     power_tape=0.0, steering=0.0)
         config["power_tape_extension_step"] = float(spec["depower"]["step"])
-        config["steering_tape_final_extension"] = 0.0
         config["steering_tape_extension_step"] = float(spec["steering"]["step"])
         prepared = prepare(driver, case, spec, config)
         prepared.restore(out / chain.name / f"step_{index:02d}" / "sim_output.h5")
@@ -333,8 +351,7 @@ def solve_chain(driver, case, chain: Chain, spec: dict, out: Path, start: int = 
     structure saved with step ``start - 1``; a fresh one from its wind's
     base state when the sweep has them (``start_from_converged``), else
     from the build. Returns the chain's number of anchors."""
-    config = copy.deepcopy(case.config)
-    config["wind_speed_wind_ref"] = float(chain.wind_speed)
+    config = _at(copy.deepcopy(case.config), wind_speed=chain.wind_speed)
     prepared = prepare(driver, case, spec, config)
     if start:
         prepared.restore(out / chain.name / f"step_{start - 1:02d}" / "sim_output.h5")
@@ -350,11 +367,12 @@ def solve_chain(driver, case, chain: Chain, spec: dict, out: Path, start: int = 
             0.0 if step.power_tape_length is None
             else step.power_tape_length - prepared.power_tape_length
         )
-        config["power_tape_final_extension"] = float(tape_reach)
-        config["power_tape_extension_step"] = float(spec["depower"]["step"])
-        config["steering_tape_final_extension"] = float(
-            step.steering_half_difference - prepared.steering_half_difference
+        config = _at(
+            config,
+            power_tape=tape_reach,
+            steering=step.steering_half_difference - prepared.steering_half_difference,
         )
+        config["power_tape_extension_step"] = float(spec["depower"]["step"])
         config["steering_tape_extension_step"] = float(spec["steering"]["step"])
         final_state = {}
         tracking, meta = driver.solve_step(case, prepared, config, final_state=final_state)

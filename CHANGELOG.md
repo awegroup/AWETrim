@@ -21,6 +21,24 @@ Legacy readers and unused modules removed. Files in the old formats raise a
   `case.find_struc_geometry` are removed: `load_structure` reads awesIO files
   only (an in-memory PSM wireframe dict is still translated).
 - **`rotate_geometry`** no longer takes a single scalar angle about +y.
+- **The operating point is a `Case`.** `awetrim.aerostructural.case.Case`
+  holds what a run is: flight state, wind spec, atmosphere (`rho`, `mu`,
+  gravity) and the tape command, with no defaults on the flight state, wind or
+  command. The drivers (`billow.driver.build_case` / `solve_deformation`,
+  `wireframe.driver.build_case` / `build_case_reduced_fem` /
+  `solve_deformation` / `solve_deformation_reduced_fem`) take
+  `(case, overrides)` instead of `config_overrides`; overrides come in
+  as_config's subsystem blocks plus `output`. `CONFIG_DEFAULTS` lost its operating-point
+  keys, which also lived (with other values) in `as_config.yaml`, the step-2
+  scripts, `identification.yaml` and `aerodynamic_vsm`. Stored results keep
+  their layout and still load.
+- **`as_config.yaml` has one block per subsystem**: `aerodynamics`,
+  `structure` (`wireframe`, `billow`), `tether`, `coupling` (`trim`, `loop`,
+  `load_transfer`). The flight state, wind, atmosphere, tape command and the
+  plot flags left it, and so did the KCU point (`aerodynamic.reference_point`,
+  `structural_pss.fixed_point_indices`): the drivers take it from the
+  structure. A flat file raises. `identification.yaml`'s
+  `sweep.config_overrides` became `sweep.case` + `sweep.overrides`.
 - **Removed modules:** `utils.fitting`, `utils.sparsity_analysis`,
   `utils.talmar_equations`, `timeseries.cycle_phase`,
   `aerostructural.logging_config`.

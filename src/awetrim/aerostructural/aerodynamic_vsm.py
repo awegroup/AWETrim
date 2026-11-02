@@ -548,7 +548,7 @@ def initialize(
 
     # For QSM, wind speed comes from system model configuration (wind_speed_wind_ref).
     # Kite velocity is computed by the optimizer, so we initialize with wind direction.
-    wind_speed_ref = float(config.get("wind_speed_wind_ref", 6.0))
+    wind_speed_ref = float(config["wind_speed_wind_ref"])
     vel_app = np.array([wind_speed_ref, 0.0, 0.0])
     body_aero.va = vel_app
     wing = body_aero.wings[0]

@@ -52,8 +52,9 @@ Each run writes its own case folder, named after its inputs, under
 - `config.yaml`, plus the deformed `aero_geometry.yaml` / `structure.yml` (awesIO), which other
   scripts can reuse (e.g. `examples/1_aerodynamics/solve_single_state.py --deformed-from <case>`)
 
-Solver settings (tolerances, panel counts, the material model) come from the
-kite's `as_config.yaml`.
+The inputs block builds the run's `Case` (flight state, wind, tape command).
+How the problem is modelled and solved comes from the kite's `as_config.yaml`
+(one block per subsystem); the scripts override a few aerodynamic settings.
 
 ## 2. Look at the result
 

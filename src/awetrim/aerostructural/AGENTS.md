@@ -95,11 +95,42 @@ src/awetrim/aerostructural/
                                    resultant_tether_force, relative_residual_norm,
                                    element_elongations, max_element_elongation
   results.py                       save_sim_output, append_sweep_csv_row, build_sweep_csv_row
-  case.py                          Case setup shared by drivers and scripts:
-                                   DEFAULT_KITE_NAME, CONFIG_DEFAULTS,
-                                   resolve_kite_paths, build_system_model,
+  case.py                          Case setup shared by drivers and scripts.
+                                   Case (frozen dataclass, since 2026-11-02):
+                                   what a run IS -- flight state, wind spec
+                                   (create_wind_model_from_config form),
+                                   atmosphere (rho, air_density_law,
+                                   height_gnd, mu, gravity), tape command --
+                                   with NO defaults on the flight state, wind
+                                   or command; to_config / from_config (a
+                                   stored result's, a wind-spec-less one read
+                                   as uniform; a wind_speed_wind_ref that
+                                   disagrees with the spec raises) / apply /
+                                   folder_name. CASE_KEYS. as_config.yaml has
+                                   one block per subsystem: aerodynamics,
+                                   structure (wireframe, billow, solver),
+                                   tether, coupling (trim, loop,
+                                   load_transfer); to_runtime maps them onto
+                                   the names the solvers read
+                                   (_RUNTIME_NAMES: aerodynamics.bridle ->
+                                   aerodynamic_bridle, structure.wireframe ->
+                                   structural_pss, coupling.loop ->
+                                   aero_structural_solver, ...) and refuses
+                                   a case key or the KCU point;
+                                   load_as_config / flatten_as_config;
+                                   apply_overrides (same blocks + output);
+                                   apply_structure (the KCU point as the
+                                   moment reference and the fixed nodes, from
+                                   the Structure; both drivers call it);
+                                   runtime_config(case, as_config, overrides,
+                                   defaults=) is THE config a coupled run
+                                   reads; OUTPUT_DEFAULTS (plot / snapshot
+                                   flags, the script's); merge_config.
+                                   DEFAULT_KITE_NAME, CONFIG_DEFAULTS (model
+                                   keys only), resolve_kite_paths,
+                                   build_system_model,
                                    air_density_at_case (THE density of a
-                                   case: as_config rho, or with
+                                   case: the Case's rho, or with
                                    air_density_law: exponential + height_gnd
                                    the sea-level rho taken to the kite height
                                    r sin(beta); VSM, bridle drag and the
@@ -1032,9 +1063,15 @@ so its difference is the camber offset and not a transfer error. On a planar
 wing, where the two coincide, the moment is exact
 (`tests/aerostructural/test_aero2struc.py`).
 
-## Config Keys (aerostructural_configs/config.yaml)
+## Config Keys (as_config.yaml)
 
-All defaults are defined in `awetrim.aerostructural.case.CONFIG_DEFAULTS`. Key sections:
+`as_config.yaml` has one block per subsystem -- `aerodynamics`, `structure`
+(`wireframe`, `billow`), `tether`, `coupling` (`trim`, `loop`,
+`load_transfer`) -- each with its model choices first and its solver settings
+after; `case.to_runtime` maps them onto the runtime names below. The
+operating point is a `case.Case`, the KCU point the structure's, never a
+config key. Key sections (runtime names; in the file `aerodynamic` is the
+`aerodynamics` block):
 
 ```yaml
 aerodynamic:
@@ -1449,7 +1486,7 @@ Output goes to `results/aerostructural/<kite_name>/<case_folder>/sim_output.h5` 
 
 - Read `coupled/awesio_structure.py` before changing how a structure file is read (`Structure`, `from_awesio`, `wireframe_to_awesio` / `wireframe_from_awesio`), and `structural_geometry_io.main()` before changing the wireframe's internal PSM dict; there the node index ordering (odd = LE, even = TE) and pulley dict format `[cj, ck, l0_cj_ck, l0_ci_cj, ci]` are load-bearing.
 - Any change to `WireframeQsmCoupler` must keep `QsmCouplingRequest` / `QsmCouplingResult` stable; the protocol tests check these fields.
-- Shared case helpers live in `awetrim.aerostructural.case` — add new shared defaults to `CONFIG_DEFAULTS` there, not as literals in individual scripts. Driver logic belongs in `wireframe/driver.py` / `billow/driver.py`; the run scripts only set inputs.
+- Shared case helpers live in `awetrim.aerostructural.case`. The operating point is a `Case` the script builds (no defaults); a new as_config key goes in its subsystem block (a new sub-block needs a `case._RUNTIME_NAMES` entry), a model default in `CONFIG_DEFAULTS`, never as a literal in an individual script. Driver logic belongs in `wireframe/driver.py` / `billow/driver.py`; the run scripts only set inputs.
 
 
 ## Trim settings reach the Billow trim (2026-10-07)

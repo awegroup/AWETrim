@@ -9,7 +9,12 @@ from awetrim.aerostructural.wireframe import driver, structural_wireframe
 
 @pytest.fixture(scope="module")
 def case():
-    return driver.build_case(kite_name="LEI-V3-KITE")
+    from awetrim.aerostructural.case import Case
+
+    return driver.build_case(
+        Case(0.0, 0.0, 90.0, 300.0, 0.0, 0.0, 0.0, {"model": "uniform", "speed_wind_ref": 6.0}, 0.0, 0.0),
+        kite_name="LEI-V3-KITE",
+    )
 
 
 def test_restore_puts_back_the_saved_structure(case, tmp_path):
