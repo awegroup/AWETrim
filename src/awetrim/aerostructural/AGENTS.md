@@ -253,10 +253,16 @@ src/awetrim/aerostructural/
                                    drivers, the actuation and the Aitken
                                    relaxation needed no change when the
                                    particle system was removed. kin_damp_sim
-                                   deliberately raises. Also holds the pure
-                                   stiffness-bound helpers
-                                   (modulus_stiffness_ceiling,
-                                   adapt_stiffnesses), moved across unchanged.
+                                   deliberately raises. The structure flies
+                                   its file's stiffnesses: the elongation-
+                                   bound stiffening (adapt_stiffnesses,
+                                   modulus_stiffness_ceiling), the modulus
+                                   ramp and pin_bridle_modulus existed for the
+                                   PSM file's 10x too soft lines and were
+                                   removed 2026-11-02 (0.13 % max elongation
+                                   on the datasheet moduli, 0 updates); the
+                                   elongations stay a diagnostic
+                                   (max_*_element_elongation in the meta).
     structural_geometry_io.py      The wireframe's internal PSM-format dict
                                    (Structure.wireframe_dict()) -> StructuralGeometry
                                    arrays. Reads no file.
@@ -295,8 +301,7 @@ src/awetrim/aerostructural/
                                    solve_deformation = build_case (config,
                                    files, VSM body, tether) + prepare_structure
                                    (one live wireframe; PreparedWireframe reads
-                                   the LIVE tape lengths, pin_bridle_modulus
-                                   sets the fixed-stiffness model, restore(h5)
+                                   the LIVE tape lengths, restore(h5)
                                    puts back a saved solve's positions (meta
                                    structure_positions: the structure's own;
                                    tracking positions[-1] carries the final
@@ -309,10 +314,7 @@ src/awetrim/aerostructural/
                                    the structure stands; final_state= receives
                                    the trimmed body, trim result and system
                                    model). Refactor of 2026-10-27 is
-                                   bit-identical. Chains must not use the
-                                   elongation bound (it only raises k, so a
-                                   reused structure ratchets): pin the modulus
-                                   and set structural_pss.update_stiffness false
+                                   bit-identical.
     reduce_fem.py                  reduce_fem_geometry: the full model as a
                                    Structure (awesIO structure.yml) -> the
                                    wireframe's PSM-format dict. Strut diameter
@@ -1212,13 +1214,6 @@ through the walk stopped a reel-in point at iteration 5 as a fully powered
 25.7 kN kite. Callers that apply their own acceptance on top of the solver
 (e.g. a "plateau" promotion) must honour `stop_reason` and never accept a
 `trim_speed_bound` run.
-
-**Elongation-rule settle gate needs history (2026-09-13):** the 1 % rule
-acts only from iteration `stiffness_settle_iters` on. The actuation
-"finalized" flags start `True` before the walk's first update, so without
-that term a handed-over shape whose iteration-0 residual is under the
-trigger stiffened on the donor/rest-length mismatch (9 wing elements at a
-spurious 9.5 % on chained cycle seconds).
 
 **Direct steering preset (2026-09-10).** Opt-in config key
 `steering_tape_preset_extension`: sets the asymmetric steering tape rest

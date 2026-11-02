@@ -192,6 +192,16 @@ _RUNTIME_NAMES = {
 }
 _BLOCK_DESTINATION = {"aerodynamics": "aerodynamic", "tether": "tether", "coupling": None, "output": None}
 
+#: Wireframe keys of the elongation-bound stiffening and the modulus ramp,
+#: removed 2026-11-02: the structure flies its file's datasheet moduli.
+_REMOVED_WIREFRAME_KEYS = frozenset({
+    "update_stiffness", "stiffness_update_scope", "max_elongation",
+    "max_stiffness_factor", "stiffness_update_factor", "stiffness_settle_iters",
+    "stiffness_trigger_factor", "modulus_ramp_target_factor",
+    "modulus_ramp_step_factor", "modulus_ramp_scope", "modulus_stall_iters",
+    "modulus_max_halvings", "modulus_divergence_factor",
+})
+
 #: Runtime entries the structure owns (set by :func:`apply_structure`), never
 #: a config's: the KCU point is the moment reference and the fixed node.
 _STRUCTURE_OWNED = (("aerodynamic", "reference_point"), ("structural_pss", "fixed_point_indices"))
@@ -237,6 +247,13 @@ def to_runtime(blocks: Mapping[str, Any], source: str) -> dict:
         raise ValueError(
             f"{source} sets {found}: the operating point (flight state, wind, "
             "atmosphere, tape command) is the Case's, not a config's"
+        )
+    removed = sorted(_REMOVED_WIREFRAME_KEYS & set(runtime.get("structural_pss") or {}))
+    if removed:
+        raise ValueError(
+            f"{source} sets structure.wireframe {removed}: the elongation-bound "
+            "stiffening and the modulus ramp were removed on 2026-11-02 (the "
+            "structure flies its file's own moduli)"
         )
     for parent, key in _STRUCTURE_OWNED:
         if key in (runtime.get(parent) or {}):

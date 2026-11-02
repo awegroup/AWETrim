@@ -119,14 +119,14 @@ def test_identification_settings_merge_the_fidelity_block(tmp_path):
         "  wind_speeds: [4.0]\n"
         "  steering: {max: 0.1, step: 0.025}\n"
         "  fidelities:\n"
-        "    wireframe: {steering: {power_tape_lengths: [1.7]}, bridle_modulus_factor: 9.0}\n"
+        "    wireframe: {steering: {power_tape_lengths: [1.7]}, system_file: flown.yaml}\n"
         "    billow: {steering: {power_tape_lengths: [2.1]}}\n",
         encoding="utf-8",
     )
     fidelity, spec = ds.identification_settings(path, "sweep")
     assert fidelity == "wireframe"
     assert spec["steering"] == {"max": 0.1, "step": 0.025, "power_tape_lengths": [1.7]}
-    assert spec["bridle_modulus_factor"] == 9.0 and "fidelities" not in spec
+    assert spec["system_file"] == "flown.yaml" and "fidelities" not in spec
     _, billow = ds.identification_settings(path, "sweep", "billow")
     assert billow["steering"]["power_tape_lengths"] == [2.1]
     with pytest.raises(ValueError):

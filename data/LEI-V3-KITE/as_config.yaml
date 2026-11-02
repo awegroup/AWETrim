@@ -78,40 +78,15 @@ structure:
   ## damping were removed 2026-09-12; the keys that only configured the
   ## relaxation are ignored if present.
   wireframe:
-    # -- model --
-    # --- Element elongation bound (Poland & Schmehl) -- ON ------------------
-    # Stiffen only the elements stretching more than `max_elongation`, each
-    # capped at its OWN modulus ceiling (k_max = max_stiffness_factor *
-    # k_initial; since k = E*A/l0 that is one modulus for every element,
-    # unlike a scalar N/m cap, which would mean 111 GPa for a short thick
-    # element and 25,000 GPa for a long thin one). The bound also gates the
-    # solve's EXIT, so a converged answer is guaranteed to satisfy it.
-    #
-    # On by default because the reason for it is physical, not numerical: a
-    # bridle stretching several percent is not the kite that was measured, and
-    # the stretch moves the trim. It costs about the baseline wall time
-    # (~166 s/point vs 164 s across u_dp 0.18-0.42).
-    update_stiffness: !!bool true
-    stiffness_update_scope: !!str 'all'    # 'wing' | 'bridle' | 'all'
-    max_elongation: !!float 0.01           # the 1% gate
-    max_stiffness_factor: !!float 9.0      # x each element's initial modulus
+    # Flies the stiffnesses of structure.yml (E*A/l0 from each line's material
+    # and diameter, the datasheet moduli). The in-loop elongation-bound
+    # stiffening of the PSM file's too-soft lines was removed 2026-11-02; the
+    # element elongations stay a diagnostic of every run
+    # (max_element_elongation in the meta).
     # -- solver --
     nlp_tolerance: !!float 1.0e-8        # IPOPT tol
     nlp_max_iterations: !!int 1000       # IPOPT iteration cap
     nlp_anchor_stiffness: !!float 1.0e-3 # [N/m] pins force-free fully-slack nodes
-    stiffness_update_factor: !!float 1.5
-    stiffness_settle_iters: !!int 5
-    stiffness_trigger_factor: !!float 1.0  # step only from residual <= tol
-    #
-    # OPT-IN, off: modulus continuation walks the bridle modulus up INSIDE one
-    # solve, each step taken only from a converged state. Reaches 90 GPa at
-    # u_dp 0.18; stalls near 2.7x at u_dp 0.32. Rarely worth it -- 90 GPa
-    # moves the trim by <4%, which is near the solver tolerance.
-    # modulus_ramp_target_factor: !!float 9.0
-    # modulus_ramp_step_factor: !!float 1.4
-    # modulus_ramp_scope: !!str 'bridle'     # 'wing' | 'bridle' | 'bridle_lines' | 'all'
-    # modulus_stall_iters: !!int 25
-    # modulus_max_halvings: !!int 2
 
   ## billow  (minimum-energy: cables, pulleys, inflatable tube beams,
   ## wrinkling membrane canopy -- see src/awetrim/aerostructural/billow/)
