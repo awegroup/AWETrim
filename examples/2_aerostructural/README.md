@@ -54,7 +54,7 @@ Each run writes its own case folder, named after its inputs, under
 
 The inputs block builds the run's `Case` (flight state, wind, tape command).
 How the problem is modelled and solved comes from the kite's `as_config.yaml`
-(its `model` and `numerics` blocks); the scripts override a few numerics.
+(one block per subsystem); the scripts override a few aerodynamic settings.
 
 ## 2. Look at the result
 

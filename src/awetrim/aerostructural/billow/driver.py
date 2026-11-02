@@ -50,6 +50,7 @@ from awetrim.aerostructural.case import (
     DEFAULT_KITE_NAME,
     DEFAULT_STRUC_GEOMETRY_FILENAME,
     Case,
+    apply_structure,
     build_actuation_case_folder,
     merge_config,  # noqa: F401  (re-exported: callers import it from here)
     runtime_config,
@@ -81,18 +82,14 @@ STRUC_GEOMETRY_FILENAME = DEFAULT_STRUC_GEOMETRY_FILENAME
 #: Settings this driver applies over the kite's ``as_config.yaml`` before the
 #: caller's overrides (override-block form, :func:`case.apply_overrides`).
 BILLOW_CONFIG_DEFAULTS: dict[str, Any] = {
-    "model": {
-        "structural_solver": "billow",
-        # Conserve the panel pitching moment, not just the panel force: the
-        # wing's trim is a moment balance. See
-        # aero2struc.weights_at_centre_of_pressure.
-        "aero2struc": {"chordwise_distribution": "moment_matched"},
-    },
-    "numerics": {
-        # The coupled body is built from the STRUCTURAL sections: 27 sections
-        # on this geometry, so 2 panels per section = 54 aero panels.
-        "aerodynamic": {"n_aero_panels_per_struc_section": 2},
-    },
+    "structure": {"solver": "billow"},
+    # Conserve the panel pitching moment, not just the panel force: the
+    # wing's trim is a moment balance. See
+    # aero2struc.weights_at_centre_of_pressure.
+    "coupling": {"load_transfer": {"chordwise_distribution": "moment_matched"}},
+    # The coupled body is built from the STRUCTURAL sections: 27 sections
+    # on this geometry, so 2 panels per section = 54 aero panels.
+    "aerodynamics": {"n_aero_panels_per_struc_section": 2},
 }
 
 
@@ -198,8 +195,9 @@ def build_case(
 
     The run is ``case`` (:class:`awetrim.aerostructural.case.Case`, the
     operating point) on the kite's ``as_config.yaml`` with
-    :data:`BILLOW_CONFIG_DEFAULTS` and then ``overrides`` (blocks ``model``,
-    ``numerics``, ``output``) merged over it, nested dicts key by key
+    :data:`BILLOW_CONFIG_DEFAULTS` and then ``overrides`` (blocks
+    ``aerodynamics``, ``structure``, ``tether``, ``coupling``, ``output``)
+    merged over it, nested dicts key by key
     (:func:`case.runtime_config`), BEFORE the VSM solver is built:
     ``aerodynamic_vsm.initialize`` constructs the solver from the config it is
     handed, so an aerodynamic key set afterwards is silently ignored.
@@ -221,6 +219,7 @@ def build_case(
     struc_geometry = load_structure(struc_geometry_path)
     if struc_geometry.is_wireframe:
         raise ValueError(f"{struc_geometry_path} is a wireframe; Billow needs the full model")
+    config = apply_structure(config, struc_geometry)
     aero_geometry = load_yaml(aero_geometry_path)
     n_struc_ribs = len(struc_geometry.stations)
     n_panels_aero = (n_struc_ribs - 1) * config["aerodynamic"][
@@ -396,7 +395,7 @@ def solve_deformation(
 
     ``case`` is the operating point (flight state, wind, atmosphere and the
     tape command, relative to the tape lengths the geometry stores);
-    ``overrides`` change the model, numerics or output (:func:`build_case`).
+    ``overrides`` change a subsystem block or the output (:func:`build_case`).
 
     ``system_config_path`` defaults to the kite's ``system.yaml``. Returns the
     results directory, config, solver tracking/meta and the final nodes.

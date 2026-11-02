@@ -472,7 +472,7 @@ def build_system_model(args: argparse.Namespace):
     if as_config_path.exists():
         from awetrim.aerostructural.case import load_as_config
 
-        # its model (tether.model, ...) and numerics (tether.n_elements) merged
+        # the tether block (model, n_elements, ...) as the solvers read it
         tether_cfg = load_as_config(as_config_path).get("tether")
 
     if system_yaml is not None:

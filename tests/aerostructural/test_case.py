@@ -62,34 +62,70 @@ def test_a_wind_speed_edited_without_the_case_is_refused():
         Case.from_config(config)
 
 
-def test_the_lei_v3_as_config_has_no_operating_point():
+def test_the_lei_v3_as_config_has_no_operating_point_and_no_kcu_point():
     config = case.load_as_config(AS_CONFIG)
     assert not case.CASE_KEYS & set(config)
-    assert config["tether"]["model"] == "williams"  # model block
-    assert config["tether"]["n_elements"] == 10  # numerics block
+    assert "reference_point" not in config["aerodynamic"]
+    assert "fixed_point_indices" not in config["structural_pss"]
 
 
-def test_as_config_must_be_split_and_disjoint():
-    with pytest.raises(ValueError, match="top-level blocks"):
+def test_subsystem_blocks_land_on_the_runtime_names():
+    runtime = case.to_runtime(
+        {
+            "aerodynamics": {"is_with_kcu_drag": False, "bridle": {"cd_cable": 1.0}, "allowed_error": 1e-6},
+            "structure": {"solver": "billow", "wireframe": {"nlp_tolerance": 1e-6}, "billow": {"move_limit": 0.1}},
+            "tether": {"model": "rigid_lumped"},
+            "coupling": {"is_with_gravity": True, "trim": {"max_nfev": 4}, "loop": {"max_iter": 9},
+                         "load_transfer": {"eps": 1e-5}},
+            "output": {"is_with_final_plot": True},
+        },
+        "test",
+    )
+    assert runtime == {
+        "is_with_kcu_drag": False, "aerodynamic_bridle": {"cd_cable": 1.0},
+        "aerodynamic": {"allowed_error": 1e-6}, "structural_solver": "billow",
+        "structural_pss": {"nlp_tolerance": 1e-6}, "structural_billow": {"move_limit": 0.1},
+        "tether": {"model": "rigid_lumped"}, "is_with_gravity": True,
+        "quasi_steady_trim": {"max_nfev": 4}, "aero_structural_solver": {"max_iter": 9},
+        "aero2struc": {"eps": 1e-5}, "is_with_final_plot": True,
+    }
+
+
+def test_as_config_needs_its_four_blocks_and_refuses_the_old_formats():
+    with pytest.raises(ValueError, match="exactly the blocks"):
         case.flatten_as_config({"is_with_gravity": False})
-    with pytest.raises(ValueError, match="both the model and the numerics"):
-        case.flatten_as_config({"model": {"a": {"x": 1}}, "numerics": {"a": {"x": 2}}})
-    with pytest.raises(ValueError, match="the Case's"):
-        case.flatten_as_config({"model": {"rho": 1.2}, "numerics": {}})
+    with pytest.raises(ValueError, match="exactly the blocks"):
+        case.flatten_as_config({"model": {}, "numerics": {}})
+    with pytest.raises(ValueError, match="unknown key structure.pss"):
+        case.to_runtime({"structure": {"pss": {}}}, "test")
 
 
-def test_overrides_cannot_set_the_operating_point():
-    with pytest.raises(ValueError, match="blocks"):
+def test_configs_cannot_set_the_operating_point_or_the_kcu_point():
+    with pytest.raises(ValueError, match="unknown blocks"):
         case.apply_overrides({}, {"angle_elevation_deg": 30.0})
     with pytest.raises(ValueError, match="the Case's"):
-        case.apply_overrides({}, {"numerics": {"wind_speed_wind_ref": 5.0}})
+        case.apply_overrides({}, {"coupling": {"wind_speed_wind_ref": 5.0}})
+    with pytest.raises(ValueError, match="the structure's"):
+        case.apply_overrides({}, {"aerodynamics": {"reference_point": [0, 0, 1]}})
+    with pytest.raises(ValueError, match="the structure's"):
+        case.apply_overrides({}, {"structure": {"wireframe": {"fixed_point_indices": [3]}}})
+
+
+def test_the_kcu_point_comes_from_the_structure():
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
+
+    structure = load_structure(REPO_ROOT / "data" / "LEI-V3-KITE" / "structure.yml")
+    config = case.apply_structure(case.load_as_config(AS_CONFIG), structure)
+    assert config["aerodynamic"]["reference_point"] == list(structure.positions[structure.kcu])
+    assert config["structural_pss"]["fixed_point_indices"] == [structure.kcu]
+    assert config["aerodynamic"]["gamma_loop_type"] == "anderson"  # the rest kept
 
 
 def test_runtime_config_is_as_config_then_overrides_then_the_case():
     config = case.runtime_config(
         _case(), AS_CONFIG,
-        {"model": {"is_with_gravity": True}, "output": {"is_with_final_plot": True}},
-        defaults={"numerics": {"aerodynamic": {"n_aero_panels_per_struc_section": 2}}},
+        {"coupling": {"is_with_gravity": True}, "output": {"is_with_final_plot": True}},
+        defaults={"aerodynamics": {"n_aero_panels_per_struc_section": 2}},
     )
     assert config["is_with_gravity"] is True
     assert config["is_with_final_plot"] is True

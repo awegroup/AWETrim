@@ -26,6 +26,7 @@ from awesio.validator import validate as awesio_validate
 from awetrim.aerostructural import aerodynamic_vsm
 from awetrim.aerostructural.case import (
     Case,
+    apply_structure,
     runtime_config,
     build_actuation_case_folder,
     build_system_model,
@@ -431,7 +432,7 @@ def build_case(
     default system file).
 
     The run is ``case`` (the operating point) on the kite's ``as_config.yaml``
-    with ``overrides`` (blocks ``model``, ``numerics``, ``output``) merged
+    with ``overrides`` (subsystem blocks of as_config, or ``output``) merged
     over it key by key (:func:`awetrim.aerostructural.case.runtime_config`);
     or ``config``, a runtime config built that way (a continuation's).
     ``system_config_path`` defaults to ``system_flown_2019.yaml``.
@@ -474,6 +475,7 @@ def build_case(
 
     config = _runtime(case, overrides, config, config_path)
     structure = load_structure(struc_geometry_path)
+    config = apply_structure(config, structure)
     if not structure.is_wireframe:
         raise ValueError(
             f"{struc_geometry_path} is a full structure (it has tubes); the wireframe "
@@ -795,8 +797,8 @@ def solve_deformation(
     :func:`solve_step`; a continuation calls :func:`solve_step` again on the
     same prepared structure.
 
-    ``case`` is the operating point; ``overrides`` change the model, numerics
-    or output (e.g. ``{"output": {"is_save_geometry_snapshots": False}}``);
+    ``case`` is the operating point; ``overrides`` change a subsystem block
+    or the output (e.g. ``{"output": {"is_save_geometry_snapshots": False}}``);
     ``config`` is an already built runtime config instead (:func:`build_case`).
 
     ``struc_geometry_path`` is a wireframe structure file (e.g. the reduction

@@ -11,6 +11,10 @@ def test_merge_config_merges_nested_and_copies():
 
 
 def test_billow_defaults_select_the_billow_solver():
-    assert driver.BILLOW_CONFIG_DEFAULTS["model"]["structural_solver"] == "billow"
+    assert driver.BILLOW_CONFIG_DEFAULTS["structure"]["solver"] == "billow"
     # the tape command is the Case's, never a driver default
-    assert set(driver.BILLOW_CONFIG_DEFAULTS) <= {"model", "numerics", "output"}
+    from awetrim.aerostructural.case import CASE_KEYS, to_runtime
+
+    runtime = to_runtime(driver.BILLOW_CONFIG_DEFAULTS, "defaults")
+    assert runtime["structural_solver"] == "billow"
+    assert not CASE_KEYS & set(runtime)

@@ -166,13 +166,35 @@ class Case:
         return build_flight_case_folder(self.to_config())
 
 
-#: The runtime keys a Case owns. as_config and the model/numerics/output
-#: overrides may not set them.
+#: The runtime keys a Case owns. as_config and the overrides may not set them.
 CASE_KEYS = frozenset(
     Case(0, 0, 0, 0, 0, 0, 0, {"model": "uniform", "speed_wind_ref": 0.0}, 0, 0).to_config()
 )
-AS_CONFIG_BLOCKS = ("model", "numerics")
-OVERRIDE_BLOCKS = ("model", "numerics", "output")
+#: The subsystem blocks of as_config.yaml (all required) and of an override
+#: (any of them, plus ``output``).
+AS_CONFIG_BLOCKS = ("aerodynamics", "structure", "tether", "coupling")
+OVERRIDE_BLOCKS = AS_CONFIG_BLOCKS + ("output",)
+
+#: Where a key of a block lands in the runtime config the solvers read:
+#: ``(block, key) -> runtime key`` (``None``: the top level). A block's other
+#: keys go to :data:`_BLOCK_DESTINATION` (``None``: the top level; a block
+#: missing there takes only the keys named here).
+_RUNTIME_NAMES = {
+    ("aerodynamics", "bridle"): "aerodynamic_bridle",
+    ("aerodynamics", "is_with_aero_bridle"): None,
+    ("aerodynamics", "is_with_kcu_drag"): None,
+    ("structure", "solver"): "structural_solver",
+    ("structure", "wireframe"): "structural_pss",
+    ("structure", "billow"): "structural_billow",
+    ("coupling", "trim"): "quasi_steady_trim",
+    ("coupling", "loop"): "aero_structural_solver",
+    ("coupling", "load_transfer"): "aero2struc",
+}
+_BLOCK_DESTINATION = {"aerodynamics": "aerodynamic", "tether": "tether", "coupling": None, "output": None}
+
+#: Runtime entries the structure owns (set by :func:`apply_structure`), never
+#: a config's: the KCU point is the moment reference and the fixed node.
+_STRUCTURE_OWNED = (("aerodynamic", "reference_point"), ("structural_pss", "fixed_point_indices"))
 
 
 def merge_config(base: Mapping[str, Any], overrides: Mapping[str, Any] | None):
@@ -186,43 +208,54 @@ def merge_config(base: Mapping[str, Any], overrides: Mapping[str, Any] | None):
     return merged
 
 
-def _merge_disjoint(a: Mapping, b: Mapping, where: str) -> dict:
-    """``a`` and ``b`` merged; a leaf in both is an error (``where`` names it)."""
-    merged = copy.deepcopy(dict(a))
-    for key, value in b.items():
-        if key not in merged:
-            merged[key] = copy.deepcopy(value)
-        elif isinstance(value, Mapping) and isinstance(merged[key], Mapping):
-            merged[key] = _merge_disjoint(merged[key], value, f"{where}.{key}")
-        else:
-            raise ValueError(
-                f"{where}.{key} is set in both the model and the numerics block; "
-                "a key is either a model choice or a solver setting"
-            )
-    return merged
+def to_runtime(blocks: Mapping[str, Any], source: str) -> dict:
+    """The runtime config (the keys the solvers read) of subsystem ``blocks``.
 
-
-def _refuse_case_keys(block: Mapping, where: str) -> None:
-    found = sorted(CASE_KEYS & set(block))
+    Refuses an unknown block or key, a case key (the operating point is the
+    Case's) and the KCU point (the structure's).
+    """
+    unknown = sorted(set(blocks) - set(OVERRIDE_BLOCKS))
+    if unknown:
+        raise ValueError(
+            f"{source}: unknown blocks {unknown}; the blocks are {list(OVERRIDE_BLOCKS)} "
+            "(the operating point is the Case's; the flat and the model/numerics "
+            "formats were replaced on 2026-11-02)"
+        )
+    runtime: dict = {}
+    for block, content in blocks.items():
+        for key, value in (content or {}).items():
+            if (block, key) in _RUNTIME_NAMES:
+                target = _RUNTIME_NAMES[(block, key)]
+                runtime = merge_config(runtime, {key if target is None else target: value})
+            elif block in _BLOCK_DESTINATION:
+                target = _BLOCK_DESTINATION[block]
+                runtime = merge_config(runtime, {key: value} if target is None else {target: {key: value}})
+            else:
+                raise ValueError(f"{source}: unknown key {block}.{key}")
+    found = sorted(CASE_KEYS & set(runtime))
     if found:
         raise ValueError(
-            f"{where} sets {found}: the operating point (flight state, wind, "
+            f"{source} sets {found}: the operating point (flight state, wind, "
             "atmosphere, tape command) is the Case's, not a config's"
         )
+    for parent, key in _STRUCTURE_OWNED:
+        if key in (runtime.get(parent) or {}):
+            raise ValueError(
+                f"{source} sets {key}: the KCU point is the structure's "
+                "(structure.yml awetrim.kcu_point and its fixed point)"
+            )
+    return runtime
 
 
 def flatten_as_config(document: Mapping[str, Any], source: str = "as_config") -> dict:
-    """The runtime base of an ``as_config`` document: its ``numerics`` and
-    ``model`` blocks merged (disjoint: no key may be in both)."""
+    """The runtime base of an ``as_config`` document (its four subsystem blocks)."""
     if set(document) != set(AS_CONFIG_BLOCKS):
         raise ValueError(
-            f"{source} must have exactly the top-level blocks {list(AS_CONFIG_BLOCKS)} "
-            f"(how the problem is modelled, how it is solved), got {sorted(document)}; "
-            "the flat format was split on 2026-11-02"
+            f"{source} must have exactly the blocks {list(AS_CONFIG_BLOCKS)}, got "
+            f"{sorted(document)}; the flat and the model/numerics formats were "
+            "replaced on 2026-11-02"
         )
-    for block in AS_CONFIG_BLOCKS:
-        _refuse_case_keys(document[block] or {}, f"{source}:{block}")
-    return _merge_disjoint(document["numerics"] or {}, document["model"] or {}, source)
+    return to_runtime(document, source)
 
 
 def load_as_config(path: Path | str) -> dict:
@@ -233,20 +266,23 @@ def load_as_config(path: Path | str) -> dict:
 
 
 def apply_overrides(config: Mapping[str, Any], overrides: Mapping[str, Any] | None) -> dict:
-    """``config`` with ``overrides`` (blocks ``model``, ``numerics``,
-    ``output``) merged over it, nested dicts key by key."""
-    overrides = overrides or {}
-    unknown = sorted(set(overrides) - set(OVERRIDE_BLOCKS))
-    if unknown:
-        raise ValueError(
-            f"overrides take the blocks {list(OVERRIDE_BLOCKS)}, got {unknown}; the "
-            "operating point is the Case's"
-        )
-    merged = dict(config)
-    for block in OVERRIDE_BLOCKS:
-        _refuse_case_keys(overrides.get(block) or {}, f"overrides:{block}")
-        merged = merge_config(merged, overrides.get(block))
-    return merged
+    """``config`` with ``overrides`` (subsystem blocks and ``output``) merged
+    over it, nested dicts key by key."""
+    return merge_config(config, to_runtime(overrides or {}, "overrides"))
+
+
+def apply_structure(config: Mapping[str, Any], structure) -> dict:
+    """``config`` with what the structure owns: the KCU point as the moment
+    reference and the structure's fixed nodes (``structure`` is a
+    :class:`~awetrim.aerostructural.coupled.awesio_structure.Structure`)."""
+    kcu = [float(v) for v in np.asarray(structure.positions[structure.kcu], dtype=float)]
+    return merge_config(
+        config,
+        {
+            "aerodynamic": {"reference_point": kcu},
+            "structural_pss": {"fixed_point_indices": [int(i) for i in structure.fixed]},
+        },
+    )
 
 
 def runtime_config(

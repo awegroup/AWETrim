@@ -68,9 +68,9 @@ def solver_results(tmp_path_factory):
         result = driver.solve_deformation(
             case,
             {
-                "model": {"is_with_gravity": True, "is_with_aero_bridle": True},
+                "coupling": {"is_with_gravity": True},
                 # the public example's mesh: 2 panels per FEM section
-                "numerics": {"aerodynamic": {"n_aero_panels_per_struc_section": 2}},
+                "aerodynamics": {"is_with_aero_bridle": True, "n_aero_panels_per_struc_section": 2},
             },
             project_dir=REPO_ROOT,
             results_dir=tmp_path_factory.mktemp(f"steering_{steering:.2f}"),

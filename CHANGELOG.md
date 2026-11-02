@@ -27,14 +27,17 @@ Legacy readers and unused modules removed. Files in the old formats raise a
   command. The drivers (`billow.driver.build_case` / `solve_deformation`,
   `wireframe.driver.build_case` / `build_case_reduced_fem` /
   `solve_deformation` / `solve_deformation_reduced_fem`) take
-  `(case, overrides)` instead of `config_overrides`; overrides come in blocks
-  `model` / `numerics` / `output`. `CONFIG_DEFAULTS` lost its operating-point
+  `(case, overrides)` instead of `config_overrides`; overrides come in
+  as_config's subsystem blocks plus `output`. `CONFIG_DEFAULTS` lost its operating-point
   keys, which also lived (with other values) in `as_config.yaml`, the step-2
   scripts, `identification.yaml` and `aerodynamic_vsm`. Stored results keep
   their layout and still load.
-- **`as_config.yaml` is split** into a `model` and a `numerics` block that may
-  not share a key; the flight state, wind, atmosphere, tape command and the
-  plot flags left it. A flat file raises. `identification.yaml`'s
+- **`as_config.yaml` has one block per subsystem**: `aerodynamics`,
+  `structure` (`wireframe`, `billow`), `tether`, `coupling` (`trim`, `loop`,
+  `load_transfer`). The flight state, wind, atmosphere, tape command and the
+  plot flags left it, and so did the KCU point (`aerodynamic.reference_point`,
+  `structural_pss.fixed_point_indices`): the drivers take it from the
+  structure. A flat file raises. `identification.yaml`'s
   `sweep.config_overrides` became `sweep.case` + `sweep.overrides`.
 - **Removed modules:** `utils.fitting`, `utils.sparsity_analysis`,
   `utils.talmar_equations`, `timeseries.cycle_phase`,
