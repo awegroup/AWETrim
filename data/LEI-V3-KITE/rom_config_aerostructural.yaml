@@ -116,8 +116,6 @@ aerodynamics:
       power: 2
       coef: -0.0015221709895366507
 tether:
-  model: williams
-  n_elements: 10
-  wind_model: uniform
-  cf: 0.01
-  is_elastic: false
+  # The tether a ROM run flies with (system.factory.load_rom_tether):
+  # rigid_lumped, the straight tether of the point-mass model.
+  model: rigid_lumped

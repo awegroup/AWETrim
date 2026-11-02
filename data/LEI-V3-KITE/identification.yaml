@@ -125,13 +125,11 @@ fit:
   # Steering-tape half-difference per unit of the ROM's u_s [m]
   # (awetrim.identification.controls: the standardised flight scale).
   steering_tape_per_unit_us: 1.4
-  # Written to the ROM file as its `tether` block.
+  # Written to the ROM file as its `tether` block: the tether a ROM run
+  # flies with. ROM runs use the rigid lumped tether; the aerostructural
+  # runs state theirs in as_config.
   rom_tether:
-    model: williams
-    n_elements: 10
-    wind_model: uniform
-    cf: 0.01
-    is_elastic: false
+    model: rigid_lumped
   # The u_p = l_dp range the coefficients are fitted on [m], and the ROM's
   # `controls` block: the tape lengths of the powered and depowered phases,
   # the band the trajectory optimiser works in. These are modelling choices

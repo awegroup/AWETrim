@@ -189,6 +189,21 @@ def load_rom_validity(
     return _load_yaml(aero_path).get("validity") or {}
 
 
+def load_rom_tether(
+    cfg: dict,
+    config_path: Union[str, Path, None] = None,
+    aero_yaml_path: Union[str, Path, None] = None,
+) -> dict:
+    """The ``tether`` block of the system's ROM file: the tether model a ROM
+    run flies with (empty, i.e. ``rigid_lumped``, when the ROM is inline or the
+    file states none). An aerostructural run states its own in as_config."""
+    base_path = Path(config_path) if config_path is not None else None
+    aero_path = _resolve_aero_config_path(cfg, base_path, aero_yaml_path)
+    if aero_path is None:
+        return {}
+    return _load_yaml(aero_path).get("tether") or {}
+
+
 def load_rom_depower_validity(
     cfg: dict,
     config_path: Union[str, Path, None] = None,
@@ -400,7 +415,9 @@ def create_system_model_from_yaml(
     resolved via ``awetrim.utils.system_config.get_kite`` / ``get_tether``, which
     also accept the singular ``components.kite`` / ``components.tether``
     layout. ROM aerodynamics are loaded from ``aero_yaml_path``, the file the
-    system file names, or a sibling ``rom_config.yaml``.
+    system file names, or a sibling ``rom_config.yaml``. The tether model is
+    ``tether_config`` when given (an aerostructural run's as_config block),
+    else the ROM file's ``tether`` block (:func:`load_rom_tether`).
     """
     config_path = Path(yaml_path)
     cfg = _load_yaml(config_path)
@@ -447,6 +464,10 @@ def create_system_model_from_yaml(
         hardware_limits, validity.get("min_tether_force_n")
     )
 
+    if tether_config is None:
+        tether_config = load_rom_tether(
+            cfg, config_path=config_path, aero_yaml_path=aero_yaml_path
+        )
     tether = create_tether_from_config(
         tether_config, diameter=tether_diameter, density=tether_density
     )
