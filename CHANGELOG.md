@@ -78,6 +78,20 @@ Legacy readers and unused modules removed. Files in the old formats raise a
   tether in the trim).
 - **`aerodynamic_vsm.trim_bounds` / `trim_settings`**: the trim search box
   and settings of a config, one place for the coupled and step-1 trims.
+- **The wing tip is a valid lifting-line bay.** The FEM tip bay (the curled
+  leading-edge tube) was meshed with 64-66 deg of panel sweep: VSM found
+  several circulations per tip panel and the trims cycled (CasADi trim: 2 of
+  12 realistic LEI-V3 states converged, the tips always stalled).
+  `aerostructural.wing_tip.correct_tip_bays`, applied by
+  `wireframe.driver.fem_wing`, keeps the tube length and slides the tip
+  corner until the bay is swept at most 55 deg (`panel_sweep_deg`,
+  `MAX_PANEL_SWEEP_DEG`), and warns about any bay of any kite still beyond
+  it; aerodynamic mesh only. Billowing (`billowing.billow_wing`) no longer
+  rotates the tip bays rigidly with the outer strut: the leading edge and
+  the tube end stay, the tip-bay trailing edge takes a fading share of the
+  strut's shift. LEI-V3 at the PSM example's case (CasADi trim, AV on):
+  converged, no panel past stall; 21.28 instead of 20.86 m/s, C_D -3.4 %,
+  tension +3.8 %. Wireframe step-2 and step-1 results change.
 - **Removed modules:** `utils.fitting`, `utils.sparsity_analysis`,
   `utils.talmar_equations`, `timeseries.cycle_phase`,
   `aerostructural.logging_config`.

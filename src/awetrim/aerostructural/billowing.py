@@ -43,10 +43,16 @@ of its struts:
 * the trailing-edge points between two struts go on the circular arc of the
   bay's built fabric length (the trailing-edge polyline), each at its own
   fraction of that length, bulging the way the built bay already bulges;
-* the two tip bays (outer strut to the leading-edge tip piece) cannot contract
-  by rotating the short tip chord: they ride rigidly with the outer strut and
-  keep their built shape. The photogrammetry also sees the smallest change
-  there.
+* the two tip bays (outer strut to the leading-edge tip piece) keep their
+  leading edge AND the tube's end (the tip chord, where the leading-edge tube
+  runs into the trailing edge), so the tube never stretches; their
+  trailing-edge points take the outer strut's trailing-edge displacement,
+  fading linearly in fabric length to zero at the tip. The photogrammetry
+  also sees the smallest change there. Until 2026-11 the tip bays rode
+  rigidly with the outer strut, which moved the tube's tip up to 0.24 m on
+  the LEI-V3.
+
+The leading edge is the same as the built one everywhere (checked).
 
 :func:`refine_billowed_wing` subdivides the result into aerodynamic sections
 on the arc. ``p = 0`` returns the built wing.
@@ -212,13 +218,18 @@ def billow_wing(
     section_motion = {}
     for k in struts[1:-1]:
         section_motion[k] = (le[k].copy(), normal(k), angle[k])
-    # tip bays ride rigidly with their outer strut
-    for (first, last), strut in ((bays[0], bays[0][1]), (bays[-1], bays[-1][0])):
-        for k in range(first, last + 1):
-            if k != strut:
-                section_motion[k] = section_motion[strut]
-                le_new[k] = le[strut] + rotate_about_axis(le[k] - le[strut], normal(strut), angle[strut])
-                te_new[k] = le[strut] + rotate_about_axis(te[k] - le[strut], normal(strut), angle[strut])
+    # tip bays: leading edge and tube end (tip chord) stay; the trailing edge
+    # in between takes the outer strut's displacement, fading to the tip
+    for strut, tip in ((bays[0][1], bays[0][0]), (bays[-1][0], bays[-1][1])):
+        idx = np.arange(strut, tip + (1 if tip > strut else -1), 1 if tip > strut else -1)
+        seg = np.linalg.norm(np.diff(te[idx], axis=0), axis=1)
+        fraction = np.concatenate([[0.0], np.cumsum(seg)]) / seg.sum()
+        shift = te_new[strut] - te[strut]
+        for k, f in zip(idx[1:], fraction[1:]):
+            te_new[k] = te[k] + (1.0 - f) * shift
+            section_motion[k] = (le[k].copy(), normal(k), 0.0)
+    if not np.array_equal(le_new, le):
+        raise AssertionError("billowing moved the leading edge")
 
     out = []
     for first, last in bays:

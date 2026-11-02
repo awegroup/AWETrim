@@ -91,14 +91,17 @@ class TestKiteFromTheDataFolder:
         assert kite.system_model.timeder_speed_tangential == 0.0
 
     def test_zero_billowing_is_the_built_wing(self):
-        """Contraction 0 gives the structure's own wing: its FEM sections."""
+        """Contraction 0 gives the structure's own wing: its FEM sections,
+        except the two tip leading-edge points (``wing_tip.correct_tip_bays``)."""
         from awetrim.aerostructural.coupled.awesio_structure import load_structure
         from awetrim.aerostructural.wireframe.driver import wing_edges
 
         structure = load_structure(common.PROJECT_DIR / "data" / "LEI-V3-KITE" / "structure.yml")
         reader = structure.resolved()
         le, te = wing_edges(structure, 0.0, 3)
-        np.testing.assert_allclose(le[::3], reader[0][np.asarray(reader[2])])
+        built_le = reader[0][np.asarray(reader[2])]
+        np.testing.assert_allclose(le[::3][1:-1], built_le[1:-1])
+        assert np.linalg.norm(le[0] - built_le[0]) > 0.1
         np.testing.assert_allclose(te[::3], reader[0][np.asarray(reader[3])])
 
 
