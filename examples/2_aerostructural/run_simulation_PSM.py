@@ -81,8 +81,11 @@ def main():
         # of the full geometry's mesh, and VSM's base circulation loop. With
         # artificial viscosity on, the LEI-V3's stalled tips trap the Anderson
         # loop (as_config's) in a post-stall limit cycle and the tip loads
-        # never converge. The Billow studies use base too.
-        "aerodynamic": {"n_aero_panels_per_struc_section": 2, "gamma_loop_type": "base"},
+        # never converge. The Billow studies use base too. as_config pairs
+        # allowed_error with the loop type: base goes with 2e-6, never with
+        # Anderson's 1e-8, which base cannot reach (same result, ~40 % slower).
+        "aerodynamic": {"n_aero_panels_per_struc_section": 2, "gamma_loop_type": "base",
+                        "allowed_error": 2e-6},
     }
     results_dir = (
         aerostructural_results_root(project_dir, KITE)

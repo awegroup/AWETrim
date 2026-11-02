@@ -14,7 +14,7 @@ Open one of the two scripts, edit the **Inputs** block at the top, and run it.
 
 | Script | Structural model | Time |
 |--------|------------------|------|
-| [`run_simulation_PSM.py`](run_simulation_PSM.py) | **Wireframe**: one rib per strut, the bridle with its pulleys, tubes as stiff axial springs, canopy as tension-only springs | under a minute |
+| [`run_simulation_PSM.py`](run_simulation_PSM.py) | **Wireframe**: one rib per strut, the bridle with its pulleys, tubes as stiff axial springs, canopy as tension-only springs | about 2 min |
 | [`run_simulation_BILLOW.py`](run_simulation_BILLOW.py) | **Full**: inflatable tube beams (leading edge, struts), a wrinkling membrane canopy and the complete bridle | about 1 min |
 
 Both read the same geometry file, `structure.yml` (an awesIO structure
