@@ -352,3 +352,32 @@ def test_resolve_opti_limits_empty_is_exactly_defaults():
         _resolve_opti_limits = PhaseParameterized._resolve_opti_limits
 
     assert _Stub()._resolve_opti_limits() == dict(DEFAULT_OPTI_LIMITS)
+
+
+def test_a_rom_run_flies_the_tether_its_rom_file_states(tmp_path):
+    """The ROM file's ``tether`` block selects the model of a ROM run; an
+    explicit ``tether_config`` (an aerostructural run's as_config) wins."""
+    from awetrim.system.tether import RigidLumpedTether
+    from awetrim.system.williams_tether import WilliamsTether
+
+    config_path = tmp_path / "kite.yaml"
+    _write_config(config_path, "  model: uniform\n  speed_wind_ref: 8.0")
+    assert isinstance(create_system_model_from_yaml(config_path).tether, RigidLumpedTether)
+
+    rom = tmp_path / "rom_config.yaml"
+    rom.write_text(rom.read_text(encoding="utf-8") + "tether:\n  model: williams\n  n_elements: 4\n",
+                   encoding="utf-8")
+    assert isinstance(create_system_model_from_yaml(config_path).tether, WilliamsTether)
+    explicit = create_system_model_from_yaml(config_path, tether_config={"model": "rigid_lumped"})
+    assert isinstance(explicit.tether, RigidLumpedTether)
+
+
+@pytest.mark.parametrize(
+    "rom", ["rom_config_aerostructural.yaml", "rom_config_aerostructural_flight_corrected.yaml"]
+)
+def test_lei_v3_roms_fly_the_rigid_lumped_tether(rom):
+    from awetrim.system.tether import RigidLumpedTether
+    from awetrim.utils.config_paths import LEI_V3_SYSTEM_CONFIG
+
+    model = create_system_model_from_yaml(LEI_V3_SYSTEM_CONFIG, aero_yaml_path=rom)
+    assert isinstance(model.tether, RigidLumpedTether)

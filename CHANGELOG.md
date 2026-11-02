@@ -39,6 +39,11 @@ Legacy readers and unused modules removed. Files in the old formats raise a
   `structural_pss.fixed_point_indices`): the drivers take it from the
   structure. A flat file raises. `identification.yaml`'s
   `sweep.config_overrides` became `sweep.case` + `sweep.overrides`.
+- **ROM tether.** A ROM file's `tether` block now selects the tether of a
+  ROM run (`system.factory.load_rom_tether`); before, it was written but
+  never read and every ROM run flew the rigid lumped tether. The LEI-V3
+  ROMs and `identification.yaml` now state `rigid_lumped`, so their runs are
+  unchanged; a ROM file that states `williams` now flies it.
 - **Removed modules:** `utils.fitting`, `utils.sparsity_analysis`,
   `utils.talmar_equations`, `timeseries.cycle_phase`,
   `aerostructural.logging_config`.
