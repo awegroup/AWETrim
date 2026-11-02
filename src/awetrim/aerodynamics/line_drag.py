@@ -273,9 +273,14 @@ def _drag_diameter_of_segment(
 ) -> float:
     """Drag diameter of one bridle segment.
 
-    A segment is a flat tape when it carries a positive ``tape_width`` [m];
-    every other segment keeps its structural diameter and the round law.
+    A segment that states a ``drag_diameter`` [m] uses it: a wireframe line
+    that replaces several lines of the full bridle (``wireframe.reduce_fem``)
+    carries their drag area spread over its own length. A segment is a flat
+    tape when it carries a positive ``tape_width`` [m]; every other segment
+    keeps its structural diameter and the round law.
     """
+    if segment.get("drag_diameter") is not None:
+        return float(segment["drag_diameter"])
     diameter = float(segment["diameter"])
     width = _tape_width(segment)
     if width is None:

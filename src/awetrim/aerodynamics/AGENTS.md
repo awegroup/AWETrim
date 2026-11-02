@@ -269,6 +269,10 @@ Three things to know before touching it:
   when a `line` is *named* like a tape but declares no width, which is how
   legacy deformed snapshots would otherwise regress silently. Every function
   takes a `Structure` or anything `load_structure` accepts.
+- A segment's optional `drag_diameter` column [m] wins over both: the
+  wireframe reduction (`aerostructural/wireframe/reduce_fem.py`) writes it on
+  the lines that replace several of the full bridle's, so their drag area is
+  conserved. Drag only, like the tape correction.
 - `roll_model` is a real modelling choice, not a tuning knob: the tape's roll
   angle about its own axis is not in the geometry and the broadside and edge-on
   limits differ by **18x**. `averaged` (default) is the uniform-roll mean,

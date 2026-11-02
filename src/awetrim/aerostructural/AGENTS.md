@@ -231,7 +231,9 @@ src/awetrim/aerostructural/
                                    breukels2011 with Billow's constants, pulleys
                                    store per-ARM rest lengths (split by arm
                                    length). Tool columns on segments: line,
-                                   linktype, tape_width; tool block awetrim
+                                   linktype, tape_width, drag_diameter (a
+                                   wireframe's merged lines, reduce_fem);
+                                   tool block awetrim
                                    (kcu_point). Masses follow awesIO, not the
                                    reader: same total, nodes differ by <= 58 g,
                                    CG 6.5 mm on the LEI-V3. kcu_point(document)
@@ -330,7 +332,13 @@ src/awetrim/aerostructural/
                                    per-strut line fans -> one *_equiv line
                                    (rest = built distance); a line into a bare
                                    pulley sheave is absorbed into the pulley
-                                   (l0 + 2L). Reproduces
+                                   (l0 + 2L). Every merged element carries a
+                                   drag-only d_drag = (sum L d of what it
+                                   replaced) / its length, so the VSM bridle
+                                   keeps the full bridle's drag area (4.5 %
+                                   was lost before 2026-11-02, -0.8 % C_D); d
+                                   (mass, EA) is unchanged; a tape inside a
+                                   merge raises. Reproduces
                                    the removed struc_geometry_PSM_reduced.yaml's topology and
                                    fixed lengths (tests/aerostructural/
                                    test_reduce_fem.py; that file's knots sit

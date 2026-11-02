@@ -48,9 +48,11 @@ How our model maps onto the schema:
 
 What awesIO leaves to a tool is carried as columns of our own on ``segments``:
 ``line`` (the ``bridle_lines`` row, which also marks the depower and steering
-tapes), ``linktype`` (what the line does in compression) and ``tape_width``
-(the drag width of a flat tape; ``diameter`` stays the area-equivalent one), and
-as the top-level ``awetrim`` block (the KCU point).
+tapes), ``linktype`` (what the line does in compression), ``tape_width``
+(the drag width of a flat tape; ``diameter`` stays the area-equivalent one) and,
+on a wireframe only, ``drag_diameter`` (a merged line's drag-only diameter,
+``wireframe.reduce_fem``), and as the top-level ``awetrim`` block (the KCU
+point).
 """
 
 from __future__ import annotations
@@ -502,7 +504,8 @@ class Structure:
         """Bridle lines connection by connection, a pulley as ONE element.
 
         ``{name (the line), nodes ([a, b] or [a, sheave, b]), rest_length (the
-        whole rope), diameter, tape_width, material, linktype, segments}``.
+        whole rope), diameter, tape_width, drag_diameter, material, linktype,
+        segments}``.
         """
         arms = {}
         for pulley in _rows(self.document.get("pulleys")):
@@ -532,6 +535,7 @@ class Structure:
                     "rest_length": rest,
                     "diameter": float(seg["diameter"]),
                     "tape_width": seg.get("tape_width"),
+                    "drag_diameter": seg.get("drag_diameter"),
                     "material": seg["material"],
                     "linktype": seg["linktype"],
                     "segments": names,
@@ -643,7 +647,7 @@ def wireframe_to_awesio(psm: dict, *, name: str = "kite_wireframe", height_kcu: 
         extra[b] += float(props["m"]) / 2.0
         member_rows.append(
             [conn[0], _Row([_name(a), _name(b)]), float(props["l0"]), 0.0,
-             WIREFRAME_MEMBER_MATERIAL, None, props["linktype"], None,
+             WIREFRAME_MEMBER_MATERIAL, None, props["linktype"], None, None,
              float(props["k"]), float(props["c"]), float(props["m"])]
         )
 
@@ -658,9 +662,9 @@ def wireframe_to_awesio(psm: dict, *, name: str = "kite_wireframe", height_kcu: 
         line = lines[line_name]
         materials.add(line["material"])
         rope = float(overrides.get(conn_row, line["l0"]))
-        width = line.get("w")
+        width, drag = line.get("w"), line.get("d_drag")
         tail = [line_name, line["linktype"], None if width in (None, "") else float(width),
-                None, None, None]
+                None if drag in (None, "") else float(drag), None, None, None]
         if len(nodes) == 2:
             bridle_rows.append(
                 [f"{line_name}_{conn_row}", _Row(_name(n) for n in nodes), rope,
@@ -713,8 +717,8 @@ def wireframe_to_awesio(psm: dict, *, name: str = "kite_wireframe", height_kcu: 
         ),
         "segments": _table(
             ["name", "points", "rest_length", "diameter", "material", "line", "linktype",
-             "tape_width", "stiffness", "damping", "mass"],
-            ["-", "-", "m", "m", "-", "-", "-", "m", "N/m", "N*s/m", "kg"],
+             "tape_width", "drag_diameter", "stiffness", "damping", "mass"],
+            ["-", "-", "m", "m", "-", "-", "-", "m", "m", "N/m", "N*s/m", "kg"],
             member_rows + bridle_rows,
         ),
         "spanwise_stations": _table(["name", "wing", "points"], ["-", "-", "-"], stations),
@@ -747,21 +751,20 @@ def wireframe_from_awesio(document: dict) -> dict:
     for row_index, element in enumerate(bridle):
         name = element["name"]
         if name not in line_rows:
-            row = [name, element["rest_length"], element["diameter"], element["material"],
-                   element["linktype"]]
-            if element.get("tape_width") is not None:
-                row.append(float(element["tape_width"]))
-            line_rows[name] = row
+            line_rows[name] = {
+                "name": name, "l0": element["rest_length"], "d": element["diameter"],
+                "material": element["material"], "linktype": element["linktype"],
+                **{key: None if element.get(column) is None else float(element[column])
+                   for key, column in (("w", "tape_width"), ("d_drag", "drag_diameter"))},
+            }
             first_rest[name] = element["rest_length"]
         elif abs(first_rest[name] - element["rest_length"]) > 1e-12:
             overrides.append([row_index, element["rest_length"]])
         connections.append([name, *element["nodes"]])
     headers = ["name", "l0", "d", "material", "linktype"]
-    if any(len(r) == 6 for r in line_rows.values()):
-        headers.append("w")
-        for r in line_rows.values():
-            if len(r) == 5:
-                r.append(None)
+    headers += [h for h in ("w", "d_drag")
+                if any(r[h] is not None for r in line_rows.values())]
+    line_table = [[r[h] for h in headers] for r in line_rows.values()]
     materials = {e["material"] for e in bridle}
     psm = {
         "bridle_point_node": [float(v) for v in pos[0]],
@@ -781,7 +784,7 @@ def wireframe_from_awesio(document: dict) -> dict:
         "bridle_particles": {"headers": ["id", "x", "y", "z"],
                              "data": [[n, *map(float, pos[n])] for n in bridle_ids]},
         "bridle_connections": {"headers": ["name", "ci", "cj", "ck"], "data": connections},
-        "bridle_lines": {"headers": headers, "data": list(line_rows.values())},
+        "bridle_lines": {"headers": headers, "data": line_table},
     }
     if overrides:
         from awetrim.aerostructural.utils import BRIDLE_CONNECTION_REST_LENGTHS
