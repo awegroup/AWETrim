@@ -165,7 +165,7 @@ away from the KCU, as the aerodynamics does.
 
 ### 3.1 Apparent wind speed
 
-`as_config`'s flight state is zero elevation, zero azimuth, 90° course, gravity
+The flight state as_config carried until 2026-11-02 (now the script's `Case`) is zero elevation, zero azimuth, 90° course, gravity
 off — the *fastest corner of the wind window*. At 8 m/s wind and the trimmed
 L/D of about 4.8 that is **v_a ≈ 38 m/s**, above the entire 13–25 m/s band the
 wes-quasi-steady campaigns sweep.

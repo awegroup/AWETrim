@@ -49,7 +49,10 @@ from awetrim.aerostructural.billow import structural_billow
 from awetrim.aerostructural.case import (
     DEFAULT_KITE_NAME,
     DEFAULT_STRUC_GEOMETRY_FILENAME,
+    Case,
     build_actuation_case_folder,
+    merge_config,  # noqa: F401  (re-exported: callers import it from here)
+    runtime_config,
     build_system_model,
     build_tether,
     resolve_config_paths,
@@ -76,32 +79,21 @@ from awetrim.utils.config_paths import REPO_ROOT
 STRUC_GEOMETRY_FILENAME = DEFAULT_STRUC_GEOMETRY_FILENAME
 
 #: Settings this driver applies over the kite's ``as_config.yaml`` before the
-#: caller's overrides.
+#: caller's overrides (override-block form, :func:`case.apply_overrides`).
 BILLOW_CONFIG_DEFAULTS: dict[str, Any] = {
-    "structural_solver": "billow",
-    # Conserve the panel pitching moment, not just the panel force: the wing's
-    # trim is a moment balance. See aero2struc.weights_at_centre_of_pressure.
-    "aero2struc": {"chordwise_distribution": "moment_matched"},
-    # Trim the tape lengths the geometry stores unless asked otherwise. The
-    # shared as_config ramps the depower and steering tapes, which would turn
-    # a single trim into a sequence of actuated states.
-    "power_tape_final_extension": 0.0,
-    "steering_tape_final_extension": 0.0,
-    # The coupled body is built from the STRUCTURAL sections: 27 sections on
-    # this geometry, so 2 panels per section = 54 aero panels.
-    "aerodynamic": {"n_aero_panels_per_struc_section": 2},
+    "model": {
+        "structural_solver": "billow",
+        # Conserve the panel pitching moment, not just the panel force: the
+        # wing's trim is a moment balance. See
+        # aero2struc.weights_at_centre_of_pressure.
+        "aero2struc": {"chordwise_distribution": "moment_matched"},
+    },
+    "numerics": {
+        # The coupled body is built from the STRUCTURAL sections: 27 sections
+        # on this geometry, so 2 panels per section = 54 aero panels.
+        "aerodynamic": {"n_aero_panels_per_struc_section": 2},
+    },
 }
-
-
-def merge_config(base: Mapping[str, Any], overrides: Mapping[str, Any] | None):
-    """``base`` with ``overrides`` applied, nested dicts merged key by key."""
-    merged = copy.deepcopy(dict(base))
-    for key, value in (overrides or {}).items():
-        if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
-            merged[key] = merge_config(merged[key], value)
-        else:
-            merged[key] = copy.deepcopy(value)
-    return merged
 
 
 def line_tensions_by_element(structure, positions, n_elements: int) -> np.ndarray:
@@ -195,7 +187,8 @@ _READER_FIELDS = (
 
 
 def build_case(
-    config_overrides: Mapping[str, Any] | None = None,
+    case: Case,
+    overrides: Mapping[str, Any] | None = None,
     *,
     kite_name: str = DEFAULT_KITE_NAME,
     project_dir=None,
@@ -203,11 +196,14 @@ def build_case(
 ) -> BillowCase:
     """Load the kite's files and build the VSM body and the tether, once.
 
-    ``config_overrides`` is merged (nested dicts key by key) over the kite's
-    ``as_config.yaml`` and :data:`BILLOW_CONFIG_DEFAULTS` BEFORE the VSM solver
-    is built: ``aerodynamic_vsm.initialize`` constructs the solver from the
-    config it is handed, so an aerodynamic key set afterwards is silently
-    ignored. ``system_config_path`` defaults to the kite's ``system.yaml``.
+    The run is ``case`` (:class:`awetrim.aerostructural.case.Case`, the
+    operating point) on the kite's ``as_config.yaml`` with
+    :data:`BILLOW_CONFIG_DEFAULTS` and then ``overrides`` (blocks ``model``,
+    ``numerics``, ``output``) merged over it, nested dicts key by key
+    (:func:`case.runtime_config`), BEFORE the VSM solver is built:
+    ``aerodynamic_vsm.initialize`` constructs the solver from the config it is
+    handed, so an aerodynamic key set afterwards is silently ignored.
+    ``system_config_path`` defaults to the kite's ``system.yaml``.
     """
     project_dir = Path(project_dir) if project_dir is not None else REPO_ROOT
     config_path, aero_geometry_path, _ = resolve_kite_paths(project_dir, kite_name)
@@ -219,9 +215,7 @@ def build_case(
         system_config = _yaml.safe_load(handle)
     awesio_validate(system_config, restrictive=False)
 
-    config = merge_config(
-        merge_config(load_yaml(config_path), BILLOW_CONFIG_DEFAULTS), config_overrides
-    )
+    config = runtime_config(case, config_path, overrides, defaults=BILLOW_CONFIG_DEFAULTS)
     resolve_config_paths(config, project_dir)
 
     struc_geometry = load_structure(struc_geometry_path)
@@ -390,7 +384,8 @@ def solve_step(
 
 
 def solve_deformation(
-    config_overrides: Mapping[str, Any] | None = None,
+    case: Case,
+    overrides: Mapping[str, Any] | None = None,
     *,
     kite_name: str = DEFAULT_KITE_NAME,
     project_dir=None,
@@ -399,19 +394,16 @@ def solve_deformation(
 ) -> dict:
     """Run one Billow coupled case and snapshot the result.
 
-    ``config_overrides`` is merged (nested dicts key by key) over the kite's
-    ``as_config.yaml`` and :data:`BILLOW_CONFIG_DEFAULTS`: set the flight
-    condition (``angle_elevation_deg``, ``angle_azimuth_deg``,
-    ``angle_course_deg``, ``distance_radial``, ``speed_radial``,
-    ``wind_speed_wind_ref``, ``is_with_gravity``) and the actuation
-    (``power_tape_final_extension``, ``steering_tape_final_extension`` [m],
-    relative to the tape lengths the geometry stores) there.
+    ``case`` is the operating point (flight state, wind, atmosphere and the
+    tape command, relative to the tape lengths the geometry stores);
+    ``overrides`` change the model, numerics or output (:func:`build_case`).
 
     ``system_config_path`` defaults to the kite's ``system.yaml``. Returns the
     results directory, config, solver tracking/meta and the final nodes.
     """
     case = build_case(
-        config_overrides,
+        case,
+        overrides,
         kite_name=kite_name,
         project_dir=project_dir,
         system_config_path=system_config_path,

@@ -8,8 +8,12 @@ re-exports this module so existing scripts keep importing ``common``.
 
 from __future__ import annotations
 
+import copy
 import logging
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
@@ -31,32 +35,234 @@ SNAPSHOT_STRUC_GEOMETRY_FILENAME = DEFAULT_STRUC_GEOMETRY_FILENAME
 #: The per-case wireframe reduction (wireframe.driver).
 WIREFRAME_STRUC_GEOMETRY_FILENAME = "structure_wireframe.yml"
 
-# Single source of truth for config defaults used across all aerostructural scripts.
+# Code defaults of MODEL keys a stored or hand-built config may lack. The
+# operating point is not here: it is the Case's, and has no defaults.
 CONFIG_DEFAULTS: dict = {
-    "angle_elevation_deg": 0.0,
-    "angle_azimuth_deg": 0.0,
-    "angle_course_deg": 90.0,
-    "speed_radial": 1.0,
-    "distance_radial": 200.0,
-    "wind_speed_wind_ref": 5.0,
-    "timeder_speed_tangential": 0.0,
-    "timeder_speed_radial": 0.0,
     "is_with_gravity": False,
     "is_with_aero_bridle": True,
     # KCU bluff-body drag in the trim (awetrim.aerodynamics.kcu_drag).
     # Added 2026-08-21; set False to reproduce a pre-2026-08-21 result.
     "is_with_kcu_drag": True,
-    "power_tape_final_extension": 0.0,
     "initial_geometry_rotation_deg": 0.0,
     "initial_geometry_rotation_point": [0.0, 0.0, 0.0],
     "initial_geometry_rotation_axes": ["x", "y", "z"],
-    # Air density: "constant" = rho everywhere; "exponential" = rho is the
-    # sea-level density of profile_laws.air_density, evaluated at the kite
-    # height r sin(beta) above a ground at height_gnd [m] (air_density_at_case).
-    "rho": 1.225,
-    "air_density_law": "constant",
-    "height_gnd": 0.0,
 }
+
+#: Output options: the script's, not as_config's. A run's ``output`` override
+#: block sets them.
+OUTPUT_DEFAULTS: dict = {
+    "is_with_initial_structure_plot": False,
+    "is_with_coupling_plot_per_iteration": False,
+    "is_with_struc_plot_per_iteration": False,
+    "is_with_aero_plot_per_iteration": False,
+    "is_with_final_plot": False,
+    "is_with_aero_frame_final_plot": False,
+    "is_save_geometry_snapshots": True,
+}
+
+
+@dataclass(frozen=True)
+class Case:
+    """What an aerostructural run IS: flight state, wind, atmosphere, command.
+
+    The script that runs a case owns it; ``as_config.yaml`` (how the problem
+    is modelled and solved) carries none of it. The flight state, the wind and
+    the command have no defaults -- every script states its full operating
+    point -- only the atmosphere does (standard sea-level constants).
+
+    ``wind`` is a wind spec as :func:`awetrim.system.factory.
+    create_wind_model_from_config` reads it (``model`` and ``speed_wind_ref``
+    required, ``height_ref`` and the law's parameters optional). The tape
+    extensions are relative to the tape lengths the structure is built with
+    [m]: + lengthens the depower tape; the steering one is the half-difference.
+    """
+
+    elevation_deg: float
+    azimuth_deg: float
+    course_deg: float
+    distance_radial: float  # m
+    speed_radial: float  # m/s, + reel-out
+    timeder_speed_tangential: float  # m/s2
+    timeder_speed_radial: float  # m/s2
+    wind: Mapping[str, Any]
+    power_tape_extension: float  # m
+    steering_tape_extension: float  # m
+    rho: float = 1.225  # kg/m3, sea level (air_density_law: exponential)
+    air_density_law: str = "constant"  # constant | exponential
+    height_gnd: float = 0.0  # m, ground height above sea level
+    mu: float = 1.789e-05  # kg/(m s)
+    gravity: tuple[float, float, float] = (0.0, 0.0, -9.81)  # m/s2
+
+    def __post_init__(self):
+        missing = {"model", "speed_wind_ref"} - set(self.wind)
+        if missing:
+            raise ValueError(f"Case.wind needs {sorted(missing)}, got {dict(self.wind)}")
+        if self.air_density_law not in ("constant", "exponential"):
+            raise ValueError(f"unknown air_density_law {self.air_density_law!r}")
+
+    def to_config(self) -> dict:
+        """The case as the runtime keys the coupled solvers read."""
+        return {
+            "angle_elevation_deg": float(self.elevation_deg),
+            "angle_azimuth_deg": float(self.azimuth_deg),
+            "angle_course_deg": float(self.course_deg),
+            "distance_radial": float(self.distance_radial),
+            "speed_radial": float(self.speed_radial),
+            "timeder_speed_tangential": float(self.timeder_speed_tangential),
+            "timeder_speed_radial": float(self.timeder_speed_radial),
+            "wind": dict(self.wind),
+            "wind_speed_wind_ref": float(self.wind["speed_wind_ref"]),
+            "power_tape_final_extension": float(self.power_tape_extension),
+            "steering_tape_final_extension": float(self.steering_tape_extension),
+            "rho": float(self.rho),
+            "air_density_law": self.air_density_law,
+            "height_gnd": float(self.height_gnd),
+            "mu": float(self.mu),
+            "grav_constant": [float(g) for g in self.gravity],
+        }
+
+    @classmethod
+    def from_config(cls, config: Mapping[str, Any]) -> "Case":
+        """The case a runtime config (e.g. a stored result's) was run at.
+
+        Results are data: a config stored before the Case existed has no
+        ``wind`` spec and is read as the uniform wind it was flown in.
+        """
+        wind = config.get("wind") or {
+            "model": "uniform",
+            "speed_wind_ref": float(config["wind_speed_wind_ref"]),
+        }
+        if float(wind["speed_wind_ref"]) != float(config["wind_speed_wind_ref"]):
+            raise ValueError(
+                f"wind_speed_wind_ref {config['wind_speed_wind_ref']} disagrees with the "
+                f"wind spec's speed_wind_ref {wind['speed_wind_ref']}: change the wind "
+                "through the Case (dataclasses.replace(case, wind=...).apply(config)), "
+                "not by editing one key"
+            )
+        return cls(
+            elevation_deg=config["angle_elevation_deg"],
+            azimuth_deg=config["angle_azimuth_deg"],
+            course_deg=config["angle_course_deg"],
+            distance_radial=config["distance_radial"],
+            speed_radial=config["speed_radial"],
+            timeder_speed_tangential=config.get("timeder_speed_tangential", 0.0),
+            timeder_speed_radial=config.get("timeder_speed_radial", 0.0),
+            wind=wind,
+            power_tape_extension=config.get("power_tape_final_extension", 0.0),
+            steering_tape_extension=config.get("steering_tape_final_extension", 0.0),
+            rho=config.get("rho", 1.225),
+            air_density_law=config.get("air_density_law", "constant"),
+            height_gnd=config.get("height_gnd", 0.0),
+            mu=config.get("mu", 1.789e-05),
+            gravity=tuple(config.get("grav_constant", (0.0, 0.0, -9.81))),
+        )
+
+    def apply(self, config: Mapping[str, Any]) -> dict:
+        """``config`` run at THIS case: its case keys replaced by this case's."""
+        return {**config, **self.to_config()}
+
+    def folder_name(self) -> str:
+        """The results folder name of this case (:func:`build_flight_case_folder`)."""
+        return build_flight_case_folder(self.to_config())
+
+
+#: The runtime keys a Case owns. as_config and the model/numerics/output
+#: overrides may not set them.
+CASE_KEYS = frozenset(
+    Case(0, 0, 0, 0, 0, 0, 0, {"model": "uniform", "speed_wind_ref": 0.0}, 0, 0).to_config()
+)
+AS_CONFIG_BLOCKS = ("model", "numerics")
+OVERRIDE_BLOCKS = ("model", "numerics", "output")
+
+
+def merge_config(base: Mapping[str, Any], overrides: Mapping[str, Any] | None):
+    """``base`` with ``overrides`` applied, nested dicts merged key by key."""
+    merged = copy.deepcopy(dict(base))
+    for key, value in (overrides or {}).items():
+        if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
+            merged[key] = merge_config(merged[key], value)
+        else:
+            merged[key] = copy.deepcopy(value)
+    return merged
+
+
+def _merge_disjoint(a: Mapping, b: Mapping, where: str) -> dict:
+    """``a`` and ``b`` merged; a leaf in both is an error (``where`` names it)."""
+    merged = copy.deepcopy(dict(a))
+    for key, value in b.items():
+        if key not in merged:
+            merged[key] = copy.deepcopy(value)
+        elif isinstance(value, Mapping) and isinstance(merged[key], Mapping):
+            merged[key] = _merge_disjoint(merged[key], value, f"{where}.{key}")
+        else:
+            raise ValueError(
+                f"{where}.{key} is set in both the model and the numerics block; "
+                "a key is either a model choice or a solver setting"
+            )
+    return merged
+
+
+def _refuse_case_keys(block: Mapping, where: str) -> None:
+    found = sorted(CASE_KEYS & set(block))
+    if found:
+        raise ValueError(
+            f"{where} sets {found}: the operating point (flight state, wind, "
+            "atmosphere, tape command) is the Case's, not a config's"
+        )
+
+
+def flatten_as_config(document: Mapping[str, Any], source: str = "as_config") -> dict:
+    """The runtime base of an ``as_config`` document: its ``numerics`` and
+    ``model`` blocks merged (disjoint: no key may be in both)."""
+    if set(document) != set(AS_CONFIG_BLOCKS):
+        raise ValueError(
+            f"{source} must have exactly the top-level blocks {list(AS_CONFIG_BLOCKS)} "
+            f"(how the problem is modelled, how it is solved), got {sorted(document)}; "
+            "the flat format was split on 2026-11-02"
+        )
+    for block in AS_CONFIG_BLOCKS:
+        _refuse_case_keys(document[block] or {}, f"{source}:{block}")
+    return _merge_disjoint(document["numerics"] or {}, document["model"] or {}, source)
+
+
+def load_as_config(path: Path | str) -> dict:
+    """The runtime base of the ``as_config.yaml`` at ``path`` (:func:`flatten_as_config`)."""
+    from awetrim.aerostructural.utils import load_yaml
+
+    return flatten_as_config(load_yaml(Path(path)), source=str(path))
+
+
+def apply_overrides(config: Mapping[str, Any], overrides: Mapping[str, Any] | None) -> dict:
+    """``config`` with ``overrides`` (blocks ``model``, ``numerics``,
+    ``output``) merged over it, nested dicts key by key."""
+    overrides = overrides or {}
+    unknown = sorted(set(overrides) - set(OVERRIDE_BLOCKS))
+    if unknown:
+        raise ValueError(
+            f"overrides take the blocks {list(OVERRIDE_BLOCKS)}, got {unknown}; the "
+            "operating point is the Case's"
+        )
+    merged = dict(config)
+    for block in OVERRIDE_BLOCKS:
+        _refuse_case_keys(overrides.get(block) or {}, f"overrides:{block}")
+        merged = merge_config(merged, overrides.get(block))
+    return merged
+
+
+def runtime_config(
+    case: Case,
+    as_config: Mapping[str, Any] | Path | str,
+    overrides: Mapping[str, Any] | None = None,
+    *,
+    defaults: Mapping[str, Any] | None = None,
+) -> dict:
+    """THE config a coupled run reads: the output defaults, ``as_config``
+    (a path or an already flattened dict), a driver's ``defaults`` and the
+    caller's ``overrides`` (both in override-block form), then the case."""
+    base = load_as_config(as_config) if isinstance(as_config, (Path, str)) else as_config
+    config = merge_config(OUTPUT_DEFAULTS, base)
+    config = apply_overrides(apply_overrides(config, defaults), overrides)
+    return case.apply(config)
 
 
 def air_density_at_case(config: dict) -> float:
@@ -66,17 +272,15 @@ def air_density_at_case(config: dict) -> float:
     model's tether) uses for a case: ``rho`` itself, or with
     ``air_density_law: exponential`` the density at z = r sin(beta).
     """
-    rho = float(config.get("rho", CONFIG_DEFAULTS["rho"]))
-    law = config.get("air_density_law", CONFIG_DEFAULTS["air_density_law"])
+    rho = float(config["rho"])
+    law = config.get("air_density_law", "constant")
     if law == "constant":
         return rho
     if law != "exponential":
         raise ValueError(f"unknown air_density_law {law!r}")
-    elevation = np.deg2rad(
-        float(config.get("angle_elevation_deg", CONFIG_DEFAULTS["angle_elevation_deg"]))
-    )
-    distance = float(config.get("distance_radial", CONFIG_DEFAULTS["distance_radial"]))
-    height_gnd = float(config.get("height_gnd", CONFIG_DEFAULTS["height_gnd"]))
+    elevation = np.deg2rad(float(config["angle_elevation_deg"]))
+    distance = float(config["distance_radial"])
+    height_gnd = float(config.get("height_gnd", 0.0))
     return float(air_density(distance * np.sin(elevation), rho, height_gnd=height_gnd))
 
 
@@ -130,12 +334,8 @@ def format_length_tag(value_m: float) -> str:
 
 def build_actuation_case_folder(config: dict) -> str:
     """Build case folder name from final depower/steering actuation settings."""
-    depower_tag = format_length_tag(
-        config.get(
-            "power_tape_final_extension", CONFIG_DEFAULTS["power_tape_final_extension"]
-        )
-    )
-    steering_tag = format_length_tag(config.get("steering_tape_final_extension", 0.0))
+    depower_tag = format_length_tag(config["power_tape_final_extension"])
+    steering_tag = format_length_tag(config["steering_tape_final_extension"])
     return f"depower_{depower_tag}_steer_{steering_tag}"
 
 
@@ -148,14 +348,16 @@ def build_flight_case_folder(config: dict) -> str:
     """
 
     def value(key):
-        number = float(config.get(key, CONFIG_DEFAULTS.get(key, 0.0)))
-        return f"{number:g}"
+        return f"{float(config[key]):g}"
 
     gravity = int(bool(config.get("is_with_gravity", CONFIG_DEFAULTS["is_with_gravity"])))
+    # A non-uniform wind names its law: the same reference speed is another case.
+    law = (config.get("wind") or {}).get("model", "uniform")
+    wind_law = "" if law == "uniform" else f"_{law}"
     return (
         f"el{value('angle_elevation_deg')}_az{value('angle_azimuth_deg')}"
         f"_chi{value('angle_course_deg')}_r{value('distance_radial')}"
-        f"_vr{value('speed_radial')}_vw{value('wind_speed_wind_ref')}_g{gravity}_"
+        f"_vr{value('speed_radial')}_vw{value('wind_speed_wind_ref')}{wind_law}_g{gravity}_"
         + build_actuation_case_folder(config)
     )
 
@@ -253,33 +455,18 @@ def build_tether(config: dict, system_config: dict, diameter: float | None = Non
 
 
 def configure_system_model_from_config(system_model: SystemModel, config: dict) -> None:
-    """Populate a SystemModel from config values using CONFIG_DEFAULTS for missing keys."""
-    system_model.angle_elevation = np.deg2rad(
-        float(config.get("angle_elevation_deg", CONFIG_DEFAULTS["angle_elevation_deg"]))
-    )
-    system_model.angle_azimuth = np.deg2rad(
-        float(config.get("angle_azimuth_deg", CONFIG_DEFAULTS["angle_azimuth_deg"]))
-    )
-    system_model.angle_course = np.deg2rad(
-        float(config.get("angle_course_deg", CONFIG_DEFAULTS["angle_course_deg"]))
-    )
-    system_model.speed_radial = float(
-        config.get("speed_radial", CONFIG_DEFAULTS["speed_radial"])
-    )
-    system_model.distance_radial = float(
-        config.get("distance_radial", CONFIG_DEFAULTS["distance_radial"])
-    )
-    system_model.wind.speed_wind_ref = float(
-        config.get("wind_speed_wind_ref", CONFIG_DEFAULTS["wind_speed_wind_ref"])
-    )
-    system_model.timeder_speed_tangential = float(
-        config.get(
-            "timeder_speed_tangential", CONFIG_DEFAULTS["timeder_speed_tangential"]
-        )
-    )
-    system_model.timeder_speed_radial = float(
-        config.get("timeder_speed_radial", CONFIG_DEFAULTS["timeder_speed_radial"])
-    )
+    """Put a SystemModel at the case a runtime config carries (:class:`Case`)."""
+    from awetrim.system.factory import create_wind_model_from_config
+
+    case = Case.from_config(config)
+    system_model.angle_elevation = np.deg2rad(float(case.elevation_deg))
+    system_model.angle_azimuth = np.deg2rad(float(case.azimuth_deg))
+    system_model.angle_course = np.deg2rad(float(case.course_deg))
+    system_model.speed_radial = float(case.speed_radial)
+    system_model.distance_radial = float(case.distance_radial)
+    system_model.wind = create_wind_model_from_config(dict(case.wind))
+    system_model.timeder_speed_tangential = float(case.timeder_speed_tangential)
+    system_model.timeder_speed_radial = float(case.timeder_speed_radial)
     # The trim's tether sees the same density as the VSM wing and bridle: the
     # position is fixed per case, so the kite-height value is a constant.
     system_model.rho = air_density_at_case(config)

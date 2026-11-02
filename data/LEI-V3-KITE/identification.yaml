@@ -28,15 +28,25 @@ fidelity: wireframe
 
 sweep:
   system_file: system.yaml      # in this folder: the masses (KCU) and the tether
-  # Merged over as_config.yaml for every solve: the flight state (course-frame
-  # angles [deg], tether length [m], reel speed [m/s]) and gravity.
-  config_overrides:
-    angle_elevation_deg: 0.0
-    angle_azimuth_deg: 0.0
-    angle_course_deg: 90.0
+  # The flight state of every solve (awetrim.aerostructural.case.Case):
+  # course-frame angles [deg], tether length [m], reel speed [m/s], steady
+  # flight, and the wind law. The wind SPEED comes from wind_speeds and the
+  # tape command from the chains.
+  case:
+    elevation_deg: 0.0
+    azimuth_deg: 0.0
+    course_deg: 90.0
     distance_radial: 300.0
     speed_radial: 0.0
-    is_with_gravity: false
+    timeder_speed_tangential: 0.0
+    timeder_speed_radial: 0.0
+    wind:
+      model: uniform
+  # Merged over as_config.yaml for every solve (blocks model / numerics).
+  # Gravity off: the ROM adds the kite's weight itself in the point-mass model.
+  overrides:
+    model:
+      is_with_gravity: false
   # Wind at the reference height of the kite's wind model [m/s], one set of
   # chains per value. Without reel-out the kite flies at about 5 x the wind,
   # v_a 20 and 25 m/s: inside the flown band.
@@ -60,10 +70,11 @@ sweep:
       # circulation loop (with artificial viscosity the stalled tips trap the
       # Anderson loop). The canopy needs a tether force well above ~2000 N to
       # keep its symmetric equilibrium (aerostructural/AGENTS.md).
-      config_overrides:
-        aerodynamic:
-          n_aero_panels_per_struc_section: 2
-          gamma_loop_type: base
+      overrides:
+        numerics:
+          aerodynamic:
+            n_aero_panels_per_struc_section: 2
+            gamma_loop_type: base
       # Built at 1.90 m. The full model flies the flown reel-out loads at a
       # longer tape than the flight's 1.7 m, so the range reaches 2.6 m.
       depower:
@@ -80,19 +91,22 @@ sweep:
       # the whole sweep, whatever order the states are solved in.
       # The wireframe flies at about 3.8 x the wind: 6 m/s reaches v_a 23.
       wind_speeds: [4.0, 5.0, 6.0]
-      config_overrides:
-        aerodynamic:
-          # 27 FEM sections x 5 = 135 panels: within 0.5 % of 324 panels in
-          # CL and CD at 4-8 deg on the billowed wing (convergence study
-          # 2026-10-28, docs/aerostructural/)
-          n_aero_panels_per_struc_section: 5
-          # strut-to-strut trailing-edge contraction, LEI-V3 photogrammetry
-          # (Haanen 2026, Table 9.2: -5.23 % powered, -3.86 % depowered)
-          billowing:
-            contraction: 0.05
-          load_transfer: strut_lever
-        structural_pss:
-          update_stiffness: false
+      overrides:
+        model:
+          aerodynamic:
+            # strut-to-strut trailing-edge contraction, LEI-V3 photogrammetry
+            # (Haanen 2026, Table 9.2: -5.23 % powered, -3.86 % depowered)
+            billowing:
+              contraction: 0.05
+            load_transfer: strut_lever
+          structural_pss:
+            update_stiffness: false
+        numerics:
+          aerodynamic:
+            # 27 FEM sections x 5 = 135 panels: within 0.5 % of 324 panels in
+            # CL and CD at 4-8 deg on the billowed wing (convergence study
+            # 2026-10-28, docs/aerostructural/)
+            n_aero_panels_per_struc_section: 5
       # Built at 1.90 m (the FEM file); the range covers the flown reel-out
       # and reel-in tapes and depowers enough to reel in.
       depower:

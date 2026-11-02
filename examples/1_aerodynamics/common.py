@@ -470,9 +470,10 @@ def build_system_model(args: argparse.Namespace):
     as_config_path = config_folder / "as_config.yaml"
     tether_cfg = None
     if as_config_path.exists():
-        with open(as_config_path, "r") as f:
-            as_cfg = yaml.safe_load(f) or {}
-        tether_cfg = as_cfg.get("tether")
+        from awetrim.aerostructural.case import load_as_config
+
+        # its model (tether.model, ...) and numerics (tether.n_elements) merged
+        tether_cfg = load_as_config(as_config_path).get("tether")
 
     if system_yaml is not None:
         system = create_system_model_from_yaml(system_yaml, tether_config=tether_cfg)

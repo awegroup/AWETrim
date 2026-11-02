@@ -380,26 +380,23 @@ def build_sweep_csv_row(
             )
         ),
         "angle_elevation_deg": float(
-            config.get("angle_elevation_deg", config_defaults["angle_elevation_deg"])
+            config["angle_elevation_deg"]
         ),
         "angle_azimuth_deg": float(
-            config.get("angle_azimuth_deg", config_defaults["angle_azimuth_deg"])
+            config["angle_azimuth_deg"]
         ),
         "angle_course_deg": float(
-            config.get("angle_course_deg", config_defaults["angle_course_deg"])
+            config["angle_course_deg"]
         ),
-        "speed_radial": float(config.get("speed_radial", config_defaults["speed_radial"])),
+        "speed_radial": float(config["speed_radial"]),
         "distance_radial": float(
-            config.get("distance_radial", config_defaults["distance_radial"])
+            config["distance_radial"]
         ),
         "timeder_speed_tangential": float(
-            config.get(
-                "timeder_speed_tangential",
-                config_defaults["timeder_speed_tangential"],
-            )
+            config["timeder_speed_tangential"]
         ),
         "timeder_speed_radial": float(
-            config.get("timeder_speed_radial", config_defaults["timeder_speed_radial"])
+            config["timeder_speed_radial"]
         ),
         "aoa_deg": float(meta.get("aoa_deg", np.nan)),
         "aoa_course_deg": float(
