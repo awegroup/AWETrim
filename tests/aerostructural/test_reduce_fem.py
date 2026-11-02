@@ -139,3 +139,70 @@ def test_tube_stiffness_comes_from_the_tubes(structure, reduced):
     a, b = ends["strut_5"]
     ea = tube_axial_stiffness([old_mean], structure.pressure_bar)[0]
     assert k["strut_5"] == pytest.approx(ea / np.linalg.norm(pos[a] - pos[b]), rel=1e-9)
+
+
+def _drag_area(structure, roll_model):
+    """``sum L d_drag`` of a structure's bridle, the VSM bridle's drag area."""
+    from awetrim.aerodynamics.line_drag import bridle_drag_diameters
+
+    pos = structure.positions
+    lengths = [
+        np.linalg.norm(pos[structure.index[a]] - pos[structure.index[b]])
+        for a, b in (s["points"] for s in structure.bridle_segments)
+    ]
+    return float(np.dot(lengths, bridle_drag_diameters(structure, roll_model)))
+
+
+@pytest.mark.parametrize("roll_model", ["averaged", "round"])
+def test_the_wireframe_bridle_keeps_the_full_drag_area(structure, reduced, roll_model):
+    """Merging a fan into one chord shortens the bridle (4.5 % of the LEI-V3's
+    drag area until 2026-11-02); the merged lines' drag diameter puts it back,
+    through the document the VSM body is built from."""
+    from awetrim.aerostructural.coupled.awesio_structure import wireframe_to_awesio
+
+    wireframe = load_structure(wireframe_to_awesio(reduced))
+    assert _drag_area(wireframe, roll_model) == pytest.approx(
+        _drag_area(structure, roll_model), rel=1e-9
+    )
+
+
+def test_only_merged_lines_carry_a_drag_diameter(reduced):
+    """Drag only: ``d`` (mass, EA) stays the line's own -- the fans' top line,
+    the tip pulleys' rope -- whichever way the drag diameter goes (a fan's
+    chord is shorter than its lines; a tip pulley's arms grow by more than
+    the absorbed line when its sheave moves onto the wing)."""
+    headers = reduced["bridle_lines"]["headers"]
+    rows = {r[0]: dict(zip(headers, r)) for r in reduced["bridle_lines"]["data"]}
+    merged = {name for name, row in rows.items() if row["d_drag"] is not None}
+    assert merged == {n for n in rows if n.endswith("_equiv")}
+    assert {rows[n]["d"] for n in merged if n.startswith("A")} == {0.002}
+    assert all(rows[n]["d_drag"] > rows[n]["d"] for n in merged if n.startswith("A"))
+
+
+def test_the_drag_diameter_survives_the_round_trip(reduced):
+    from awetrim.aerostructural.coupled.awesio_structure import (
+        wireframe_from_awesio,
+        wireframe_to_awesio,
+    )
+
+    back = wireframe_from_awesio(wireframe_to_awesio(reduced))
+    drag = lambda psm: {  # noqa: E731
+        r[0]: dict(zip(psm["bridle_lines"]["headers"], r)).get("d_drag")
+        for r in psm["bridle_lines"]["data"]
+    }
+    assert drag(back) == pytest.approx(drag(reduced))
+
+
+def test_a_tape_inside_a_merged_fan_raises(structure):
+    """A tape's drag width depends on the roll model, unknown to the reduction."""
+    import copy
+
+    document = copy.deepcopy(structure.document)
+    segments = document["segments"]
+    column = segments["headers"].index("tape_width")
+    line = segments["headers"].index("line")
+    for row in segments["data"]:
+        if row[line] == "A1":
+            row[column] = 0.012
+    with pytest.raises(ValueError, match="flat tape inside a merged fan"):
+        reduce_fem_geometry(load_structure(document))

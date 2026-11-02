@@ -30,6 +30,16 @@ to disk it goes through ``awesio_structure.wireframe_to_awesio``).
 * Everything above the fans -- the cascade, the main lines, the pulleys, the
   tapes -- is copied unchanged.
 
+**Bridle drag.** Both merges shorten the bridle (a fan's lines are longer than
+the one chord that replaces them): 4.5 % of the LEI-V3's drag area ``sum L d``
+went missing from the wireframe's VSM bridle until 2026-11-02, 0.8 % of the
+wing's C_D. A merged element therefore carries a drag-only diameter ``d_drag``
+= (drag area of everything it replaced) / (its own length), both on the
+positions the reduction is given, so the VSM bridle keeps the full bridle's
+drag area while ``d`` -- mass and EA -- stays the line's own
+(``awetrim.aerodynamics.line_drag``). A merge involving a flat tape raises: its
+drag width depends on the roll model, which the reduction does not know.
+
 **Wing.** Per rib bay, the reduced file's topology (``le``, ``strut``, ``te``
 and an X of diagonals), with stiffnesses from the SAME material the Billow
 model uses, so the wing deforms little:
@@ -111,6 +121,14 @@ def _ribs(structure, positions):
     return ribs
 
 
+def _same_drag(a, b) -> bool:
+    """Two drag diameters (None = the line's own) are one: the mirror halves of
+    a merged fan agree to round-off, not bit for bit."""
+    if a is None or b is None:
+        return a is b
+    return abs(a - b) <= 1e-6 * max(abs(a), abs(b))
+
+
 def _chord_fraction(point, le, te):
     chord = te - le
     return float(np.dot(point - le, chord) / np.dot(chord, chord))
@@ -188,6 +206,23 @@ def reduce_bridle(structure, positions, wing_attachment_rib, kcu=0):
     """
     bridle = _Bridle(structure)
 
+    def length(element):
+        nodes = element["nodes"]
+        return float(sum(
+            np.linalg.norm(positions[a] - positions[b]) for a, b in zip(nodes[:-1], nodes[1:])
+        ))
+
+    def drag_area(element):
+        """``sum L d`` the element stands for: its own, or what it replaced."""
+        if "drag_area" in element:
+            return element["drag_area"]
+        if element.get("w") is not None:
+            raise ValueError(
+                f"bridle line {element['name']!r} is a flat tape inside a merged "
+                "fan: its drag width depends on the roll model"
+            )
+        return float(element["d"]) * length(element)
+
     # -- 1. lines into a bare pulley sheave are absorbed into the pulley ----
     for index, element in list(enumerate(bridle.elements)):
         if len(element["nodes"]) != 2:
@@ -204,12 +239,11 @@ def reduce_bridle(structure, positions, wing_attachment_rib, kcu=0):
             ]
             if len(pulleys) == 1 and len(around) == 2:
                 pulley = bridle.elements[pulleys[0]]
-                length = float(np.linalg.norm(positions[a] - positions[b]))
+                pulley["drag_area"] = drag_area(pulley) + drag_area(element)
                 pulley["nodes"][1] = attachment
                 pulley["l0"] = float(pulley["l0"]) + 2.0 * float(element["l0"])
                 pulley["name"] = element["name"]  # e.g. a5_equiv, as reduced
                 element["absorbed"] = True
-                del length
                 break
     bridle.elements = [e for e in bridle.elements if not e.get("absorbed")]
 
@@ -257,10 +291,19 @@ def reduce_bridle(structure, positions, wing_attachment_rib, kcu=0):
             "nodes": [node, knot],
             "l0": round(float(np.linalg.norm(positions[node] - positions[knot])), 6),
             "linktype": "noncompressive",
+            "drag_area": sum(drag_area(bridle.elements[i]) for i in fan),
         })
         removed.update(fan)
     elements = [e for i, e in enumerate(bridle.elements) if i not in removed] + added
-    return elements, bridle.headers, keep
+
+    # -- 4. merged elements keep the drag area they replaced ----------------
+    headers = list(bridle.headers)
+    for element in elements:
+        if "drag_area" in element:
+            element["d_drag"] = element.pop("drag_area") / length(element)
+    if any("d_drag" in e for e in elements):
+        headers.append("d_drag")
+    return elements, headers, keep
 
 
 def reduce_fem_geometry(
@@ -384,10 +427,11 @@ def reduce_fem_geometry(
         row = [element.get(h) for h in headers]
         row[0] = element["name"]
         row[headers.index("l0")] = float(element["l0"])
-        key = (element["name"], row[headers.index("l0")])
+        key = (element["name"], row[headers.index("l0")], element.get("d_drag"))
         name = element["name"]
         if name in seen and (
             seen[name][0] != key[0] or abs(seen[name][1] - key[1]) > _SAME_LENGTH
+            or not _same_drag(seen[name][2], key[2])
         ):
             name = f"{name}_{len(seen)}"
             row[0] = name

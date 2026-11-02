@@ -57,6 +57,18 @@ Legacy readers and unused modules removed. Files in the old formats raise a
   `utils.talmar_equations`, `timeseries.cycle_phase`,
   `aerostructural.logging_config`.
 
+### Fixes
+
+- **Wireframe bridle drag.** `reduce_fem` merges each strut's line fan into
+  one chord and absorbs the tip lines into their pulleys; the VSM bridle drag
+  was computed on those merged lines, 4.5 % short of the full bridle's drag
+  area on the LEI-V3 (0.8 % low in C_D on the same wing). Merged lines now
+  carry a drag-only `drag_diameter` (a new `segments` column of wireframe
+  documents) that conserves it; mass and EA keep the structural `diameter`.
+  Wireframe results and the wireframe-identified ROM change accordingly
+  (about +1.2 % C_D). The C_D still sits 0.2-0.6 % above the step-1 body,
+  because the relaxed bridle is 0.9 m longer than the built one.
+
 ## v1.0.1 (2026-11-02)
 
 A bug-fix release: the KCU mass is counted once everywhere.
