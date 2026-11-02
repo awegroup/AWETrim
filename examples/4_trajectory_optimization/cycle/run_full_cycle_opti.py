@@ -994,7 +994,9 @@ if __name__ == "__main__":
         default=None,
         help="Optimized config YAML of a previous run to continue from "
         "(re-runs the stages from it, seed validation skipped) -- use when "
-        "the previous run ended with the backstop step box active",
+        "the previous run ended with the backstop step box active; stage 1 "
+        "is seeded from the run's trajectory CSV next to it unless "
+        "--warm-start names another",
     )
     parser.add_argument(
         "--warm-start",
@@ -1026,6 +1028,14 @@ if __name__ == "__main__":
         help="Height (m) of --wind-speed (default the profile's height_ref)",
     )
     args = parser.parse_args()
+    warm_start = args.warm_start
+    if args.continue_from and warm_start is None:
+        # An optimum sits on the steering box and the trim edge, so marching
+        # it forward again usually fails: seed stage 1 from the trajectory the
+        # run saved next to its YAML instead.
+        csv = Path(args.continue_from).with_suffix(".csv")
+        if csv.exists():
+            warm_start = str(csv)
     exit_code = main(
         run_plots=args.plot,
         optimize=not args.no_optimize,
@@ -1037,7 +1047,7 @@ if __name__ == "__main__":
         step_scale=args.step_scale,
         wind_speed=args.wind_speed,
         wind_height=args.wind_height,
-        warm_start_csv=args.warm_start,
+        warm_start_csv=warm_start,
     )
     if args.plot:
         import matplotlib.pyplot as plt
