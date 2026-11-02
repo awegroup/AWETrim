@@ -1,5 +1,9 @@
 """Solve a VSM quasi-steady trim and report STATIC stability.
 
+Edit the Inputs block and run from the project root::
+
+    python examples/1_aerodynamics/compute_stability_derivatives.py
+
 Computes the finite-difference trim linearisation
 (``compute_vsm_trim_stability_derivatives``) about a VSM quasi-steady trim
 point — the raw ``J_full`` columns ARE the static force/moment derivatives —
@@ -15,46 +19,31 @@ The ``chi_dot`` slope is in the trim vector's ``timeder_angle_course`` sense:
 a positive turn rate is a rotation about ``-e_radial``, so a positive
 ``dM_radial/dchi_dot`` opposes the physical rotation (damping iff slope > 0).
 
-History note: this script previously performed dynamic/modal analysis —
-eigenvalue extraction, complex-plane plots, and per-eigenmode animations.
-The project moved to static stability; the full modal version of this file
-is recoverable from git history
+The kite, its shape and the trim are ``common.load_kite`` / ``common.trim``'s
+(see ``solve_single_state.py``). The linearisation always runs in the course
+frame (``DEFAULT_AXES``): the Omega_C transport construction is only
+frame-consistent there. ``STABILITY_FRAME = "body"`` additionally reports the
+roll/pitch/yaw slopes about the centre-panel body axes of the kite's own
+structure, rotated to the trim attitude.
+
+History note: this script previously performed dynamic/modal analysis; the
+full modal version is recoverable from git history
 (``git log -- examples/1_aerodynamics/compute_stability_derivatives.py``).
-The old ``--stability-frame body`` behaviour, which passed the material
-body axes INTO the linearisation, was removed as well: the Omega_C transport
-construction is only frame-consistent in the course frame, so the
-linearisation now always runs in ``DEFAULT_AXES``. With
-``--stability-frame body`` the centre-panel body axes (rotated to the trim
-attitude) are instead passed as ``attitude_axes`` to a second
-``static_slopes_summary`` call, so both course-frame and body-frame
-attitude slopes are reported.
 """
 
 from __future__ import annotations
 
-import argparse
-import sys
-from pathlib import Path
-
 import matplotlib.pyplot as plt
 import numpy as np
-import yaml
-
-_SRC_DIR = Path(__file__).resolve().parents[2] / "src"
-if str(_SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(_SRC_DIR))
 
 from common import (
-    add_common_arguments,
-    build_body,
-    build_system_model,
+    load_kite,
     output_dir,
-    parsed_common,
+    print_kite,
     print_trim_summary,
-    kite_rigid_body,
     save_figure,
+    trim,
     write_json,
-    DEFAULT_OUTPUT_ROOT,
 )
 
 from awetrim.aerodynamics.vsm_quasi_steady import (
@@ -62,39 +51,53 @@ from awetrim.aerodynamics.vsm_quasi_steady import (
     DEFAULT_AXES,
     _compose_attitude_rotation,
     compute_vsm_trim_stability_derivatives,
-    solve_vsm_qs_trim_with_williams_tether,
-    solve_vsm_quasi_steady_trim,
 )
 from awetrim.aerodynamics.cg_eom import static_slopes_summary
 from awetrim.aerodynamics.protocols import AxisDefinition
-from awetrim.system.williams_tether import WilliamsTether
-
-from awetrim.aerostructural.case import find_struc_geometry
-from awetrim.aerostructural.utils import load_sim_output
+from awetrim.aerostructural.case import Case
 from awetrim.identification.rigid_body_axes import (
     compute_rigid_body_axes,
     load_psm_geometry,
 )
 
 # ---------------------------------------------------------------------------
-# Operating condition (edit here)
+# Inputs
 # ---------------------------------------------------------------------------
-# These set the trim/stability operating point. They become the argument
-# defaults, so the matching CLI flags (--elevation-deg, --azimuth-deg,
-# --course-deg, --wind-speed, --radial-speed, --distance-radial) still
-# override them when provided.
-#: Default operating condition: the validated powered reel-out crosswind
-#: state (state A of the wes-quasi-steady representative states) — with the
-#: Williams joint solve, gravity on, and the powered_2019 deformed shape it
-#: trims physically (moment residuals ~1e-13).
-OPERATING_CONDITION = {
-    "elevation_deg": 30.0,
-    "azimuth_deg": 0.0,
-    "course_deg": 90.0,
-    "wind_speed": 12.0,
-    "radial_speed": 1.0,
-    "distance_radial": 250.0,
+KITE = "LEI-V3-KITE"  # a folder under data/
+
+#: The step-2 PSM example's case (examples/2_aerostructural/run_simulation_PSM.py),
+#: so SHAPE = "wireframe" finds that example's result.
+CASE = Case(
+    elevation_deg=0.0,  # beta
+    azimuth_deg=0.0,  # phi
+    course_deg=90.0,  # chi
+    distance_radial=300.0,  # r [m]
+    speed_radial=1.5,  # v_r [m/s], positive = reeling out
+    timeder_speed_tangential=0.0,  # steady flight
+    timeder_speed_radial=0.0,
+    wind={"model": "uniform", "speed_wind_ref": 6.0},
+    # [m]; the built shape is at 0: a tape command needs a deformed SHAPE
+    power_tape_extension=0.0,
+    steering_tape_extension=0.0,
+)
+SHAPE = "built"  # "built" | "wireframe" | "billow"
+DEFORMED_FROM = None  # a results case folder; overrides SHAPE
+# A gravity-free "trim" leaves the weight unbalanced and every static verdict
+# off-equilibrium.
+WITH_GRAVITY = True
+
+#: Finite-difference steps of the linearisation.
+EPS = {
+    "vel": 0.1,  # [m/s]
+    "angle_deg": 0.5,  # [deg]
+    "rate": 0.01,  # [rad/s]
+    "position": 0.5,  # radial position z [m]
+    "course_rate": 0.02,  # [rad/s], the J_course_rate column (chi_dot slope)
 }
+STABILITY_FRAME = "course"  # "course" | "body" (adds the body-axes slopes)
+
+OUTPUT_DIR = None  # default results/aerodynamics/stability_derivatives
+SHOW = True
 
 #: Verdict-table channel order and SI units.
 _STATIC_CHANNELS = (
@@ -105,65 +108,6 @@ _STATIC_CHANNELS = (
     ("radial", "N / m"),
     ("chi_dot", "N m / (rad/s)"),
 )
-
-
-def _load_rigid_body_axes_from_result(result_path: Path, struc_override: Path | None):
-    """Load RigidBodyAxes from a structural result directory or structure file.
-
-    Priority (same as plot_body_axes.py):
-      1. struc_override (explicit --rigid-body-struc)
-      2. the structure in {result_path} (``find_struc_geometry``: the deformed
-         structure.yml saved by save_geometry_snapshot)
-      3. HDF5 positions + data/{kite}/deformed_results/powered_2019/structure.yml
-         (fallback, a wireframe with the same node numbering)
-
-    Masses are the structure's (awesIO's lumping) plus the KCU mass from the
-    system.yaml beside the geometry (single source of the KCU mass).
-    """
-    result_path = result_path.resolve()
-    case_dir = result_path if result_path.is_dir() else result_path.parent
-
-    if struc_override is not None:
-        nodes, m_arr, le_indices, te_indices = load_psm_geometry(
-            struc_override.resolve()
-        )
-    else:
-        saved = find_struc_geometry(case_dir)
-        if saved is not None:
-            nodes, m_arr, le_indices, te_indices = load_psm_geometry(saved)
-        else:
-            h5 = case_dir / "sim_output.h5"
-            if not h5.exists():
-                raise FileNotFoundError(
-                    f"No sim_output.h5 or structure.yml in {case_dir}"
-                )
-            _, tracking = load_sim_output(h5)
-            nodes = np.asarray(tracking["positions"][-1], dtype=float)
-            # infer the structure file from the path layout
-            parts = case_dir.parts
-            try:
-                ri = next(i for i, p in enumerate(parts) if p == "results")
-                kite_name = (
-                    parts[ri + 2]
-                    if parts[ri + 1] == "aerostructural"
-                    else parts[ri + 1]
-                )
-                project_root = Path(*parts[:ri])
-                kite_data = project_root / "data" / kite_name
-                fallback = (
-                    kite_data / "deformed_results" / "powered_2019" / "structure.yml"
-                )
-            except (StopIteration, IndexError):
-                raise FileNotFoundError(
-                    "Could not infer the structure path from result layout."
-                )
-            if not fallback.exists():
-                raise FileNotFoundError(
-                    f"Fallback structure not found: {fallback}"
-                )
-            _, m_arr, le_indices, te_indices = load_psm_geometry(fallback)
-
-    return compute_rigid_body_axes(nodes, m_arr, le_indices, te_indices)
 
 
 def _axes_to_dict(axes: AxisDefinition) -> dict[str, list[float]]:
@@ -235,295 +179,40 @@ def _static_summary_jsonable(summary: dict) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Solve VSM aerodynamic trim, compute the FD stability derivatives, "
-            "and report the six-channel static-stability verdict."
-        )
-    )
-    add_common_arguments(parser)
-    # Apply the script-level operating condition as defaults (CLI still overrides).
-    parser.set_defaults(**OPERATING_CONDITION)
-    # Gravity ON by default (common.py's --include-gravity flag is a
-    # store_true whose default is off; a gravity-free "trim" leaves the
-    # weight unbalanced and every static verdict off-equilibrium).
-    parser.set_defaults(include_gravity=True)
-    parser.add_argument(
-        "--no-gravity",
-        action="store_true",
-        help="Solve trim and linearise without the kite weight "
-        "(overrides the gravity-on default).",
-    )
-    parser.add_argument(
-        "--deformed-case",
-        default=None,
-        help=(
-            "Name of a result case folder under --deformed-root "
-            "(e.g. depower_p0000mm_steer_p0200mm). Uses that case's deformed "
-            "aero_geometry.yaml/structure.yml for the trim (shortcut for "
-            "--deformed-from). Mass/inertia/CoG/tether still come from "
-            "system.yaml in --config-folder."
-        ),
-    )
-    parser.add_argument(
-        "--deformed-root",
-        default=None,
-        help=(
-            "Directory holding the deformed result cases "
-            "(default: data/<kite>/deformed_results when present; otherwise "
-            "results/<kite>/aerostructural)."
-        ),
-    )
-    parser.add_argument(
-        "--list-cases",
-        action="store_true",
-        help="List available deformed cases under --deformed-root and exit.",
-    )
-    parser.add_argument("--eps-vel", type=float, default=0.1)
-    parser.add_argument("--eps-angle-deg", type=float, default=0.5)
-    parser.add_argument("--eps-rate", type=float, default=0.01)
-    parser.add_argument(
-        "--eps-position",
-        type=float,
-        default=0.5,
-        help="Finite-difference step [m] for radial position state `z`.",
-    )
-    parser.add_argument(
-        "--eps-course-rate",
-        type=float,
-        default=0.02,
-        help=(
-            "Finite-difference step [rad/s] for the course-rate column "
-            "J_course_rate (feeds the chi_dot kinematic slope)."
-        ),
-    )
-    parser.add_argument(
-        "--stability-frame",
-        choices=["course", "body"],
-        default="course",
-        help=(
-            "Attitude-slope reporting frame. The trim linearisation ALWAYS "
-            "runs in the course frame (the Omega_C transport construction is "
-            "only frame-consistent there). `body` additionally reports the "
-            "roll/pitch/yaw static slopes about the centre-panel body "
-            "axes at the trim attitude; requires "
-            "--rigid-body-result."
-        ),
-    )
-    parser.add_argument(
-        "--rigid-body-result",
-        type=Path,
-        default=None,
-        help=(
-            "Path to a structural result directory (or sim_output.h5). "
-            "Loads identified body axes, CG, and inertia from the PSM model, "
-            "overriding --center-of-gravity and --inertia-xx/yy/zz."
-        ),
-    )
-    parser.add_argument(
-        "--rigid-body-struc",
-        type=Path,
-        default=None,
-        help="structure.yml to use with --rigid-body-result (auto-detected if omitted).",
-    )
-    args = parser.parse_args()
-    if args.no_gravity:
-        args.include_gravity = False
-
-    # Resolve the deformed-results case selection (--deformed-case / --list-cases).
-    kite_name = Path(args.config_folder).name
-    data_deformed_root = Path(args.config_folder) / "deformed_results"
-    deformed_root = (
-        Path(args.deformed_root)
-        if args.deformed_root
-        else (
-            data_deformed_root
-            if data_deformed_root.is_dir()
-            else DEFAULT_OUTPUT_ROOT.parent / kite_name / "aerostructural"
-        )
-    )
-    if args.list_cases:
-        print(f"Deformed-result cases under {deformed_root}:")
-        if deformed_root.is_dir():
-            cases = sorted(
-                d.name
-                for d in deformed_root.iterdir()
-                if d.is_dir() and (d / "aero_geometry.yaml").exists()
-            )
-            for name in cases:
-                print(f"  {name}")
-            if not cases:
-                print("  (none found)")
-        else:
-            print("  (directory does not exist)")
-        return
-    if args.deformed_case:
-        case_dir = deformed_root / args.deformed_case
-        if not case_dir.is_dir():
-            parser.error(
-                f"--deformed-case '{args.deformed_case}' not found under {deformed_root}. "
-                "Use --list-cases to see available cases."
-            )
-        # build_body reads args.deformed_from to use the frozen deformed geometry.
-        args.deformed_from = str(case_dir)
-        print(f"Using deformed geometry from: {case_dir}")
-    elif args.deformed_from is None:
-        powered_case = deformed_root / "powered_2019"
-        if powered_case.is_dir():
-            args.deformed_from = str(powered_case)
-            print(f"Using default powered deformed geometry from: {powered_case}")
-
-    values = parsed_common(args)
-    out_dir = output_dir(args, "stability_derivatives")
-
-    stability_frame = args.stability_frame
-    if stability_frame == "body" and args.rigid_body_result is None:
-        parser.error("--stability-frame body requires --rigid-body-result.")
-
+    if STABILITY_FRAME not in ("course", "body"):
+        raise ValueError(f"STABILITY_FRAME must be 'course' or 'body', got {STABILITY_FRAME!r}")
+    out_dir = output_dir("stability_derivatives", OUTPUT_DIR)
     print(f"Output directory: {out_dir.resolve()}")
 
-    # Load body and properties from config folder
-    body, props = build_body(args)
-    system_model = build_system_model(args)
-
-    # Mass, CG and inertia of one body (kite_rigid_body raises when they are
-    # not). --inertia-xx/yy/zz replace individual diagonal entries; the
-    # products of inertia (off-diagonals, geometry basis) are kept.
-    kite_body = kite_rigid_body(values, props, system_model)
-    mass_kite = kite_body["mass"]
+    kite = load_kite(
+        KITE,
+        CASE,
+        shape=SHAPE,
+        deformed_from=DEFORMED_FROM,
+        overrides={"coupling": {"is_with_gravity": WITH_GRAVITY}},
+    )
+    print_kite(kite)
+    system_model = kite.system_model
+    mass_kite = kite.mass
     mass_wing = float(system_model.kite.mass_wing)
-    inertia_cg = kite_body["inertia_cg"]
-    for _i, _diag_override in enumerate(
-        (args.inertia_xx, args.inertia_yy, args.inertia_zz)
-    ):
-        if _diag_override is not None:
-            inertia_cg[_i, _i] = float(_diag_override)
+    inertia_cg = kite.inertia_cg
     inertia_xx, inertia_yy, inertia_zz = (float(v) for v in np.diag(inertia_cg))
-
-    center_of_gravity = kite_body["center_of_gravity"]
+    center_of_gravity = kite.center_of_gravity
     trim_axes = DEFAULT_AXES
-    rigid_body = None  # RigidBodyAxes result when --rigid-body-result is given
-    deformed_aero_path: Path | None = None  # set below when deformed geometry is found
 
-    # Optionally load identified rigid-body properties and deformed geometry.
-    # NOTE: the linearisation ALWAYS runs in the course frame — the centre-
-    # panel body axes are used only for the body-frame attitude slopes of the
-    # static_slopes_summary call (--stability-frame body).
-    if args.rigid_body_result is not None:
-        from common import _resolve_csv_paths, add_vsm_path as _add_vsm_path
-        import tempfile
-
-        rigid_body = _load_rigid_body_axes_from_result(
-            args.rigid_body_result, args.rigid_body_struc
-        )
-        center_of_gravity = rigid_body.cg
-        inertia_xx, inertia_yy, inertia_zz = (
-            float(v) for v in rigid_body.inertia_moments
-        )
-        # Course stability axes: pass the full structural-frame tensor — the
-        # centre-panel frame does not diagonalise the inertia, so the diagonal
-        # scalars above are only a fallback; the products of inertia are kept.
-        inertia_cg = np.asarray(rigid_body.inertia_cg, dtype=float)
-
-        case_dir = args.rigid_body_result.resolve()
-        if case_dir.is_file():
-            case_dir = case_dir.parent
-
-        _aero_candidate = case_dir / "aero_geometry.yaml"
-
-        if _aero_candidate.exists():
-            deformed_aero_path = _aero_candidate
-            _add_vsm_path(args.vsm_src)
-            from VSM.core.BodyAerodynamics import BodyAerodynamics as _BA
-
-            from awetrim.aerodynamics.vsm_settings import vsm_body_kwargs
-
-            with deformed_aero_path.open("r", encoding="utf-8") as _f:
-                aero_cfg = yaml.safe_load(_f)
-            _resolve_csv_paths(aero_cfg, Path(args.config_folder))
-
-            with tempfile.NamedTemporaryFile(
-                mode="w", suffix=".yaml", delete=False, encoding="utf-8"
-            ) as _tmp:
-                yaml.dump(aero_cfg, _tmp)
-                _tmp_path = _tmp.name
-            try:
-                body = _BA.instantiate(
-                    n_panels=args.n_panels,
-                    file_path=_tmp_path,
-                    spanwise_panel_distribution=args.spanwise_panel_distribution,
-                    **vsm_body_kwargs(),
-                )
-            finally:
-                Path(_tmp_path).unlink()
-            # The bridle lines VSM's bridle_path used to add: the structure's
-            # segments, at their structural diameters (no tape drag here, as
-            # before).
-            if props.get("struc_geometry_path"):
-                from awetrim.aerostructural.coupled.awesio_structure import (
-                    load_structure,
-                )
-
-                body._bridle_line_system = load_structure(
-                    props["struc_geometry_path"]
-                ).bridle_line_system()
-            print(f"VSM body rebuilt from deformed aero_geometry: {deformed_aero_path}")
-        else:
-            print(
-                f"Warning: no deformed aero_geometry.yaml in {case_dir}. "
-                "Run with is_save_geometry_snapshots: true to save it. "
-                "Falling back to data/ geometry."
-            )
-
-        print(f"\nRigid-body axes loaded from: {args.rigid_body_result}")
-        print(f"  CG (structural frame):  {rigid_body.cg}")
-        print(f"  Inertia [Ixx, Iyy, Izz] (body axes): {rigid_body.inertia_moments}")
+    rigid_body = None
+    if STABILITY_FRAME == "body":
+        rigid_body = compute_rigid_body_axes(*load_psm_geometry(kite.structure_path))
+        print(f"\nCentre-panel body axes of {kite.structure_path}:")
         print(f"  x_body (roll):   {rigid_body.body_axes[0]}")
         print(f"  y_body (pitch):  {rigid_body.body_axes[1]}")
         print(f"  z_body (yaw):    {rigid_body.body_axes[2]}\n")
 
-    print(f"Attitude-slope reporting frame: {stability_frame}")
+    print(f"Attitude-slope reporting frame: {STABILITY_FRAME}")
     print("  trim axes:          course")
     print("  linearisation axes: course (always)")
 
-    # Robust Williams detection: ``isinstance`` can miss it when ``awetrim`` is
-    # importable via two paths (the src path injected by common.py and an
-    # installed copy), giving two distinct class objects.
-    _tether = getattr(system_model, "tether", None)
-    use_williams = (
-        isinstance(_tether, WilliamsTether)
-        or type(_tether).__name__ == "WilliamsTether"
-    )
-    if use_williams:
-        print("Tether model: WilliamsTether -> running joint trim+tether solve.")
-        result, solved_body = solve_vsm_qs_trim_with_williams_tether(
-            body_aero=body,
-            center_of_gravity=center_of_gravity,
-            reference_point=values["reference_point"],
-            system_model=system_model,
-            x_guess=values["x_guess"],
-            bounds_lower=values["bounds_lower"],
-            bounds_upper=values["bounds_upper"],
-            include_gravity=args.include_gravity,
-            moment_tolerance=args.moment_tolerance,
-            max_nfev=args.max_nfev,
-            axes=trim_axes,
-        )
-    else:
-        result, solved_body = solve_vsm_quasi_steady_trim(
-            body_aero=body,
-            center_of_gravity=center_of_gravity,
-            reference_point=values["reference_point"],
-            system_model=system_model,
-            x_guess=values["x_guess"],
-            bounds_lower=values["bounds_lower"],
-            bounds_upper=values["bounds_upper"],
-            include_gravity=args.include_gravity,
-            moment_tolerance=args.moment_tolerance,
-            return_timing_breakdown=True,
-            max_nfev=args.max_nfev,
-            axes=trim_axes,
-        )
+    result, solved_body = trim(kite)
     print_trim_summary(result)
 
     # The linearisation always runs in the course frame (DEFAULT_AXES): the
@@ -532,7 +221,7 @@ def main() -> None:
     stability = compute_vsm_trim_stability_derivatives(
         body_aero=solved_body,
         center_of_gravity=center_of_gravity,
-        reference_point=values["reference_point"],
+        reference_point=kite.reference_point,
         x_trim=np.asarray(result["opt_x"], dtype=float),
         trim_result=result,
         system_model=system_model,
@@ -540,17 +229,19 @@ def main() -> None:
         # Full CG tensor (zero-attitude geometry basis).
         inertia_cg=inertia_cg,
         axes=DEFAULT_AXES,
-        distance_radial=args.distance_radial,
-        eps_vel=args.eps_vel,
-        eps_angle_deg=args.eps_angle_deg,
-        eps_rate=args.eps_rate,
-        eps_position=args.eps_position,
-        eps_course_rate=args.eps_course_rate,
+        distance_radial=CASE.distance_radial,
+        eps_vel=EPS["vel"],
+        eps_angle_deg=EPS["angle_deg"],
+        eps_rate=EPS["rate"],
+        eps_position=EPS["position"],
+        eps_course_rate=EPS["course_rate"],
         course_rate_state=True,
         # Must match the trim's gravity setting: the library defaults to
         # gravity ON, which puts the linearisation base off-equilibrium
         # (net force = the unbalanced weight) after a gravity-off trim.
-        include_gravity=args.include_gravity,
+        include_gravity=kite.include_gravity,
+        solver=kite.solver,
+        kcu_drag=kite.kcu_drag,
     )
 
     # --- Diagnostic: course-frame transport rate used for the gyroscopic term --
@@ -579,13 +270,13 @@ def main() -> None:
         "tether_radial_position_model:",
         stability.get("tether_radial_position_model"),
     )
-    print(f"  use_williams (this run): {use_williams}")
+    print(f"  tether in trim (this run): {kite.tether_in_trim}")
     print(
         "  actual tether class:    "
-        f"{type(_tether).__name__}  (module={type(_tether).__module__})"
+        f"{type(system_model.tether).__name__}  (module={type(system_model.tether).__module__})"
     )
-    print(f"  config_folder:          {args.config_folder}")
-    print(f"  eps_position requested:  {args.eps_position:g} m")
+    print(f"  structure:              {kite.structure_path}")
+    print(f"  eps_position requested:  {EPS['position']:g} m")
     print(f"  eps_position used:       {stability.get('eps_position_used'):g} m")
     J_full = np.asarray(stability["J_full"], dtype=float)
     out_names = list(stability.get("output_names", []))
@@ -621,7 +312,7 @@ def main() -> None:
 
     static_body = None
     body_axes_world_at_trim = None
-    if stability_frame == "body":
+    if STABILITY_FRAME == "body":
         # Principal body axes at trim: rows of the identified structural-frame
         # axes, rotated by the trim attitude rotation (same composition as the
         # trim solver: yaw @ pitch @ roll about the course-frame axes).
@@ -685,10 +376,10 @@ def main() -> None:
                 "state_names_full": state_names_full,
                 "output_names": out_names,
                 "eps": {
-                    "vel": args.eps_vel,
-                    "angle_deg": args.eps_angle_deg,
-                    "rate": args.eps_rate,
-                    "position_requested": args.eps_position,
+                    "vel": EPS["vel"],
+                    "angle_deg": EPS["angle_deg"],
+                    "rate": EPS["rate"],
+                    "position_requested": EPS["position"],
                     "position_used": stability.get("eps_position_used"),
                     "course_rate": stability.get("eps_course_rate"),
                 },
@@ -725,14 +416,14 @@ def main() -> None:
             "frame": {
                 "trim_frame": "course",
                 "linearisation_frame": "course",
-                "attitude_report_frame": stability_frame,
+                "attitude_report_frame": STABILITY_FRAME,
                 "trim_axes": _axes_to_dict(trim_axes),
             },
             "run_settings": {
                 "output_dir": str(out_dir.resolve()),
-                "deformed_from": args.deformed_from,
+                "case": CASE.to_config(),
             },
-            "properties": props,
+            "properties": kite.properties(),
         },
     )
 
@@ -750,10 +441,10 @@ def main() -> None:
     fig_mat.tight_layout()
     save_figure(fig_mat, out_dir / "stability_derivative_matrices.pdf")
 
-    if args.no_show:
-        plt.close(fig_mat)
-    else:
+    if SHOW:
         plt.show()
+    else:
+        plt.close(fig_mat)
 
 
 if __name__ == "__main__":

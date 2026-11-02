@@ -668,6 +668,38 @@ def rebuild_bridle_line_system(body_aero, struc_nodes, bridle_line_specs) -> Non
     ]
 
 
+def trim_settings(config) -> dict:
+    """The config's ``quasi_steady_trim`` block (``quasi_steady`` is an alias)."""
+    config = config or {}
+    return config.get("quasi_steady_trim") or config.get("quasi_steady") or {}
+
+
+def trim_bounds(config) -> tuple[np.ndarray, np.ndarray]:
+    """``(lower, upper)`` search bounds of the five trim states.
+
+    The module constants above are the defaults; the config's
+    ``quasi_steady_trim`` block overrides them. Those YAML keys
+    (kite_speed_bounds_ms, roll_bounds_deg, ...) already existed in
+    as_config.yaml and read as if they configured this solve, but nothing
+    consulted them -- so the hard-coded values silently won. That matters for
+    near-stationary states: a kite whose trim speed is below
+    kite_speed_bounds[0] cannot be represented at all, and the optimiser
+    returns a bound-constrained point that is NOT an equilibrium.
+    """
+    qs_cfg = trim_settings(config)
+    bounds = [
+        tuple(qs_cfg.get("kite_speed_bounds_ms", kite_speed_bounds)),
+        tuple(qs_cfg.get("roll_bounds_deg", roll_bounds)),
+        tuple(qs_cfg.get("pitch_bounds_deg", pitch_bounds)),
+        tuple(qs_cfg.get("yaw_bounds_deg", yaw_bounds)),
+        tuple(qs_cfg.get("course_rate_bounds_rad_s", course_rate_bounds)),
+    ]
+    return (
+        np.array([float(b[0]) for b in bounds]),
+        np.array([float(b[1]) for b in bounds]),
+    )
+
+
 def run_vsm_package(
     body_aero,
     solver,
@@ -728,30 +760,9 @@ def run_vsm_package(
     # So we call the underlying setter method directly using the descriptor protocol
     # type(body_aero).va.fset(body_aero, va_vector)
 
-    # Trim search bounds. The module constants above are the defaults; a
-    # ``config`` with a ``quasi_steady`` block overrides them. Those YAML keys
-    # (kite_speed_bounds_ms, roll_bounds_deg, ...) already existed in
-    # as_config.yaml and read as if they configured this solve, but nothing
-    # consulted them -- so the hard-coded values silently won. That matters for
-    # near-stationary states: a kite whose trim speed is below
-    # kite_speed_bounds[0] cannot be represented at all, and the optimiser
-    # returns a bound-constrained point that is NOT an equilibrium.
-    # The kite configs name this block ``quasi_steady_trim``; ``quasi_steady``
-    # is accepted as an alias so either spelling works.
-    _cfg = config or {}
-    qs_cfg = _cfg.get("quasi_steady_trim") or _cfg.get("quasi_steady") or {}
-    speed_b = tuple(qs_cfg.get("kite_speed_bounds_ms", kite_speed_bounds))
-    roll_b = tuple(qs_cfg.get("roll_bounds_deg", roll_bounds))
-    pitch_b = tuple(qs_cfg.get("pitch_bounds_deg", pitch_bounds))
-    yaw_b = tuple(qs_cfg.get("yaw_bounds_deg", yaw_bounds))
-    rate_b = tuple(qs_cfg.get("course_rate_bounds_rad_s", course_rate_bounds))
-
-    bounds_lower = np.array(
-        [speed_b[0], roll_b[0], pitch_b[0], yaw_b[0], rate_b[0]]
-    )
-    bounds_upper = np.array(
-        [speed_b[1], roll_b[1], pitch_b[1], yaw_b[1], rate_b[1]]
-    )
+    qs_cfg = trim_settings(config)
+    bounds_lower, bounds_upper = trim_bounds(config)
+    speed_b = (bounds_lower[0], bounds_upper[0])
     # Trim evaluation cap (opt-in, quasi_steady_trim.max_nfev). Inside a
     # coupled loop a FULLY converged trim on an intermediate geometry is
     # wasted work -- the geometry moves right after. Capping least_squares to

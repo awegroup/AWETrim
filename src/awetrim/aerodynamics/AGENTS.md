@@ -826,13 +826,15 @@ stability driver: trim → `compute_vsm_trim_stability_derivatives` (always
 course-frame `DEFAULT_AXES`, always `course_rate_state=True`) →
 `static_slopes_summary` verdict table + `J_full`/`J_course_rate` diagnostics
 and JSON. No modal/eigenmode analysis (the modal version is recoverable from
-git history). `--stability-frame body` no longer changes the linearisation
+git history). `STABILITY_FRAME = "body"` (Inputs block) does not change the linearisation
 axes — it additionally reports the attitude slopes about the centre-panel
 body axes at trim (`rigid_body_axes`: chord and normal of the wing's centre
 panel, aircraft FRD sense: x forward, y right, z down — rotated by the trim
 attitude) via the
 `attitude_axes=` argument of `static_slopes_summary`; the old
-`stability_config.yaml` (`states`/`coupled`/`frame`) is gone.
+`stability_config.yaml` (`states`/`coupled`/`frame`) is gone. The step-1
+scripts take no CLI since 2026-11-02: Inputs blocks, and the kite from
+`examples/1_aerodynamics/common.load_kite` (see that folder's README).
 
 ## Trim State Convention
 

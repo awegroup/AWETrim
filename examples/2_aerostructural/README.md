@@ -50,7 +50,7 @@ Each run writes its own case folder, named after its inputs, under
 - `sim_output.h5`: node positions, forces and the solver history
 - `case.json`: what to draw (wing, tubes, bridle lines with names and tensions) and the flight state
 - `config.yaml`, plus the deformed `aero_geometry.yaml` / `structure.yml` (awesIO), which other
-  scripts can reuse (e.g. `examples/1_aerodynamics/solve_single_state.py --deformed-from <case>`)
+  scripts can reuse (e.g. `examples/1_aerodynamics/solve_single_state.py` with `SHAPE = "wireframe"` and the same `Case`)
 
 The inputs block builds the run's `Case` (flight state, wind, tape command).
 How the problem is modelled and solved comes from the kite's `as_config.yaml`

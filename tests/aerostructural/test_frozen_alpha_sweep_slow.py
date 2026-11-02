@@ -37,8 +37,6 @@ either is unavailable.
 
 from __future__ import annotations
 
-import argparse
-import importlib.util
 from pathlib import Path
 
 import numpy as np
@@ -64,33 +62,11 @@ UMAG = 22.0
 AOA0_DEG = 6.0
 
 
-def _load_aero_scripts_common():
-    """Import examples/1_aerodynamics/common.py under a unique name (no path clash).
-
-    Both examples/1_aerodynamics/common.py and examples/2_aerostructural/common.py are
-    called ``common``; load this one under a distinct module name so it does not
-    collide with the one used by the PSS slow test.
-    """
-    path = REPO_ROOT / "examples" / "1_aerodynamics" / "common.py"
-    spec = importlib.util.spec_from_file_location("aerodynamics_scripts_common", path)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 @pytest.fixture(scope="module")
-def body_and_solver():
-    """Build the real LEI-V3 VSM body once and share it across the tests."""
-    common = _load_aero_scripts_common()
-    parser = argparse.ArgumentParser()
-    common.add_common_arguments(parser)
-    args = parser.parse_args([])  # LEI-V3 defaults (18 panels, uniform spanwise)
-    try:
-        body, _props = common.build_body(args)
-    except Exception as exc:  # pragma: no cover - environment-dependent
-        pytest.skip(f"could not build VSM body: {exc}")
-    solver = default_vsm_solver(np.zeros(3))
-    return body, solver
+def body_and_solver(lei_v3_step1_kite):
+    """The step-1 LEI-V3 body (conftest), with AWETrim's default solver."""
+    solver = default_vsm_solver(np.asarray(lei_v3_step1_kite.reference_point, dtype=float))
+    return lei_v3_step1_kite.body, solver
 
 
 def _anchor_reference(body, solver, *, umag, aoa_deg, beta_deg, rate):
