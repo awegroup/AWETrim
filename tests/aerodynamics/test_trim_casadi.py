@@ -9,44 +9,23 @@ iterations, carry an exact Jacobian, and honour a pinned roll. Slow-ish
 
 from __future__ import annotations
 
-import argparse
-import sys
-from pathlib import Path
-
 import numpy as np
 import pytest
 
 casadi = pytest.importorskip("casadi")
 pytest.importorskip("VSM")
 
-PROJECT_DIR = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(PROJECT_DIR / "examples" / "1_aerodynamics"))
-from common import (  # noqa: E402
-    add_common_arguments,
-    build_body,
-    build_system_model,
-    kite_rigid_body,
-    parsed_common,
-)
-
-from awetrim.aerodynamics.kcu_drag import KcuDragModel  # noqa: E402
 from awetrim.aerodynamics.trim_casadi import CasadiTrim, CasadiTrimOptions, solve_vsm_trim_casadi  # noqa: E402
 from awetrim.aerodynamics.vsm_quasi_steady import (  # noqa: E402
     solve_vsm_qs_trim_with_williams_tether,
     solve_vsm_quasi_steady_trim,
 )
+from conftest import step1_trim_env  # noqa: E402
 
 
 @pytest.fixture(scope="module")
-def lei_v3():
-    parser = argparse.ArgumentParser()
-    add_common_arguments(parser)
-    args = parser.parse_args([])
-    body, props = build_body(args)
-    values = parsed_common(args)
-    system_model = build_system_model(args)
-    values["center_of_gravity"] = kite_rigid_body(values, props, system_model)["center_of_gravity"]
-    return dict(body=body, values=values, system_model=system_model, kcu=KcuDragModel.from_system_model(system_model))
+def lei_v3(lei_v3_step1_kite):
+    return step1_trim_env(lei_v3_step1_kite)
 
 
 def _numpy_reference(env, tether: bool, **extra):
@@ -90,7 +69,9 @@ def test_legacy_bridle_reproduces_numpy_trim(lei_v3, tether):
         assert np.linalg.norm(res["williams_ground_residual"]) < 1e-4
         assert res["williams_positions"].shape[1] == 3
     assert res["casadi_trim"]["iterations"] <= 40
-    assert res["casadi_trim"]["residual_max"] < 1e-8
+    # the solver's promise: below the wake-rebuild tolerance after the last
+    # rebuild (each Newton pass itself stops at ``tolerance``)
+    assert res["casadi_trim"]["residual_max"] < trim.options.wake_tolerance
 
 
 def test_rigid_bridle_differs_only_slightly(lei_v3):

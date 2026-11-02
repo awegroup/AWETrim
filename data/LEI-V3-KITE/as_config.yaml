@@ -42,12 +42,22 @@ aerodynamics:
     # pre-2026-08-21 behaviour, the area-equivalent circle.
     # See awetrim.aerodynamics.line_drag.
     tape_roll_model: averaged
+  # The WIREFRAME's wing (read by wireframe.driver only; Billow full billows
+  # its own membrane and maps loads through coupling.load_transfer).
+  # Strut-to-strut trailing-edge contraction, LEI-V3 photogrammetry (Haanen
+  # 2026, Table 9.2: -5.23 % powered, -3.86 % depowered); 0 = the built (CAD)
+  # wing. docs/aerostructural/lei_v3_wing_corrections.md
+  billowing:
+    contraction: !!float 0.05
+  # Panel load onto the ribs: strut_lever is exact in force and moment,
+  # bilinear (the code default) loses 2-6 % of the moment.
+  load_transfer: !!str 'strut_lever'
 
   # -- solver --
   # Panels per structural section: on the FEM geometry's 27 sections, 5 =
-  # 135 panels, the identification mesh (Billow full flies 2 per section,
-  # its own BILLOW_CONFIG_DEFAULTS). Chosen 2026-08-31 on the PSM ribs
-  # (mesh-converged across 27/36/45 panels, v_tau +/-0.2%).
+  # 135 panels, within 0.5 % of 324 panels in CL and CD at 4-8 deg on the
+  # billowed wing (convergence study 2026-10-28, docs/aerostructural/).
+  # Billow full flies 2 per section (its own BILLOW_CONFIG_DEFAULTS).
   n_aero_panels_per_struc_section: !!int 5
   spanwise_panel_distribution: !!str 'uniform'
   max_iterations: !!int 1500

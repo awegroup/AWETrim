@@ -53,6 +53,31 @@ Legacy readers and unused modules removed. Files in the old formats raise a
   (`update_stiffness`, `max_elongation`, `max_stiffness_factor`, ...) raise;
   a handover's `stiffnesses` / `stiffness_factors` are ignored with a
   warning; the meta keeps the elongation diagnostics and `final_stiffnesses`.
+- **The LEI-V3 wireframe flies the ROM's wing by default.** `as_config.yaml`
+  states `aerodynamics.billowing.contraction: 0.05` and
+  `load_transfer: strut_lever` (with its 5 panels per FEM section, 135),
+  which only `identification.yaml` used to set. The identification sweep
+  is unchanged; `run_simulation_PSM.py` drops its 54-panel base-loop
+  override and flies `as_config`'s aerodynamics.
+- **Step-1 scripts take Inputs blocks, not a CLI.** `solve_single_state.py`,
+  `compute_polars.py` and `compute_stability_derivatives.py` read a `Case`,
+  a `SHAPE` (`built`, or the `wireframe` / `billow` result of the same case
+  from step 2; `DEFORMED_FROM` for any results folder) and their own
+  settings. The kite is `examples/1_aerodynamics/common.load_kite`: the
+  structure's wing billowed and meshed as `as_config` says
+  (`wireframe.driver.wing_edges`, shared with the wireframe), the full
+  bridle, the KCU point as the moment reference, mass/CG/inertia from
+  `structure.yml` + `system.yaml`, and as_config's KCU drag, tether in the
+  trim and `pre_loop` trim bounds. The overrides of physical quantities
+  (`--mass-wing`, `--inertia-*`, `--center-of-gravity`, `--tether-diameter`,
+  `--n-panels`) and the stability script's `--deformed-case` /
+  `--list-cases` / `--rigid-body-result` are gone. Step 1 keeps its VSM
+  loop (base, no artificial viscosity): the least_squares trims stop at
+  their seed with as_config's AV loop. Default state: the step-2 PSM
+  example's case. Step-1 results change (KCU drag, billowed 135-panel wing,
+  tether in the trim).
+- **`aerodynamic_vsm.trim_bounds` / `trim_settings`**: the trim search box
+  and settings of a config, one place for the coupled and step-1 trims.
 - **Removed modules:** `utils.fitting`, `utils.sparsity_analysis`,
   `utils.talmar_equations`, `timeseries.cycle_phase`,
   `aerostructural.logging_config`.

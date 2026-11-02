@@ -294,7 +294,15 @@ src/awetrim/aerostructural/
                                    the wing members at the new distances (bridle
                                    unchanged); the refined arc points are
                                    anchored in the skin one by one (static arc,
-                                   carried rigidly). WireframeCase.panel_bays
+                                   carried rigidly). fem_wing(structure,
+                                   positions, le, te, p) -> (le, te,
+                                   strut_sections, BillowedWing | None) is
+                                   that wing; wing_edges(structure, p, n)
+                                   its refined edges on the BUILT positions
+                                   (p = 0: linear between the FEM sections,
+                                   NOT billow_wing(0), which draws arcs up to
+                                   23 mm off), the step-1 scripts' wing.
+                                   WireframeCase.panel_bays
                                    carries the bay of every panel for the
                                    strut-lever transfer; prepare_structure
                                    builds the corner map from it
@@ -1403,6 +1411,9 @@ moment with a ~2 rad/s course rate, the tips stalled, the first structural
 step swung the kite ~22 deg about the KCU and VSM returned NaN. Same date:
 `_warn_if_trim_on_bounds` takes `rel_tol=1e-3` of the span, since TRF stops
 strictly inside the box (yaw 3.9987 on [-4, 4]) and 1e-6 never fired.
+`aerodynamic_vsm.trim_bounds(config)` / `trim_settings(config)` read the box
+and the block (2026-11-02), for `run_vsm_package` and the step-1 scripts,
+which trim with `pre_loop_trim_config` (their trim sets the whole attitude).
 
 ### Cold trim seed (quasi_steady_trim.initial_aoa_band_deg, 2026-10-27)
 

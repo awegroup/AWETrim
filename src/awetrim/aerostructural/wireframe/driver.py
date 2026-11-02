@@ -933,6 +933,57 @@ def billowing_contraction(config) -> float:
     return float(block.get("contraction", 0.0))
 
 
+def fem_wing(structure, positions, le_nodes, te_nodes, contraction: float):
+    """``(le, te, strut_sections, wing)`` of the full structure's wing.
+
+    ``le`` / ``te``: the FEM sections' edge points (``Structure.resolved``'s
+    LE / TE node indices into ``positions``), span order +y to -y;
+    ``strut_sections``: the section of every strut, tips included; ``wing``:
+    the :func:`billowing.billow_wing` of contraction p, or None at p = 0 --
+    the built wing, which is NOT ``billow_wing(p=0)``: that one still draws
+    every inner bay's trailing edge as a circular arc, up to 23 mm off the
+    built canopy points on the LEI-V3.
+    """
+    from awetrim.aerostructural.billowing import billow_wing
+
+    positions = np.asarray(positions, dtype=float)
+    fem_le, fem_te = np.asarray(le_nodes, dtype=int), np.asarray(te_nodes, dtype=int)
+    struts = sorted(structure.struts, key=lambda strut: -positions[strut["nodes"][0]][1])
+    sections = [int(np.flatnonzero(fem_le == strut["nodes"][0])[0]) for strut in struts]
+    if sections != sorted(sections):
+        raise ValueError(f"the struts do not follow the FEM sections: {sections}")
+    le, te = positions[fem_le], positions[fem_te]
+    wing = billow_wing(le, te, sections, contraction) if contraction > 0.0 else None
+    return le, te, sections, wing
+
+
+def wing_edges(structure, contraction: float, n_per_section: int):
+    """The wireframe's aerodynamic wing on the structure's BUILT positions:
+    ``(le, te)`` with ``n_per_section`` panels per FEM section.
+
+    What :func:`build_case_reduced_fem` flies before any deformation (its
+    wing nodes are held while the bridle relaxes), for a body that needs the
+    wing without the wireframe: the step-1 trims. p = 0 is the built wing,
+    linear between the FEM sections; p > 0 the billowed one
+    (:func:`billowing.refine_billowed_wing`).
+    """
+    from awetrim.aerostructural.billowing import refine_billowed_wing
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
+
+    structure = load_structure(structure)
+    reader = structure.resolved()
+    le, te, _, wing = fem_wing(structure, reader[0], reader[2], reader[3], contraction)
+    if wing is not None:
+        return refine_billowed_wing(wing, n_per_section)
+    t = np.arange(n_per_section)[:, None] / int(n_per_section)
+
+    def refine(points):
+        inner = [(1.0 - t) * a + t * b for a, b in zip(points[:-1], points[1:])]
+        return np.vstack([*inner, points[-1:]])
+
+    return refine(le), refine(te)
+
+
 def build_case_reduced_fem(
     case: Case | None = None,
     overrides: dict | None = None,
@@ -982,7 +1033,7 @@ def build_case_reduced_fem(
     ``system.yaml``; ``tether_diameter`` overrides the system file's.
     """
     from awetrim.aerostructural.billow.structural_billow import relax_bridle_nodes
-    from awetrim.aerostructural.billowing import billow_wing, refine_billowed_wing
+    from awetrim.aerostructural.billowing import refine_billowed_wing
     from awetrim.aerostructural.coupled.awesio_structure import (
         wireframe_to_awesio,
         write_awesio,
@@ -1022,20 +1073,15 @@ def build_case_reduced_fem(
     per_section = int(config["aerodynamic"]["n_aero_panels_per_struc_section"])
     n_ribs = len(reduced["wing_particles"]["data"]) // 2
     relaxed = np.asarray(relaxed, dtype=float)
-    fem_le, fem_te = np.asarray(reader[2], dtype=int), np.asarray(reader[3], dtype=int)
-    # the FEM section of every reduced rib (both run +y to -y)
-    rib_le_node = [
-        int(strut["nodes"][0])
-        for strut in sorted(structure.struts, key=lambda strut: -relaxed[strut["nodes"][0]][1])
-    ]
-    rib_sections = [int(np.flatnonzero(fem_le == node)[0]) for node in rib_le_node]
-    if rib_sections != sorted(rib_sections) or len(rib_sections) != n_ribs:
-        raise ValueError(f"reduced ribs do not follow the FEM sections: {rib_sections}")
-
-    le_points, te_points = relaxed[fem_le], relaxed[fem_te]
     contraction = billowing_contraction(config)
-    if contraction > 0.0:
-        wing = billow_wing(le_points, te_points, rib_sections, contraction)
+    le_points, te_points, rib_sections, wing = fem_wing(
+        structure, relaxed, reader[2], reader[3], contraction
+    )
+    if len(rib_sections) != n_ribs:
+        raise ValueError(f"reduced ribs do not follow the FEM sections: {rib_sections}")
+    n_sections = len(le_points)
+
+    if wing is not None:
         le_points, te_points = refine_billowed_wing(wing, per_section)
         skin_per_section = 1  # the arc points are anchored themselves
         # the ribs move with their struts; the wing members rest at the new shape
@@ -1092,7 +1138,7 @@ def build_case_reduced_fem(
         te_points=rotate_geometry(te_points, **rotation),
         n_panels_per_section=skin_per_section,
     )
-    n_panels_aero = (len(fem_le) - 1) * per_section
+    n_panels_aero = (n_sections - 1) * per_section
 
     work_dir = Path(
         work_dir

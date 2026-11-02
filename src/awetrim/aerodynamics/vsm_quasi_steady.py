@@ -2519,7 +2519,7 @@ def corotating_state_transform(
     the same course axes CARRIED BY THE BODY about the tether attachment:
     axes that coincide with the course axes at trim and co-rotate with the
     perturbed attitude. (This is a component-basis choice, distinct from the
-    material-body-axes ``--stability-frame body`` option.) At a fixed trim
+    material-body-axes ``STABILITY_FRAME = "body"`` option.) At a fixed trim
     the two descriptions differ by the constant linear map built here,
 
         dv_corot     = dv_frozen     + [v_kite_trim]_x dTheta
@@ -3463,7 +3463,7 @@ def compute_vsm_trim_stability_derivatives(
         geometry — correct when the stability axes are the (space-fixed)
         course axes and the kite is tilted from them by the trim attitude.
         Set ``False`` when the stability axes are the body-fixed material
-        axes (``--stability-frame body``): the baseline tensors are already
+        axes (``STABILITY_FRAME = "body"``): the baseline tensors are already
         resolved in them and only the attitude perturbation rotates them.
     include_added_mass
         If ``True``, the strip-theory apparent-mass matrix of the canopy
