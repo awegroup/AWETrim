@@ -20,7 +20,7 @@ pytest.importorskip("VSM")
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_DIR / "examples" / "1_aerodynamics"))
-from common import add_common_arguments, build_body, build_system_model, parsed_common  # noqa: E402
+from common import add_common_arguments, build_body, build_system_model, kite_rigid_body, parsed_common  # noqa: E402
 
 from awetrim.aerodynamics.kcu_drag import KcuDragModel  # noqa: E402
 from awetrim.aerostructural import aerodynamic_vsm  # noqa: E402
@@ -31,9 +31,10 @@ def lei_v3():
     parser = argparse.ArgumentParser()
     add_common_arguments(parser)
     args = parser.parse_args([])
-    body, _ = build_body(args)
+    body, props = build_body(args)
     values = parsed_common(args)
     system_model = build_system_model(args)
+    values["center_of_gravity"] = kite_rigid_body(values, props, system_model)["center_of_gravity"]
     return dict(body=body, values=values, system_model=system_model, kcu=KcuDragModel.from_system_model(system_model))
 
 

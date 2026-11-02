@@ -14,8 +14,8 @@ keywords:
   - Vortex Step Method
   - Structural Simulation
   - Reduced-Order Modelling
-version: 1.0.0
+version: 1.0.1
 license: Apache-2.0
 url: "https://github.com/awegroup/AWETrim"
-date-released: "2026-10-29"
+date-released: "2026-11-02"
 doi: ""  # TODO: add Zenodo or equivalent DOI after first release

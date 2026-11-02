@@ -51,6 +51,7 @@ from common import (
     output_dir,
     parsed_common,
     print_trim_summary,
+    kite_rigid_body,
     save_figure,
     write_json,
     DEFAULT_OUTPUT_ROOT,
@@ -60,7 +61,6 @@ from awetrim.aerodynamics.vsm_quasi_steady import (
     ALL_STATE_NAMES,
     DEFAULT_AXES,
     _compose_attitude_rotation,
-    _system_model_mass_total,
     compute_vsm_trim_stability_derivatives,
     solve_vsm_qs_trim_with_williams_tether,
     solve_vsm_quasi_steady_trim,
@@ -384,21 +384,15 @@ def main() -> None:
 
     # Load body and properties from config folder
     body, props = build_body(args)
+    system_model = build_system_model(args)
 
-    mass_wing = (
-        args.mass_wing if args.mass_wing is not None else props.get("mass", 30.0)
-    )
-
-    # Inertia: full CG tensor from system.yaml unless explicitly overridden.
-    # --inertia-xx/yy/zz replace individual diagonal entries; the products of
-    # inertia (off-diagonals, geometry basis) are kept and passed through.
-    try:
-        inertia_cg = np.asarray(
-            props.get("inertia", [[100, 0, 0], [0, 20, 0], [0, 0, 100]]),
-            dtype=float,
-        ).reshape(3, 3)
-    except (ValueError, TypeError):
-        inertia_cg = np.diag([100.0, 20.0, 100.0])
+    # Mass, CG and inertia of one body (kite_rigid_body raises when they are
+    # not). --inertia-xx/yy/zz replace individual diagonal entries; the
+    # products of inertia (off-diagonals, geometry basis) are kept.
+    kite_body = kite_rigid_body(values, props, system_model)
+    mass_kite = kite_body["mass"]
+    mass_wing = float(system_model.kite.mass_wing)
+    inertia_cg = kite_body["inertia_cg"]
     for _i, _diag_override in enumerate(
         (args.inertia_xx, args.inertia_yy, args.inertia_zz)
     ):
@@ -406,7 +400,7 @@ def main() -> None:
             inertia_cg[_i, _i] = float(_diag_override)
     inertia_xx, inertia_yy, inertia_zz = (float(v) for v in np.diag(inertia_cg))
 
-    center_of_gravity = values["center_of_gravity"]
+    center_of_gravity = kite_body["center_of_gravity"]
     trim_axes = DEFAULT_AXES
     rigid_body = None  # RigidBodyAxes result when --rigid-body-result is given
     deformed_aero_path: Path | None = None  # set below when deformed geometry is found
@@ -492,12 +486,6 @@ def main() -> None:
     print("  trim axes:          course")
     print("  linearisation axes: course (always)")
 
-    system_model = build_system_model(args, mass_wing=mass_wing)
-    # Linearisation mass must be the mass the trim balanced: wing + KCU (the
-    # system.yaml KCU mass joins mass_wing inside the system model). Passing
-    # mass_wing alone leaves the KCU weight/inertial force out of the
-    # linearisation base and the trim point sits ~m_kcu*g off equilibrium.
-    mass_kite = float(_system_model_mass_total(system_model))
     # Robust Williams detection: ``isinstance`` can miss it when ``awetrim`` is
     # importable via two paths (the src path injected by common.py and an
     # installed copy), giving two distinct class objects.

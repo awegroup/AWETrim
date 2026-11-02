@@ -1,5 +1,27 @@
 # Changelog
 
+## v1.0.1 (2026-11-02)
+
+A bug-fix release: the KCU mass is counted once everywhere.
+
+### Fixes
+
+- **Step-1 stability analysis** (`examples/1_aerodynamics/`). The stability
+  script counted the KCU mass twice (30.4 kg instead of 22.0 kg on the LEI-V3)
+  and both step-1 scripts trimmed about a fixed CG of (0.5, 0, 5) m instead of
+  the kite's own. At the default point this turned the yaw verdict divergent;
+  on the kite's own CG and mass every channel is restoring.
+  `--center-of-gravity` now defaults to the kite's CG (the structure plus KCU
+  aggregate). The mass, CG and inertia come from one body, and a mismatch
+  (`--mass-wing`, `--no-struc-geometry`, or `system.yaml` and `structure.yml`
+  out of sync) raises instead of mixing two.
+- **KCU mass in a structure document.** `system.yaml` is the KCU mass's single
+  source and the structure readers add it at the KCU point. A KCU mass also
+  written into `structure.yml` was counted twice, silently in the coupled
+  solvers. The readers now refuse it.
+- Documentation: `examples/README.md` names `structure.yml`; the polar CSV
+  comment states that alpha may be in degrees or radians.
+
 ## v1.0.0 (2026-10-29)
 
 The first stable release. Since v0.1.0, AWETrim has a new structural solver,

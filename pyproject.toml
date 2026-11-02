@@ -1,6 +1,6 @@
 [project]
 name = "awetrim"
-version = "1.0.0"
+version = "1.0.1"
 description = "Aerostructural modelling, trim analysis, and trajectory optimisation for soft-kite Airborne Wind Energy Systems (AWES)"
 readme = "README.md"
 requires-python = ">=3.8"
