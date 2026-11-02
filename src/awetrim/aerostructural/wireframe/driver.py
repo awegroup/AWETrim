@@ -360,16 +360,6 @@ class PreparedWireframe:
             + (self.rest_length(second) - self.reader["l0"][second])
         )
 
-    def pin_bridle_modulus(self, factor: float) -> None:
-        """Every bridle line (tapes included) at ``factor`` x its own
-        stiffness, the wing at its own: the fixed-stiffness model. Pair it
-        with ``structural_pss.update_stiffness: false`` so the elongation
-        bound does not ratchet the stiffness from solve to solve."""
-        k = np.asarray(structural_wireframe.get_stiffnesses(self.psystem), dtype=float).copy()
-        n_bridle = len(self.reader["bridle_connectivity"])
-        k[len(k) - n_bridle:] *= float(factor)
-        structural_wireframe.set_stiffnesses(self.psystem, k)
-
     def restore(self, sim_output_path) -> None:
         """Put the structure back where a saved solve ended: its final node
         positions, rest lengths and the stiffnesses it ran with.

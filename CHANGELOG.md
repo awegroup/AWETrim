@@ -44,6 +44,15 @@ Legacy readers and unused modules removed. Files in the old formats raise a
   never read and every ROM run flew the rigid lumped tether. The LEI-V3
   ROMs and `identification.yaml` now state `rigid_lumped`, so their runs are
   unchanged; a ROM file that states `williams` now flies it.
+- **Wireframe elongation-bound stiffening removed**, with the in-loop
+  modulus ramp and `PreparedWireframe.pin_bridle_modulus`
+  (`structural_wireframe.adapt_stiffnesses` / `modulus_stiffness_ceiling`).
+  They raised element stiffnesses for the PSM file's ten-times-too-soft lines;
+  on `structure.yml`'s datasheet moduli the bound never fires (0.13 % largest
+  elongation against 1 %, no update). Its as_config keys
+  (`update_stiffness`, `max_elongation`, `max_stiffness_factor`, ...) raise;
+  a handover's `stiffnesses` / `stiffness_factors` are ignored with a
+  warning; the meta keeps the elongation diagnostics and `final_stiffnesses`.
 - **Removed modules:** `utils.fitting`, `utils.sparsity_analysis`,
   `utils.talmar_equations`, `timeseries.cycle_phase`,
   `aerostructural.logging_config`.

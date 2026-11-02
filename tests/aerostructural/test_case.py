@@ -172,3 +172,8 @@ def test_air_density_at_case_exponential_uses_kite_height():
 def test_air_density_at_case_rejects_an_unknown_law():
     with pytest.raises(ValueError, match="air_density_law"):
         case.air_density_at_case({"rho": 1.225, "air_density_law": "isa"})
+
+
+def test_the_removed_stiffening_keys_are_refused():
+    with pytest.raises(ValueError, match="removed on 2026-11-02"):
+        case.apply_overrides({}, {"structure": {"wireframe": {"update_stiffness": False}}})

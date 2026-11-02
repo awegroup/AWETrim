@@ -204,11 +204,8 @@ def open_case(fidelity: str, spec: dict, kite: str):
 
 
 def prepare(driver, case, spec: dict, config: dict):
-    """A fresh structure; the wireframe with its bridle modulus pinned."""
-    prepared = driver.prepare_structure(case, config)
-    if spec.get("bridle_modulus_factor"):
-        prepared.pin_bridle_modulus(float(spec["bridle_modulus_factor"]))
-    return prepared
+    """A fresh structure, at the stiffnesses of its file."""
+    return driver.prepare_structure(case, config)
 
 
 def base_state_path(out: Path, wind_speed: float) -> Path:

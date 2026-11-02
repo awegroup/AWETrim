@@ -84,10 +84,9 @@ sweep:
     wireframe:
       fem_geometry: structure.yml
       system_file: system_flown_2019.yaml   # the hardware the shipped ROM used
-      # No bridle_modulus_factor: the FEM file's Dyneema is already the
-      # datasheet 109 GPa (the PSM file's 10 GPa needed x9). The fixed-
-      # stiffness model stays: no elongation-bound stiffening, one kite for
-      # the whole sweep, whatever order the states are solved in.
+      # The structure flies the FEM file's own stiffnesses: its Dyneema is the
+      # datasheet 109 GPa (the PSM file's 10 GPa needed a hand-applied x9 and
+      # an in-loop stiffening, both removed 2026-11-02).
       # The wireframe flies at about 3.8 x the wind: 6 m/s reaches v_a 23.
       wind_speeds: [4.0, 5.0, 6.0]
       overrides:
@@ -101,9 +100,6 @@ sweep:
           billowing:
             contraction: 0.05
           load_transfer: strut_lever
-        structure:
-          wireframe:
-            update_stiffness: false
       # Built at 1.90 m (the FEM file); the range covers the flown reel-out
       # and reel-in tapes and depowers enough to reel in.
       depower:
