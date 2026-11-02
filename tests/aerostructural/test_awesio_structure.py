@@ -55,6 +55,19 @@ def test_the_masses_follow_awesios_rule(structure):
     assert structure.resolved(kcu_mass=KCU_MASS)[1][structure.kcu] >= KCU_MASS
 
 
+def test_a_kcu_in_the_structure_is_refused(structure):
+    """system.yaml is the KCU mass's single source: a KCU written into the
+    structure would be added twice, so every reader refuses it."""
+    document = copy.deepcopy(structure.document)
+    column = document["points"]["headers"].index("extra_mass")
+    row = next(r for r in document["points"]["data"] if r[0] == awesio_structure.kcu_point(document))
+    row[column] = KCU_MASS
+    with pytest.raises(ValueError, match="belongs in system.yaml"):
+        awesio_structure.Structure(document)
+    with pytest.raises(ValueError, match="belongs in system.yaml"):
+        awesio_structure.from_awesio(document, kcu_mass=KCU_MASS)
+
+
 def test_the_structure_accessors(structure):
     assert structure.kcu == 0 and structure.fixed == [0]
     assert not structure.is_wireframe
