@@ -89,17 +89,8 @@ sweep:
       # an in-loop stiffening, both removed 2026-11-02).
       # The wireframe flies at about 3.8 x the wind: 6 m/s reaches v_a 23.
       wind_speeds: [4.0, 5.0, 6.0]
-      overrides:
-        aerodynamics:
-          # 27 FEM sections x 5 = 135 panels: within 0.5 % of 324 panels in
-          # CL and CD at 4-8 deg on the billowed wing (convergence study
-          # 2026-10-28, docs/aerostructural/)
-          n_aero_panels_per_struc_section: 5
-          # strut-to-strut trailing-edge contraction, LEI-V3 photogrammetry
-          # (Haanen 2026, Table 9.2: -5.23 % powered, -3.86 % depowered)
-          billowing:
-            contraction: 0.05
-          load_transfer: strut_lever
+      # The aerodynamics are as_config's: 135 panels on the billowed wing
+      # (5 % contraction) with the strut-lever load transfer.
       # Built at 1.90 m (the FEM file); the range covers the flown reel-out
       # and reel-in tapes and depowers enough to reel in.
       depower:

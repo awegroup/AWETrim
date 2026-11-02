@@ -53,6 +53,12 @@ Legacy readers and unused modules removed. Files in the old formats raise a
   (`update_stiffness`, `max_elongation`, `max_stiffness_factor`, ...) raise;
   a handover's `stiffnesses` / `stiffness_factors` are ignored with a
   warning; the meta keeps the elongation diagnostics and `final_stiffnesses`.
+- **The LEI-V3 wireframe flies the ROM's wing by default.** `as_config.yaml`
+  states `aerodynamics.billowing.contraction: 0.05` and
+  `load_transfer: strut_lever` (with its 5 panels per FEM section, 135),
+  which only `identification.yaml` used to set. The identification sweep
+  is unchanged; `run_simulation_PSM.py` drops its 54-panel base-loop
+  override and flies `as_config`'s aerodynamics.
 - **Removed modules:** `utils.fitting`, `utils.sparsity_analysis`,
   `utils.talmar_equations`, `timeseries.cycle_phase`,
   `aerostructural.logging_config`.

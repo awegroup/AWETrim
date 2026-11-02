@@ -79,18 +79,9 @@ def main():
         power_tape_extension=DEPOWER_TAPE_EXTENSION_M,
         steering_tape_extension=STEERING_TAPE_EXTENSION_M,
     )
-    overrides = {
-        "coupling": {"is_with_gravity": WITH_GRAVITY},
-        # The same aerodynamics in both scripts: 27 sections x 2 = 54 panels
-        # of the full geometry's mesh, and VSM's base circulation loop. With
-        # artificial viscosity on, the LEI-V3's stalled tips trap the Anderson
-        # loop (as_config's) in a post-stall limit cycle and the tip loads
-        # never converge. The Billow studies use base too. as_config pairs
-        # allowed_error with the loop type: base goes with 2e-6, never with
-        # Anderson's 1e-8, which base cannot reach (same result, ~40 % slower).
-        "aerodynamics": {"n_aero_panels_per_struc_section": 2, "gamma_loop_type": "base",
-                         "allowed_error": 2e-6},
-    }
+    # The aerodynamics are as_config's, the wing the ROM was identified on:
+    # 135 panels on the billowed wing, strut-lever load transfer.
+    overrides = {"coupling": {"is_with_gravity": WITH_GRAVITY}}
     results_dir = (
         aerostructural_results_root(project_dir, KITE)
         / "wireframe"
