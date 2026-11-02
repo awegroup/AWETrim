@@ -24,10 +24,13 @@ from awetrim.utils.config_paths import (
 from awetrim.utils.utils import load_cycle_config_from_yaml
 
 """
-Reelout pattern simulation using YAML configuration files.
+Reelout pattern simulation and optimisation using YAML configuration files.
+
+Flies the seed loop forward, then optimises its path (C_phi, C_beta) and the
+depower for mean power, and flies the optimised loop again.
 
 Configuration is split into two YAML files:
-- System properties: data/LEI-V3-KITE/lei_v3_system_config.yaml
+- System properties: data/LEI-V3-KITE/system.yaml
 - Cycle parameters: data/LEI-V3-KITE/cycle_configs/downloop_spline.yaml
 
 To modify parameters:
@@ -103,6 +106,13 @@ REELOUT_CONFIG["sim_parameters"]["input_depower"] = flight_depower_match(
 )[0]
 REELOUT_CONFIG["sim_parameters"]["reg_weight"] = 1.0
 REELOUT_CONFIG["sim_parameters"]["detect_simple_bounds"] = True
+# Without a turn-radius floor the optimiser shrinks the eight onto the window
+# centre until the ROM's steering box no longer trims it (IPOPT stops at its
+# iteration limit); with it but no stall margin the optimised loop re-flies
+# with |u_s| far outside the box. 30 m and 2 deg (the full-cycle profiles'
+# values) converge for 30-35 m and 1-3 deg alike.
+REELOUT_CONFIG["sim_parameters"]["min_turn_radius"] = 30.0  # [m]
+REELOUT_CONFIG["sim_parameters"]["stall_margin_deg"] = 2.0
 WIND_CONFIG = {
     "speed_wind_at_100": 8,
     "z0": 0.03,
@@ -139,7 +149,7 @@ def build_wind_model(speed_wind_at_100=8, z0=0.01, model_type="uniform", **profi
 
 
 def main(run_plots=False, rom=None, system="optimisation", results_dir=None,
-         up_band=None, stall_margin_deg=None):
+         up_band=None, stall_margin_deg=None, min_turn_radius=None):
     """``rom``/``system``: keys of ROM_CONFIGS / SYSTEM_CONFIGS (None = the
     system file's own ROM); results go to ``results_dir`` (default
     RESULTS_DIR, or RESULTS_DIR/<system>_<rom> when either is given)."""
@@ -156,6 +166,9 @@ def main(run_plots=False, rom=None, system="optimisation", results_dir=None,
     if stall_margin_deg is not None:
         # Keep alpha this far below the ROM's stall angle at every node.
         REELOUT_CONFIG["sim_parameters"]["stall_margin_deg"] = float(stall_margin_deg)
+    if min_turn_radius is not None:
+        # 0 switches the turn-radius floor off.
+        REELOUT_CONFIG["sim_parameters"]["min_turn_radius"] = float(min_turn_radius)
     system_model = create_system_model_from_yaml(
         yaml_path=SYSTEM_CONFIGS[system],
         aero_yaml_path=ROM_CONFIGS[rom] if rom is not None else None,
@@ -186,6 +199,9 @@ def main(run_plots=False, rom=None, system="optimisation", results_dir=None,
     # plt.plot(t, np.degrees(aoa))
     # plt.show()
     solution = reelout.run_simulation_opti(optimization_params=optimization_params)
+    if solution is None:
+        raise SystemExit("downloop optimisation failed (see the IPOPT log and the constraint "
+                         "report above); nothing was written")
     depower_prefix = "depower_" if "input_depower" in optimization_params else ""
     filename = f"{depower_prefix}downloop_optimized_config_wind_{WIND_CONFIG['speed_wind_at_100']}_z0_{WIND_CONFIG['z0']}_{WIND_CONFIG['model_type']}_spline.yaml"
 
@@ -220,11 +236,14 @@ if __name__ == "__main__":
                         "ROM's identified band (default: DEFAULT_OPTI_LIMITS)")
     parser.add_argument("--stall-margin", type=float, default=None, metavar="DEG",
                         help="keep alpha this many degrees below the ROM's stall "
-                        "angle throughout the loop")
+                        "angle throughout the loop (default 2)")
+    parser.add_argument("--min-turn-radius", type=float, default=None, metavar="M",
+                        help="turn-radius floor of the optimised path [m] (default 30; 0 = off)")
     args = parser.parse_args()
     if args.no_show:
         plt.switch_backend("Agg")
     main(run_plots=not args.no_show, rom=args.rom, system=args.system,
-         up_band=args.up_band, stall_margin_deg=args.stall_margin)
+         up_band=args.up_band, stall_margin_deg=args.stall_margin,
+         min_turn_radius=args.min_turn_radius)
     if not args.no_show:
         plt.show()
