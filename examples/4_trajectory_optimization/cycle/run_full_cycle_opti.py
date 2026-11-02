@@ -1,8 +1,8 @@
 """Full pumping-cycle optimization as a single periodic spline + depower profile.
 
-This is the "full opti" counterpart to ``run_cycle_simulation.py`` (which stitches
-a reel-out ``Phase`` to a parametrized ``ReelinSimple``). Here the **entire**
-pumping cycle is one ``spline_periodic`` ``Phase``:
+Instead of stitching a reel-out ``Phase`` to a parametrized ``ReelinSimple``
+(``awetrim.timeseries.Cycle``), the **entire** pumping cycle is one
+``spline_periodic`` ``Phase``:
 
   * the path is a single periodic B-spline over the whole cycle (reel-out
     figures + reel-in), generated -- synthetic and trim-feasible by default --
@@ -17,7 +17,9 @@ pumping cycle is one ``spline_periodic`` ``Phase``:
     whole radius band with it (bounded by ``DEFAULT_OPTI_LIMITS["r0"]`` and
     the per-node ``distance_radial`` band).
 
-The wind is a constant analytic profile, tunable here via ``WIND_CONFIG``.
+The wind is a constant analytic profile, the ``wind:`` block of the kite's
+cycle_profile.yaml (``--wind-config`` replaces the block, ``--wind-speed`` /
+``--wind-height`` override its speed).
 The objective is cycle-average mechanical power (a single monolithic NLP, no
 alternating / no separate reel-in phase).
 
@@ -67,7 +69,7 @@ from awetrim.timeseries.phase import Phase, step_box_active, trajectory_mean_pow
 # Configuration
 # ---------------------------------------------------------------------------
 # Everything that belongs to a KITE is read from its data folder
-# (system.yaml, rom_config.yaml, cycle_profile.yaml; see ``cycle_kites.py``)
+# (system.yaml, the ROM config it names, cycle_profile.yaml; see ``cycle_kites.py``)
 # into these globals by ``configure_kite`` (``--kite``; the module is
 # configured for DEFAULT_KITE on import):
 #   KITE_CONFIG_PATH   the kite's system.yaml (mass, tether, drum envelope,
@@ -1118,7 +1120,7 @@ if __name__ == "__main__":
         "--kite",
         default=DEFAULT_KITE,
         help="Kite folder under data/ (or a path to one) holding system.yaml, "
-        "rom_config.yaml and cycle_profile.yaml (see cycle_kites.py); "
+        "the ROM config it names and cycle_profile.yaml (see cycle_kites.py); "
         f"default {DEFAULT_KITE}",
     )
     parser.add_argument(
