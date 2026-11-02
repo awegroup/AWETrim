@@ -310,6 +310,9 @@ def main() -> None:
 
     trims_raw, polars_raw = ds.load_sweep(sweep)
     ok = trims_raw.converged & trims_raw.success_physical
+    # converged coupled loops whose trim moments did not balance: no equilibrium
+    n_unbalanced = int((trims_raw.converged & ~trims_raw.success_physical).sum())
+    n_unconverged = int((~trims_raw.converged).sum())
     trims_raw = trims_raw[ok]
     polar, trims = ds.coefficient_tables(
         trims_raw, polars_raw[polars_raw.anchor.isin(
@@ -321,7 +324,8 @@ def main() -> None:
     polar.to_csv(out_dir / "polar_samples.csv", index=False)
     trims.to_csv(out_dir / "trim_samples.csv", index=False)
     lens = polar[polar.source == "polar"]
-    print(f"{len(trims)} anchors ({int((~ok).sum())} unconverged dropped), "
+    print(f"{len(trims)} anchors (dropped: {n_unconverged} unconverged, "
+          f"{n_unbalanced} with unbalanced trim moments), "
           f"{len(lens)} polar samples ({int((~lens.converged).sum())} unconverged); "
           f"S_ref {fit_spec['reference_area']} m2")
 
