@@ -1792,6 +1792,11 @@ def main(
         "trim_solver": str(results_aero.get("trim_solver", "least_squares")),
         "trim_time_total_s": float(trim_time_total_s),
         "opt_x": opt_x,
+        # The final circulation: with opt_x, what a continuation resumed from
+        # this file starts from (``PreparedWireframe.restore``).
+        "gamma_distribution": np.asarray(
+            results_aero.get("gamma_distribution", np.full(0, np.nan)), dtype=float
+        ),
         # Trim state per coupled iteration, (n, 5). With the largest settled
         # |course_rate| below it gives sweep callers a donor-free branch
         # check: a final |opt_x[4]| far under course_rate_max_settled means

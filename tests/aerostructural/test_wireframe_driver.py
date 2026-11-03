@@ -1,4 +1,5 @@
-"""PreparedWireframe.restore: a structure put back from a saved solve."""
+"""PreparedWireframe: a structure put back from a saved solve, and a solve
+continuing from the one before it."""
 
 import numpy as np
 import pytest
@@ -78,3 +79,75 @@ def test_restore_refuses_another_structure(case, tmp_path):
     )
     with pytest.raises(ValueError):
         prepared.restore(h5)
+
+
+def _fake_solves(monkeypatch, n_panels: int = 3):
+    """solve_step down to its call of the coupled solver, each call converging
+    at a kite speed of 10, 11, ... m/s; returns the calls' system models and configs."""
+    calls = []
+
+    def main(**kwargs):
+        calls.append((kwargs["system_model"], dict(kwargs["config"])))
+        opt_x = np.array([9.0 + len(calls), 0.0, 0.0, 0.0, 0.0])
+        return {}, {"converged": True, "opt_x": opt_x, "gamma_distribution": np.full(n_panels, 1.0 * len(calls))}
+
+    monkeypatch.setattr(driver.coupled_solver_qsm, "main", main)
+    return calls
+
+
+def test_a_second_solve_continues_from_the_first(case, monkeypatch):
+    calls = _fake_solves(monkeypatch)
+    prepared = driver.prepare_structure(case)
+    driver.solve_step(case, prepared)
+    driver.solve_step(case, prepared)
+    (model_0, config_0), (model_1, config_1) = calls
+    assert "quasi_steady_initial_guess" not in config_0  # nothing to continue from yet
+    assert model_1 is model_0  # the CasADi trim's graph is tied to the object
+    assert config_1["quasi_steady_initial_guess"][0] == 10.0
+    np.testing.assert_array_equal(config_1["initial_gamma_distribution"], np.full(3, 1.0))
+
+
+def test_a_stated_seed_wins_and_the_case_config_stays_clean(case, monkeypatch):
+    calls = _fake_solves(monkeypatch)
+    prepared = driver.prepare_structure(case)
+    driver.solve_step(case, prepared)
+    stated = np.array([25.0, 0.0, 0.0, 0.0, 0.0])
+    driver.solve_step(case, prepared, {**case.config, "quasi_steady_initial_guess": stated})
+    assert calls[1][1]["quasi_steady_initial_guess"] is stated
+    assert "quasi_steady_initial_guess" not in case.config
+
+
+def test_another_flight_state_starts_cold(case, monkeypatch):
+    calls = _fake_solves(monkeypatch)
+    prepared = driver.prepare_structure(case)
+    driver.solve_step(case, prepared)
+    driver.solve_step(case, prepared, {**case.config, "distance_radial": 450.0})
+    assert "quasi_steady_initial_guess" not in calls[1][1]
+
+
+def test_an_unconverged_solve_is_not_continued_from(case, monkeypatch):
+    prepared = driver.prepare_structure(case)
+    prepared.trim_seed = {"quasi_steady_initial_guess": np.array([12.0, 0.0, 0.0, 0.0, 0.0])}
+    monkeypatch.setattr(
+        driver.coupled_solver_qsm, "main",
+        lambda **_: ({}, {"converged": False, "opt_x": np.full(5, 99.0)}),
+    )
+    driver.solve_step(case, prepared)
+    assert prepared.trim_seed["quasi_steady_initial_guess"][0] == 12.0
+
+
+@pytest.mark.parametrize("gamma", [np.array([1.0, 2.0, 3.0]), None])
+def test_restore_brings_the_seed_back(case, tmp_path, gamma):
+    prepared = driver.prepare_structure(case)
+    meta = {
+        "n_iter": 1, "opt_x": np.array([14.0, 0.0, 0.0, 0.0, 0.0]),
+        "rest_lengths": np.asarray(structural_wireframe.get_rest_lengths(prepared.psystem)),
+        "structure_positions": np.asarray(prepared.psystem.positions, dtype=float),
+    }
+    if gamma is not None:
+        meta["gamma_distribution"] = gamma
+    fresh = driver.prepare_structure(case)
+    fresh.restore(save_sim_output({"positions": meta["structure_positions"][None]}, meta, tmp_path))
+    assert fresh.trim_seed["quasi_steady_initial_guess"][0] == 14.0
+    assert ("initial_gamma_distribution" in fresh.trim_seed) == (gamma is not None)
+

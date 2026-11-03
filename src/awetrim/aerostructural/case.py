@@ -526,6 +526,19 @@ def configure_system_model_from_config(system_model: SystemModel, config: dict) 
     system_model.kite.air_density_model = None
 
 
+def system_model_state_key(config: dict) -> tuple:
+    """What :func:`configure_system_model_from_config` reads from ``config``: two
+    configs with the same key put a SystemModel in the same state, whatever
+    their tape commands."""
+    case = Case.from_config(config)
+    return (
+        float(case.elevation_deg), float(case.azimuth_deg), float(case.course_deg),
+        float(case.speed_radial), float(case.distance_radial), repr(sorted(dict(case.wind).items())),
+        float(case.timeder_speed_tangential), float(case.timeder_speed_radial),
+        float(air_density_at_case(config)),
+    )
+
+
 def resolve_starting_struc_nodes(
     case_dir: Path,
     struc_nodes_default: np.ndarray,

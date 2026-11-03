@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Continuation of the wireframe solve
+
+- **`wireframe.driver.solve_step` continues from the solve before it**: the
+  prepared structure carries the last converged trim and circulation, and
+  `restore` reads them back from the file (`gamma_distribution` is new in
+  `sim_output.h5`). Results of a chain change: on `w5.0_depower_2.60` tether
+  force 0-2.3 % higher than the cold starts, with 33 % fewer coupled iterations.
+  A stated `quasi_steady_initial_guess` still wins; another flight state starts
+  cold.
+- **One CasADi trim graph per chain**, not two per state: the trim bounds are out
+  of the cache key and the system model is reused while the flight state holds.
+- **The LEI-V3 `as_config.yaml` sets `coupling.trim.solver: casadi`.** A config
+  without the key stays on `least_squares`.
+- **A cold CasADi trim no longer diverges**: its true-polar stage starts from the
+  attached predictor, a failed Newton solve retries from it and then takes one
+  `least_squares` trim, and `max_nfev` no longer passes a Newton failure on as a
+  success.
+
 ### Breaking changes
 
 Legacy readers and unused modules removed. Files in the old formats raise a

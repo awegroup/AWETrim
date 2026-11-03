@@ -205,9 +205,14 @@ coupling:
   power_tape_extension_step: !!float 0.05
   steering_tape_extension_step: !!float 0.05
 
-  ## the quasi-steady trim (the coupled loop's least-squares trim, aerodynamic_vsm)
+  ## the quasi-steady trim (aerodynamic_vsm)
   trim:
-    # Cap on trim residual evaluations per coupled iteration (scipy
+    # casadi = trim states and circulations as one Newton problem, fully
+    # converged every coupled iteration (aerodynamics/trim_casadi.py); the
+    # default since 2026-11-03. least_squares = the NumPy trim of the results
+    # before, the only one for tether.model rigid_lumped.
+    solver: !!str 'casadi'
+    # least_squares only: cap on trim residual evaluations per coupled iteration (scipy
     # least_squares max_nfev). 8 = roughly one warm-started Gauss-Newton step:
     # the trim and the geometry then converge TOGETHER instead of the trim
     # being polished against every intermediate shape (quasi-monolithic).
