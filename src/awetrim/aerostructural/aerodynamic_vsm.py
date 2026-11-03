@@ -368,7 +368,7 @@ def _solve_trim_casadi(
             )
         ),
         # Refused inside CasadiTrim when True: the kernels are the
-        # freestream-direction law, so a config asking for the corrected
+        # 3/4-chord-direction law, so a config asking for the corrected
         # directions must run the least_squares trims.
         is_aoa_corrected=bool(
             getattr(solver, "is_aoa_corrected", VSM_SOLVER_DEFAULTS["is_aoa_corrected"])

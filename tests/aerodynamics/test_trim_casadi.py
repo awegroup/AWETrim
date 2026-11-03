@@ -33,7 +33,7 @@ def _numpy_reference(env, tether: bool, **extra):
     kw = dict(
         body_aero=env["body"], center_of_gravity=v["center_of_gravity"], reference_point=v["reference_point"],
         system_model=env["system_model"], x_guess=v["x_guess"], gamma_loop="casadi_newton", gamma_tolerance=1e-10,
-        kcu_drag=env["kcu"], include_gravity=False, **extra,
+        kcu_drag=env["kcu"], include_gravity=False, is_aoa_corrected=False, **extra,
     )
     res, _ = (solve_vsm_qs_trim_with_williams_tether if tether else solve_vsm_quasi_steady_trim)(**kw)
     return res

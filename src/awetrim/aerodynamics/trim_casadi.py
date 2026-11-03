@@ -125,10 +125,11 @@ class CasadiTrimOptions:
     polar_interpolation: str = VSM_SOLVER_DEFAULTS["polar_interpolation"]
     is_with_artificial_viscosity: bool = VSM_SOLVER_DEFAULTS["is_with_artificial_viscosity"]
     artificial_viscosity_factor: float = VSM_SOLVER_DEFAULTS["artificial_viscosity_factor"]
-    #: The panel kernels implement the freestream-direction force law only;
-    #: ``True`` (VSM develop's quarter-chord directions) is refused at build
-    #: time rather than silently solved with the wrong law.
-    is_aoa_corrected: bool = VSM_SOLVER_DEFAULTS["is_aoa_corrected"]
+    #: The panel kernels implement the 3/4-chord-direction force law only,
+    #: so this is that law and NOT AWETrim's default (the quarter-chord
+    #: directions, ``vsm_settings``); ``True`` is refused at build time rather
+    #: than silently solved with the wrong law.
+    is_aoa_corrected: bool = False
     #: Kutta-Joukowski force on the attached trailed vortex legs (VSM's
     #: ``is_with_attached_trailed_vortex_force``); its induction at the legs
     #: is frozen per wake pass with the AIC.
@@ -242,17 +243,18 @@ class CasadiTrim:
             rho=opt.rho,
             core_radius_fraction=opt.core_radius_fraction,
             aerodynamic_model_type=opt.aerodynamic_model_type,
-            # The panel kernels are the uncorrected (freestream-direction)
+            # The panel kernels are the uncorrected (3/4-chord-direction)
             # force law.
             is_aoa_corrected=False,
             is_with_attached_trailed_vortex_force=opt.is_with_attached_trailed_vortex_force,
         )
         if opt.is_aoa_corrected:
             raise ValueError(
-                "CasadiTrim implements the freestream-direction force law only "
+                "CasadiTrim implements the 3/4-chord-direction force law only "
                 "(is_aoa_corrected=False); the quarter-chord-corrected VSM "
-                "force directions are not available in the CasADi trim. Use "
-                "the least_squares trims."
+                "force directions (AWETrim's default) are not available in the "
+                "CasADi trim. Use the least_squares trims, or set "
+                "is_aoa_corrected: false to run the 3/4-chord directions."
             )
         self.vsm.panels = panels
         self.vsm.n_panels = self.n

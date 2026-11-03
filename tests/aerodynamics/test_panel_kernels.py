@@ -54,7 +54,8 @@ def solved_body():
         body_rates=float(np.linalg.norm(omega)), body_axis=omega / np.linalg.norm(omega),
         reference_point=np.zeros(3), rates_in_body_frame=True,
     )
-    solver = make_vsm_solver(gamma_loop_type="casadi_newton", allowed_error=1e-10)
+    # the kernels are the 3/4-chord-direction law
+    solver = make_vsm_solver(gamma_loop_type="casadi_newton", allowed_error=1e-10, is_aoa_corrected=False)
     results = solver.solve(body)
     assert results["gamma_converged"]
     return body, solver, results
