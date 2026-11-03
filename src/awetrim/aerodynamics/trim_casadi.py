@@ -31,8 +31,11 @@ What is symbolic and what is not
   world frame while it rotates the sections -- a small inconsistency there
   (4 N and 22 N m at 1 deg of pitch on the LEI-V3, 0.05 % in CL).
 * The section physics -- effective angle of attack, the 2-D polars, VSM's
-  lift/drag/moment construction, bridle line drag, KCU drag -- come from the
-  ``xp`` kernels in :mod:`awetrim.aerodynamics.panel_kernels`,
+  lift/drag/moment construction with either force law (3/4-chord or
+  quarter-chord directions, ``is_aoa_corrected``) -- come from VSM's own
+  ``xp`` kernels (``VSM.core.panel_kernels``, the ones its
+  ``compute_results`` calls); bridle line drag, KCU drag and the totals from
+  :mod:`awetrim.aerodynamics.panel_kernels`,
   :mod:`awetrim.aerodynamics.kcu_drag` and
   :mod:`awetrim.aerodynamics.apparent_wind`, and the circulation residual and
   polar lookups from VSM's own CasADi panel function
@@ -78,6 +81,7 @@ from time import perf_counter
 from typing import Any
 
 import casadi as ca
+from VSM.core import panel_kernels as vpk
 import numpy as np
 
 from awetrim.aerodynamics import panel_kernels as pk
@@ -125,11 +129,11 @@ class CasadiTrimOptions:
     polar_interpolation: str = VSM_SOLVER_DEFAULTS["polar_interpolation"]
     is_with_artificial_viscosity: bool = VSM_SOLVER_DEFAULTS["is_with_artificial_viscosity"]
     artificial_viscosity_factor: float = VSM_SOLVER_DEFAULTS["artificial_viscosity_factor"]
-    #: The panel kernels implement the 3/4-chord-direction force law only,
-    #: so this is that law and NOT AWETrim's default (the quarter-chord
-    #: directions, ``vsm_settings``); ``True`` is refused at build time rather
-    #: than silently solved with the wrong law.
-    is_aoa_corrected: bool = False
+    #: Force directions from the quarter-chord flow (True, AWETrim's model)
+    #: or the 3/4-chord flow (False); VSM's force law either way
+    #: (``VSM.core.panel_kernels``), the quarter-chord induction matrices
+    #: numeric per wake pass like the control-point AIC.
+    is_aoa_corrected: bool = VSM_SOLVER_DEFAULTS["is_aoa_corrected"]
     #: Kutta-Joukowski force on the attached trailed vortex legs (VSM's
     #: ``is_with_attached_trailed_vortex_force``); its induction at the legs
     #: is frozen per wake pass with the AIC.
@@ -243,19 +247,14 @@ class CasadiTrim:
             rho=opt.rho,
             core_radius_fraction=opt.core_radius_fraction,
             aerodynamic_model_type=opt.aerodynamic_model_type,
-            # The panel kernels are the uncorrected (3/4-chord-direction)
-            # force law.
-            is_aoa_corrected=False,
+            # The circulation residual and polar lookups are the same for both
+            # laws; the force directions are the graph's (VSM's panel_kernels).
+            is_aoa_corrected=opt.is_aoa_corrected,
             is_with_attached_trailed_vortex_force=opt.is_with_attached_trailed_vortex_force,
         )
-        if opt.is_aoa_corrected:
-            raise ValueError(
-                "CasadiTrim implements the 3/4-chord-direction force law only "
-                "(is_aoa_corrected=False); the quarter-chord-corrected VSM "
-                "force directions (AWETrim's default) are not available in the "
-                "CasADi trim. Use the least_squares trims, or set "
-                "is_aoa_corrected: false to run the 3/4-chord directions."
-            )
+        # VSM applies the quarter-chord directions to its VSM model only (the
+        # LLT loop already evaluates on the quarter chord).
+        self.quarter_chord_directions = bool(opt.is_aoa_corrected) and opt.aerodynamic_model_type == "VSM"
         self.vsm.panels = panels
         self.vsm.n_panels = self.n
         self.panel_fn = self.vsm._casadi_newton_function()
@@ -414,6 +413,8 @@ class CasadiTrim:
             arr = np.asarray(values[name], dtype=float).reshape(shape)
             parts.append(arr.ravel(order="F"))
         self._p = np.concatenate(parts) if parts else np.zeros(0)
+        # handed to CasADi as a DM once per shape, not converted on every call
+        self._p_dm = ca.DM(self._p)
 
     def _unpack_geometry(self, p):
         """The parameter vector's slices as ``(rows, cols)`` CasADi matrices."""
@@ -435,6 +436,7 @@ class CasadiTrim:
         key = self.vsm._casadi_newton_key(*self.vsm._polar_tables())
         if key != self.polar_key:
             raise ValueError("the body's polars differ from the graph's -- build a new CasadiTrim.")
+        self._expand_once()
 
     # ------------------------------------------------------------------ graph
     def _substitute_numeric(self, exprs: list, keep: set[str]) -> list:
@@ -478,11 +480,14 @@ class CasadiTrim:
         at_x = ca.MX.sym("at_x", n + 1, n)
         at_y = ca.MX.sym("at_y", n + 1, n)
         at_z = ca.MX.sym("at_z", n + 1, n)
+        qc_x = ca.MX.sym("qc_x", n, n)
+        qc_y = ca.MX.sym("qc_y", n, n)
+        qc_z = ca.MX.sym("qc_z", n, n)
         p = ca.MX.sym("p_geometry", int(self._p.size))
         g = self._unpack_geometry(p)
         v_tau, roll, pitch, yaw, chi_dot = (x[i] for i in range(5))
         keep = {x.name(), gamma.name(), length.name(), p.name()} | {
-            m.name() for m in (aic_x, aic_y, aic_z, at_x, at_y, at_z)
+            m.name() for m in (aic_x, aic_y, aic_z, at_x, at_y, at_z, qc_x, qc_y, qc_z)
         }
 
         T = ca.DM(self.transformation)
@@ -508,13 +513,18 @@ class CasadiTrim:
             l_gamma=ca.mtimes(ca.DM(self.laplacian), gamma),
         ))
         h, mu, alpha, umag, gate, h_avg = (out[k] for k in ("h", "mu", "alpha", "umag", "gate", "h_avg"))
+        if self.quarter_chord_directions:
+            v_qc = vpk.quarter_chord_velocity(va_panels, gamma, qc_x, qc_y, qc_z, ca)
+            alpha_dir = vpk.direction_angle(v_qc, g["x_airf"], g["y_airf"], ca)
+        else:
+            alpha_dir = None
         cl, cd, cm, cl_avg, cd_avg, cm_avg = (out[k] for k in ("cl", "cd", "cm", "cl_avg", "cd_avg", "cm_avg"))
 
         # Attached-trailed legs: Kutta-Joukowski force at the boundaries, the
         # induction at the leg points frozen with the AIC (numeric per pass).
         if opt.is_with_attached_trailed_vortex_force:
             v_ind_at = ca.horzcat(ca.mtimes(at_x, gamma), ca.mtimes(at_y, gamma), ca.mtimes(at_z, gamma))
-            f_at = pk.attached_trailed_forces(gamma, va_panels, v_ind_at, g["at_legs"], opt.rho, ca)
+            f_at = vpk.attached_trailed_forces(gamma, va_panels, v_ind_at, g["at_legs"], opt.rho, ca)
             m_at = ca.sum1(pk.cross_rows(g["at_points"] - pk.tile_vector(r0, n + 1, ca), f_at, ca)).T
             at_forces = [f_at[j, :].T for j in range(n + 1)]
         else:
@@ -531,10 +541,10 @@ class CasadiTrim:
         spanwise = g["spanwise_direction"]
 
         def aero_loads(cl_, cd_, cm_):
-            force_b, moment_local = pk.panel_forces(
+            force_b, moment_local = vpk.panel_forces(
                 alpha, umag, cl_, cd_, cm_, g["chord"], g["width"],
-                g["x_airf"], g["y_airf"], g["z_airf"],
-                spanwise, opt.rho, ca,
+                g["x_airf"], g["y_airf"], g["z_airf"], opt.rho,
+                alpha_dir=alpha_dir, xp=ca,
             )
             f_tot, m_tot = pk.total_force_and_moment(force_b, moment_local, g["aero_centers"] - r0_rows, ca)
             f_tot = f_tot + ca.sum1(f_at).T
@@ -633,13 +643,19 @@ class CasadiTrim:
             ["tether_length"] if self.williams else []
         )
 
-        params = [aic_x, aic_y, aic_z, at_x, at_y, at_z, p]
+        params = [aic_x, aic_y, aic_z, at_x, at_y, at_z, qc_x, qc_y, qc_z, p]
         res_free, res_avg_free = self._substitute_numeric([residual[rows], residual_avg[rows]], keep)
         args = [x, gamma, length, *params]
         self._kin_fn = ca.Function("trim_kinematics", [x], self._substitute_numeric([va_w, omega_w, R], keep))
         self._res_fn = ca.Function("trim_residual", args, [res_free, gate])
         self._jac_fn = ca.Function("trim_jacobian", args, [ca.jacobian(res_avg_free, z)[:, free_cols]])
         self._jac_exact_fn = ca.Function("trim_jacobian_exact", args, [ca.jacobian(res_free, z)[:, free_cols]])
+        # SX expansion is deferred to the first REUSE of the graph
+        # (_expand_once): it makes every call ~5x cheaper (MX call overhead)
+        # but costs a build-time multiple (0.8 s at 54 panels, ~8 s at 135),
+        # which only pays when the graph serves more than one solve.
+        self._expanded = False
+        self._n_solves = 0
 
         # Reported coefficients: VSM's own bookkeeping (each panel in its
         # local inflow frame, projected on the reference directions).
@@ -664,6 +680,19 @@ class CasadiTrim:
             )
         self._output_names = list(outputs)
         self._out_fn = ca.Function("trim_outputs", args, self._substitute_numeric(list(outputs.values()), keep))
+
+    def _expand_once(self) -> None:
+        """SX-expand the trim functions, once, when the graph is reused: on
+        :meth:`update_geometry` (the coupled loop swapping a deformed shape in)
+        or on a second :meth:`solve`. The values are identical (round-off)."""
+        if self._expanded:
+            return
+        self._kin_fn = self._kin_fn.expand()
+        self._res_fn = self._res_fn.expand()
+        self._jac_fn = self._jac_fn.expand()
+        self._jac_exact_fn = self._jac_exact_fn.expand()
+        self._out_fn = self._out_fn.expand()
+        self._expanded = True
 
     # ---------------------------------------------------------------- numerics
     def _kinematics(self, x: np.ndarray):
@@ -696,8 +725,13 @@ class CasadiTrim:
             self.options.aerodynamic_model_type, self.options.core_radius_fraction, norms, units
         ))
         n = self.n
+        if self.quarter_chord_directions:
+            qc = tuple(np.asarray(m, dtype=float) for m in self.body.compute_quarter_chord_AIC_matrices(
+                self.options.core_radius_fraction, norms, units))
+        else:
+            qc = tuple(np.zeros((n, n)) for _ in range(3))
         if not self.options.is_with_attached_trailed_vortex_force:
-            return aic + tuple(np.zeros((n + 1, n)) for _ in range(3))
+            return self._as_dm(aic + tuple(np.zeros((n + 1, n)) for _ in range(3)) + qc)
         from VSM.core.utils import induced_velocity_at_points
 
         panels = self.body.panels
@@ -720,7 +754,13 @@ class CasadiTrim:
             for j in range(n)
         ]
         at = np.stack(columns, axis=1)  # (n+1, n, 3)
-        return aic + (at[:, :, 0].copy(), at[:, :, 1].copy(), at[:, :, 2].copy())
+        return self._as_dm(aic + (at[:, :, 0].copy(), at[:, :, 1].copy(), at[:, :, 2].copy()) + qc)
+
+    @staticmethod
+    def _as_dm(matrices) -> tuple:
+        """The frozen matrices as CasADi DMs, converted once per wake pass
+        rather than on every residual / Jacobian call."""
+        return tuple(ca.DM(np.asarray(m, dtype=float)) for m in matrices)
 
     def initial_circulation(self, x: np.ndarray) -> np.ndarray:
         """A converged VSM circulation at trim state ``x`` (the ``casadi_newton``
@@ -746,15 +786,15 @@ class CasadiTrim:
         return u
 
     def residual(self, x, gamma, aic, length: float = 0.0):
-        r, gate = self._res_fn(x, gamma, length, *aic, self._p)
+        r, gate = self._res_fn(x, gamma, length, *aic, self._p_dm)
         return np.asarray(r).ravel(), bool(float(gate) > 0.5)
 
     def jacobian(self, x, gamma, aic, length: float = 0.0, exact: bool = False):
         fn = self._jac_exact_fn if exact else self._jac_fn
-        return np.asarray(fn(x, gamma, length, *aic, self._p))
+        return np.asarray(fn(x, gamma, length, *aic, self._p_dm))
 
     def outputs(self, x, gamma, aic, length: float = 0.0) -> dict[str, Any]:
-        vals = self._out_fn(x, gamma, length, *aic, self._p)
+        vals = self._out_fn(x, gamma, length, *aic, self._p_dm)
         return {k: np.asarray(v) for k, v in zip(self._output_names, vals)}
 
     # ------------------------------------------------------------------ solve
@@ -846,6 +886,9 @@ class CasadiTrim:
         plus ``casadi_trim`` diagnostics and the exact Jacobian at the
         solution."""
         opt = self.options
+        self._n_solves += 1
+        if self._n_solves > 1:
+            self._expand_once()
         t_start = perf_counter()
         x = np.clip(_as_5vector(x_guess, "x_guess"), self.bounds_lower, self.bounds_upper)
         if self.prescribed_roll_deg is not None:

@@ -36,9 +36,11 @@ src/awetrim/
                          root-finding problem (trim states + circulations +
                          Williams length, exact Jacobian, numeric AIC frozen
                          per wake pass); 20-70x faster than the least-squares
-                         trims, same result. panel_kernels.py = the section
-                         force laws as xp kernels (numpy/casadi, one formula)
-                         — see src/awetrim/aerodynamics/AGENTS.md
+                         trims, same result; both force laws through VSM's
+                         own xp kernels (VSM.core.panel_kernels).
+                         panel_kernels.py = the rest of its force assembly
+                         (totals, bridle lines, lift/drag/side) — see
+                         src/awetrim/aerodynamics/AGENTS.md
   aerostructural/    ✅  The coupling: shared interfaces (protocols, mapping,
                          convergence, forces, results, utils) plus one adapter
                          per Billow fidelity. The structural solver itself is
@@ -419,7 +421,7 @@ External dependencies referenced by `pyproject.toml` (VCS installs):
 
 | Package | Role | Install note |
 |---------|------|-------------|
-| `Vortex-Step-Method` | VSM aerodynamic solver | Installed from GitHub, **pinned to develop `1201f6f`** in `pyproject.toml` (https://github.com/awegroup/Vortex-Step-Method; was `8825a12` until 2026-10-28). `aerodynamics/panel_kernels.py` / `trim_casadi.py` mirror its panel force law (drag along the local inner flow, attached-trailed vortex force) and its CasADi panel function; move the pin only together with them (`tests/aerodynamics/test_panel_kernels.py`). Every VSM object is built on AWETrim's own settings (`aerodynamics/vsm_settings.py`), never VSM's defaults; they take the force directions from the quarter-chord flow (`is_aoa_corrected: true`, since 2026-11-03, `docs/aerostructural/quarter_chord_force_directions.md`), which the CasADi kernels do not implement (a CasADi trim runs `is_aoa_corrected: false`). An editable local VSM checkout on another branch silently overrides the pin |
+| `Vortex-Step-Method` | VSM aerodynamic solver | Installed from GitHub, **pinned to `a801b5b`** (VSM PR #166, quarter-chord xp kernels; move to its merge commit on develop once merged) in `pyproject.toml` (https://github.com/awegroup/Vortex-Step-Method; was `1201f6f` until 2026-11-03, `8825a12` until 2026-10-28). `trim_casadi.py` builds on its force-law kernels (`VSM.core.panel_kernels`), its quarter-chord induction and its CasADi panel function; move the pin only together with `tests/aerodynamics/test_trim_casadi*.py` / `test_panel_kernels.py`. Every VSM object is built on AWETrim's own settings (`aerodynamics/vsm_settings.py`), never VSM's defaults; they take the force directions from the quarter-chord flow (`is_aoa_corrected: true`, since 2026-11-03, `docs/aerostructural/quarter_chord_force_directions.md`), in the NumPy and the CasADi trims alike. An editable local VSM checkout on another branch silently overrides the pin |
 | `billow` | Minimum-energy structural solver, both fidelities | Installed from GitHub, pinned to a commit in `pyproject.toml` (https://github.com/awegroup/Billow; move the pin deliberately). For local development: `pip install -e ../Billow` |
 | `awes-ekf` | Extended Kalman Filter for flight data | Installed from GitHub; repository used here: https://github.com/ocayon/EKF-AWE |
 | `awesIO` | IO helpers used by scripts | Installed from GitHub (https://github.com/awegroup/awesIO) |

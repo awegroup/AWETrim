@@ -28,42 +28,52 @@ def lei_v3(lei_v3_step1_kite):
     return step1_trim_env(lei_v3_step1_kite)
 
 
-def _numpy_reference(env, tether: bool, **extra):
+def _numpy_reference(env, tether: bool, aoa: bool = True, **extra):
     v = env["values"]
     kw = dict(
         body_aero=env["body"], center_of_gravity=v["center_of_gravity"], reference_point=v["reference_point"],
         system_model=env["system_model"], x_guess=v["x_guess"], gamma_loop="casadi_newton", gamma_tolerance=1e-10,
-        kcu_drag=env["kcu"], include_gravity=False, is_aoa_corrected=False, **extra,
+        kcu_drag=env["kcu"], include_gravity=False, is_aoa_corrected=aoa, **extra,
     )
     res, _ = (solve_vsm_qs_trim_with_williams_tether if tether else solve_vsm_quasi_steady_trim)(**kw)
     return res
 
 
-def _casadi(env, tether: bool, bridle_rotates: bool = True, **extra):
+def _casadi(env, tether: bool, bridle_rotates: bool = True, aoa: bool = True, **extra):
     v = env["values"]
     trim = CasadiTrim(
         env["body"], env["system_model"], v["center_of_gravity"], v["reference_point"], kcu_drag=env["kcu"],
-        options=CasadiTrimOptions(tether_model="williams" if tether else None, bridle_rotates_with_body=bridle_rotates),
+        options=CasadiTrimOptions(tether_model="williams" if tether else None, bridle_rotates_with_body=bridle_rotates,
+                                  is_aoa_corrected=aoa),
         **extra,
     )
     return trim, trim.solve(v["x_guess"])
 
 
+@pytest.mark.parametrize("aoa", [True, False])
 @pytest.mark.parametrize("tether", [False, True])
-def test_legacy_bridle_reproduces_numpy_trim(lei_v3, tether):
+def test_legacy_bridle_reproduces_numpy_trim(lei_v3, tether, aoa):
     """With the NumPy trims' bridle convention the CasADi trim lands on the
     same trim state (to the NumPy loop's own 1e-10 circulation tolerance),
-    same tether length, same coefficients up to VSM's attitude-dependent
-    projected area (1e-4 in CL)."""
-    ref = _numpy_reference(lei_v3, tether)
-    trim, res = _casadi(lei_v3, tether, bridle_rotates=False)
+    the same forces and the same tether length, for both force laws. The
+    reported coefficients share one normalisation factor that differs by up
+    to ~3e-4 (VSM's attitude-dependent projected area), so they are held to
+    that common factor rather than to an absolute tolerance."""
+    ref = _numpy_reference(lei_v3, tether, aoa)
+    trim, res = _casadi(lei_v3, tether, bridle_rotates=False, aoa=aoa)
     assert res["success"] and res["success_physical"]
     dx = np.abs(np.asarray(res["opt_x"]) - np.asarray(ref["opt_x"]))
     assert dx[0] < 5e-3  # m/s
     assert np.all(dx[1:4] < 1e-4)  # deg
     assert dx[4] < 1e-6  # rad/s
-    assert abs(res["cl"] - ref["cl"]) < 3e-4
-    assert abs(res["cd"] - ref["cd"]) < 3e-5
+    for key in ("total_aero_force_vec", "tether_force"):
+        if key not in res or key not in ref:
+            continue
+        a, b = np.asarray(res[key], float), np.asarray(ref[key], float)
+        assert np.max(np.abs(a - b)) < 1e-5 * np.max(np.abs(b)), key
+    ratio_cl, ratio_cd = res["cl"] / ref["cl"], res["cd"] / ref["cd"]
+    assert abs(ratio_cl - ratio_cd) < 1e-5  # one normalisation, not a force difference
+    assert abs(ratio_cl - 1.0) < 5e-4
     if tether:
         assert abs(res["williams_tether_length"] - ref["williams_tether_length"]) < 1e-3
         assert np.linalg.norm(res["williams_ground_residual"]) < 1e-4
@@ -84,8 +94,9 @@ def test_rigid_bridle_differs_only_slightly(lei_v3):
     assert abs(res["cl"] - ref["cl"]) < 2e-3
 
 
-def test_jacobian_matches_finite_differences(lei_v3):
-    trim, res = _casadi(lei_v3, True)
+@pytest.mark.parametrize("aoa", [True, False])
+def test_jacobian_matches_finite_differences(lei_v3, aoa):
+    trim, res = _casadi(lei_v3, True, aoa=aoa)
     x, gamma, length = res["opt_x"], res["gamma_distribution"], res["williams_tether_length"]
     aic = trim.compute_aic(x)
     jac = trim.jacobian(x, gamma, aic, length, exact=True)

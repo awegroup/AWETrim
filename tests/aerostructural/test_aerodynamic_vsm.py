@@ -30,10 +30,8 @@ def lei_v3(lei_v3_step1_kite):
 def _solver(av: bool):
     from awetrim.aerodynamics.vsm_settings import make_vsm_solver
 
-    # the CasADi trim implements the 3/4-chord-direction law only
     solver = make_vsm_solver(
         gamma_loop_type="anderson", allowed_error=1e-8, is_with_artificial_viscosity=av,
-        is_aoa_corrected=False,
         artificial_viscosity_factor=0.035, reference_point=[0.0, 0.0, 0.0],
     )
     solver._awetrim_attached_first = True

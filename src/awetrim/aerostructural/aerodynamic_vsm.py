@@ -367,9 +367,7 @@ def _solve_trim_casadi(
                 VSM_SOLVER_DEFAULTS["artificial_viscosity_factor"],
             )
         ),
-        # Refused inside CasadiTrim when True: the kernels are the
-        # 3/4-chord-direction law, so a config asking for the corrected
-        # directions must run the least_squares trims.
+        # The coupled solver's force law, either one (VSM's kernels).
         is_aoa_corrected=bool(
             getattr(solver, "is_aoa_corrected", VSM_SOLVER_DEFAULTS["is_aoa_corrected"])
         ),

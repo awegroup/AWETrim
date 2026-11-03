@@ -50,12 +50,14 @@ dependencies = [
   "prompt_toolkit",
   "vplot3d @ git+https://github.com/rschmehl/vplot3d.git@c5efdc8ffb96832eaaf3f7d7749cac923c2516f7",
   "billow @ git+https://github.com/awegroup/Billow.git@ec6fb79e0a0af8706eda325f309154fd24fa7aae",
-  # Pinned: aerodynamics/panel_kernels.py and trim_casadi.py mirror VSM's
-  # panel force law and its CasADi panel function, so a VSM change there
-  # breaks the CasADi trim. 1201f6f = VSM develop with the curved
-  # bound-vortex / attached-trailed-force work (2026-10-13); move the pin only
-  # together with the kernels (tests/aerodynamics/test_panel_kernels.py).
-  "VSM @ git+https://github.com/awegroup/Vortex-Step-Method.git@1201f6fd1e4c419159ce8867cbb654210d9ef060",
+  # Pinned: trim_casadi.py builds its graph on VSM's force-law kernels
+  # (VSM.core.panel_kernels), its quarter-chord induction
+  # (BodyAerodynamics.compute_quarter_chord_AIC_matrices) and its CasADi
+  # panel function, so a VSM change there moves the CasADi trim. a801b5b =
+  # VSM PR #166 (quarter-chord xp kernels, faster filament kernels); move to
+  # its merge commit on develop once merged, and only together with
+  # tests/aerodynamics/test_trim_casadi*.py.
+  "VSM @ git+https://github.com/awegroup/Vortex-Step-Method.git@a801b5ba31e2d53fa167118df04c008912d027dd",
   # EKF-AWE: the shared KCU drag model (awetrim.aerodynamics.kcu_drag). Its flight
   # reconstructions are read by awetrim.flight_data, not produced here.
   "awes-ekf @ git+https://github.com/awegroup/EKF-AWE.git@52579b914fefa070e8298539e68677cbcdb7c4b8",

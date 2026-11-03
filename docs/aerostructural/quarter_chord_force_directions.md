@@ -81,11 +81,10 @@ depower chains at 4-6 m/s and steering chains at 6 m/s, on a coarse 0.10 m /
 
 ## Limits
 
-- The CasADi trim (`trim_casadi.py`, `panel_kernels.py`) implements the
-  3/4-chord directions only. `CasadiTrimOptions.is_aoa_corrected` defaults
-  to `false` and `true` is refused; a run with `trim: solver: casadi` must
-  state `is_aoa_corrected: false`. Porting the quarter-chord directions to the
-  kernels is a separate change.
+- The CasADi trim runs both laws through VSM's own force-law kernels
+  (`VSM.core.panel_kernels` and
+  `BodyAerodynamics.compute_quarter_chord_AIC_matrices`, VSM PR #166); with
+  `true` it reproduces the NumPy trims, and `false` trims are unchanged.
 - Stored results are not recomputed: the default ROM
   (`rom_config_aerostructural.yaml`) and its flight match were identified with
   `false`, and the snapshots under `data/LEI-V3-KITE/deformed_results/`

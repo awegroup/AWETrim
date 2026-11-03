@@ -1,10 +1,16 @@
-"""The ``xp`` section-force kernels reproduce VSM's own force assembly.
+"""The CasADi trim's force assembly reproduces VSM's own, for both force laws.
 
-These are the single-source guard for :mod:`awetrim.aerodynamics.panel_kernels`:
-each kernel is pinned to the numbers VSM's ``BodyAerodynamics.compute_results``
-/ ``compute_line_aerodynamic_force`` produce, in the NumPy path and in the
-CasADi path (evaluated on ``DM`` inputs), on a rotating body with sideslip so
-no term is trivially zero. A synthetic bridle exercises the line kernel.
+The section force law is VSM's (``VSM.core.panel_kernels``: ``relative_flow``,
+``quarter_chord_velocity``, ``direction_angle``, ``panel_forces``,
+``attached_trailed_forces``); the rest is AWETrim's
+(:mod:`awetrim.aerodynamics.panel_kernels`: attached-trailed geometry and
+shares, totals, bridle lines, VSM's lift/drag/side bookkeeping). Together they
+are pinned to the numbers VSM's ``BodyAerodynamics.compute_results`` /
+``compute_line_aerodynamic_force`` produce, with ``is_aoa_corrected`` False
+(3/4-chord directions) and True (quarter-chord directions), in the NumPy path
+and in the CasADi path (evaluated on ``DM`` inputs), on a rotating body with
+sideslip so no term is trivially zero. A synthetic bridle exercises the line
+kernel.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from VSM.core.BodyAerodynamics import BodyAerodynamics  # noqa: E402
 from VSM.core.utils import induced_velocity_at_points  # noqa: E402
 from awetrim.aerodynamics.vsm_settings import make_vsm_solver  # noqa: E402
 
+from VSM.core import panel_kernels as vpk  # noqa: E402
 from awetrim.aerodynamics import panel_kernels as pk  # noqa: E402
 from awetrim.aerodynamics.apparent_wind import apparent_wind_at  # noqa: E402
 
@@ -30,9 +37,10 @@ def _polar():
     return np.column_stack((alpha, cl, cd, cm))
 
 
-@pytest.fixture(scope="module")
-def solved_body():
-    """Tapered, twisted, anhedral wing with a bridle: VSM solved once."""
+@pytest.fixture(scope="module", params=[False, True], ids=["3/4-chord", "quarter-chord"])
+def solved_body(request):
+    """Tapered, twisted, anhedral wing with a bridle: VSM solved once per
+    force law (``is_aoa_corrected``)."""
     n = 10
     wing = VSM_Wing(n_panels=n, spanwise_panel_distribution="uniform")
     for y in np.linspace(-4.0, 4.0, n + 1):
@@ -54,8 +62,7 @@ def solved_body():
         body_rates=float(np.linalg.norm(omega)), body_axis=omega / np.linalg.norm(omega),
         reference_point=np.zeros(3), rates_in_body_frame=True,
     )
-    # the kernels are the 3/4-chord-direction law
-    solver = make_vsm_solver(gamma_loop_type="casadi_newton", allowed_error=1e-10, is_aoa_corrected=False)
+    solver = make_vsm_solver(gamma_loop_type="casadi_newton", allowed_error=1e-10, is_aoa_corrected=request.param)
     results = solver.solve(body)
     assert results["gamma_converged"]
     return body, solver, results
@@ -69,7 +76,7 @@ def test_panel_forces_and_totals_match_vsm(solved_body, use_casadi):
     gamma = np.asarray(res["gamma_distribution"], dtype=float)
     v_rel = s.va_array + np.column_stack([a @ gamma for a in (s.AIC_x, s.AIC_y, s.AIC_z)])
 
-    alpha, umag = pk.relative_flow(X(v_rel), X(s.x_airf_array), X(s.y_airf_array), X(s.z_airf_array), xp)
+    alpha, umag = vpk.relative_flow(X(v_rel), X(s.x_airf_array), X(s.y_airf_array), X(s.z_airf_array), xp)
     alpha_np = np.asarray(alpha).ravel()
     # the kernel's alpha/umag ARE VSM's
     alpha_vsm, umag_vsm, _ = s.compute_aerodynamic_quantities(gamma)
@@ -78,10 +85,17 @@ def test_panel_forces_and_totals_match_vsm(solved_body, use_casadi):
 
     cl = np.array([p.compute_cl(a) for p, a in zip(s.panels, alpha_np)])
     cdcm = np.array([p.compute_cd_cm(a) for p, a in zip(s.panels, alpha_np)])
-    force, moment_local = pk.panel_forces(
+    if s.is_aoa_corrected:
+        # the trim's construction: quarter-chord matrices frozen, then VSM's kernels
+        speeds = np.linalg.norm(s.va_array, axis=1)
+        aic_qc = body.compute_quarter_chord_AIC_matrices(s.core_radius_fraction, speeds, s.va_array / speeds[:, None])
+        v_qc = vpk.quarter_chord_velocity(X(s.va_array), X(gamma), *(X(a) for a in aic_qc), xp=xp)
+        alpha_dir = vpk.direction_angle(v_qc, X(s.x_airf_array), X(s.y_airf_array), xp)
+    else:
+        alpha_dir = None
+    force, moment_local = vpk.panel_forces(
         alpha, umag, X(cl), X(cdcm[:, 0]), X(cdcm[:, 1]), X(s.chord_array), X(s.width_array),
-        X(s.x_airf_array), X(s.y_airf_array), X(s.z_airf_array),
-        body.wings[0].spanwise_direction, s.rho, xp,
+        X(s.x_airf_array), X(s.y_airf_array), X(s.z_airf_array), s.rho, alpha_dir=alpha_dir, xp=xp,
     )
     # attached-trailed legs: geometry, VSM's induction at their points, force
     assert s.is_with_attached_trailed_vortex_force
@@ -99,7 +113,7 @@ def test_panel_forces_and_totals_match_vsm(solved_body, use_casadi):
         p_at, *(np.ascontiguousarray([getattr(p, k) for p in panels]) for k in ("bound_point_1", "bound_point_2", "TE_point_1", "TE_point_2")),
         gamma, wake_units, wake_speeds, s.core_radius_fraction,
     )
-    f_at = pk.attached_trailed_forces(X(gamma), X(s.va_array), X(v_ind), legs, s.rho, xp)
+    f_at = vpk.attached_trailed_forces(X(gamma), X(s.va_array), X(v_ind), legs, s.rho, xp)
     np.testing.assert_allclose(np.asarray(f_at), f_at_vsm, atol=1e-11)
     assert np.max(np.abs(f_at_vsm)) > 1e-3  # anhedral + twist: not trivially zero
     force_dist = force + (casadi.mtimes(casadi.DM(pk.boundary_shares(len(panels))), f_at) if use_casadi
@@ -175,8 +189,11 @@ def test_kernels_are_differentiable_in_casadi():
 
     def total(v_rel_flat, xp):
         v_rel = xp.reshape(v_rel_flat, n, 3) if xp is casadi else v_rel_flat.reshape(n, 3)
-        alpha, umag = pk.relative_flow(v_rel, x_airf, y_airf, z_airf, xp)
-        force, moment_local = pk.panel_forces(alpha, umag, cl, cd, cm, chord, width, x_airf, y_airf, z_airf, [0.0, 1.0, 0.0], 1.225, xp)
+        alpha, umag = vpk.relative_flow(v_rel, x_airf, y_airf, z_airf, xp)
+        # a direction angle offset from alpha, so the quarter-chord path is differentiated too
+        alpha_dir = alpha - 0.02
+        force, moment_local = vpk.panel_forces(alpha, umag, cl, cd, cm, chord, width, x_airf, y_airf, z_airf, 1.225,
+                                               alpha_dir=alpha_dir, xp=xp)
         f, m = pk.total_force_and_moment(force, moment_local, y_airf * 0.25, xp)
         return xp.vertcat(f, m) if xp is casadi else np.concatenate([f, m])
 
