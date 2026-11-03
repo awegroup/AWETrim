@@ -76,17 +76,21 @@ def test_attached_first_at_the_trim_level(lei_v3):
         assert panel_out._panel_polar_data is panel_in._panel_polar_data
 
 
-def test_attached_and_true_polar_graphs_get_separate_cache_entries(lei_v3):
-    """The attached-first stage builds its graph on CONTINUED polars; a later
-    true-polar solve on the same solver must get its own graph, not trip the
-    cached one's polar check (the key was once taken before the swap, so every
-    stalled-stage trim raised and fell back to an untrimmed direct solve)."""
+def test_attached_and_true_polars_share_one_graph(lei_v3):
+    """The attached-first stage solves on CONTINUED polars, a later solve on
+    the true ones: same alpha grid, so ONE cached graph serves both with the
+    tables swapped in (VSM PR #167). The true-polar solve must be a CasADi
+    trim on that graph, not trip a polar check and fall back to an untrimmed
+    direct solve (the bug of a key taken before the swap, 2026-09-15)."""
     solver = _solver(av=True)
-    _call(lei_v3, solver)  # attached-first: graph on the continued polars
+    _call(lei_v3, solver)  # attached-first: the continued polars
+    cache = solver._awetrim_casadi_trims
+    (_, trim), = cache.values()
     solver._awetrim_attached_first = False  # true polars, same solver object
     results, _ = _call(lei_v3, solver)
     assert results["converged"]
-    assert len(solver._awetrim_casadi_trims) == 2
+    assert "casadi_trim" in results  # trimmed, not the direct-solve fallback
+    assert len(cache) == 1 and next(iter(cache.values()))[1] is trim
 
 
 def test_graph_is_cached_on_the_solver_and_reused(lei_v3):

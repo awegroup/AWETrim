@@ -413,7 +413,7 @@ def _solve_trim_casadi(
         # check and fell back to an untrimmed direct VSM solve (2026-09-15:
         # every coupled iteration of the deep-depower reel-in grid points).
         key = (
-            CasadiTrim.geometry_signature(body_aero),
+            CasadiTrim.geometry_signature(body_aero, options.polar_interpolation),
             dataclasses.astuple(options),
             None if kcu_drag is None else dataclasses.astuple(kcu_drag),
             tuple(np.asarray(bounds_lower, dtype=float).ravel().tolist()),

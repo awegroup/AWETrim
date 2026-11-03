@@ -257,19 +257,28 @@ class CasadiTrim:
         self.quarter_chord_directions = bool(opt.is_aoa_corrected) and opt.aerodynamic_model_type == "VSM"
         self.vsm.panels = panels
         self.vsm.n_panels = self.n
-        self.panel_fn = self.vsm._casadi_newton_function()
-        # The polars the graph was built on (VSM's own cache key: panel count,
-        # regularisation settings, table digest); update_geometry refuses a
-        # body whose polars differ.
-        self.polar_key = self.vsm._casadi_newton_key(*self.vsm._polar_tables())
-        if opt.is_with_artificial_viscosity:
-            self.stall_angles = self.vsm._panel_stall_angles()
-            self.stall_angles_neg = self.vsm._panel_negative_stall_angles()
-            self.laplacian = self.vsm._build_spanwise_laplacian()
-        else:
-            self.stall_angles = np.full(self.n, np.inf)
-            self.stall_angles_neg = np.full(self.n, -np.inf)
-            self.laplacian = np.zeros((self.n, self.n))
+        # The panel polars are blended from the section polars with weights
+        # that follow the geometry, so a deformed shape has new polar VALUES on
+        # the same alpha grid. With linear polars on one shared grid VSM's panel
+        # function takes the tables as INPUTS (VSM PR #167): the graph depends
+        # on the grid only and serves every shape (update_geometry passes the
+        # new tables). Otherwise the tables are constants of the graph and a
+        # shape with other polars needs a new CasadiTrim.
+        alpha_tables = self.vsm._polar_tables()[0]
+        try:
+            self.polar_key = self.vsm._casadi_table_input_key(alpha_tables)
+            self.table_inputs = True
+        except ValueError as exc:
+            logging.info("CasadiTrim: polar tables embedded in the graph (%s); a shape "
+                         "whose blended polars differ rebuilds it", exc)
+            self.polar_key = self.vsm._casadi_newton_key(*self.vsm._polar_tables())
+            self.table_inputs = False
+        self.n_alpha = len(alpha_tables[0]) if self.table_inputs else 1
+        self.panel_fn = self.vsm._casadi_newton_function(table_inputs=self.table_inputs)
+        # a pure stencil of the panel count: a constant of the graph
+        self.laplacian = (self.vsm._build_spanwise_laplacian() if opt.is_with_artificial_viscosity
+                          else np.zeros((self.n, self.n)))
+        self._read_polars()
 
         self.mass_total = _system_model_mass_total(system_model)
 
@@ -337,17 +346,25 @@ class CasadiTrim:
         ]
 
     @staticmethod
-    def geometry_signature(body_aero: Any) -> tuple:
+    def geometry_signature(body_aero: Any, polar_interpolation: str = "linear") -> tuple:
         """What a built graph is tied to besides its options: panel count,
-        bridle segment count and a digest of the panel polars. Two bodies
-        with the same signature can share one :class:`CasadiTrim` through
-        :meth:`update_geometry`."""
+        bridle segment count and a polar digest. Two bodies with the same
+        signature can share one :class:`CasadiTrim` through
+        :meth:`update_geometry`. With linear polars on one shared alpha grid
+        the tables are graph inputs, so only the GRID is digested (a deformed
+        shape's blended polars keep it); otherwise the full tables are."""
         panels = list(getattr(body_aero, "panels", None) or ())
+        tables = [np.asarray(t, dtype=float) for t in
+                  (getattr(panel, "panel_polar_data", None) for panel in panels) if t is not None]
+        shared_grid = bool(tables) and all(
+            t.shape == tables[0].shape and np.array_equal(t[:, 0], tables[0][:, 0]) for t in tables)
         digest = hashlib.blake2b(digest_size=16)
-        for panel in panels:
-            table = getattr(panel, "panel_polar_data", None)
-            if table is not None:
-                digest.update(np.ascontiguousarray(np.asarray(table, dtype=float)).tobytes())
+        if polar_interpolation == "linear" and shared_grid:
+            digest.update(b"grid")
+            digest.update(np.ascontiguousarray(tables[0][:, 0]).tobytes())
+        else:
+            for table in tables:
+                digest.update(np.ascontiguousarray(table).tobytes())
         bridle = getattr(body_aero, "_bridle_line_system", None) or []
         return (len(panels), len(bridle), digest.hexdigest())
 
@@ -425,17 +442,36 @@ class CasadiTrim:
             offset += size
         return out
 
+    def _read_polars(self) -> None:
+        """The current panels' polar tables and the stall angles derived from
+        them, as CasADi DMs (the graph's polar parameters), once per shape."""
+        stall = self.vsm.casadi_stall_angle_inputs()
+        if self.table_inputs:
+            tables = self.vsm.casadi_polar_table_inputs()
+            tables = [tables[k] for k in ("cl_table", "cd_table", "cm_table")]
+        else:
+            tables = [np.zeros((self.n, 1))] * 3  # unused: embedded in the panel function
+        self._polar_dm = tuple(ca.DM(np.asarray(t, dtype=float)) for t in tables) + (
+            ca.DM(np.asarray(stall["stall_angles"], dtype=float)),
+            ca.DM(np.asarray(stall["stall_angles_neg"], dtype=float)),
+        )
+
     def update_geometry(self, body_aero: Any, center_of_gravity: Any) -> None:
         """Swap in a new shape without rebuilding the graph: same panel and
-        bridle counts and the SAME polars (checked against the build's
-        ``polar_key``); everything else -- the deformed panels, the bridle
-        endpoints, the centre of gravity -- is numeric and re-read."""
+        bridle counts and the same polar alpha grid (with table inputs; the
+        same polars otherwise), checked against the build's ``polar_key``;
+        everything else -- the deformed panels, the bridle endpoints, the
+        centre of gravity, the blended polar tables and their stall angles --
+        is numeric and re-read."""
         self._read_geometry(body_aero, center_of_gravity)
         self.vsm.panels = self.body.panels
         self.vsm.n_panels = self.n
-        key = self.vsm._casadi_newton_key(*self.vsm._polar_tables())
+        tables = self.vsm._polar_tables()
+        key = (self.vsm._casadi_table_input_key(tables[0]) if self.table_inputs
+               else self.vsm._casadi_newton_key(*tables))
         if key != self.polar_key:
-            raise ValueError("the body's polars differ from the graph's -- build a new CasadiTrim.")
+            raise ValueError("the body's polar grid / polars differ from the graph's -- build a new CasadiTrim.")
+        self._read_polars()
         self._expand_once()
 
     # ------------------------------------------------------------------ graph
@@ -484,10 +520,16 @@ class CasadiTrim:
         qc_y = ca.MX.sym("qc_y", n, n)
         qc_z = ca.MX.sym("qc_z", n, n)
         p = ca.MX.sym("p_geometry", int(self._p.size))
+        cl_tab = ca.MX.sym("cl_table", n, self.n_alpha)
+        cd_tab = ca.MX.sym("cd_table", n, self.n_alpha)
+        cm_tab = ca.MX.sym("cm_table", n, self.n_alpha)
+        stall_pos = ca.MX.sym("stall_angles", n)
+        stall_neg = ca.MX.sym("stall_angles_neg", n)
+        polar_params = [cl_tab, cd_tab, cm_tab, stall_pos, stall_neg]
         g = self._unpack_geometry(p)
         v_tau, roll, pitch, yaw, chi_dot = (x[i] for i in range(5))
         keep = {x.name(), gamma.name(), length.name(), p.name()} | {
-            m.name() for m in (aic_x, aic_y, aic_z, at_x, at_y, at_z, qc_x, qc_y, qc_z)
+            m.name() for m in (aic_x, aic_y, aic_z, at_x, at_y, at_z, qc_x, qc_y, qc_z, *polar_params)
         }
 
         T = ca.DM(self.transformation)
@@ -509,8 +551,9 @@ class CasadiTrim:
         out = self.panel_fn.call(dict(
             v_rel=v_rel, x_airf=g["x_airf"], y_airf=g["y_airf"], z_airf=g["z_airf"],
             chord=g["chord"], width=g["width"],
-            stall_angles=ca.DM(self.stall_angles), stall_angles_neg=ca.DM(self.stall_angles_neg),
+            stall_angles=stall_pos, stall_angles_neg=stall_neg,
             l_gamma=ca.mtimes(ca.DM(self.laplacian), gamma),
+            **(dict(cl_table=cl_tab, cd_table=cd_tab, cm_table=cm_tab) if self.table_inputs else {}),
         ))
         h, mu, alpha, umag, gate, h_avg = (out[k] for k in ("h", "mu", "alpha", "umag", "gate", "h_avg"))
         if self.quarter_chord_directions:
@@ -643,7 +686,7 @@ class CasadiTrim:
             ["tether_length"] if self.williams else []
         )
 
-        params = [aic_x, aic_y, aic_z, at_x, at_y, at_z, qc_x, qc_y, qc_z, p]
+        params = [aic_x, aic_y, aic_z, at_x, at_y, at_z, qc_x, qc_y, qc_z, p, *polar_params]
         res_free, res_avg_free = self._substitute_numeric([residual[rows], residual_avg[rows]], keep)
         args = [x, gamma, length, *params]
         self._kin_fn = ca.Function("trim_kinematics", [x], self._substitute_numeric([va_w, omega_w, R], keep))
@@ -786,15 +829,15 @@ class CasadiTrim:
         return u
 
     def residual(self, x, gamma, aic, length: float = 0.0):
-        r, gate = self._res_fn(x, gamma, length, *aic, self._p_dm)
+        r, gate = self._res_fn(x, gamma, length, *aic, self._p_dm, *self._polar_dm)
         return np.asarray(r).ravel(), bool(float(gate) > 0.5)
 
     def jacobian(self, x, gamma, aic, length: float = 0.0, exact: bool = False):
         fn = self._jac_exact_fn if exact else self._jac_fn
-        return np.asarray(fn(x, gamma, length, *aic, self._p_dm))
+        return np.asarray(fn(x, gamma, length, *aic, self._p_dm, *self._polar_dm))
 
     def outputs(self, x, gamma, aic, length: float = 0.0) -> dict[str, Any]:
-        vals = self._out_fn(x, gamma, length, *aic, self._p_dm)
+        vals = self._out_fn(x, gamma, length, *aic, self._p_dm, *self._polar_dm)
         return {k: np.asarray(v) for k, v in zip(self._output_names, vals)}
 
     # ------------------------------------------------------------------ solve

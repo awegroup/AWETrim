@@ -200,18 +200,50 @@ def test_update_geometry_matches_fresh_build(lei_v3):
     assert abs(res_fresh["opt_x"][2] - res_base["opt_x"][2]) > 1e-3
 
 
-def test_update_geometry_refuses_other_polars(lei_v3):
+def test_update_geometry_polar_check(lei_v3, monkeypatch):
+    """With the polar tables as graph inputs (linear polars, one shared alpha
+    grid) other polar VALUES are numbers of the same graph -- the
+    attached-first stage's continued polars swap in -- and only another
+    alpha grid is refused. The embedded-table fallback refuses other polars."""
+    import copy
+
+    from VSM.core.Solver import Solver
+
     from awetrim.aerodynamics.vsm_quasi_steady import _attached_polars_installed
 
     v = lei_v3["values"]
-    trim = CasadiTrim(lei_v3["body"], lei_v3["system_model"], v["center_of_gravity"], v["reference_point"], kcu_drag=lei_v3["kcu"])
+
+    def make():
+        return CasadiTrim(lei_v3["body"], lei_v3["system_model"], v["center_of_gravity"], v["reference_point"],
+                          kcu_drag=lei_v3["kcu"])
+
+    trim = make()
+    assert trim.table_inputs
+    with _attached_polars_installed(lei_v3["body"]):
+        trim.update_geometry(lei_v3["body"], v["center_of_gravity"])  # same grid: accepted
+        attached_key = CasadiTrim.geometry_signature(lei_v3["body"])
+    assert attached_key == CasadiTrim.geometry_signature(lei_v3["body"])  # one cache entry
+    # another alpha grid is another graph
+    other = copy.deepcopy(lei_v3["body"])
+    table = np.array(other.panels[0].panel_polar_data, dtype=float)
+    table[:, 0] += 1e-3
+    other.panels[0]._panel_polar_data = table  # the property's storage, as _attached_polars_installed does
+    with pytest.raises(ValueError, match="grid"):
+        trim.update_geometry(other, v["center_of_gravity"])
+    assert CasadiTrim.geometry_signature(other) != CasadiTrim.geometry_signature(lei_v3["body"])
+
+    # embedded tables (e.g. bspline polars): other polars need a new graph
+    def refuse(self, alpha_tables):
+        raise ValueError("forced: embedded tables")
+
+    monkeypatch.setattr(Solver, "_casadi_table_input_key", refuse)
+    embedded = make()
+    assert not embedded.table_inputs
     with _attached_polars_installed(lei_v3["body"]):
         with pytest.raises(ValueError, match="polars"):
-            trim.update_geometry(lei_v3["body"], v["center_of_gravity"])
-    # and the signature tells the two apart, which is what a cache keys on
-    with _attached_polars_installed(lei_v3["body"]):
-        attached_key = CasadiTrim.geometry_signature(lei_v3["body"])
-    assert attached_key != CasadiTrim.geometry_signature(lei_v3["body"])
+            embedded.update_geometry(lei_v3["body"], v["center_of_gravity"])
+        attached_key = CasadiTrim.geometry_signature(lei_v3["body"], "bspline")
+    assert attached_key != CasadiTrim.geometry_signature(lei_v3["body"], "bspline")
 
 
 def test_solve_with_body_contract(lei_v3):
@@ -239,3 +271,94 @@ def test_solve_with_body_contract(lei_v3):
     np.testing.assert_allclose(state.velocity_rotation, res["omega_c_vsm"], rtol=0, atol=1e-12)
     assert "stalled_fraction" in res and "kcu_drag_coefficient" in res
     assert body.geometry_rotation.shape == (3, 3)
+
+
+def _deformed_copy(body):
+    """The body with every other section's chord 8 % longer: the panel polars
+    are blended from the section polars with geometry-dependent weights, so
+    the deformed shape has new polar VALUES on the same alpha grid."""
+    import copy
+
+    body_b = copy.deepcopy(body)
+    sections = body_b.wings[0].sections
+    le = np.array([s.LE_point for s in sections], dtype=float)
+    te = np.array([s.TE_point for s in sections], dtype=float)
+    te[1::2] = le[1::2] + 1.08 * (te[1::2] - le[1::2])
+    body_b.update_from_points(le, te, "reuse_initial_polar_data", [s.polar_data for s in sections])
+    return body_b
+
+
+@pytest.mark.parametrize("aoa", [True, False])
+def test_one_graph_serves_a_deformed_shape(lei_v3, aoa, monkeypatch):
+    """Built once on shape A, re-used through update_geometry on a deformed
+    shape B whose blended polars differ: each solve equals a fresh CasadiTrim
+    built for that shape, and the reused graph is never rebuilt."""
+    import copy
+
+    v = lei_v3["values"]
+    body_a = copy.deepcopy(lei_v3["body"])
+    body_b = _deformed_copy(body_a)
+    tables_a = np.array([p.panel_polar_data for p in body_a.panels])
+    tables_b = np.array([p.panel_polar_data for p in body_b.panels])
+    assert np.array_equal(tables_a[:, :, 0], tables_b[:, :, 0])  # same alpha grid
+    assert np.max(np.abs(tables_a[:, :, 1:] - tables_b[:, :, 1:])) > 1e-4  # other polar values
+
+    builds = []
+    original = CasadiTrim._build_graph
+
+    def counting(self):
+        builds.append(self)
+        return original(self)
+
+    monkeypatch.setattr(CasadiTrim, "_build_graph", counting)
+
+    def make(body):
+        return CasadiTrim(body, lei_v3["system_model"], v["center_of_gravity"], v["reference_point"],
+                          kcu_drag=lei_v3["kcu"], options=CasadiTrimOptions(tether_model=None, is_aoa_corrected=aoa))
+
+    reused = make(body_a)
+    assert reused.table_inputs
+    res_a = reused.solve(v["x_guess"])
+    reused.update_geometry(body_b, v["center_of_gravity"])
+    res_b = reused.solve(v["x_guess"])
+    assert len(builds) == 1  # one graph for both shapes
+
+    for body, res in ((body_a, res_a), (body_b, res_b)):
+        fresh = make(body).solve(v["x_guess"])
+        np.testing.assert_allclose(res["opt_x"], fresh["opt_x"], rtol=1e-10, atol=1e-10)
+        np.testing.assert_allclose(np.ravel(res["gamma_distribution"]), np.ravel(fresh["gamma_distribution"]),
+                                   rtol=1e-10, atol=1e-10)
+        np.testing.assert_allclose(res["total_aero_force_vec"], fresh["total_aero_force_vec"], rtol=1e-10, atol=1e-8)
+    assert abs(res_a["opt_x"][0] - res_b["opt_x"][0]) > 1e-3  # the shapes do trim differently
+
+
+@pytest.mark.parametrize("av", [False, True])
+@pytest.mark.parametrize("aoa", [True, False])
+def test_table_inputs_equal_the_embedded_polars(lei_v3, aoa, av, monkeypatch):
+    """The polar tables as graph inputs (VSM PR #167) give the trim of the
+    graph with the tables embedded as constants, to round-off."""
+    from VSM.core.Solver import Solver
+
+    v = lei_v3["values"]
+
+    def solve():
+        trim = CasadiTrim(lei_v3["body"], lei_v3["system_model"], v["center_of_gravity"], v["reference_point"],
+                          kcu_drag=lei_v3["kcu"],
+                          options=CasadiTrimOptions(tether_model=None, is_aoa_corrected=aoa,
+                                                    is_with_artificial_viscosity=av))
+        res = trim.solve(v["x_guess"])
+        return trim, res
+
+    trim_in, res_in = solve()
+    assert trim_in.table_inputs
+
+    def refuse(self, alpha_tables):
+        raise ValueError("forced: embedded tables")
+
+    monkeypatch.setattr(Solver, "_casadi_table_input_key", refuse)
+    trim_emb, res_emb = solve()
+    assert not trim_emb.table_inputs
+    np.testing.assert_allclose(res_in["opt_x"], res_emb["opt_x"], rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(np.ravel(res_in["gamma_distribution"]), np.ravel(res_emb["gamma_distribution"]),
+                               rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(res_in["total_aero_force_vec"], res_emb["total_aero_force_vec"], rtol=1e-12, atol=1e-9)

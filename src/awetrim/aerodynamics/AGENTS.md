@@ -51,7 +51,7 @@ stated: `VSM_SOLVER_DEFAULTS` (Solver kwargs) and `VSM_BODY_DEFAULTS`
 `make_vsm_solver(**overrides)` / `BodyAerodynamics.instantiate(...,
 **vsm_body_kwargs())`, never a bare `Solver()`, whose defaults follow the
 installed VSM (develop: `is_aoa_corrected=True`, automatic relaxation).
-The model (VSM a801b5b, PR #166): 3/4-chord VSM circulation with the force
+The model (VSM 3cb7bd0, PRs #166/#167): 3/4-chord VSM circulation with the force
 directions from the quarter-chord flow (`is_aoa_corrected=True`, since
 2026-11-03; verified against the Trefftz-plane induced drag on inviscid
 wings in VSM 62c53af and PR #165 -- see
@@ -83,12 +83,19 @@ DMs once per wake pass / shape. The residual, Jacobian and output functions
 are SX-expanded LAZILY, on the first reuse of a graph (`update_geometry` or a
 second `solve`; `_expand_once`): a reused 54-panel trim solves in 70-77 ms
 instead of 196-235 ms, but the expansion costs a build-time multiple (~8 s at
-135 panels), which a single-use graph never earns back. In the coupled loop
-the graph is currently rebuilt every iteration (the panel polars are blended
-from the deforming geometry and VSM's CasADi panel function embeds them as
-constants, so `geometry_signature` changes), so the coupled trims stay
-unexpanded; making the polar tables inputs of VSM's CasADi functions lets one
-graph serve every shape.
+135 panels), which a single-use graph never earns back. The panel polars are
+blended from the section polars with geometry-dependent weights, so a
+deformed shape has new polar values on the same alpha grid: with linear
+polars on one shared grid the graph takes the cl/cd/cm tables and the stall
+angles as numeric PARAMETERS (VSM PR #167, `_casadi_newton_function(
+table_inputs=True)`, `casadi_polar_table_inputs`,
+`casadi_stall_angle_inputs`), `update_geometry` passes the new ones, and
+`geometry_signature(body, polar_interpolation)` digests the alpha grid only,
+so the coupled loop builds ONE graph per case and re-uses it (expanded from
+the second iteration). Bspline polars or per-panel grids fall back to tables
+embedded as constants (logged), where a shape with other polars rebuilds.
+`test_one_graph_serves_a_deformed_shape` / `test_table_inputs_equal_the_embedded_polars`
+pin both properties.
 
 `trim_casadi.py` (2026-09-15) solves the quasi-steady trim as ONE CasADi
 root-finding problem: unknowns = the 5 trim states + the panel circulations
