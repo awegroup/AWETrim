@@ -123,6 +123,9 @@ def test_another_flight_state_starts_cold(case, monkeypatch):
     driver.solve_step(case, prepared)
     driver.solve_step(case, prepared, {**case.config, "distance_radial": 450.0})
     assert "quasi_steady_initial_guess" not in calls[1][1]
+    # a new object: the CasADi trim's cached graph holds the old state as numbers
+    assert calls[1][0] is not calls[0][0]
+    assert float(calls[1][0].distance_radial) == 450.0
 
 
 def test_an_unconverged_solve_is_not_continued_from(case, monkeypatch):

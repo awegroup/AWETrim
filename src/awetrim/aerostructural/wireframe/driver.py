@@ -31,7 +31,6 @@ from awetrim.aerostructural.case import (
     build_actuation_case_folder,
     build_system_model,
     build_tether,
-    configure_system_model_from_config,
     DEFAULT_KITE_NAME,
     DEFAULT_STRUC_GEOMETRY_FILENAME,
     WIREFRAME_STRUC_GEOMETRY_FILENAME,
@@ -335,7 +334,8 @@ class PreparedWireframe:
 
     A continuation is carried here too, so :func:`solve_step` needs no seed from
     its caller: ``system_model`` is reused while the flight state stays the same
-    (``system_model_key``; the CasADi trim's graph is tied to the object), and
+    (``system_model_key``; the CasADi trim's graph is tied to the object and
+    holds that state as numbers), and
     ``trim_seed`` holds the last converged trim and circulation, which the next
     solve starts from. A cold trim on a warm shape can land on another solution
     or diverge (docs in aerostructural/AGENTS.md).
@@ -727,14 +727,16 @@ def solve_step(
     m_arr = prepared.m_arr
     mass_total = float(np.sum(m_arr))
     print(f"Total structural mass (sum of particle masses): {mass_total:.3f} kg")
+    # Same flight state: the same object, which keeps the CasADi trim's graph.
+    # Another one: a new object, because that graph holds the wind and position
+    # as numbers and is matched by the object's identity; and nothing to continue
+    # from, unless this is the first solve after a restore.
     state_key = system_model_state_key(config)
-    if prepared.system_model is None:
+    if prepared.system_model is None or state_key != prepared.system_model_key:
+        if prepared.system_model is not None:
+            prepared.trim_seed = None
         prepared.system_model = build_system_model(case.system_config_path, tether, m_arr, config)
-    else:
-        if state_key != prepared.system_model_key:
-            prepared.trim_seed = None  # another flight state: nothing to continue from
-        configure_system_model_from_config(prepared.system_model, config)
-    prepared.system_model_key = state_key
+        prepared.system_model_key = state_key
     system_model = prepared.system_model
     # A seed the caller states wins over the carried one.
     config = {**(prepared.trim_seed or {}), **config}

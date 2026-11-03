@@ -1462,6 +1462,8 @@ stated value overrides), ``restore`` reads it back from the file (``meta``'s
 ``opt_x`` and ``gamma_distribution``), and it is dropped when the flight state
 changes (``case.system_model_state_key``). ``system_model`` is reused meanwhile,
 which keeps the CasADi trim's graph: one per chain, the bounds being numeric.
+Another flight state gets a new ``system_model``, since the graph holds the wind
+and position as numbers and is matched by the object's identity.
 
 Before this every state of a chain trimmed cold on a warm shape.
 ``w5.0_depower_2.60`` of the LEI-V3 wireframe, ``least_squares``: 174 -> 117
