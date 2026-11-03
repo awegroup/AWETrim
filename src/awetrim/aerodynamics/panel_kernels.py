@@ -1,19 +1,19 @@
-"""Section-level aerodynamic force laws as ``xp`` kernels.
+"""The AWETrim side of the CasADi trim's force assembly, as ``xp`` kernels.
 
-The formulas here are the ones VSM's ``BodyAerodynamics.compute_results`` and
-``compute_line_aerodynamic_force`` apply in NumPy, written once over an
-``xp`` math namespace so the same function serves the NumPy path and a CasADi
-graph (the CasADi trim in :mod:`awetrim.aerodynamics.trim_casadi`). Pass
-``xp=numpy`` (default) or ``xp=casadi``. No formula may be restated at a call
-site; ``tests/aerodynamics/test_panel_kernels.py`` pins each kernel to the VSM
-numbers it reproduces. Moving these kernels upstream into VSM, so its own
-``compute_results`` calls them, is the intended end state.
+The SECTION force law is VSM's: ``VSM.core.panel_kernels`` (``relative_flow``,
+``quarter_chord_velocity``, ``direction_angle``, ``panel_forces``,
+``attached_trailed_forces`` and the row helpers), the functions VSM's own
+``BodyAerodynamics.compute_results`` calls, so the formula lives once (moved
+upstream with VSM PR #166). What stays here is what VSM does not provide as a
+kernel: the attached-trailed leg geometry and boundary shares, the force and
+moment totals, VSM's lift/drag/side bookkeeping, the bridle-line force and
+3-vector helpers. Every function takes an ``xp`` math namespace (``numpy``,
+default, or ``casadi``); ``tests/aerodynamics/test_panel_kernels.py`` pins the
+assembly to the numbers VSM's ``compute_results`` produces for both
+``is_aoa_corrected`` settings.
 
 Conventions (VSM's): every per-panel quantity is a row of an ``(n, 3)`` array
-or an entry of an ``(n,)`` vector (``(n, 1)`` in CasADi). ``alpha`` is the
-effective angle of attack from the relative velocity's components along the
-panel's chord-normal ``x_airf`` and chord ``y_airf`` axes; ``umag`` is
-``|v_rel x z_airf|``, the speed the 2-D section sees.
+or an entry of an ``(n,)`` vector (``(n, 1)`` in CasADi).
 """
 from __future__ import annotations
 
@@ -21,49 +21,20 @@ from typing import Any
 
 import numpy as np
 
+# the row helpers are VSM's (one place); re-exported for this module's callers
+from VSM.core.panel_kernels import (  # noqa: F401
+    cross_rows,
+    dot_rows,
+    hstack_columns,
+    norm_rows,
+    scale_rows,
+    unit_rows,
+)
+
 
 # --------------------------------------------------------------------------- xp
 def _is_casadi(xp: Any) -> bool:
     return hasattr(xp, "horzcat")
-
-
-def hstack_columns(xp: Any, *cols):
-    """``(n, k)`` from ``k`` per-row columns."""
-    if _is_casadi(xp):
-        return xp.horzcat(*cols)
-    return np.column_stack(cols)
-
-
-def cross_rows(a, b, xp=np):
-    """Row-wise cross product of two ``(n, 3)`` arrays."""
-    return hstack_columns(
-        xp,
-        a[:, 1] * b[:, 2] - a[:, 2] * b[:, 1],
-        a[:, 2] * b[:, 0] - a[:, 0] * b[:, 2],
-        a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0],
-    )
-
-
-def dot_rows(a, b, xp=np):
-    """Row-wise dot product of two ``(n, 3)`` arrays -> per-row scalar."""
-    if _is_casadi(xp):
-        return xp.sum2(a * b)
-    return np.sum(a * b, axis=1)
-
-
-def norm_rows(a, xp=np):
-    return xp.sqrt(dot_rows(a, a, xp))
-
-
-def scale_rows(s, a, xp=np):
-    """Per-row scalar ``s`` times ``(n, 3)`` rows of ``a``."""
-    if _is_casadi(xp):
-        return xp.repmat(s, 1, a.shape[1]) * a
-    return np.asarray(s)[:, None] * a
-
-
-def unit_rows(a, xp=np):
-    return scale_rows(1.0 / norm_rows(a, xp), a, xp)
 
 
 def as_xp_vector(v, xp=np):
@@ -82,10 +53,6 @@ def tile_vector(v, n: int, xp=np):
             v = as_xp_vector(np.asarray(v, dtype=float), xp)
         return xp.repmat(xp.reshape(v, 1, 3), n, 1)
     return np.tile(np.asarray(v, dtype=float).reshape(1, 3), (n, 1))
-
-
-def atan2(y, x, xp=np):
-    return xp.atan2(y, x) if _is_casadi(xp) else np.arctan2(y, x)
 
 
 def dot3(a, b, xp=np):
@@ -107,68 +74,6 @@ def cross3(a, b, xp=np):
 
 
 # ------------------------------------------------------------------ section flow
-def relative_flow(v_rel, x_airf, y_airf, z_airf, xp=np):
-    """Effective angle of attack and section speed from the relative velocity.
-
-    VSM ``Solver.compute_aerodynamic_quantities``:
-    ``alpha = atan2(v_rel . x_airf, v_rel . y_airf)``, ``umag = |v_rel x z_airf|``.
-    """
-    alpha = atan2(dot_rows(x_airf, v_rel, xp), dot_rows(y_airf, v_rel, xp), xp)
-    umag = norm_rows(cross_rows(v_rel, z_airf, xp), xp)
-    return alpha, umag
-
-
-def circulation_target(umag, cl, chord):
-    """VSM's fixed-point target ``0.5 umag cl chord`` (Gaunaa, Li & Pirrung
-    2026, Eq. 4: the circulation from the section's own inner speed)."""
-    return 0.5 * umag * cl * chord
-
-
-def panel_forces(
-    alpha,
-    umag,
-    cl,
-    cd,
-    cm,
-    chord,
-    width,
-    x_airf,
-    y_airf,
-    z_airf,
-    spanwise_direction,
-    rho: float,
-    xp=np,
-):
-    """Per-panel 3-D force and local pitching moment, VSM's construction.
-
-    ``compute_results`` with ``is_aoa_corrected=False`` and no viscous drag
-    correction: the 2-D lift ``cl q c`` acts normal to the section's own
-    relative-flow direction ``cos(alpha) y_airf + sin(alpha) x_airf`` (in the
-    plane normal to ``z_airf``), the 2-D drag ``cd q c`` ALONG that direction
-    (the local inner flow, not the global span axis), both scaled by the
-    panel width; the 2-D moment ``cm q c^2`` is a vector along ``z_airf``
-    times the width. ``q = 0.5 rho umag^2`` with the SECTION speed, not the
-    freestream. ``spanwise_direction`` is no longer used by the force law and
-    is kept for the call signature.
-
-    The attached-trailed vortex force is NOT included here; see
-    :func:`attached_trailed_forces`.
-
-    Returns ``(force (n, 3), moment_local (n, 3))``.
-    """
-    q_chord = 0.5 * rho * umag**2 * chord
-    lift = cl * q_chord
-    drag = cd * q_chord
-    moment = cm * q_chord * chord
-
-    dir_flow = scale_rows(xp.cos(alpha), y_airf, xp) + scale_rows(xp.sin(alpha), x_airf, xp)
-    dir_flow = unit_rows(dir_flow, xp)
-    dir_lift = unit_rows(cross_rows(dir_flow, z_airf, xp), xp)
-
-    force_2d = scale_rows(lift, dir_lift, xp) + scale_rows(drag, dir_flow, xp)
-    force = scale_rows(width, force_2d, xp)
-    moment_local = scale_rows(moment * width, z_airf, xp)
-    return force, moment_local
 
 
 # ---------------------------------------------------- attached trailed vortices
@@ -200,31 +105,6 @@ def boundary_shares(n: int) -> np.ndarray:
         else:
             shares[j - 1, j] = shares[j, j] = 0.5
     return shares
-
-
-def attached_trailed_forces(gamma, va_panels, v_induced, legs, rho: float, xp=np):
-    """Kutta-Joukowski force on the AT legs (Gaunaa, Li & Pirrung 2026, Sec. 3),
-    VSM ``compute_attached_trailed_vortex_forces``:
-    ``rho (gamma_j - gamma_{j-1}) (v_rel_j x l_j)``, ``gamma_{-1} = gamma_n = 0``,
-    with ``v_rel_j`` the mean of the neighbouring panels' inflow plus
-    ``v_induced`` (the full vortex system's induction at the AT points,
-    ``(n+1, 3)``). Returns ``(n+1, 3)``.
-    """
-    n = va_panels.shape[0]
-    to_boundary = np.zeros((n + 1, n))  # gamma_net = D gamma
-    to_boundary[np.arange(n), np.arange(n)] += 1.0
-    to_boundary[np.arange(1, n + 1), np.arange(n)] -= 1.0
-    mean = np.abs(to_boundary) * np.where(
-        (np.arange(n + 1) > 0) & (np.arange(n + 1) < n), 0.5, 1.0
-    )[:, None]
-    if _is_casadi(xp):
-        gamma_net = xp.mtimes(xp.DM(to_boundary), gamma)
-        va_boundary = xp.mtimes(xp.DM(mean), va_panels)
-    else:
-        gamma_net = to_boundary @ np.asarray(gamma, dtype=float).ravel()
-        va_boundary = mean @ va_panels
-    legs = xp.DM(legs) if _is_casadi(xp) and isinstance(legs, np.ndarray) else legs
-    return scale_rows(rho * gamma_net, cross_rows(va_boundary + v_induced, legs, xp), xp)
 
 
 def total_force_and_moment(force, moment_local, arm, xp=np):

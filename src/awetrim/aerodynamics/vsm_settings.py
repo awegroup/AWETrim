@@ -25,8 +25,8 @@ AWETrim since 2026-11-03; results before that date ran the 3/4-chord
 directions (``is_aoa_corrected=False``: CD 11-16 % higher on the LEI-V3,
 CL < 0.3 % different), and before 2026-10-28 VSM 8825a12 without the
 attached-trailed force (polar and trim shifts of 1-4 %).
-The CasADi trim's panel kernels implement the 3/4-chord directions only, so
-it is run with ``is_aoa_corrected=False`` (it refuses ``True``).
+The CasADi trim runs either law through VSM's own force-law kernels
+(``VSM.core.panel_kernels``, VSM PR #166), so it follows this setting too.
 
 An option the installed VSM does not have is dropped when the requested
 value is what that VSM does anyway (``_ABSENT_MEANS``), and refused
