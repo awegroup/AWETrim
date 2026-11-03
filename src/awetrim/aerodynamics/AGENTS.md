@@ -51,11 +51,19 @@ stated: `VSM_SOLVER_DEFAULTS` (Solver kwargs) and `VSM_BODY_DEFAULTS`
 `make_vsm_solver(**overrides)` / `BodyAerodynamics.instantiate(...,
 **vsm_body_kwargs())`, never a bare `Solver()`, whose defaults follow the
 installed VSM (develop: `is_aoa_corrected=True`, automatic relaxation).
-The model (2026-10-28, VSM develop 1201f6f): 3/4-chord VSM, freestream force
-directions (`is_aoa_corrected=False`), the attached-trailed vortex force ON
-(`is_with_attached_trailed_vortex_force=True`), relaxation 0.01. Before that
-date AWETrim ran VSM 8825a12 without the attached-trailed force (built-shape
-polar: CL +2%, CD +4% at alpha 10 deg with it). An option the installed VSM
+The model (VSM develop 1201f6f): 3/4-chord VSM circulation with the force
+directions from the quarter-chord flow (`is_aoa_corrected=True`, since
+2026-11-03; verified against the Trefftz-plane induced drag on inviscid
+wings in VSM 62c53af and PR #165 -- see
+`docs/aerostructural/quarter_chord_force_directions.md`), the attached-trailed
+vortex force ON (`is_with_attached_trailed_vortex_force=True`), relaxation
+0.01. Results from 2026-10-28 to 2026-11-03 ran the 3/4-chord directions
+(`is_aoa_corrected=False`: LEI-V3 CD 11-16 % higher, CL < 0.3 %); before
+2026-10-28 AWETrim ran VSM 8825a12 without the attached-trailed force
+(built-shape polar: CL +2%, CD +4% at alpha 10 deg with it). The CasADi trim
+(`trim_casadi.py`, `panel_kernels.py`) implements the 3/4-chord directions
+only: `CasadiTrimOptions.is_aoa_corrected` defaults to False and True is
+refused, so a CasADi run states `is_aoa_corrected: false`. An option the installed VSM
 lacks is dropped at its no-op value and refused otherwise. The aerostructural
 `aerodynamic:` block overrides any of the same keys.
 
@@ -778,7 +786,7 @@ Public functions should use these names:
   Ignored when an explicit `solver` is passed.
   `default_vsm_solver` (public since 2026-10-28; `_default_vsm_solver` is an
   alias) is THE place AWETrim's VSM settings live (zero gamma seed, `base`
-  loop at 1e-6, AV off, `is_aoa_corrected=False`), stated rather than
+  loop at 1e-6, AV off, `is_aoa_corrected=True`), stated rather than
   inherited because VSM's defaults change between versions. Scripts that
   solve VSM outside a trim (e.g. `examples/1_aerodynamics/compute_polars.py`)
   build their solver with it so they share the trims' force law.

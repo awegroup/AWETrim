@@ -166,9 +166,11 @@ must be resolved). 16 sections (432 panels) agree with 12 to 0.03 %; at 20
 (540 panels) VSM's circulation loop no longer converges within its iteration
 limit. At 12 deg the values move +-1 % without trend from 3 sections on (panels
 near stall changing branch with the mesh), as in the trim panel-count study.
-The quarter-chord force directions (`is_aoa_corrected`, off by default) give
-the same mesh convergence but change the values: CD -11 to -16 %, CMy -0.04
-to -0.08, CL < 0.3 %. Default: **5 sections, 135 panels**.
+The quarter-chord force directions (`is_aoa_corrected`, the default since
+2026-11-03; this study ran both) give the same mesh convergence but change
+the values: CD -11 to -16 %, CMy -0.04 to -0.08, CL < 0.3 %
+([quarter_chord_force_directions.md](quarter_chord_force_directions.md)).
+Default: **5 sections, 135 panels**.
 
 At fixed angle of attack, 5 % billowing lowers CL by about 20 % (0.82 to 0.66
 at 8 deg): the arc pitches the mid-bay sections nose down by about 3 deg on

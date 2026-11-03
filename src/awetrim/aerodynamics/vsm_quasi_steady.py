@@ -30,7 +30,7 @@ from scipy.optimize import least_squares
 
 from awetrim.environment.profile_laws import LOG_BASED_MODELS
 from awetrim.aerodynamics.apparent_wind import apparent_wind_at
-from awetrim.aerodynamics.vsm_settings import make_vsm_solver
+from awetrim.aerodynamics.vsm_settings import VSM_SOLVER_DEFAULTS, make_vsm_solver
 from awetrim.aerodynamics.kcu_drag import (
     AXIS_MODEL_NONE,
     AXIS_MODEL_RADIAL,
@@ -87,7 +87,7 @@ def default_vsm_solver(
     is_with_artificial_viscosity: bool = False,
     artificial_viscosity_factor: float = 0.035,
     anderson_max_iterations: int | None = None,
-    is_aoa_corrected: bool = False,
+    is_aoa_corrected: bool = VSM_SOLVER_DEFAULTS["is_aoa_corrected"],
 ) -> VsmSolver:
     """The VSM ``Solver`` every AWETrim quasi-steady trim uses.
 
@@ -104,8 +104,9 @@ def default_vsm_solver(
         is_with_artificial_viscosity: Li/Gaunaa spanwise artificial viscosity.
         artificial_viscosity_factor: its factor.
         anderson_max_iterations: cap of the Anderson attempt (None = AWETrim's).
-        is_aoa_corrected: force directions from the quarter-chord flow (True)
-            instead of the freestream (False, AWETrim's model).
+        is_aoa_corrected: force directions from the quarter-chord flow (True,
+            AWETrim's model) instead of the flow at the 3/4-chord control
+            point (False).
     """
     try:
         from VSM.core.Solver import Solver  # noqa: F401  (availability check)
@@ -528,7 +529,7 @@ def solve_vsm_quasi_steady_trim(
     is_with_artificial_viscosity: bool = False,
     artificial_viscosity_factor: float = 0.035,
     anderson_max_iterations: int | None = None,
-    is_aoa_corrected: bool = False,
+    is_aoa_corrected: bool = VSM_SOLVER_DEFAULTS["is_aoa_corrected"],
     kcu_drag: "KcuDragModel | None" = None,
     gamma_seed: np.ndarray | None = None,
 ) -> tuple[dict[str, Any], VsmBodyAerodynamics]:
@@ -1460,7 +1461,7 @@ def solve_vsm_qs_trim_with_williams_tether(
     is_with_artificial_viscosity: bool = False,
     artificial_viscosity_factor: float = 0.035,
     anderson_max_iterations: int | None = None,
-    is_aoa_corrected: bool = False,
+    is_aoa_corrected: bool = VSM_SOLVER_DEFAULTS["is_aoa_corrected"],
     tether_model: str = "williams",
     prescribed_roll_deg: float | None = None,
     gamma_seed: np.ndarray | None = None,
