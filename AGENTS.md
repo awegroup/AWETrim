@@ -13,7 +13,11 @@ implements the winch/tether physics for pumping-cycle simulation.
 
 ```
 src/awetrim/
-  system/            ✅  Wing, Kite, SystemModel, Winch, Tether variants
+  system/            ✅  Wing, Kite, SystemModel, Winch, Tether variants;
+                         turn_radius.py: steering_limited_turn_radius ->
+                         TurnRadiusTable, the tightest turn per course and
+                         direction at the optimizer's steering box
+                         (steering_limit), from quasi-steady states
                          (rigid/flexible link, rigid/flexible lumped,
                           Williams discretised distributed-mass)
   aerodynamics/      ✅  VSM quasi-steady trim + KCU bluff-body drag
@@ -82,6 +86,18 @@ src/awetrim/
                          symmetrize_periodic_path: half a period of the
                          uniform periodic spline is an index shift by M/2, so
                          a mirrored path is a coefficient-pair condition)
+                         + steering_limited_eight.py: the kite-sized seed.
+                         CourseTurnLimit (signed curvature bounds per course,
+                         mirror-symmetric, from required(course, sign), e.g.
+                         system.turn_radius.TurnRadiusTable.radius, x margin);
+                         fit_spline_to_turn_limit moves the control points of
+                         a one-eight down-loop spline the least (IPOPT, half
+                         the coefficients as unknowns, height + speed floors,
+                         MAX_MOVE trust box) so the SPLINE holds it;
+                         spline_turn_geometry checks it. The kernels
+                         geodesic_curvature_numerator (also Kinematics) and
+                         heading_rate_turn live in parametrized_patterns.
+                         Reel-out only so far: full-cycle seeds do not use it
   timeseries/        ✅  PhaseParameterized, ReeloutSimple, ReelinSimple, Cycle
                          (opti_phase sim_parameters.periodic_wrap: the seam
                          interval node N-1 -> node 0 of a one-period periodic
@@ -124,7 +140,12 @@ src/awetrim/
                          term (reg) weighted to that fraction of |objective|
                          at the NLP's initial point (phase.relative_reg_weight;
                          an explicit reg_weight wins). All
-                         opt-in keys off = NLP unchanged)
+                         opt-in keys off = NLP unchanged).
+                         roll_assist.py: the roll-gain assist (seed marched
+                         at the smallest Kite.gain_roll_scale on 1-2 that
+                         trims it, solved there, continued back to 1 with
+                         the excess halved, midpoint retry); shared by the
+                         full-cycle scripts and the server's cold solve
   environment/       ✅  Wind (uniform / logarithmic / power_law / explog /
                          jet / tabulated). profile_laws.py is the ONLY place the
                          analytic formulas live (pure functions over an ``xp``
@@ -146,7 +167,19 @@ src/awetrim/
                          (FastAPI, optional [server] extra; endpoints
                          /init /status /step /trajectory /reset; one
                          warm-started re-solve per /step for co-simulation
-                         clients, e.g. an external kite simulator).
+                         clients, e.g. an external kite simulator; the cold
+                         first solve uses timeseries.roll_assist, so a ROM
+                         whose roll gain cannot march the seed still
+                         starts, and replies are always at scale 1).
+                         InitRequest.kite_sized_seed (default on, echoed;
+                         never for a client trajectory or initial_guess):
+                         the configured eight is fitted at /init to the turns
+                         the kite holds at this wind (SEED_TURN_MARGIN 1.2)
+                         when it is tighter somewhere; a failed fit keeps it,
+                         a cold solve that fails from the fitted seed retries
+                         the configured one.
+                         tests/server/test_session_solve_slow.py runs it
+                         unmocked on the kite's default ROM.
                          Co-sim structs: WinchParams {mode, k_v, f_min,
                          f_max, v_max|p_max, optimize_k_v, k_v_bounds}
                          (optimize_k_v -> slope_winch_ro becomes a design
@@ -241,7 +274,7 @@ comparison in `docs/identification/`; it lives in git history (last at
 commit bad8a9b).
 
 Full-cycle optimisation scripts (`optimization/cycle/`): `fit_periodic_cycle_config.py`
-+ `run_full_cycle_opti.py` (multi-lobe cycle; closed through the `periodic_wrap` seam, the closing stage uses the one-sided `close_radial_cycle` pin; step boxes ±0.15 rad / ±50 m in the closing stage, 4x that in the power stage and polish; `--step-scale` scales the latter; the closing stage holds the depower profile, except on a `--continue-from` run, where it anchors it with `depower_anchor_weight` 0.05 so a wind continuation can depower into the rated region; the power stages carry the smoothness term at `REG_FRACTION` 0.1 of the objective, without which the reel-in of a kite steering at its band zigzags. Roll-gain assist (`march_with_roll_assist`, used by both scripts): when the seed does not trim at the kite's roll gain, it is marched at 1.25-2 x k(u_p) (`Kite.gain_roll_scale`, not a ROM parameter) and the optimizer inserts continuation stages that halve the excess back to 1 (midpoint retry on failure) before the power stages, so a kite with little roll authority (the bare LEI-V3 ROM, x1.75 at 6 m/s) still starts at the reel-in top). Studies
++ `run_full_cycle_opti.py` (multi-lobe cycle; closed through the `periodic_wrap` seam, the closing stage uses the one-sided `close_radial_cycle` pin; step boxes ±0.15 rad / ±50 m in the closing stage, 4x that in the power stage and polish; `--step-scale` scales the latter; the closing stage holds the depower profile, except on a `--continue-from` run, where it anchors it with `depower_anchor_weight` 0.05 so a wind continuation can depower into the rated region; the power stages carry the smoothness term at `REG_FRACTION` 0.1 of the objective, without which the reel-in of a kite steering at its band zigzags. Roll-gain assist (`awetrim.timeseries.roll_assist`, used by both scripts and the server's cold solve): when the seed does not trim at the kite's roll gain, it is marched at 1.25-2 x k(u_p) (`Kite.gain_roll_scale`, not a ROM parameter) and the optimizer inserts continuation stages that halve the excess back to 1 (midpoint retry on failure) before the power stages, so a kite with little roll authority (the bare LEI-V3 ROM, x1.75 at 6 m/s) still starts at the reel-in top). Studies
 built on them live in `optimization/studies/` (see its README), e.g.
 `run_uploop_eight_opti.py` + `plot_uploop_eight_comparison.py` (ONE slanted up-loop figure eight per period: low lobe
 + crossings reel out, high arc reels in; `periodic_wrap`, `free_speed`, free
@@ -288,7 +321,10 @@ optimiser's `sim_parameters.stall_margin_deg` keeps alpha that far below it at
 every node and then REPLACES the generic alpha box (no lower bound, no other
 upper bound). Quasi-steady roots are selected by being BELOW THE STALL (alpha <
 angle_of_attack_stall): the phase seed march prefers pre-stall roots
-(`seed_reject_post_stall`) and keeps simulating on the closest post-stall one
+(`seed_reject_post_stall`), and among those one inside the optimizer's steering
+box at node 0 and on retries (`seed_prefer_steering_box`: the node residual also
+has a low-lift root, tension at the winch minimum, needing several times the
+steering), and keeps simulating on the closest post-stall one
 when none exists; `setup_qs_solver` exposes `_qs_alpha_function` for other
 callers (the flight validator). The speed stability (paper Eq. 36,
 `system_model.tangential_speed_stability`, at fixed steering) is a DIAGNOSTIC

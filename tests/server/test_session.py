@@ -108,6 +108,12 @@ def patched_session(monkeypatch, tmp_path):
         lambda path: (_base_config(), None),
     )
     monkeypatch.setattr(session_mod, "Phase", StubPhase)
+    # No seed march: the stub phase does not simulate, and the roll-gain
+    # assist path has its own tests (test_session.py).
+    monkeypatch.setattr(
+        session_mod.roll_assist, "march_with_roll_assist",
+        lambda *args, **kwargs: (None, None, None, None),
+    )
 
     sess = ReeloutSession()
     init_config = {
@@ -909,3 +915,117 @@ def test_apply_air_density_exponential_then_back_to_constant():
     ReeloutSession._apply_air_density(model, {"wind_speed": 8.0}, 1.225)
     assert model.kite.rho == 1.225
     assert model.kite.air_density_model is None
+
+
+class RecordingPhase:
+    """Non-blocking phase that records the kite's roll-gain scale per solve."""
+
+    def __init__(self, kite, results):
+        self.kite = kite
+        self.results = list(results)  # None = failed solve
+        self.scales = []
+        self.pattern_config = _base_config()
+        self.start_state = {"distance_radial": R0}
+
+    def run_simulation_opti(self, **kwargs):
+        self.scales.append(self.kite.gain_roll_scale)
+        return self.results.pop(0)
+
+
+def _assisted_session(patched_session, monkeypatch, results, assist=2.0):
+    sess, config = patched_session
+    sess.init(config)
+    kite = sess.system_model.kite
+    marched = RecordingPhase(kite, results)
+
+    def march(kite_, make_phase, n_points, **kwargs):
+        kite_.gain_roll_scale = assist
+        return marched, None, assist, RuntimeError("trim truncated at node 5")
+
+    monkeypatch.setattr(session_mod.roll_assist, "march_with_roll_assist", march)
+    return sess, kite, marched
+
+
+def test_cold_step_continues_the_assisted_roll_gain_back_to_one(
+    patched_session, monkeypatch
+):
+    sess, kite, marched = _assisted_session(
+        patched_session, monkeypatch, [_fake_result()] * 6
+    )
+    sess.step_blocking()
+    # solved at the assisted scale, then the excess halved down to 1
+    assert marched.scales == [2.0, 1.5, 1.25, 1.125, 1.0625, 1.0]
+    assert sess.phase is marched
+    assert kite.gain_roll_scale == 1.0
+    assert sess.successful_steps == 1
+
+    # a later warm step runs at the kite's own gain only
+    marched.results.append(_fake_result())
+    sess.step_blocking()
+    assert marched.scales[-1] == 1.0 and len(marched.scales) == 7
+
+
+def test_failed_cold_solve_from_the_sized_seed_retries_the_configured_one(
+    patched_session, monkeypatch
+):
+    sess, kite, marched = _assisted_session(
+        patched_session, monkeypatch, [None, _fake_result()], assist=1.0
+    )
+    configured = {
+        "r0": 150.0, "M": 10, "C_phi": [0.1] * 10, "C_beta": [0.3] * 10,
+        "s_init": 0.0, "s_final": 1.0,
+    }
+    sess._configured_path = dict(configured)
+    sess._seed_sized = True
+    marched.pattern_config["path_parameters"]["r0"] = R0
+    marched.pattern_config["sim_parameters"]["n_points"] = 100
+
+    sess.step_blocking()
+
+    assert len(marched.scales) == 2  # the sized seed, then the configured one
+    assert sess.successful_steps == 1
+    assert sess._seed_sized is False and sess._configured_path is None
+    # configured shape, at the session's tether length
+    assert marched.pattern_config["path_parameters"] == {**configured, "r0": R0}
+
+
+def test_failed_cold_solve_without_a_sized_seed_does_not_retry(
+    patched_session, monkeypatch
+):
+    sess, kite, marched = _assisted_session(
+        patched_session, monkeypatch, [None, _fake_result()], assist=1.0
+    )
+    sess._configured_path = None
+    with pytest.raises(session_mod.SolveFailedError):
+        sess.step_blocking()
+    assert len(marched.scales) == 1
+
+
+def test_seed_sizing_failure_keeps_the_seed_and_init_succeeds(monkeypatch):
+    def broken(*args, **kwargs):
+        raise KeyError("anything")
+
+    monkeypatch.setattr(session_mod, "steering_limited_turn_radius", broken)
+    config = _base_config()
+    before = dict(config["path_parameters"])
+    assert not ReeloutSession._size_seed_to_kite(SimpleNamespace(), config, None, None)
+    assert config["path_parameters"] == before
+
+
+def test_seed_sizing_skips_a_config_it_cannot_size():
+    config = _base_config()
+    config["pattern_type"] = "spline_open"
+    assert not ReeloutSession._size_seed_to_kite(SimpleNamespace(), config, None, None)
+
+
+def test_failed_continuation_fails_the_step_and_restores_the_gain(
+    patched_session, monkeypatch
+):
+    halvings = session_mod.roll_assist.ROLL_ASSIST_MAX_HALVINGS
+    sess, kite, marched = _assisted_session(
+        patched_session, monkeypatch, [_fake_result()] + [None] * (halvings + 1)
+    )
+    with pytest.raises(session_mod.SolveFailedError):
+        sess.step_blocking()
+    assert kite.gain_roll_scale == 1.0
+    assert sess.successful_steps == 0
