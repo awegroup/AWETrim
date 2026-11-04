@@ -36,6 +36,7 @@ from awetrim.aerostructural.case import (
     WIREFRAME_STRUC_GEOMETRY_FILENAME,
     resolve_initial_geometry_rotation_kwargs,
     resolve_kite_paths,
+    system_model_state_key,
 )
 from awetrim.aerostructural.case_view import build_case_view, save_case_view
 from awetrim.aerostructural.coupled.awesio_structure import load_structure
@@ -330,6 +331,14 @@ class PreparedWireframe:
     ``reader`` keeps the geometry reader's arrays by name, with ``l0`` the
     rest lengths the structure was built with. The VSM objects are this
     structure's own copies, carried across solves like the structure itself.
+
+    A continuation is carried here too, so :func:`solve_step` needs no seed from
+    its caller: ``system_model`` is reused while the flight state stays the same
+    (``system_model_key``; the CasADi trim's graph is tied to the object and
+    holds that state as numbers), and
+    ``trim_seed`` holds the last converged trim and circulation, which the next
+    solve starts from. A cold trim on a warm shape can land on another solution
+    or diverge (docs in aerostructural/AGENTS.md).
     """
 
     psystem: Any
@@ -340,6 +349,9 @@ class PreparedWireframe:
     body_aero: Any
     vsm_solver: Any
     initial_polar_data: Any
+    system_model: Any = None
+    system_model_key: tuple | None = None
+    trim_seed: dict | None = None
 
     def rest_length(self, element_index: int) -> float:
         """Live rest length [m] of one element (pulley arms split)."""
@@ -396,6 +408,9 @@ class PreparedWireframe:
             structural_wireframe.set_stiffnesses(
                 self.psystem, np.asarray(metadata["final_stiffnesses"], dtype=float)
             )
+        self.trim_seed = _trim_seed_of(
+            metadata.get("opt_x"), metadata.get("gamma_distribution")
+        )
 
 
 def build_case(
@@ -510,6 +525,20 @@ def build_case(
         structural_to_aero=structural_to_aero,
         panel_bays=panel_bays,
     )
+
+
+def _trim_seed_of(opt_x, gamma) -> dict | None:
+    """The config keys that start the next solve from this trim; None without a
+    usable trim state (a file older than ``gamma_distribution`` still seeds the
+    trim, and the circulation starts cold)."""
+    opt_x = None if opt_x is None else np.asarray(opt_x, dtype=float).ravel()
+    if opt_x is None or opt_x.size != 5 or not np.all(np.isfinite(opt_x)):
+        return None
+    seed = {"quasi_steady_initial_guess": opt_x.copy()}
+    gamma = None if gamma is None else np.asarray(gamma, dtype=float).ravel()
+    if gamma is not None and gamma.size:
+        seed["initial_gamma_distribution"] = gamma.copy()
+    return seed
 
 
 def prepare_structure(case: WireframeCase, config: dict | None = None) -> PreparedWireframe:
@@ -698,7 +727,19 @@ def solve_step(
     m_arr = prepared.m_arr
     mass_total = float(np.sum(m_arr))
     print(f"Total structural mass (sum of particle masses): {mass_total:.3f} kg")
-    system_model = build_system_model(case.system_config_path, tether, m_arr, config)
+    # Same flight state: the same object, which keeps the CasADi trim's graph.
+    # Another one: a new object, because that graph holds the wind and position
+    # as numbers and is matched by the object's identity; and nothing to continue
+    # from, unless this is the first solve after a restore.
+    state_key = system_model_state_key(config)
+    if prepared.system_model is None or state_key != prepared.system_model_key:
+        if prepared.system_model is not None:
+            prepared.trim_seed = None
+        prepared.system_model = build_system_model(case.system_config_path, tether, m_arr, config)
+        prepared.system_model_key = state_key
+    system_model = prepared.system_model
+    # A seed the caller states wins over the carried one.
+    config = {**(prepared.trim_seed or {}), **config}
     # Report the tether the system model ACTUALLY ends up with. The factory
     # inside build_system_model prints the tether it built from system.yaml and
     # is then overwritten by ``tether`` -- so that earlier line is stale and
@@ -755,6 +796,8 @@ def solve_step(
         structural_to_aero=case.structural_to_aero,
         final_state=final_state,
     )
+    if meta.get("converged"):
+        prepared.trim_seed = _trim_seed_of(meta.get("opt_x"), meta.get("gamma_distribution"))
     if final_state is not None:
         final_state["system_model"] = system_model
     return tracking_data, meta

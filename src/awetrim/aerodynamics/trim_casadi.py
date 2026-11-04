@@ -456,6 +456,11 @@ class CasadiTrim:
             ca.DM(np.asarray(stall["stall_angles_neg"], dtype=float)),
         )
 
+    def set_bounds(self, bounds_lower: Any, bounds_upper: Any) -> None:
+        """New bounds on the trim states; numeric, not part of the graph."""
+        self.bounds_lower = _as_5vector(bounds_lower, "bounds_lower")
+        self.bounds_upper = _as_5vector(bounds_upper, "bounds_upper")
+
     def update_geometry(self, body_aero: Any, center_of_gravity: Any) -> None:
         """Swap in a new shape without rebuilding the graph: same panel and
         bridle counts and the same polar alpha grid (with table inputs; the

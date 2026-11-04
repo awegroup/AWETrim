@@ -397,7 +397,9 @@ def _solve_trim_casadi(
     # (~0.5 s at 45 panels) is paid once per coupled solve, not per
     # iteration. The attached-first stage swaps polars, so it gets its own
     # entry. Keyed on the system model's identity too (its wind, position and
-    # masses are baked into the graph numerically).
+    # masses are baked into the graph numerically). The trim bounds only clip
+    # the Newton steps, so the pre-loop trim's and the coupled iterations' share
+    # one graph.
     cache = getattr(solver, "_awetrim_casadi_trims", None)
     if cache is None:
         cache = {}
@@ -416,14 +418,13 @@ def _solve_trim_casadi(
             CasadiTrim.geometry_signature(body_aero, options.polar_interpolation),
             dataclasses.astuple(options),
             None if kcu_drag is None else dataclasses.astuple(kcu_drag),
-            tuple(np.asarray(bounds_lower, dtype=float).ravel().tolist()),
-            tuple(np.asarray(bounds_upper, dtype=float).ravel().tolist()),
             tuple(np.asarray(reference_point, dtype=float).ravel().tolist()),
         )
         entry = cache.get(key)
         if entry is not None and entry[0] is system_model:
             trim = entry[1]
             trim.update_geometry(body_aero, center_of_gravity)
+            trim.set_bounds(bounds_lower, bounds_upper)
         else:
             trim = CasadiTrim(
                 body_aero,
@@ -476,7 +477,19 @@ def _solve_trim_casadi(
 
     # Stage 2: the true model, from the caller's seed.
     predictor_converged = bool(results.get("converged", False))
+    # With no circulation to start from, the predictor's solution is the seed:
+    # the cold guess on the true polars can be an asymmetric, unconverged
+    # circulation that Newton does not recover from (a symmetric kite trimmed
+    # asymmetric, then the structure taking it apart). A caller's seed stands.
+    predictor = results if predictor_converged else None
+    cold = gamma_seed is None
+    if cold and predictor is not None:
+        x_guess, gamma_seed = predictor["opt_x"], predictor["gamma_distribution"]
     results, body = run_once()
+    if not results.get("converged", False) and not cold and predictor is not None:
+        # The caller's seed did not take; the attached solution is a second start.
+        x_guess, gamma_seed = predictor["opt_x"], predictor["gamma_distribution"]
+        results, body = run_once()
     results["av_stage"] = "stalled"
     results["attached_predictor_converged"] = predictor_converged
     return results, body
@@ -782,12 +795,13 @@ def run_vsm_package(
     # Which trim solver (quasi_steady_trim.solver, 2026-09-15):
     #   'least_squares' -- the NumPy trims (scipy least_squares over the five
     #                      trim states, a full inner VSM solve per residual
-    #                      evaluation). The default; every stored result.
+    #                      evaluation). Without the key; every result before
+    #                      2026-11-03.
     #   'casadi'        -- awetrim.aerodynamics.trim_casadi: trim states and
     #                      circulations as ONE Newton problem with the exact
     #                      Jacobian. Same physics, no max_nfev (a converged
-    #                      trim per coupled iteration costs ~0.5 s at 45
-    #                      panels, most of it the graph build).
+    #                      trim per coupled iteration costs under 1 s at 135
+    #                      panels, past the one graph build). The LEI-V3 setting.
     trim_solver_name = str(qs_cfg.get("solver", "least_squares")).lower()
     if trim_solver_name not in ("least_squares", "casadi"):
         raise ValueError(
@@ -831,6 +845,43 @@ def run_vsm_package(
             "'least_squares'."
         )
 
+    def least_squares_trim(body):
+        if include_tether_in_trim:
+            return solve_vsm_qs_trim_with_williams_tether(
+                kcu_drag=kcu_drag,
+                body_aero=body,
+                center_of_gravity=center_of_gravity,
+                reference_point=reference_point,
+                system_model=system_model,
+                x_guess=current_guess,
+                solver=solver,
+                bounds_lower=bounds_lower,
+                bounds_upper=bounds_upper,
+                include_gravity=include_gravity,
+                tether_model=tether_model,
+                # Warm continuation across coupling iterations: the previous
+                # iteration's converged circulation seeds every inner solve of
+                # this trim. In deep stall a cold-started gamma loop is noisy
+                # enough that least_squares parks on a residual plateau
+                # (qs_cm ~ 3e-2 observed) and burns minutes per aero call; the
+                # fixed per-solve seed removes both while staying FD-smooth.
+                gamma_seed=gamma_seed,
+                max_nfev=trim_max_nfev,
+            )
+        return solve_quasi_steady_state(
+            kcu_drag=kcu_drag,
+            body_aero=body,
+            center_of_gravity=center_of_gravity,
+            reference_point=reference_point,
+            system_model=system_model,
+            x_guess=current_guess,
+            solver=solver,
+            bounds_lower=bounds_lower,
+            bounds_upper=bounds_upper,
+            include_gravity=include_gravity,
+            max_nfev=trim_max_nfev,
+        )
+
     # Primary path: quasi-steady trim solve.
     t_trim_start = time.perf_counter()
     try:
@@ -854,46 +905,25 @@ def run_vsm_package(
             )
             # A trim on a search bound is reported through ``trim_on_bounds``
             # below (the coupled loop's runaway stop counts it), as with
-            # least_squares, which also returns success there; only a Newton
-            # failure takes the direct-solve fallback.
+            # least_squares, which also returns success there. A Newton failure
+            # (a polar kink it cycles on) takes one least_squares trim, whose
+            # result carries what the load transfer needs; the next coupled
+            # iteration tries Newton again from it.
             results["success"] = bool(results.get("converged", False))
-        elif include_tether_in_trim:
-            results, body_aero = solve_vsm_qs_trim_with_williams_tether(
-                kcu_drag=kcu_drag,
-                body_aero=body_aero,
-                center_of_gravity=center_of_gravity,
-                reference_point=reference_point,
-                system_model=system_model,
-                x_guess=current_guess,
-                solver=solver,
-                bounds_lower=bounds_lower,
-                bounds_upper=bounds_upper,
-                include_gravity=include_gravity,
-                tether_model=tether_model,
-                # Warm continuation across coupling iterations: the previous
-                # iteration's converged circulation seeds every inner solve of
-                # this trim. In deep stall a cold-started gamma loop is noisy
-                # enough that least_squares parks on a residual plateau
-                # (qs_cm ~ 3e-2 observed) and burns minutes per aero call; the
-                # fixed per-solve seed removes both while staying FD-smooth.
-                gamma_seed=gamma_seed,
-                max_nfev=trim_max_nfev,
-            )
+            if not results["success"]:
+                logging.warning(
+                    "CasADi trim failed (%s); least_squares for this iteration.",
+                    (results.get("casadi_trim") or {}).get("failure"),
+                )
+                trim_solver_name = "least_squares"
+                results, body_aero = least_squares_trim(body_fallback)
         else:
-            results, body_aero = solve_quasi_steady_state(
-                kcu_drag=kcu_drag,
-                body_aero=body_aero,
-                center_of_gravity=center_of_gravity,
-                reference_point=reference_point,
-                system_model=system_model,
-                x_guess=current_guess,
-                solver=solver,
-                bounds_lower=bounds_lower,
-                bounds_upper=bounds_upper,
-                include_gravity=include_gravity,
-                max_nfev=trim_max_nfev,
-            )
-        if not results.get("success", False) and trim_max_nfev is not None:
+            results, body_aero = least_squares_trim(body_aero)
+        if (
+            not results.get("success", False)
+            and trim_max_nfev is not None
+            and trim_solver_name == "least_squares"  # the cap is scipy's; a Newton failure is a failure
+        ):
             # A capped trim reports success=False (status 0) while it is still
             # mid-convergence -- that partial step IS the point of the cap, so
             # keep it rather than discarding it through the direct-solve

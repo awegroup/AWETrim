@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import copy
+
 import numpy as np
 import pytest
 
@@ -105,6 +107,116 @@ def test_graph_is_cached_on_the_solver_and_reused(lei_v3):
     np.testing.assert_allclose(second["opt_x"], first["opt_x"], atol=1e-7)
     # a warm re-solve on the cached graph is far cheaper than the build
     assert second["casadi_trim"]["time_total_s"] < 0.5
+
+
+def test_other_trim_bounds_share_the_graph(lei_v3):
+    """The pre-loop trim and the coupled iterations differ in their bounds only,
+    which clip the Newton steps and are not in the graph."""
+    solver = _solver(av=False)
+    v = lei_v3["values"]
+    _call(lei_v3, solver)
+    (_, trim), = solver._awetrim_casadi_trims.values()
+    narrow_lower = np.asarray(v["bounds_lower"], dtype=float).copy()
+    narrow_upper = np.asarray(v["bounds_upper"], dtype=float).copy()
+    narrow_upper[0] = 0.5 * (narrow_lower[0] + narrow_upper[0])
+    _call(lei_v3, solver, bounds_lower=narrow_lower, bounds_upper=narrow_upper)
+    assert len(solver._awetrim_casadi_trims) == 1
+    (_, again), = solver._awetrim_casadi_trims.values()
+    assert again is trim
+    np.testing.assert_array_equal(trim.bounds_upper, narrow_upper)
+
+
+def _scripted_trims(monkeypatch, *script):
+    """solve_with_body records its starts and, per call, keeps its result or
+    applies a script entry: "stalled" rejects the attached predictor (a panel
+    past its onset), "failed" reports a Newton failure."""
+    from awetrim.aerodynamics.trim_casadi import CasadiTrim
+
+    original = CasadiTrim.solve_with_body
+    starts = []
+
+    def solve_with_body(self, x_guess, gamma_seed=None, **kwargs):
+        starts.append((np.asarray(x_guess, dtype=float).copy(), gamma_seed))
+        results, body = original(self, x_guess, gamma_seed=gamma_seed, **kwargs)
+        action = script[len(starts) - 1] if len(starts) <= len(script) else None
+        if action == "stalled":
+            results["alpha_at_ac"] = np.full_like(np.asarray(results["alpha_at_ac"], dtype=float), 1.5)
+        elif action == "failed":
+            results["converged"] = False
+        return results, body
+
+    monkeypatch.setattr(CasadiTrim, "solve_with_body", solve_with_body)
+    return starts
+
+
+def test_cold_trim_continues_from_the_attached_predictor(lei_v3, monkeypatch):
+    """With no circulation to start from, the true polars start from the
+    predictor's solution, not from the cold guess."""
+    starts = _scripted_trims(monkeypatch, "stalled")
+    results, _ = _call(lei_v3, _solver(av=True))
+    assert len(starts) == 2 and starts[0][1] is None
+    assert starts[1][1] is not None and np.any(starts[1][0] != starts[0][0])
+    assert results["av_stage"] == "stalled" and results["converged"]
+
+
+def test_a_stated_seed_stands_until_it_fails(lei_v3, monkeypatch):
+    """A warm start keeps its seed; only if Newton fails on it does the trim
+    start again, once, from the predictor's solution."""
+    first, _ = _call(lei_v3, _solver(av=False))
+    seed = np.asarray(first["gamma_distribution"], dtype=float)
+
+    starts = _scripted_trims(monkeypatch, "stalled")
+    _call(lei_v3, _solver(av=True), gamma_seed=seed, x_guess=first["opt_x"])
+    assert len(starts) == 2 and starts[1][1] is seed
+
+    monkeypatch.undo()
+    starts = _scripted_trims(monkeypatch, "stalled", "failed")
+    results, _ = _call(lei_v3, _solver(av=True), gamma_seed=seed, x_guess=first["opt_x"])
+    assert len(starts) == 3 and starts[2][1] is not seed
+    assert results["converged"]
+
+
+def _le_te(body):
+    sections = body.wings[0].sections
+    return (
+        np.array([s.LE_point for s in sections], dtype=float),
+        np.array([s.TE_point for s in sections], dtype=float),
+    )
+
+
+@pytest.mark.parametrize("max_nfev", [None, 8])
+def test_a_failed_casadi_trim_takes_one_least_squares_trim(lei_v3, monkeypatch, max_nfev):
+    """Not the direct-solve fallback, whose result the strut-lever load transfer
+    cannot use, and not passed on as a success through the least_squares cap."""
+    v = lei_v3["values"]
+    body = copy.deepcopy(lei_v3["body"])
+
+    def failed(**kwargs):
+        return {"converged": False, "casadi_trim": {"failure": "scripted"}}, kwargs["body_aero"]
+
+    monkeypatch.setattr(aerodynamic_vsm, "_solve_trim_casadi", failed)
+    calls = []
+    original = aerodynamic_vsm.solve_quasi_steady_state
+
+    def least_squares_trim(**kwargs):
+        calls.append(kwargs)
+        return original(**kwargs)
+
+    monkeypatch.setattr(aerodynamic_vsm, "solve_quasi_steady_state", least_squares_trim)
+    trim = {"solver": "casadi", **({} if max_nfev is None else {"max_nfev": max_nfev})}
+    le, te = _le_te(body)
+    _, _, results = aerodynamic_vsm.run_vsm_package(
+        body_aero=body, solver=_solver(av=False), system_model=lei_v3["system_model"],
+        center_of_gravity=v["center_of_gravity"], le_arr=le, te_arr=te,
+        reference_point=v["reference_point"], current_guess=v["x_guess"],
+        initial_polar_data=[s.polar_data for s in body.wings[0].sections],
+        aero_input_type="reuse_initial_polar_data",
+        config={"quasi_steady_trim": trim, "is_with_kcu_drag": False},
+    )
+    assert len(calls) == 1
+    assert results["trim_solver"] == "least_squares"
+    assert "casadi_trim" not in results
+    assert results.get("M_distribution") is not None
 
 
 def test_pre_loop_trim_config_overrides_only_its_keys():

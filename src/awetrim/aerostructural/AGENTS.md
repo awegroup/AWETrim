@@ -1453,9 +1453,40 @@ structure ~22 m and VSM then reported a "folded" lifting line. No trim or
 circulation solver survives that start (least_squares, CasADi, CasADi-Newton
 all failed alike); seeded, the state converges in 8 iterations.
 
+### Continuation (wireframe, 2026-11-03)
+
+``PreparedWireframe`` carries a continuation, so a caller of ``solve_step`` passes
+no seed: ``trim_seed`` is the last converged ``opt_x`` and circulation (the config
+keys ``quasi_steady_initial_guess`` / ``initial_gamma_distribution``, which a
+stated value overrides), ``restore`` reads it back from the file (``meta``'s
+``opt_x`` and ``gamma_distribution``), and it is dropped when the flight state
+changes (``case.system_model_state_key``). ``system_model`` is reused meanwhile,
+which keeps the CasADi trim's graph: one per chain, the bounds being numeric.
+Another flight state gets a new ``system_model``, since the graph holds the wind
+and position as numbers and is matched by the object's identity.
+
+Before this every state of a chain trimmed cold on a warm shape.
+``w5.0_depower_2.60`` of the LEI-V3 wireframe, ``least_squares``: 174 -> 117
+coupled iterations, tether force 0-2.3 % higher, stalled fraction a steady 0.030
+instead of 0.030-0.059. The results before it, the shipped ROM's sweep included,
+ran cold.
+
+A cold CasADi trim starts its true-polar stage from the attached predictor's
+solution when that converged (``_solve_trim_casadi``): the cold circulation guess
+can be an asymmetric, unconverged one Newton does not recover from. A stated seed
+stands, with the predictor as one retry if Newton fails on it; a trim that still
+fails takes one ``least_squares`` trim for that iteration (``run_vsm_package``),
+not the direct-solve fallback, whose result the strut-lever load transfer cannot
+use. The ``max_nfev`` truncation rule applies to ``least_squares`` only: with the
+key in the config it used to pass a failed Newton solve on as a success. Cold at
+every state now gives the warm result to round-off on the LEI-V3 depower and
+steering chains.
+
 ### Trim solver (quasi_steady_trim.solver, 2026-09-15)
 
-``least_squares`` (default, every stored result) is the NumPy trim: scipy
+The LEI-V3 ``as_config.yaml`` sets ``casadi`` since 2026-11-03; a config without
+the key gets ``least_squares``. ``least_squares`` (every result before that
+date) is the NumPy trim: scipy
 over the five trim states, one inner VSM solve per residual evaluation,
 capped by ``max_nfev``. ``casadi`` is ``aerodynamics/trim_casadi.CasadiTrim``:
 trim states and circulations as ONE Newton problem with the exact Jacobian,
