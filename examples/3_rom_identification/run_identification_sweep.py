@@ -34,7 +34,10 @@ files are written under a lock). Resumable: a finished chain is skipped. An unfi
 on after its last complete anchor, from the structure that anchor's
 sim_output.h5 saved; an unfinished Billow chain is solved again from its
 start (its beam frames are not saved). A state that does not converge ends
-its chain. About a minute per anchor.
+its chain, and so does a trim that fails (recorded in the step's
+trim_failed.txt and listed at the end of the run); the sweep goes on with the
+next chain. A finished chain is skipped on a rerun: delete its chain_done to
+try it again. About a minute per anchor.
 
 Optional `start_from_converged` (wireframe): before the chains, the built
 tape is solved at every wind, walking the wind up and down on one structure
@@ -85,6 +88,7 @@ from awetrim.identification import aerostructural_dataset as ds
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 DONE_MARKER = "chain_done"
+TRIM_FAILED_FILE = "trim_failed.txt"
 BASE_DIR = "base"
 LOCK_FILE = ".sweep_files.lock"
 LOCK_STALE_S = 120.0  # a lock this old was left by a killed run
@@ -240,15 +244,26 @@ def solve_base_states(driver, case, spec: dict, out: Path) -> None:
     config["steering_tape_extension_step"] = float(spec["steering"]["step"])
     prepared = prepare(driver, case, spec, config)
     latest = {}
+    last_saved = None
     for n_pass in range(max_passes):
         order = winds if n_pass % 2 == 0 else winds[::-1]
         for wind in order[1:] if n_pass else order:  # a turn re-solves no wind twice
             started = time.perf_counter()
             config = _at(config, wind_speed=wind)
-            tracking, meta = driver.solve_step(case, prepared, config, final_state={})
+            try:
+                tracking, meta = driver.solve_step(case, prepared, config, final_state={})
+            except aerodynamic_vsm.CasadiTrimFailed as failure:
+                latest[wind] = (False, float("nan"))
+                print(f"  base pass {n_pass + 1}, wind {wind:.1f} m/s: TRIM FAILED, {str(failure)[:200]}", flush=True)
+                # The failure leaves the structure mid-solve: back to the last saved shape.
+                prepared = prepare(driver, case, spec, config)
+                if last_saved is not None:
+                    prepared.restore(last_saved)
+                continue
             path = base_state_path(out, wind)
             path.parent.mkdir(parents=True, exist_ok=True)
             save_sim_output(tracking, meta, path.parent)
+            last_saved = path
             course_rate = float(np.ravel(meta["opt_x"])[4])
             latest[wind] = (bool(meta["converged"]), course_rate)
             print(f"  base pass {n_pass + 1}, wind {wind:.1f} m/s: course rate {course_rate:+.2e} rad/s, "
@@ -323,7 +338,11 @@ def repolar_chain(driver, case, chain: Chain, spec: dict, out: Path) -> int:
         prepared = prepare(driver, case, spec, config)
         prepared.restore(out / chain.name / f"step_{index:02d}" / "sim_output.h5")
         final_state = {}
-        _, meta = driver.solve_step(case, prepared, config, final_state=final_state)
+        try:
+            _, meta = driver.solve_step(case, prepared, config, final_state=final_state)
+        except aerodynamic_vsm.CasadiTrimFailed as failure:
+            print(f"  {anchor}: TRIM FAILED, rows kept as they were: {str(failure)[:200]}", flush=True)
+            continue
         rows = anchor_rows(chain, index, prepared, config, meta, final_state, d_alpha)
         if rows is None:
             print(f"  {anchor}: re-solve NOT CONVERGED, rows kept as they were", flush=True)
@@ -372,12 +391,22 @@ def solve_chain(driver, case, chain: Chain, spec: dict, out: Path, start: int = 
         config["power_tape_extension_step"] = float(spec["depower"]["step"])
         config["steering_tape_extension_step"] = float(spec["steering"]["step"])
         final_state = {}
-        tracking, meta = driver.solve_step(case, prepared, config, final_state=final_state)
         step_dir = out / chain.name / f"step_{index:02d}"
         step_dir.mkdir(parents=True, exist_ok=True)
+        anchor = f"{chain.name}/{index:02d}"
+        try:
+            tracking, meta = driver.solve_step(case, prepared, config, final_state=final_state)
+        except aerodynamic_vsm.CasadiTrimFailed as failure:
+            # A continuation has no state to go on from, as with an unconverged one.
+            (step_dir / TRIM_FAILED_FILE).write_text(f"{failure}\n", encoding="utf-8")
+            print(
+                f"  {anchor}: TRIM FAILED, chain stopped "
+                f"| {(time.perf_counter() - started) / 60:.1f} min",
+                flush=True,
+            )
+            break
         save_sim_output(tracking, meta, step_dir)
 
-        anchor = f"{chain.name}/{index:02d}"
         rows = anchor_rows(chain, index, prepared, config, meta, final_state, d_alpha)
         # An unconverged state ends the chain before its polar: the fit drops
         # it anyway, and a diverged (NaN) shape has no polar to take.
@@ -516,6 +545,13 @@ def main() -> None:
         resumed = f", resumed at step {start}" if start else ""
         print(f"{chain.name}: {len(chain.steps)} states{resumed}", flush=True)
         solve_chain(driver, case, chain, spec, out, start=start)
+    failed = [
+        path.parent.relative_to(out).as_posix()
+        for chain in chains
+        for path in sorted((out / chain.name).glob(f"step_*/{TRIM_FAILED_FILE}"))
+    ]
+    if failed:
+        print(f"{len(failed)} chain(s) stopped by a failed trim: {', '.join(failed)}", flush=True)
 
 
 if __name__ == "__main__":
