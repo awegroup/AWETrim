@@ -303,6 +303,37 @@ def _run_vsm_direct_fallback(body_aero, solver, system_model, current_guess):
     }
 
 
+#: Largest residual of a Newton trim the coupled loop may step on (see its use below).
+CASADI_INEXACT_RESIDUAL = 0.05
+#: Largest residual of such a trim that may end the coupled loop.
+CASADI_FINAL_RESIDUAL = 5e-3
+
+
+class CasadiTrimFailed(RuntimeError):
+    """Newton found no trim. Not a ValueError, so the direct-solve fallback cannot take
+    it: an untrimmed state must not pass as a trim."""
+
+
+def _is_near_root(results) -> bool:
+    forces = np.asarray(results.get("F_distribution", [np.nan]), dtype=float)
+    return (
+        casadi_trim_residual(results) < CASADI_INEXACT_RESIDUAL
+        and not results.get("at_bound", False)
+        and bool(np.all(np.isfinite(forces)))
+    )
+
+
+def casadi_trim_residual(results) -> float:
+    """The last Newton pass's residual, infinite when the trim reports none."""
+    passes = (results.get("casadi_trim") or {}).get("passes") or [{}]
+    return float(passes[-1].get("residual", np.inf))
+
+
+def trim_may_end_loop(results) -> bool:
+    """False for an inexact Newton trim still too far from its root to be a result."""
+    return not results.get("trim_inexact") or casadi_trim_residual(results) < CASADI_FINAL_RESIDUAL
+
+
 def _solve_trim_casadi(
     *,
     body_aero,
@@ -905,18 +936,21 @@ def run_vsm_package(
             )
             # A trim on a search bound is reported through ``trim_on_bounds``
             # below (the coupled loop's runaway stop counts it), as with
-            # least_squares, which also returns success there. A Newton failure
-            # (a polar kink it cycles on) takes one least_squares trim, whose
-            # result carries what the load transfer needs; the next coupled
-            # iteration tries Newton again from it.
+            # least_squares, which also returns success there.
             results["success"] = bool(results.get("converged", False))
-            if not results["success"]:
+            if not results["success"] and _is_near_root(results):
+                # Newton cycling just short of the root (a polar corner): good enough
+                # for the structure's next step; trim_may_end_loop decides on the end.
                 logging.warning(
-                    "CasADi trim failed (%s); least_squares for this iteration.",
-                    (results.get("casadi_trim") or {}).get("failure"),
+                    "CasADi trim inexact, |r| %.1e: taken as a step.", casadi_trim_residual(results)
                 )
-                trim_solver_name = "least_squares"
-                results, body_aero = least_squares_trim(body_fallback)
+                results["success"] = True
+                results["trim_inexact"] = True
+            if not results["success"]:
+                raise CasadiTrimFailed(
+                    f"CasADi trim did not converge: {(results.get('casadi_trim') or {}).get('passes')}, "
+                    f"on bounds {results.get('at_bound')}, x {results.get('opt_x')}"
+                )
         else:
             results, body_aero = least_squares_trim(body_aero)
         if (

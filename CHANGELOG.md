@@ -16,9 +16,15 @@
 - **The LEI-V3 `as_config.yaml` sets `coupling.trim.solver: casadi`.** A config
   without the key stays on `least_squares`.
 - **A cold CasADi trim no longer diverges**: its true-polar stage starts from the
-  attached predictor, a failed Newton solve retries from it and then takes one
-  `least_squares` trim, and `max_nfev` no longer passes a Newton failure on as a
-  success.
+  attached predictor, a failed Newton solve retries from it, and `max_nfev` no
+  longer passes a Newton failure on as a success.
+- **A failed CasADi trim now fails**: `run_vsm_package` raises `CasadiTrimFailed`
+  instead of taking one `least_squares` trim. A trim just short of its root is
+  taken as a step, flagged `trim_inexact`, and can only end the coupled loop below
+  `CASADI_FINAL_RESIDUAL`.
+- **The LEI-V3 trim attitude box is +-30 deg**, one box with no `pre_loop` block
+  (was +-4 deg in the loop, +-15 deg before it): the first trim of a steered state
+  can need more, and with its root outside the box Newton has no solution.
 
 ### Breaking changes
 

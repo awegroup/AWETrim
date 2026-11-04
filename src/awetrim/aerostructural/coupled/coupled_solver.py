@@ -1350,6 +1350,15 @@ def main(
                 )
                 is_convergence = False
 
+            ### TRIM GATE: an inexact trim is a step, not a result
+            if is_convergence and not aerodynamic_vsm.trim_may_end_loop(results_aero):
+                logging.info(
+                    "residual below the gate at iteration %d but the trim is inexact "
+                    "(|r| %.1e); held",
+                    i, aerodynamic_vsm.casadi_trim_residual(results_aero),
+                )
+                is_convergence = False
+
             ### STEERING SETTLE (see steering_settle_course_rate_tol)
             if course_rate_since_step is not None:
                 course_rate_since_step.append(float(results_aero["opt_x"][4]))
@@ -1515,6 +1524,7 @@ def main(
         # measures, and the gate in whichever one residual_tol_is_relative
         # says, so a stored run states what "converged" meant.
         "exit_reason": exit_reason,
+        "trim_inexact": bool(results_aero.get("trim_inexact", False)),
         "residual_final_n": float(f_residual_norm_n),
         "residual_relative": float(f_residual_relative),
         "tether_force_resultant": float(force_reference),

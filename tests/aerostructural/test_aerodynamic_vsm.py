@@ -184,25 +184,9 @@ def _le_te(body):
     )
 
 
-@pytest.mark.parametrize("max_nfev", [None, 8])
-def test_a_failed_casadi_trim_takes_one_least_squares_trim(lei_v3, monkeypatch, max_nfev):
-    """Not the direct-solve fallback, whose result the strut-lever load transfer
-    cannot use, and not passed on as a success through the least_squares cap."""
+def _run_package(lei_v3, max_nfev=None):
     v = lei_v3["values"]
     body = copy.deepcopy(lei_v3["body"])
-
-    def failed(**kwargs):
-        return {"converged": False, "casadi_trim": {"failure": "scripted"}}, kwargs["body_aero"]
-
-    monkeypatch.setattr(aerodynamic_vsm, "_solve_trim_casadi", failed)
-    calls = []
-    original = aerodynamic_vsm.solve_quasi_steady_state
-
-    def least_squares_trim(**kwargs):
-        calls.append(kwargs)
-        return original(**kwargs)
-
-    monkeypatch.setattr(aerodynamic_vsm, "solve_quasi_steady_state", least_squares_trim)
     trim = {"solver": "casadi", **({} if max_nfev is None else {"max_nfev": max_nfev})}
     le, te = _le_te(body)
     _, _, results = aerodynamic_vsm.run_vsm_package(
@@ -213,10 +197,64 @@ def test_a_failed_casadi_trim_takes_one_least_squares_trim(lei_v3, monkeypatch, 
         aero_input_type="reuse_initial_polar_data",
         config={"quasi_steady_trim": trim, "is_with_kcu_drag": False},
     )
-    assert len(calls) == 1
-    assert results["trim_solver"] == "least_squares"
-    assert "casadi_trim" not in results
-    assert results.get("M_distribution") is not None
+    return results
+
+
+@pytest.mark.parametrize("max_nfev", [None, 8])
+def test_a_failed_casadi_trim_raises(lei_v3, monkeypatch, max_nfev):
+    """No least_squares rescue and no direct-solve fallback, and not passed on as a
+    success through the least_squares cap: an untrimmed state must not pass as a trim."""
+
+    def failed(**kwargs):
+        return {"converged": False, "casadi_trim": {"passes": [{"residual": 1.0}]}}, kwargs["body_aero"]
+
+    def must_not_run(**kwargs):
+        raise AssertionError("least_squares ran")
+
+    monkeypatch.setattr(aerodynamic_vsm, "_solve_trim_casadi", failed)
+    monkeypatch.setattr(aerodynamic_vsm, "solve_quasi_steady_state", must_not_run)
+    with pytest.raises(aerodynamic_vsm.CasadiTrimFailed):
+        _run_package(lei_v3, max_nfev)
+
+
+def _scripted_stop(monkeypatch, residual, **fields):
+    """A real trim, then reported as Newton stopping at ``residual``."""
+    original = aerodynamic_vsm._solve_trim_casadi
+
+    def stopped(**kwargs):
+        results, body = original(**kwargs)
+        results.update(converged=False, casadi_trim={"passes": [{"residual": residual}]}, **fields)
+        return results, body
+
+    monkeypatch.setattr(aerodynamic_vsm, "_solve_trim_casadi", stopped)
+
+
+def test_a_trim_just_short_of_the_root_is_a_step_flagged_inexact(lei_v3, monkeypatch):
+    _scripted_stop(monkeypatch, 0.01)
+    results = _run_package(lei_v3)
+    assert results["success"] and results["trim_inexact"]
+    assert results["trim_solver"] == "casadi"
+
+
+def test_a_trim_on_a_bound_is_not_near_the_root(lei_v3, monkeypatch):
+    _scripted_stop(monkeypatch, 0.01, at_bound=True)
+    with pytest.raises(aerodynamic_vsm.CasadiTrimFailed):
+        _run_package(lei_v3)
+
+
+def test_a_trim_past_the_inexact_limit_raises(lei_v3, monkeypatch):
+    _scripted_stop(monkeypatch, 2 * aerodynamic_vsm.CASADI_INEXACT_RESIDUAL)
+    with pytest.raises(aerodynamic_vsm.CasadiTrimFailed):
+        _run_package(lei_v3)
+
+
+@pytest.mark.parametrize(
+    "inexact, residual, may_end",
+    [(False, None, True), (True, 1e-3, True), (True, 1e-2, False)],
+)
+def test_only_a_close_inexact_trim_may_end_the_loop(inexact, residual, may_end):
+    results = {"trim_inexact": inexact, "casadi_trim": {"passes": [{"residual": residual}]}}
+    assert aerodynamic_vsm.trim_may_end_loop(results) is may_end
 
 
 def test_pre_loop_trim_config_overrides_only_its_keys():
