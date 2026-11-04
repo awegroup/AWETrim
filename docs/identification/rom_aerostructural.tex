@@ -19,7 +19,7 @@
 \usepackage[hidelinks]{hyperref}
 \usepackage{siunitx}
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta,angles,quotes,calc}
+\usetikzlibrary{arrows.meta,angles,quotes,calc,positioning}
 \sisetup{range-phrase={--},range-units=single}
 
 \graphicspath{{figures/}}
@@ -56,29 +56,17 @@
 The quasi-steady reduced-order model (ROM) of Cayon, van Deursen and
 Schmehl~\cite{cayon2026rom} needs a lift and a drag polar, the bridle pitch
 $\theta_b$ between the bridle resultant and the wing chord, and a steering gain.
-The existing LEI-V3 ROM is semi-empirical: rigid-wing vortex-step-method (VSM)
-polars with drag offsets and a $\theta_b$ tuned to flight data. This note
-documents a second ROM in which \emph{every} parameter is identified from
-coupled VSM + Billow-wireframe solutions at the centre of the wind window.
-The lift and drag polynomials are selected by forward--backward stepwise
-regression on a cross-validation error that holds out whole frozen shapes,
-include a smooth stall switch, and carry anchor-cluster bootstrap intervals.
-The ROM reproduces the coupled trims it was identified from to about one
-percent in speed and tension. Validating it against the 2019 flight exposed a
-frame error in the ROM code itself: the bridle pitch and roll were taken in a
-frame rotated by twice the sideslip angle off the apparent wind, which put the
-bridle angle of attack 2--3$^\circ$ off in turns (and zero off at the
-centre-window states the ROM was identified on). With that corrected, the
-simulation-only ROM reproduces held-out reel-out cycles to $+7\,\%$ in tension
-and $+10\,\%$ in speed with the measured turn rate as input, while the
-paper's flight-calibrated ROM, which had absorbed the error, read $-19\,\%$
-and $-11\,\%$ until it was recalibrated the same way. A third ROM keeps the simulated lift polynomial and stall and
-refits the bridle pitch $\theta_b(u_p)$, the roll gain and a single-input drag
-correction $\Delta C_D(u_p,u_s^2)$ to the 2019 flight, first on the EKF
-coefficients and then jointly by output error on the quasi-steady solve with
-the steering gain set by the turn-rate law; it reproduces the held-out
-reel-out to $-3\,\%$ in tension and $-1\,\%$ in speed. Reel-in remains
-unresolved by every ROM.
+This note identifies \emph{every} one of them from coupled vortex-step-method
+(VSM) and Billow-wireframe solutions at the centre of the wind window. Near
+stall the coupled problem has more than one solution, and which one a
+continuation finds depends on the way it was reached: marching the angle of
+attack up stays attached far past the stall of the same wing marched down. The
+state marched down is the one that agrees with reality, so every state of the
+data set is moved to it and every polar is the march down. The lift and drag
+polynomials are selected by forward--backward stepwise regression on a
+cross-validation error that holds out whole frozen shapes, and include a smooth
+stall switch. The range of the controls the ROM may be flown in follows from
+the same data: a depower setting is valid if a gust does not stall it.
 \end{abstract}
 
 \tableofcontents
@@ -96,32 +84,66 @@ aerodynamic inputs are
         attack $\alpha_b$ into the wing angle of attack,
         $\alpha_w=\alpha_b-\theta_b$ (paper Eqs.~1--2);
   \item the steering gain $k_{\phi,s}$ of the control-induced aerodynamic roll,
-        $\phi_{a,w}=k_{\phi,s}\,u_s$ (paper Eq.~43).
+        $\phi_{a,w}=k_{\phi,s}\,u_s$ (paper Eq.~43), which depends on the depower and
+        on the steering itself.
 \end{itemize}
-The semi-empirical LEI-V3 ROM (\code{rom\_config\_semi\_empirical.yaml}) took
-its polars from rigid-wing VSM and calibrated drag offsets and $\theta_b$ on
-flight-identified states~\cite[Sect.~5.1]{cayon2026rom}. The aerostructural ROM
-(\code{rom\_config\_aerostructural.yaml}) is identified from simulations only:
-the VSM aerodynamics of the \emph{deformed} kite, coupled to the Billow
-structural model. It is the simulation-only reference against which flight
-data can then be used for a minimal correction.
+The ROM (\code{rom\_config\_aerostructural.yaml}) is identified from simulations
+only: the VSM aerodynamics of the \emph{deformed} kite, coupled to the Billow
+structural model.
 
 The note is written so that the identification can be repeated with another
 aerostructural tool: Sect.~\ref{sec:model} states the model,
-Sect.~\ref{sec:geometry} defines every angle as a formula on vectors any
-tool provides, Sect.~\ref{sec:data} lists what the simulations must deliver
-(converged trims \emph{and} angle-of-attack sweeps on their frozen shapes),
-and Sect.~\ref{sec:method} turns those into the ROM parameters.
+Sect.~\ref{sec:geometry} defines every angle as a formula on vectors any tool
+provides, Sect.~\ref{sec:data} builds the data set, Sect.~\ref{sec:method} fits the
+ROM parameters to it and Sect.~\ref{sec:limits} sets the limits of the controls.
 
 Scope and limits, stated once:
 \begin{itemize}
-  \item centre of the wind window (azimuth and elevation $0$), gravity off,
-        tetherless trims (the ROM models gravity and the tether itself);
-  \item 2019 LEI-V3 hardware; power-tape band
-        $u_p\in[\upLow,\upHigh]\,\si{\metre}$; steering up to the coupled
-        data's $|u_s|\le0.18$;
-  \item the stall comes from VSM with artificial viscosity on frozen shapes.
+  \item centre of the wind window (azimuth and elevation $0$), no reel speed,
+        steady flight, gravity off (the ROM models gravity itself);
+  \item the stall comes from VSM with artificial viscosity on frozen shapes;
+  \item the coefficients describe the wing and its bridle lines: the ROM adds the
+        KCU drag and the tether itself.
 \end{itemize}
+
+%======================================================================
+\section{Overview}
+\label{sec:procedure}
+
+Two scripts do the identification, both reading the kite's
+\path{identification.yaml}:
+\path{examples/3_rom_identification/run_identification_sweep.py} solves the data
+set (Sect.~\ref{sec:data}) and
+\path{examples/3_rom_identification/identify_rom_aerostructural.py} fits the ROM
+and its limits (Sects.~\ref{sec:method} and~\ref{sec:limits}).
+Fig.~\ref{fig:overview} shows the steps. Flight data enters at none of them: it is
+compared with, and corrected against, afterwards.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[font=\small, >={Stealth[length=2mm]},
+  box/.style={draw, rounded corners=2pt, align=center, minimum height=11mm, text width=23mm, inner sep=2pt},
+  fit/.style={box, fill=black!6}]
+  \node[box] (a) {Walk the tapes\\along a chain};
+  \node[box, right=5mm of a] (b) {Coupled solve:\\the state};
+  \node[box, right=5mm of b] (c) {Move it to the\\down branch};
+  \node[box, right=5mm of c] (d) {Frozen-shape\\polar, marched\\up and down};
+  \draw[->] (a) -- (b);
+  \draw[->] (b) -- (c);
+  \draw[->] (c) -- (d);
+  \draw[->] (d.north) -- ++(0,5mm) -| node[pos=0.25, above] {next state of the chain} (a.north);
+  \node[fit, below=7mm of a] (e) {Bridle pitch\\$\theta_b(u_p)$};
+  \node[fit, right=5mm of e] (f) {Steering gain\\$k_{\phi,s}(u_p)$};
+  \node[fit, right=5mm of f] (g) {Stall, $C_L$, $C_D$\\polynomials};
+  \node[fit, right=5mm of g] (h) {Limits of\\the controls};
+  \draw[->] (d.south) -- ++(0,-2.5mm) -| (e.north);
+  \draw[->] (e) -- (f);
+  \draw[->] (f) -- (g);
+  \draw[->] (g) -- (h);
+\end{tikzpicture}
+\caption{The identification. Top: the data set, solved per state. Bottom: the fit.}
+\label{fig:overview}
+\end{figure}
 
 %======================================================================
 \section{The model}
@@ -132,13 +154,13 @@ Scope and limits, stated once:
   \item $u_p$ is the power-tape length $l_\mathrm{dp}$ in metres.
   \item $u_s$ is the \emph{standardised} steering of
         \code{awetrim.identification.controls}: $\SI{1.4}{\metre}\times u_s$ is the
-        steering-tape half-difference (2019 KCU: $u_s=-\mathrm{kcu}/200$, full
-        deflection $\pm0.175$); $u_s>0$ turns the kite to its right.
+        steering-tape half-difference (2019 KCU: $u_s=-\mathrm{kcu}/100$, full
+        deflection $\pm0.35$); $u_s>0$ turns the kite to its right.
   \item $\alpha\equiv\alpha_w$ is the angle of attack of the wing's
         centre-panel chord (Sect.~\ref{sec:geometry}).
   \item $v_a$ is the apparent wind speed.
   \item All coefficients are referenced to $S=\SI{\refArea}{\square\metre}$, the
-        EKF/flight area also used by the semi-empirical ROM; the ROM file states
+        EKF/flight area; the ROM file states
         it (\code{aerodynamics.reference\_area}). It is \emph{not} the projected
         area of the geometry (\SI{17.21}{\square\metre}).
 \end{itemize}
@@ -168,7 +190,7 @@ identification never does).
 \begin{equation}
   \alpha_w=\alpha_b-\theta_b,\qquad
   \theta_b=\theta_0+\theta_1\,u_p,\qquad
-  \phi_{a,w}=k_{\phi,s}\,u_s ,
+  \phi_{a,w}=k_{\phi,s}(u_p,u_s)\,u_s ,
 \end{equation}
 with $\theta_0$, $\theta_1$, $k_{\phi,s}$ the ROM parameters
 \code{angle\_pitch\_tether\_0}, \code{slope\_angle\_pitch\_tether\_depower},
@@ -250,7 +272,7 @@ positive nose up.
 \paragraph{Lift and drag coefficients.}
 $D=\mathbf F_w\cdot\hat{\mathbf v}_a$, $L=\bigl|\mathbf F_w-D\,\hat{\mathbf v}_a\bigr|$
 (positive on the $-\mathbf z_K$ side), $C_{L,D}=\{L,D\}/(\tfrac12\rho v_a^2S)$
-with $S=\SI{\refArea}{\square\metre}$. The KCU drag is not in $C_D$.
+with $S=\SI{\refArea}{\square\metre}$.
 
 \paragraph{The apparent-wind frame.} The ROM takes the bridle angles in the
 frame of paper App.~D, built from $\mathbf v_a$ and $\mathbf e_r$ only:
@@ -386,31 +408,121 @@ the left wing; drawn for $u_s>0$ (right turn, $\phi_{a,w}<0$).}
 \end{figure}
 
 %======================================================================
-\section{Simulation data required}
+\section{The data set}
 \label{sec:data}
-Two kinds of simulation are needed, and the second is not optional.
+Every state of the data set is reached along a chain, solved by the coupled model,
+moved to the realistic stall branch, and then given a polar. Two kinds of data
+come out, and the second is not optional: converged trims, and angle-of-attack
+sweeps on their frozen shapes.
 
-\subsection{Converged trims}
+\subsection{The chains}
 \label{sec:data-trims}
-A trim is a converged aerostructural equilibrium of the kite at a prescribed
-wind and control setting: structure and aerodynamics coupled to convergence,
-the forces and the moments about the bridle point balanced, the flight speed
-(and for a steered trim the course rate) solved for. Conditions: centre of
-the wind window, gravity off, the tether represented by its force at the
-bridle point only.
-
-\paragraph{Which trims.}
+All states are at the centre of the wind window: course \SI{90}{\degree}, no reel
+speed, steady flight, uniform wind, gravity off. A chain is a sequence of states,
+each starting from the one before. A depower chain ends when its stalled span
+fraction exceeds \num{0.2}, a steering chain at the end of its range, and either at a
+state that does not converge.
 \begin{itemize}
-  \item \textbf{Depower sweeps} at zero steering: the power tape across the
-        whole band, at several apparent wind speeds
-        ($v_a\approx13$--\SI{25}{\metre\per\second} here). They give
+  \item \textbf{Depower chains}, at zero steering, walk the power tape from the
+        length the geometry is built at past both ends of the band, at several wind
+        speeds, reaching the apparent wind speeds of reel-out and reel-in. They give
         $\theta_b(u_p)$ and the depower and load terms of the polars.
-  \item \textbf{Steering sweeps} at the powered and the depowered setting,
-        from zero to full steering (one side suffices; left and right are
-        mirror images). They give $k_{\phi,s}$ and the steering terms.
+  \item \textbf{Steering chains} walk the power tape to a set length, then grow the
+        steering half-difference (one side suffices; left and right are mirror
+        images), at lengths across the band including its powered end. They give
+        $k_{\phi,s}(u_p)$, the steering terms and the steering limit.
 \end{itemize}
+\begin{table}[H]
+\centering\small
+\caption{The LEI-V3 chains, on the 2019 hardware.}
+\begin{tabular}{lll}
+\toprule
+Chain & Range & Wind speed \\
+\midrule
+Depower & $u_p$ from \SI{1.90}{\metre} to \SI{1.10}{\metre}, steps of \SI{0.05}{\metre} & 4, 5, \SI{6}{\metre\per\second} \\
+Depower & $u_p$ from \SI{1.90}{\metre} to \SI{2.60}{\metre}, steps of \SI{0.05}{\metre} & 4, 5, 6, 7, \SI{8}{\metre\per\second} \\
+Steering & half-difference to \SI{0.50}{\metre}, steps of \SI{0.025}{\metre}, & 4, 5, \SI{6}{\metre\per\second} \\
+ & at $u_p=1.40$, 1.50, 1.70, 1.95, 2.10, \SI{2.40}{\metre} & \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\paragraph{What each trim must output.}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{chains.pdf}
+\caption{Every solved state in the plane of the controls, at the three wind speeds with steering chains (7 and \SI{8}{\metre\per\second} have depower chains only). A chain ends at the first state past the stall stop (open markers) or that does not converge. Box: the ROM's limits.}
+\label{fig:chains}
+\end{figure}
+
+\subsection{The coupled solve}
+The kite's structural file is reduced to the wireframe (cables, tension-only lines,
+pulleys and the wing's struts), and the wing is meshed with \num{135} VSM panels on
+the billowed geometry, the loads transferred by the strut-lever rule. At each state
+the coupled loop moves the tapes, solves the structure by energy minimisation, trims
+the kite with a Newton solve on the trim states and the circulation, transfers the
+loads and repeats until the forces settle. The trim balances the forces and the
+moments about the bridle point, with the tether force at that point, and solves for
+the flight speed and, for a steered state, the course rate. A Newton solve that does
+not reach its tolerance reports the lowest residual it visited, and is accepted only
+near a root.
+
+\subsection{The stall branch}
+\label{sec:branches}
+A wing past its stall has more than one solution for the circulation, and a seeded
+solve stays on the one it starts near. The chains approach the powered tapes from
+the attached side, so they stay attached past the point at which the same wing,
+marched down in angle of attack from a fully stalled state, is already separated
+(Fig.~\ref{fig:branches}). The march down is the stall that agrees with reality, and
+it is the one identified:
+\begin{enumerate}
+  \item from the converged state, freeze the shape and march the angle of attack up
+        past the stall and back down to the trim's own inflow, keeping that
+        circulation;
+  \item solve the coupled problem again from it, structure and trim free.
+\end{enumerate}
+A state with one solution comes back to itself. A state with two stays on the lower
+one, at a higher angle of attack and a lower tension, and that re-solved state is
+the data point. Step~2 is the test: the frozen march alone does not say that the kite
+stays there, and the coupled solve is free to go back. The maximum of the march must
+be well past the stall, or the march down has not fully separated and its stall
+reads too high.
+
+\begin{figure}[H]
+\centering
+\IfFileExists{figures/stall_branches.pdf}{%
+\includegraphics[width=\textwidth]{stall_branches.pdf}}{\fbox{figures/stall\_branches.pdf}}
+\caption{The two branches of one frozen shape: LEI-V3, $u_p=\SI{1.40}{\metre}$, no
+steering, \SI{5}{\metre\per\second} wind. Coefficients on
+$S=\SI{19.75}{\square\metre}$ (multiply by 1.147 for the projected
+\SI{17.21}{\square\metre}). Open markers: the solve did not converge. The march down
+stalls near \SI{10}{\degree}, the march up near \SI{16}{\degree}.}
+\label{fig:branches}
+\end{figure}
+
+\subsection{The polars}
+\label{sec:data-sweeps}
+Trims alone cannot identify the polars. Along a depower chain $\alpha_w$ follows
+$u_p$ almost one to one, so a fit on trims cannot tell the polar slope from the
+depower effect, while in flight gravity and turning move $\alpha_w$ by several
+degrees around the trim value. Around every state:
+\begin{enumerate}
+  \item freeze the converged deformed shape, and keep $|\mathbf v_a|$, the sideslip
+        and the body rates of the trim;
+  \item solve the aerodynamics at $\Delta\alpha_w=0$ from the trim's own circulation,
+        which returns the trim's force;
+  \item rotate the inflow about $\mathbf y_K$ in steps of \SI{1}{\degree}, up to
+        \SI{+22}{\degree} about the trim, and then back down to \SI{-6}{\degree}, each
+        solve seeded with the one before and without re-trimming (the moment about
+        the bridle point is not balanced; this is the polar of that shape);
+  \item record $\alpha_w$ (Eq.~\ref{eq:alpha-w}), $\mathbf v_a$, $\mathbf F_w$ and,
+        separately, $\mathbf F_\mathrm{KCU}$ at each step of the march \emph{down}.
+\end{enumerate}
+The $\Delta\alpha_w=0$ step must reproduce the trim's force within \SI{0.1}{\percent},
+or the sweep is discarded. Solves that do not converge, which happen above the stall,
+are dropped from the fit.
+
+\subsection{What each state must output}
+With these, another aerostructural tool can repeat the identification.
 \begin{center}
 \small
 \begin{tabular}{lp{0.62\textwidth}}
@@ -427,7 +539,7 @@ $\mathbf F_t$ & tether force at the bridle point \\
 $m_w$, $m_\mathrm{KCU}$, $\mathbf a$ & wing and KCU mass, kite acceleration (or the inertial force), to build $\mathbf F_b$ \\
 $P_\mathrm{LE}$, $P_\mathrm{TE}$, $\mathbf s$ & centre-panel chord points and span direction of the \emph{deformed} wing \\
 $v_\tau$, $\dot\chi$ & trimmed tangential speed and course rate \\
-deformed shape & the full converged structural geometry, to be frozen for the sweeps of Sect.~\ref{sec:data-sweeps} \\
+deformed shape & the full converged structural geometry, to be frozen for the polars \\
 convergence & flag and force/moment residuals \\
 \bottomrule
 \end{tabular}
@@ -435,95 +547,36 @@ convergence & flag and force/moment residuals \\
 From these, Sect.~\ref{sec:geometry} gives per trim $\alpha_w$, $C_L$,
 $C_D$, $\alpha_b$, $\theta_b$, $\phi_{a,b}$ and $\phi_{a,w}$.
 
-\subsection{Angle-of-attack sweeps on the frozen shapes}
-\label{sec:data-sweeps}
-Trims alone cannot identify the polars. Along a trimmed depower sweep
-$\alpha_w$ follows $u_p$ almost one to one (it moves by about
-\SI{1}{\degree} across the whole $v_a$ range), so a fit on trims cannot tell
-the polar slope from the depower effect. In flight, gravity and turning move
-$\alpha_w$ by several degrees around the trim value, and the ROM needs the
-polar there. Around every trim:
-\begin{enumerate}
-  \item freeze the converged deformed shape (no further structural solve);
-  \item keep $|\mathbf v_a|$, the sideslip and the body rates of the trim, and
-        rotate the inflow about $\mathbf y_K$ in steps of $\Delta\alpha_w$, here
-        from \SI{-6}{\degree} to \SI{+22}{\degree} about the trim, through
-        the stall;
-  \item solve the aerodynamics only at each step, without re-trimming (the
-        moment about the bridle point is not balanced; this is the polar of
-        that shape);
-  \item record per step $\alpha_w$ (Eq.~\ref{eq:alpha-w}), $\mathbf v_a$,
-        $\mathbf F_w$ and, separately, $\mathbf F_\mathrm{KCU}$.
-\end{enumerate}
-The $\Delta\alpha_w=0$ step must reproduce the trim's $C_L$ (here within
-\lensTolPct\,\%); a sweep that does not is discarded and its trim enters as a
-single sample (the lens check below).
-
-\subsection{The LEI-V3 data set}
-
-\paragraph{Coupled trims (anchors).}
-\nAnchorsAll{} converged coupled VSM + Billow-wireframe trims (VSM main at
-\code{8825a12}, artificial viscosity on, 45 panels) from the \code{\_billow9}
-continuation chains of the 2019 hardware: power-tape sweeps at zero steering
-for $v_a=13$--\SI{25}{\metre\per\second}, and steering sweeps at the reel-out
-and reel-in depower.
-
-\paragraph{Frozen-shape polars.}
-Each anchor's snapshot is frozen, re-trimmed with the aerodynamics alone as
-a consistency check, and swept as above
-(\code{run\_center\_sweep\_alpha\_polar.py}).
-
-\paragraph{Lens check.}
-A polar is used only if its frozen-shape re-trim reproduces the coupled trim:
-$C_L$ at the coupled $\alpha$ within \lensTolPct\,\%. Steered snapshots with a
-steering tape of \SI{0.125}{\metre} or more re-trim to a different roll/rate
-state ($\alpha$ up to \SI{2}{\degree} off, $C_L$ 10--23\,\% high); their polars
-are dropped and their coupled trims enter as single samples instead.
-
-\paragraph{Sample.}
-Within the depower band and up to $\alpha=\SI{30}{\degree}$:
-\nPolarSamples{} polar samples and \nTrimSamples{} coupled-trim samples from
-\nAnchorsFit{} anchors.
-
 %======================================================================
-\section{Identification method}
+\section{The fit}
 \label{sec:method}
+The samples are the converged states inside the fit band of the power tape
+(Sect.~\ref{sec:limits}), and the polars that pass the check of
+Sect.~\ref{sec:data-sweeps}.
 
-\begin{center}
-\small
-\begin{tabular}{lll}
-\toprule
-Parameter & Data & Fit \\
-\midrule
-$\theta_0$, $\theta_1$ & unsteered trims & $\theta_b=\alpha_b-\alpha_w$, linear in $u_p$ \\
-$k_{\phi,s}$ & steered trims & $\phi_{a,w}$, linear in $u_s$ through the origin \\
-$\alpha_s$, $w$ & sweeps + trims & grid search on the $C_L$ cross-validation error \\
-$C_L$, $C_D$ terms & sweeps + trims & stepwise least squares in $(\alpha_w,u_p,u_s,v_a,\sigma)$ \\
-\bottomrule
-\end{tabular}
-\end{center}
-LEI-V3 values for comparison: $\theta_b=\SI{\thetaPoweredDeg}{\degree}$ at
-$u_p=\SI{1.7}{\metre}$ and \SI{\thetaDepoweredDeg}{\degree} at
-\SI{2.1}{\metre}; $k_{\phi,s}=\rollGain$\,rad.
 \subsection{Bridle pitch}
-With gravity off, the coupled equilibrium is
-$\mathbf F_\mathrm{wing}+\mathbf F_\mathrm{KCU}+\mathbf F_t+\mathbf F_\mathrm{in}=0$,
-and the ROM's bridle resultant is
-$\mathbf F_b=-(\mathbf F_\mathrm{wing}+\tfrac{m_w}{m}\mathbf F_\mathrm{in})$.
-$\alpha_b$ is its paper Eq.~D11 angle about the apparent wind and $\alpha_w$ the
-centre-panel angle; $\theta_b=\alpha_b-\alpha_w$ is fitted linearly in $u_p$ by
-ordinary least squares on the \thetaN{} unsteered trims in the band.
+$\theta_b=\alpha_b-\alpha_w$ (Eq.~\ref{eq:alpha-b}) is fitted linearly in $u_p$
+by ordinary least squares on the unsteered trims. With gravity off the coupled
+equilibrium is $\mathbf F_w+\mathbf F_\mathrm{KCU}+\mathbf F_t+\mathbf F_\mathrm{in}=0$,
+with $\mathbf F_\mathrm{in}$ the inertial force, and the bridle resultant is
+$\mathbf F_b=-(\mathbf F_w+\tfrac{m_w}{m}\mathbf F_\mathrm{in})$.
 
 \subsection{Steering gain}
-$\phi_{a,w}$ is the roll of the wing lift about $\mathbf v_a$ relative to
-$-\mathbf F_b$ (paper Eqs.~D6--D8, D13); $k_{\phi,s}$ is the least-squares slope
-through the origin over the \rollN{} steered trims.
+$\phi_{a,w}$ per $u_s$ (Sect.~\ref{sec:geometry}) is fitted as a polynomial in the
+depower plus an even term in the steering,
+$k_{\phi,s}(u_p,u_s)=k_0+k_1u_p+k_2u_p^2+(s_0+s_1u_p)\,u_s^2$, with both degrees chosen by leave-one-chain-out
+cross-validation, on the steered trims with a stalled span fraction up to \num{0.2}.
 
 \subsection{Stall location}
-$\alpha_s$ and $w$ are chosen first, on a grid
-($\alpha_s=15.5$--\SI{18}{\degree}, $w=0.5$--\SI{1.5}{\degree}), by the
-cross-validation error of the full $C_L$ library with fixed terms. This
-separates locating the stall from choosing the terms.
+$\alpha_s$ is measured, not fitted: it is the median stall onset
+(Sect.~\ref{sec:limits}) of the unsteered states near their stall, $u_p=1.40$ to
+\SI{1.70}{\metre} for the LEI-V3, which gives \SI{10.27}{\degree}, with
+$w=\SI{1}{\degree}$. Chosen on the fit instead, it would follow the many samples of the
+plateau rather than the few at the lift drop. The coefficients are then fitted on
+the samples up to \SI{8}{\degree} past $\alpha_s$, on states with a stalled span
+fraction up to \num{0.2}. The ROM is not flown past the stall, so its operating range
+is what the fit serves; past $\alpha_s$ it follows the trend of the data, not the lift
+drop itself.
 
 \subsection{Candidate terms}
 \begin{center}
@@ -565,9 +618,9 @@ keeps accepting terms worth a fraction of a percent.
         \minImprovementPct\,\%.
   \item \textbf{Backward}: drop any term whose removal costs less than the same
         \minImprovementPct\,\%; a term picked early can become redundant later.
-  \item \textbf{Extrapolation check}: $C_D$ must stay positive over
-        $\pm\SI{30}{\degree}$ across the fitted $u_p$, $u_s$, $v_a$ ranges, or
-        the identification fails.
+  \item \textbf{Extrapolation check}: $C_D$ should stay positive over
+        $\pm\SI{30}{\degree}$ across the fitted $u_p$, $u_s$, $v_a$ ranges; the
+        script warns if it does not.
 \end{enumerate}
 
 \subsection{Metrics and uncertainty}
@@ -582,6 +635,68 @@ standard errors far too optimistic. The intervals are \emph{conditional on the
 selected term set}: the selection is not repeated per resample. $\theta_b$
 and $k_{\phi,s}$ have one sample per trim, and their standard errors are the
 ordinary least-squares ones.
+
+%======================================================================
+\section{The limits of the controls}
+\label{sec:limits}
+The ROM is valid in a box of the controls, written to its \code{validity} block, to
+which the optimiser's bounds are clipped.
+
+\paragraph{Depower.}
+A depower setting that is itself stalled is no operating point, and one a gust can
+stall is not a safe one. The powered end of the band is the shortest tape for which
+a gust stays below the stall onset of the march down:
+\begin{equation}
+  \alpha_w+\arctan\frac{\Delta v}{v_a}<\alpha_\mathrm{onset},
+\end{equation}
+with $\Delta v=\SI{1}{\metre\per\second}$ and $\alpha_\mathrm{onset}$ the angle at
+which $C_L$ falls \SI{5}{\percent} below the attached curve extrapolated from the
+polar below the trim. For the LEI-V3 this gives \SI{1.50}{\metre}. The fit band reaches
+further, to the shortest tape not itself stalled, \SI{1.40}{\metre}: no stalled depower
+setting enters the fit, its polars still reach past the stall, and the edge of the
+ROM's band is not an extrapolation. The depowered end is the end of the sweep,
+\SI{2.60}{\metre}. Figures~\ref{fig:trim-depower} and~\ref{fig:gust-margin} show this
+along the depower chains.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{trim_vs_depower.pdf}
+\caption{Tension and angle of attack along the depower chains, on the realistic stall branch. Solid line: the ROM's powered end; dotted line: the end of the fit band. Below the dotted line the states stall and the curves stop being smooth.}
+\label{fig:trim-depower}
+\end{figure}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.6\textwidth]{gust_margin.pdf}
+\caption{Margin to the stall onset after a gust of \SI{1}{\metre\per\second}, $\alpha_\mathrm{onset}-\alpha_w-\arctan(\Delta v/v_a)$. The onset is read against a curve extrapolated from below the trim, so the measure holds only for states near their stall, which is the range shown.}
+\label{fig:gust-margin}
+\end{figure}
+
+\paragraph{Angle of attack.}
+The optimiser's upper bound is the stall less a margin for the same gust, \SI{3}{\degree}
+for the LEI-V3, so \SI{7.27}{\degree}: the ROM's \code{validity} states what may be flown,
+not how far the data reach.
+
+\paragraph{Steering.}
+Steering stalls one wing tip, earlier the more powered the kite is
+(Fig.~\ref{fig:steering}): towards the powered end the tension falls in steps and the
+chains end on the stall stop, while on the longer tapes they reach the flown
+range.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{steering.pdf}
+\caption{Course rate and tension against steering along the steering chains, \SI{5}{\metre\per\second} wind.}
+\label{fig:steering}
+\end{figure}
+
+% TODO when implemented: the steering limit u_s,max(u_p), from the same rule on the
+% steered states, and the optimiser's row u_s^2 <= u_s,max(u_p)^2.
+
+\paragraph{Tension.}
+The force margin depends on the wind, so it is a tension floor for the optimiser
+rather than a limit on the tape: the tether force must stay above twice the KCU
+weight after a \SI{15}{\percent} lull in speed (\SI{602}{\newton} for the LEI-V3).
 
 %======================================================================
 \section{Results}
@@ -620,35 +735,38 @@ $\theta_0=\thetaZero\pm\thetaZeroSE$\,rad and
 $\theta_1=\thetaSlope\pm\thetaSlopeSE$\,rad\,m$^{-1}$ (residual
 \SI{\thetaRMSdeg}{\degree} RMS): $\theta_b=\SI{\thetaPoweredDeg}{\degree}$ at
 \SI{1.7}{\metre} and \SI{\thetaDepoweredDeg}{\degree} at \SI{2.1}{\metre}.
-The semi-empirical ROM measured its pitch against the tether direction instead
-(KCU drag inside its $C_D$); that angle reads about \SI{2.5}{\degree} larger on
-the same trims (Fig.~\ref{fig:theta}) and is not the $\theta_b$ defined here.
-Its slope is 45\,\% steeper.
+See Fig.~\ref{fig:theta}.
 
 \paragraph{Steering gain.}
 $k_{\phi,s}=\rollGain\pm\rollGainSE$\,rad per unit $u_s$ (residual
-\SI{\rollRMSdeg}{\degree} RMS), against $-0.689$ for the semi-empirical ROM in
-the same units.
+\SI{\rollRMSdeg}{\degree} RMS).
 
 \begin{figure}[H]
 \centering
 \includegraphics[width=\textwidth]{polars.pdf}
-\caption{Lift and drag polars at the powered and depowered setting
-($u_s=0$, $v_a\approx\SI{19}{\metre\per\second}$, $C_D$ with the 2019 KCU): coupled
-frozen-shape data, the aerostructural ROM and the semi-empirical ROM.}
+\caption{Lift and drag polars across the band ($u_s=0$, \SI{5}{\metre\per\second}
+wind): frozen-shape data on the realistic branch (markers) and the ROM (lines).
+Coefficients on $S=\SI{19.75}{\square\metre}$ (multiply by 1.147 for the projected
+\SI{17.21}{\square\metre}); no KCU drag, which the ROM adds separately.}
 \label{fig:polars}
 \end{figure}
 
 \begin{figure}[H]
 \centering
-\includegraphics[width=0.75\textwidth]{theta_b.pdf}
-\caption{Bridle pitch against power-tape length: coupled trims measured
-against the bridle resultant ($\theta_b$) and against the tether direction,
-the aerostructural relation and the semi-empirical one.}
+\includegraphics[width=\textwidth]{bridle_and_roll.pdf}
+\caption{Left: bridle pitch against power-tape length, unsteered trims and the ROM.
+Right: steering gain, steered trims coloured by $|u_s|$, and the ROM's
+$k_{\phi,s}(u_p)$.}
 \label{fig:theta}
 \end{figure}
 
 \subsection{Check against the coupled trims}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{rom_check.pdf}
+\caption{The ROM's coefficients against the coupled trims in the band, on $S=\SI{19.75}{\square\metre}$ (multiply by 1.147 for \SI{17.21}{\square\metre}).}
+\label{fig:rom-check}
+\end{figure}
 Each coupled trim is re-solved with the ROM's own quasi-steady solver at the
 same condition: centre of the window, same wind, $u_p$, $u_s$, gravity off,
 tetherless (\code{validate\_rom\_aerostructural.py}).

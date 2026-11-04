@@ -97,6 +97,7 @@ from scipy.spatial.transform import Rotation
 from awetrim.flight_data import load_flight
 from awetrim.aerodynamics.kcu_drag import force_drag_kcu
 from awetrim.identification import aero_polynomial as ap
+from awetrim.system.kite import roll_gain
 from awetrim.identification.controls import (
     FLIGHT_STEERING_ZERO_OFFSET_2019,
     flight_dataframe_depower_to_power_tape_length,
@@ -305,13 +306,14 @@ def fit_theta(train: pd.DataFrame, terms=None) -> ap.PolynomialFit:
         criterion="cv", min_relative_improvement=MIN_RELATIVE_IMPROVEMENT, backward=True)
 
 
-def roll_gain_shape(params: dict, u_p) -> np.ndarray:
-    """k(u_p) / k_0 of the AS ROM (``gain_roll_steering_depower``): 1 without
-    depower terms. The flight fit scales the WHOLE k(u_p) by one factor."""
+def roll_gain_shape(params: dict, u_p, u_s) -> np.ndarray:
+    """k(u_p, u_s) / k_0 of the AS ROM (:func:`awetrim.system.kite.roll_gain`): 1
+    without depower or steering terms. The flight fit scales the WHOLE gain by
+    one factor."""
     k0 = float(params["gain_roll_steering"])
-    k = np.full_like(np.asarray(u_p, dtype=float), k0)
-    for power, coef in enumerate(params.get("gain_roll_steering_depower") or [], start=1):
-        k = k + float(coef) * np.asarray(u_p, dtype=float) ** power
+    k = roll_gain(k0, [float(c) for c in params.get("gain_roll_steering_depower") or []],
+                  [float(c) for c in params.get("gain_roll_steering_squared") or []],
+                  np.asarray(u_p, dtype=float), np.asarray(u_s, dtype=float))
     return k / k0
 
 
@@ -321,9 +323,8 @@ def fit_roll_gain(train: pd.DataFrame, params: dict) -> dict:
     ``gain_roll_steering`` is the fitted k_0, ``gain_roll_steering_depower``
     the AS depower terms scaled with it."""
     g = train[np.isfinite(train.u_s_lagged) & np.isfinite(train.phi_a_w)].copy()
-    shape = roll_gain_shape(params, g.u_p.to_numpy())
-    g["u_s_lagged"] = g.u_s_lagged.to_numpy() * shape
-    g["u_s"] = g.u_s.to_numpy() * shape
+    g["u_s_lagged"] = g.u_s_lagged.to_numpy() * roll_gain_shape(params, g.u_p.to_numpy(), g.u_s_lagged.to_numpy())
+    g["u_s"] = g.u_s.to_numpy() * roll_gain_shape(params, g.u_p.to_numpy(), g.u_s.to_numpy())
     x, y = g.u_s_lagged.to_numpy(), g.phi_a_w.to_numpy()
     k = float(x @ y / (x @ x))
     (k_free, offset), *_ = np.linalg.lstsq(np.c_[x, np.ones_like(x)], y, rcond=None)
@@ -333,6 +334,8 @@ def fit_roll_gain(train: pd.DataFrame, params: dict) -> dict:
     return {"gain_roll_steering": k,
             "gain_roll_steering_depower": [
                 scale * float(c) for c in params.get("gain_roll_steering_depower") or []],
+            "gain_roll_steering_squared": [
+                scale * float(c) for c in params.get("gain_roll_steering_squared") or []],
             "lag_s": STEERING_LAG_S,
             "r2": float(1 - resid.var() / y.var()),
             "rms_deg": float(np.rad2deg(resid.std())),
@@ -427,6 +430,8 @@ def merged_rom(rom: dict, theta: dict, drag_fit: ap.PolynomialFit, roll: dict,
     aero = doc["aerodynamics"]
     aero["params"].update(theta)
     aero["params"]["gain_roll_steering"] = float(roll["gain_roll_steering"])
+    if roll["gain_roll_steering_squared"]:
+        aero["params"]["gain_roll_steering_squared"] = roll["gain_roll_steering_squared"]
     if roll["gain_roll_steering_depower"]:
         aero["params"]["gain_roll_steering_depower"] = roll["gain_roll_steering_depower"]
     aero["params"]["CD0"] = float(aero["params"]["CD0"] + drag_fit.intercept)

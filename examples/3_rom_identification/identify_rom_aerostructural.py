@@ -27,7 +27,8 @@ What is identified, against the ROM's own definitions (awetrim.system.kite)
     gain_roll_steering  paper Eq. 43, phi_a,w = k u_s: the roll of the lift
                   about v_a relative to F_b, on the steering chains; with
                   gain_roll_steering_depower, k = k(u_p) a polynomial in the
-                  tape (degree 0-2 by leave-one-chain-out CV).
+                  tape, and gain_roll_steering_squared, k + s(u_p) u_s^2 (degrees
+                  of both by leave-one-chain-out CV).
 
 Conventions: u_p = power-tape length l_dp [m]; u_s = steering-tape
 half-difference / fit.steering_tape_per_unit_us; alpha in rad; coefficients on
@@ -51,6 +52,7 @@ Usage (project root)
 from __future__ import annotations
 
 import argparse
+from itertools import product
 import json
 from datetime import date
 from pathlib import Path
@@ -89,12 +91,12 @@ STALL_TERMS = [
 ]
 CANDIDATES_CL = CANDIDATES_CL + STALL_TERMS
 CANDIDATES_CD = list(CANDIDATES_CL)
-#: Stall-location grid [deg], searched on grouped CV of the full C_L library.
-STALL_ANGLE_GRID_DEG = tuple(np.arange(12.0, 22.01, 0.5))
-STALL_WIDTH_GRID_DEG = (0.5, 1.0, 1.5)
-#: A polar is kept only if its 0 step re-solves the coupled trim's force to
-#: this relative accuracy (it re-solves the trim's own body, so ~1e-15).
-POLAR_CHECK_TOLERANCE = 1e-3
+#: Width of the stall switch [deg]; the onset gives where it is, not how sharp.
+STALL_WIDTH_DEG = 1.0
+#: The coefficients are fitted up to this far past the stall [deg]. The ROM is
+#: not flown past it, and the many deep-stall samples would otherwise cost the
+#: accuracy of the operating range.
+FIT_PAST_STALL_DEG = 8.0
 
 
 # ───────────────────────────────────────────────────────────────── fits
@@ -112,11 +114,12 @@ def fit_theta_b(trims, band) -> dict:
     }
 
 
-def fit_roll_gain(trims, max_degree: int = 2) -> dict:
-    """phi_a,w = k(u_p) u_s through the origin on the steered trims, with
-    k(u_p) = k0 + k1 u_p + ... a polynomial whose degree (0..max_degree) is
-    chosen by leave-one-chain-out cross-validation RMSE (a chain's states
-    share one tape, so a chain never straddles train and test)."""
+def fit_roll_gain(trims, max_degree: int = 2, max_degree_squared: int = 1) -> dict:
+    """phi_a,w = (k(u_p) + s(u_p) u_s^2) u_s through the origin on the steered
+    trims, k(u_p) = k0 + k1 u_p + ... and s(u_p) = s0 + s1 u_p + ... polynomials
+    whose degrees (0..max_degree; none or 0..max_degree_squared) are chosen by
+    leave-one-chain-out cross-validation RMSE (a chain's states share one
+    tape, so a chain never straddles train and test)."""
     rows = trims[trims.u_s != 0.0]
     if rows.empty:
         raise SystemExit("no steered anchors in the sweep: cannot fit the roll gain")
@@ -125,26 +128,33 @@ def fit_roll_gain(trims, max_degree: int = 2) -> dict:
     # at most one fewer coefficient than distinct tapes
     max_degree = min(max_degree, len(np.unique(u_p.round(3))) - 1)
 
-    def design(deg, mask=slice(None)):
-        return np.column_stack([u_s[mask] * u_p[mask] ** p for p in range(deg + 1)])
+    def design(degrees, mask=slice(None)):
+        deg, deg_squared = degrees
+        return np.column_stack(
+            [u_s[mask] * u_p[mask] ** p for p in range(deg + 1)]
+            + [u_s[mask] ** 3 * u_p[mask] ** p for p in range(deg_squared + 1)]
+        )
 
     cv = {}
-    for deg in range(max_degree + 1):
+    for degrees in product(range(max_degree + 1), range(-1, max_degree_squared + 1)):
         sq = []
         for c in np.unique(chains):
             test = chains == c
-            coef, *_ = np.linalg.lstsq(design(deg, ~test), phi[~test], rcond=None)
-            sq.append((phi[test] - design(deg, test) @ coef) ** 2)
-        cv[deg] = float(np.sqrt(np.concatenate(sq).mean()))
-    deg = min(cv, key=cv.get)
-    coef, *_ = np.linalg.lstsq(design(deg), phi, rcond=None)
-    resid = phi - design(deg) @ coef
+            coef, *_ = np.linalg.lstsq(design(degrees, ~test), phi[~test], rcond=None)
+            sq.append((phi[test] - design(degrees, test) @ coef) ** 2)
+        cv[degrees] = float(np.sqrt(np.concatenate(sq).mean()))
+    degrees = min(cv, key=cv.get)
+    coef, *_ = np.linalg.lstsq(design(degrees), phi, rcond=None)
+    resid = phi - design(degrees) @ coef
+    deg = degrees[0]
     out = {"gain_roll_steering": float(coef[0]),
            "rms_deg": float(np.rad2deg(resid.std())),
-           "cv_rms_deg": {d: float(np.rad2deg(v)) for d, v in cv.items()},
-           "degree": int(deg), "n": int(len(rows))}
+           "cv_rms_deg": {f"k{d} s{s}": float(np.rad2deg(v)) for (d, s), v in cv.items()},
+           "degree": list(degrees), "n": int(len(rows))}
     if deg:
-        out["gain_roll_steering_depower"] = [float(c) for c in coef[1:]]
+        out["gain_roll_steering_depower"] = [float(c) for c in coef[1:deg + 1]]
+    if degrees[1] >= 0:
+        out["gain_roll_steering_squared"] = [float(c) for c in coef[deg + 1:]]
     return out
 
 
@@ -156,24 +166,24 @@ def regressors(polar, stall) -> dict[str, np.ndarray]:
     return data
 
 
-def locate_stall(polar) -> dict:
-    """Stall angle and width minimising the grouped CV RMSE of the FULL C_L
-    library (fixed terms: fast, and separates locating the stall from
-    choosing the terms)."""
-    groups = polar["anchor"].to_numpy()
-    best = None
-    for angle in STALL_ANGLE_GRID_DEG:
-        for width in STALL_WIDTH_GRID_DEG:
-            stall = {"angle_of_attack_stall": np.deg2rad(angle),
-                     "width_stall": np.deg2rad(width)}
-            cv = ap._cv_rmse(regressors(polar, stall), polar["CL"].to_numpy(),
-                             CANDIDATES_CL, abs_basis=False, folds=CV_FOLDS,
-                             groups=groups)
-            if best is None or cv < best[0]:
-                best = (cv, stall)
-    print(f"stall: {np.rad2deg(best[1]['angle_of_attack_stall']):.1f} deg, width "
-          f"{np.rad2deg(best[1]['width_stall']):.1f} deg (full-library C_L CV {best[0]:.5f})")
-    return best[1]
+def locate_stall(polar, trims, tapes) -> dict:
+    """The stall angle: the median onset on the realistic branch of the
+    unsteered states on ``tapes``, the tapes near their stall where the onset
+    means something (:func:`ds.stall_onset_increment`). Measured, not chosen on
+    the fit: the few samples at the lift drop itself would lose to the many past it."""
+    states = trims[(trims.u_s == 0.0) & trims.u_p.between(*tapes)]
+    onsets = []
+    for state in states.itertuples():
+        samples = polar[polar.anchor == state.anchor].sort_values("d_alpha_deg")
+        increment = ds.stall_onset_increment(samples.d_alpha_deg, samples.CL)
+        onsets.append(np.rad2deg(state.alpha_w) + increment)
+    onsets = np.array(onsets)[np.isfinite(onsets)]
+    if not onsets.size:
+        raise ValueError(f"no stall onset in the polars on tapes {tapes} m")
+    angle = float(np.median(onsets))
+    print(f"stall: {angle:.2f} deg ({np.percentile(onsets, 10):.1f}-{np.percentile(onsets, 90):.1f}, "
+          f"{onsets.size} states on {tapes[0]}-{tapes[1]} m), width {STALL_WIDTH_DEG:.1f} deg")
+    return {"angle_of_attack_stall": np.deg2rad(angle), "width_stall": np.deg2rad(STALL_WIDTH_DEG)}
 
 
 def fit_coefficients(polar, stall) -> dict[str, ap.PolynomialFit]:
@@ -233,6 +243,8 @@ def rom_document(fits, theta, roll, polar, fit_spec, stall, kite, n_trims, fidel
             "gain_roll_steering": roll["gain_roll_steering"],
             **({"gain_roll_steering_depower": roll["gain_roll_steering_depower"]}
                if "gain_roll_steering_depower" in roll else {}),
+            **({"gain_roll_steering_squared": roll["gain_roll_steering_squared"]}
+               if "gain_roll_steering_squared" in roll else {}),
             **{k: float(v) for k, v in stall.items()},
         },
     )
@@ -274,8 +286,11 @@ def rom_document(fits, theta, roll, polar, fit_spec, stall, kite, n_trims, fidel
         },
         "controls": fit_spec["controls"],
         "validity": {
+            # Up to the stall less the gust margin: what the optimiser may fly,
+            # not how far the data reach.
             "angle_of_attack_deg": [float(np.floor(alpha_deg.min())),
-                                    float(np.ceil(alpha_deg.max()))],
+                                    round(float(np.rad2deg(stall["angle_of_attack_stall"]))
+                                          - float(fit_spec["stall_margin_deg"]), 2)],
             "input_depower": [round(float(polar.u_p.min()), 4), round(float(polar.u_p.max()), 4)],
             "input_steering_abs_max": round(float(polar.u_s.abs().max()), 4),
             # the fit block's own validity limits (e.g. min_tether_force_n,
@@ -294,6 +309,8 @@ def main() -> None:
                         help="structural model of the sweep (default: identification.yaml's)")
     parser.add_argument("--sweep", type=Path, default=None,
                         help="sweep folder (default results/<kite>/identification/<fidelity>/sweep)")
+    parser.add_argument("--results", type=Path, default=None,
+                        help="results folder (default results/<kite>/identification/<fidelity>)")
     parser.add_argument("--out", type=Path, default=None,
                         help="ROM file to write (default in the output folder)")
     parser.add_argument("--no-write", action="store_true",
@@ -304,7 +321,7 @@ def main() -> None:
         PROJECT_DIR / "data" / args.kite / "identification.yaml", "fit", args.fidelity
     )
     band = tuple(fit_spec["depower_band"])
-    results = PROJECT_DIR / "results" / args.kite / "identification" / fidelity
+    results = args.results or PROJECT_DIR / "results" / args.kite / "identification" / fidelity
     out_dir = results / "rom_aerostructural"
     sweep = args.sweep or results / "sweep"
 
@@ -313,7 +330,7 @@ def main() -> None:
     trims_raw = trims_raw[ok]
     polar, trims = ds.coefficient_tables(
         trims_raw, polars_raw[polars_raw.anchor.isin(
-            trims_raw.anchor[trims_raw.polar_check <= POLAR_CHECK_TOLERANCE])],
+            trims_raw.anchor[trims_raw.polar_check <= ds.POLAR_CHECK_TOLERANCE])],
         reference_area=fit_spec["reference_area"],
         steering_tape_per_unit_us=fit_spec["steering_tape_per_unit_us"],
     )
@@ -325,22 +342,24 @@ def main() -> None:
           f"{len(lens)} polar samples ({int((~lens.converged).sum())} unconverged); "
           f"S_ref {fit_spec['reference_area']} m2")
 
-    polar = polar[polar.converged & polar.u_p.between(*band)]
-    theta = fit_theta_b(trims, band)
-    # The roll law is the attached wing's: drop the states past the sweep's
-    # own stall stop (the last state of a chain that stopped on stall).
-    _, sweep_spec = ds.identification_settings(
-        PROJECT_DIR / "data" / args.kite / "identification.yaml", "sweep", fidelity
-    )
     stalled = trims.anchor.map(trims_raw.set_index("anchor").stalled_fraction)
-    roll = fit_roll_gain(trims[stalled <= sweep_spec["max_stalled_fraction"]])
-    stall = locate_stall(polar)
+    attached_anchors = trims.anchor[stalled <= fit_spec["max_stalled_fraction"]]
+    polar = polar[polar.converged & polar.u_p.between(*band) & polar.anchor.isin(attached_anchors)]
+    if not (polar.source == "polar").any():
+        raise SystemExit("no polar sample survives the polar check, the fit band and the stall cut: "
+                         "a fit on the trims alone cannot separate alpha from the depower")
+    theta = fit_theta_b(trims, band)
+    # The roll law is the attached wing's too.
+    roll = fit_roll_gain(trims[trims.anchor.isin(attached_anchors)])
+    stall = locate_stall(polar, trims, fit_spec["stall_onset_tapes"])
+    polar = polar[polar.alpha <= stall["angle_of_attack_stall"] + np.deg2rad(FIT_PAST_STALL_DEG)]
     fits = fit_coefficients(polar, stall)
     check_extrapolation(fits, polar, stall, band)
 
     print("\ntheta_b = {:.4f} + {:.4f} u_p [rad]  (rms {:.2f}, max {:.2f} deg, n {})".format(
         theta["angle_pitch_tether_0"], theta["slope_angle_pitch_tether_depower"],
         theta["rms_deg"], theta["max_deg"], theta["n"]))
+    print("gain_roll_steering_squared =", roll.get("gain_roll_steering_squared"))
     print("gain_roll_steering = {:.4f} {} rad per u_s  (degree {}, rms {:.2f} deg, n {}; "
           "CV rms by degree {})".format(
               roll["gain_roll_steering"],

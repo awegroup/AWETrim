@@ -166,19 +166,20 @@ def rom_values(aero: dict, spec: dict) -> dict:
 def with_values(aero: dict, values: dict, spec: dict) -> dict:
     """A copy of the aerodynamics block with the refined parameters replaced.
 
-    The roll gain scales the WHOLE k(u_p): a refined gain_roll_steering k_0
-    scales the gain_roll_steering_depower terms by k_0 / (the file's k_0),
-    keeping the identified depower shape."""
+    The roll gain scales the WHOLE k(u_p, u_s): a refined gain_roll_steering k_0
+    scales the gain_roll_steering_depower and _squared terms by k_0 / (the
+    file's k_0), keeping the identified shape."""
     out = copy.deepcopy(aero)
     for name, where in spec["parameters"].items():
         if where[0] == "param":
             out["params"][where[1]] = values[name]
-            depower = aero["params"].get("gain_roll_steering_depower")
-            if where[1] == "gain_roll_steering" and depower:
-                scale = values[name] / float(aero["params"]["gain_roll_steering"])
-                out["params"]["gain_roll_steering_depower"] = [
-                    scale * float(c) if isinstance(scale, ca.MX) else float(scale * float(c))
-                    for c in depower]
+            for shape in ("gain_roll_steering_depower", "gain_roll_steering_squared"):
+                terms = aero["params"].get(shape)
+                if where[1] == "gain_roll_steering" and terms:
+                    scale = values[name] / float(aero["params"]["gain_roll_steering"])
+                    out["params"][shape] = [
+                        scale * float(c) if isinstance(scale, ca.MX) else float(scale * float(c))
+                        for c in terms]
         else:
             _cd_term(out, *where[1:])["coef"] = values[name]
     return out

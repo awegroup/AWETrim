@@ -66,6 +66,21 @@ def stall_blend(alpha, angle_of_attack_stall, width_stall, xp=ca):
     return 0.5 * (1.0 + xp.tanh((alpha - angle_of_attack_stall) / width_stall))
 
 
+def roll_gain(k0, k_depower, k_squared, u_p, u_s):
+    """The steering roll gain, ``phi_a,w = k u_s``: this is the one place it lives.
+
+    ``k = k0 + k1 u_p + k2 u_p^2 ... + (s0 + s1 u_p + ...) u_s^2``, with
+    ``k_depower = [k1, k2, ...]`` and ``k_squared = [s0, s1, ...]``. Plain
+    arithmetic, so it takes CasADi and NumPy alike.
+    """
+    gain = k0
+    for power, coef in enumerate(k_depower, start=1):
+        gain = gain + coef * u_p**power
+    for power, coef in enumerate(k_squared):
+        gain = gain + coef * u_p**power * u_s**2
+    return gain
+
+
 def _uses_variable(coefficients, name):
     """True if any ``coeffs`` term (``var`` or ``vars`` form) uses ``name``."""
     return any(
@@ -492,6 +507,13 @@ class Kite(Wing):
             c if isinstance(c, (ca.MX, ca.SX)) else float(c)
             for c in (self.aero_params.get("gain_roll_steering_depower") or [])
         ]
+        # How that gain changes with the steering itself, k + s(u_p) u_s^2:
+        # coefficients [s0, s1, ...] of s(u_p). Even in u_s, so left and right
+        # stay mirror images, and smooth at zero. Absent/empty = no change.
+        self.gain_roll_steering_squared = [
+            c if isinstance(c, (ca.MX, ca.SX)) else float(c)
+            for c in (self.aero_params.get("gain_roll_steering_squared") or [])
+        ]
         # Scale on the WHOLE k(u_p), not a ROM parameter: 1 except during the
         # roll-gain continuation of the full-cycle optimizer, which marches a
         # seed the kite cannot turn through at an assisted gain and steps it
@@ -552,10 +574,10 @@ class Kite(Wing):
         return self.angle_roll_aerodynamic_for(self)
 
     def gain_roll_steering_for(self, model):
-        """k(u_p) [rad per u_s]: the constant gain plus its depower polynomial."""
-        gain = self.gain_roll_steering
-        for power, coef in enumerate(self.gain_roll_steering_depower, start=1):
-            gain = gain + coef * model.input_depower**power
+        """k(u_p, u_s) [rad per u_s], :func:`roll_gain`."""
+        gain = roll_gain(self.gain_roll_steering, self.gain_roll_steering_depower,
+                         self.gain_roll_steering_squared,
+                         model.input_depower, model.input_steering)
         if self.gain_roll_scale != 1.0:
             gain = self.gain_roll_scale * gain
         return gain

@@ -138,6 +138,18 @@ def test_roll_gain_depower_polynomial():
     assert float(f(u_s, u_p)) == pytest.approx(expected)
 
 
+def test_roll_gain_changes_with_the_steering_evenly():
+    kite = _kite({"gain_roll_steering": -0.5, "gain_roll_steering_depower": [0.2],
+                  "gain_roll_steering_squared": [0.3, -0.1]})
+    model = _model(kite)
+    f = ca.Function("roll", [model.input_steering, model.input_depower],
+                    [kite.angle_roll_aerodynamic_for(model)])
+    u_s, u_p = 0.2, 2.0
+    expected = u_s * (-0.5 + 0.2 * u_p + (0.3 - 0.1 * u_p) * u_s**2)
+    assert float(f(u_s, u_p)) == pytest.approx(expected)
+    assert float(f(-u_s, u_p)) == pytest.approx(-expected)
+
+
 def test_roll_gain_scale_multiplies_the_whole_gain():
     kite = _kite({"gain_roll_steering": -0.5, "gain_roll_steering_depower": [0.2, -0.05]})
     kite.gain_roll_scale = 1.5

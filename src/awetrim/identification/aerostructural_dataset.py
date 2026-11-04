@@ -78,6 +78,13 @@ import numpy as np
 TRIMS_FILE = "trims.csv"
 POLARS_FILE = "polars.csv"
 FIDELITIES = ("billow", "wireframe")
+#: A polar is kept only if its 0 step re-solves the coupled trim's force to this
+#: relative accuracy (it re-solves the trim's own body from the trim's circulation).
+POLAR_CHECK_TOLERANCE = 1e-3
+#: Stall onset of a polar: the lift this far below the attached curve, which is
+#: fitted on the polar steps in this range below the trim [deg].
+STALL_ONSET_DROP = 0.05
+STALL_ONSET_ATTACHED_D_ALPHA_DEG = (-5.0, -1.0)
 
 _AXES = ("x", "y", "z")
 
@@ -254,6 +261,29 @@ def lift_drag_coefficients(force, va, body_z, rho, area):
     lift = np.sign(np.einsum("ij,ij->i", f_perp, up)) * np.linalg.norm(f_perp, axis=1)
     q = 0.5 * np.asarray(rho, dtype=float) * np.einsum("ij,ij->i", va, va)
     return lift / (q * area), drag / (q * area)
+
+
+def stall_onset_increment(d_alpha_deg, lift) -> float:
+    """Polar increment [deg] of the stall onset, NaN if the polar shows none.
+
+    The lift is read against a curve extrapolated from below the trim, so this
+    only means something for a state near its stall.
+    """
+    d_alpha_deg, lift = np.asarray(d_alpha_deg, dtype=float), np.asarray(lift, dtype=float)
+    low, high = STALL_ONSET_ATTACHED_D_ALPHA_DEG
+    attached = (d_alpha_deg >= low) & (d_alpha_deg <= high)
+    if attached.sum() < 3 or d_alpha_deg.max() <= 0.0:
+        return float("nan")
+    curve = np.polyval(np.polyfit(d_alpha_deg[attached], lift[attached], 2), d_alpha_deg)
+    excess = lift / curve - 1.0 + STALL_ONSET_DROP
+    beyond = np.flatnonzero((d_alpha_deg >= 0.0) & (excess < 0.0))
+    if beyond.size == 0:
+        return float("nan")
+    i = beyond[0]
+    if i == 0 or d_alpha_deg[i - 1] < 0.0:
+        return float(d_alpha_deg[i])
+    return float(d_alpha_deg[i - 1]
+                 + excess[i - 1] / (excess[i - 1] - excess[i]) * (d_alpha_deg[i] - d_alpha_deg[i - 1]))
 
 
 def coefficient_tables(trims, polars, *, reference_area: float,

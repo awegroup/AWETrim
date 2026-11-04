@@ -866,6 +866,9 @@ class CasadiTrim:
             return float(np.max(np.abs(s["r"])))
 
         cur = evaluate(self._project(u))
+        # At a polar kink Newton can reach 1e-4 and drift off again (the pseudo-time
+        # steps accept a rising residual): an unconverged solve reports its best point.
+        best = cur
         evaluations, iteration, dt, failure = 1, 0, np.inf, None
         converged = err(cur) < tol
         while not converged and iteration < budget:
@@ -918,8 +921,11 @@ class CasadiTrim:
                     dt = np.inf
             iteration += 1
             converged = err(cur) < tol
+            if err(cur) < err(best):
+                best = cur
             _LOG.debug("casadi trim iteration %s: max|r| %.3e dt %.3g", iteration, err(cur), dt)
-        return cur, {"converged": converged, "iterations": iteration, "evaluations": evaluations, "failure": failure}
+        info = {"converged": converged, "iterations": iteration, "evaluations": evaluations, "failure": failure}
+        return (cur if converged else best), info
 
     def solve(
         self,

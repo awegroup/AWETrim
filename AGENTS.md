@@ -260,7 +260,9 @@ pitch theta_b(u_p) in the PAPER sign, `alpha_w = alpha_b - theta_b`;
 `gain_roll_steering` is k_phi,s (`phi_a,w = k u_s`, asymmetric steering), made
 depower-dependent by the optional `gain_roll_steering_depower: [k1, k2, ...]`
 (`k(u_p) = gain_roll_steering + k1 u_p + k2 u_p^2 ...`, `Kite.gain_roll_steering_for`;
-absent = the paper's constant gain); both
+absent = the paper's constant gain) and steering-dependent by the optional
+`gain_roll_steering_squared: [s0, s1, ...]` (`k + (s0 + s1 u_p ...) u_s^2`; the formula is
+`kite.roll_gain`); both
 angles are taken in the paper's App. D apparent-wind frame, which
 `Kite._force_in_wind_frame` builds from the v_a VECTOR (until 2026-10-06 an
 Euler-angle frame with a mirrored yaw sign put the bridle pitch 2-3 deg off

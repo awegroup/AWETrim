@@ -3,8 +3,8 @@
 A fake VSM body (a flat two-panel wing in the VSM frame) and solver stand in
 for VSM: they check that the polar keeps |v_a|, the side slip and the
 rotational inflow, steps the FRD angle of attack by exactly the increment,
-re-solves the trim's own inflow at 0, and marches the circulation seed
-outward from 0.
+re-solves the trim's own inflow at 0, and marches the circulation seed up from
+0 past the stall and back down, the march down giving the rows.
 """
 
 import numpy as np
@@ -89,10 +89,35 @@ def test_polar_steps_alpha_and_keeps_speed_slip_and_rates():
     np.testing.assert_array_equal(body.va, va0)
 
 
-def test_polar_marches_the_seed_outward_from_zero():
+def test_the_zero_step_starts_from_the_trims_circulation():
     body = _Body([20.0, 0.0, 2.0], [0.0, -0.07, 0.0])
     solver = _Solver()
-    aerodynamic_vsm.run_frozen_alpha_polar_about_trim(body, solver, [-2.0, -1.0, 1.0, 2.0])
+    aerodynamic_vsm.run_frozen_alpha_polar_about_trim(
+        body, solver, [-1.0, 1.0], gamma_trim=np.full(3, 7.0)
+    )
+    # One plain seeded solve at 0, however the other increments are solved.
+    np.testing.assert_array_equal(solver.calls[0][2], np.full(3, 7.0))
+    np.testing.assert_allclose(solver.calls[0][0], [20.0, 0.0, 2.0])
+
+
+def test_down_branch_circulation_is_the_march_downs_at_zero():
+    body = _Body([20.0, 0.0, 2.0], [0.0, -0.07, 0.0])
+    solver = _Solver()
+    gamma = aerodynamic_vsm.down_branch_circulation(body, solver, [-1.0, 1.0, 2.0])
+    assert float(gamma[0]) == 5.0  # the solves: 0, +1, +2, then +1, 0 (the fifth), -1
+
+
+def test_polar_marches_up_then_down_and_reports_the_march_down():
+    body = _Body([20.0, 0.0, 2.0], [0.0, -0.07, 0.0])
+    solver = _Solver()
+    rows = aerodynamic_vsm.run_frozen_alpha_polar_about_trim(body, solver, [-1.0, 1.0, 2.0])
     seeds = [None if s is None else float(s[0]) for _va, _r, s in solver.calls]
-    # 0 (cold), +1 and +2 from it, then -1 from 0's solution, -2 from -1's.
-    assert seeds == [None, 1.0, 2.0, 1.0, 4.0]
+    # 0 (cold), +1, +2 from it, then down: +1 from +2, 0 from +1, -1 from 0.
+    assert seeds == [None, 1.0, 2.0, 3.0, 4.0, 5.0]
+    alphas = [_alpha_beta(va)[0] for va, _r, _s in solver.calls]
+    assert np.diff(alphas[:3]).min() > 0 and np.diff(alphas[2:]).max() < 0
+    # Fz is 10 va_z, so a row's force is that of the solve at its own inflow; the
+    # +1 row is of the march down, and the 0 row of the first solve.
+    forces = {r["d_alpha_deg"]: r["force_world"] for r in rows}
+    assert set(forces) == {-1.0, 0.0, 1.0, 2.0}
+    assert len(solver.calls) == 6
