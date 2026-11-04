@@ -1141,7 +1141,14 @@ class CasadiTrim:
         result["aero_roll_deg"] = float(np.rad2deg(np.arctan2(
             np.dot(f_aero, np.cross(lift_dir, va_unit)), np.dot(f_aero, lift_dir)
         )))
-        result["tether_force"] = float(np.asarray(result["net_force"], dtype=float)[2])
+        # The reporting of the NumPy trims: the angles to the centre chord (the
+        # body axes are not the chord, ~13 deg apart on the LEI-V3), and the
+        # tension along the tether's end direction with a Williams tether, the
+        # radial component without one.
+        result["aoa_deg"] = float(res.get("alpha_center_chord_deg", result["aoa_course_deg"]))
+        result["side_slip_deg"] = float(res.get("beta_center_chord_deg", result["side_slip_course_deg"]))
+        net_force = np.asarray(result["net_force"], dtype=float)
+        result["tether_force"] = float(np.linalg.norm(net_force) if self.williams else net_force[2])
         result.update(stall_fraction_fields(body, res.get("alpha_at_ac")))
         result.update(_kcu_drag_fields(
             self.kcu_drag, np.asarray(result["kcu_drag_force_vsm"], dtype=float),

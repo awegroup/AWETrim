@@ -273,6 +273,18 @@ def test_solve_with_body_contract(lei_v3):
     assert body.geometry_rotation.shape == (3, 3)
 
 
+@pytest.mark.parametrize("tether", [False, True])
+def test_solve_with_body_reports_like_the_numpy_trim(lei_v3, tether):
+    """The aerostructural dataset reads aoa_deg as alpha_w and stores
+    tether_force: both must mean what the NumPy trims report."""
+    numpy_res = _numpy_reference(lei_v3, tether)
+    trim, _ = _casadi(lei_v3, tether, bridle_rotates=False)
+    res, _ = trim.solve_with_body(lei_v3["values"]["x_guess"])
+    for key in ("aoa_deg", "side_slip_deg", "aoa_course_deg"):
+        assert res[key] == pytest.approx(numpy_res[key], abs=1e-3), key
+    assert res["tether_force"] == pytest.approx(numpy_res["tether_force"], rel=1e-4)
+
+
 def _deformed_copy(body):
     """The body with every other section's chord 8 % longer: the panel polars
     are blended from the section polars with geometry-dependent weights, so
