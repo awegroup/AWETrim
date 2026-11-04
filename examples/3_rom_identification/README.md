@@ -30,15 +30,19 @@ estimates, commented in the file).
 
 | Script | What it does | Writes |
 |--------|--------------|--------|
-| [`run_identification_sweep.py`](run_identification_sweep.py) | Solves coupled VSM + Billow states at the centre of the wind window, gravity off, along continuation chains in depower and steering. Each chain warm-starts every step from the previous one. On every converged state it also solves a frozen-shape angle-of-attack polar. About a minute per state. Resumable: a wireframe chain goes on after its last saved state, a Billow chain starts over. A state that does not converge ends its chain. Runs on disjoint `--chains` can go in parallel on one output folder. With `start_from_converged` (wireframe) every chain starts from a converged, unsteered state at its wind instead of the unloaded build (solve them first with `--base-only` before parallel runs). | `results/<kite>/identification/<fidelity>/sweep/` (`trims.csv`, `polars.csv`, one `sim_output.h5` per state) |
+| [`run_identification_sweep.py`](run_identification_sweep.py) | Solves coupled VSM + Billow states at the centre of the wind window, gravity off, along continuation chains in depower and steering. Each chain warm-starts every step from the previous one. On every converged state it also solves a frozen-shape angle-of-attack polar. A few minutes per state (LEI-V3 wireframe: ~2.5 min attached, up to ~30 min near the stall; the 213 states take ~19 CPU-hours). Resumable: a wireframe chain goes on after its last saved state, a Billow chain starts over. A state that does not converge ends its chain. Runs on disjoint `--chains` can go in parallel on one output folder (six runs: ~4 h for the LEI-V3). With `start_from_converged` (wireframe) every chain starts from a converged, unsteered state at its wind instead of the unloaded build; only then solve those first with `--base-only` before parallel runs (the LEI-V3 file does not set it). | `results/<kite>/identification/<fidelity>/sweep/` (`trims.csv`, `polars.csv`, one `sim_output.h5` per state) |
 | [`identify_rom_aerostructural.py`](identify_rom_aerostructural.py) | Fits every ROM parameter on that dataset: the bridle pitch `theta_b(u_p)` from the coupled trims, the lift and drag polynomials in `(alpha, u_p, u_s, v_a)` from the trims and polars (terms chosen on cross-validation, a smooth stall switch located on the data), and the steering roll gain. | `results/<kite>/identification/<fidelity>/rom_aerostructural/` (`rom_config_aerostructural.yaml`, the tidy samples, a report) |
 
 ```bash
 python examples/3_rom_identification/run_identification_sweep.py --list   # the chains
+# the file's fidelity (`fidelity:`, wireframe for the LEI-V3)
 python examples/3_rom_identification/run_identification_sweep.py
 python examples/3_rom_identification/identify_rom_aerostructural.py
-python examples/3_rom_identification/run_identification_sweep.py --fidelity wireframe
-python examples/3_rom_identification/identify_rom_aerostructural.py --fidelity wireframe
+# the other fidelity
+python examples/3_rom_identification/run_identification_sweep.py --fidelity billow
+python examples/3_rom_identification/identify_rom_aerostructural.py --fidelity billow
+# in parallel: one process per group of chains, same output folder
+python examples/3_rom_identification/run_identification_sweep.py --chains w4.0_depower_1.10 w4.0_steering_1.40
 ```
 
 `--chains <name> ...` solves only some chains. `--no-write` fits and reports

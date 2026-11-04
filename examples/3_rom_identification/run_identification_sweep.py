@@ -34,14 +34,17 @@ files are written under a lock). Resumable: a finished chain is skipped. An unfi
 on after its last complete anchor, from the structure that anchor's
 sim_output.h5 saved; an unfinished Billow chain is solved again from its
 start (its beam frames are not saved). A state that does not converge ends
-its chain. About a minute per anchor.
+its chain. A few minutes per anchor (LEI-V3 wireframe, 135 panels: ~2.5 min
+for an attached state, polar included, up to ~30 min near the stall; the 213
+anchors take ~19 CPU-hours, ~4 h in six parallel --chains runs).
 
 Optional `start_from_converged` (wireframe): before the chains, the built
 tape is solved at every wind, walking the wind up and down on one structure
 until each wind's state is converged with |course rate| below a tolerance
 (results/.../sweep/base/); every chain then starts from its wind's base state
 instead of the unloaded build, whose first iterations can settle on a
-one-tip-stalled, turning state with zero steering.
+one-tip-stalled, turning state with zero steering. Only then do parallel
+runs need --base-only first; without it every chain starts from the build.
 
 --repolar (wireframe) solves the polars of the saved anchors again over the
 current polar_d_alpha_deg, e.g. after widening it to reach the stall: each
@@ -50,9 +53,9 @@ trim and polar rows are replaced together.
 
 Usage (project root):
     python examples/3_rom_identification/run_identification_sweep.py
-    python examples/3_rom_identification/run_identification_sweep.py --fidelity wireframe
+    python examples/3_rom_identification/run_identification_sweep.py --fidelity billow
     python examples/3_rom_identification/run_identification_sweep.py --chains w4.0_depower_2.60
-    python examples/3_rom_identification/run_identification_sweep.py --chains w5.0_depower_1.35 w5.0_depower_2.60
+    python examples/3_rom_identification/run_identification_sweep.py --chains w5.0_depower_1.10 w5.0_depower_2.60
     python examples/3_rom_identification/run_identification_sweep.py --list
     python examples/3_rom_identification/run_identification_sweep.py --base-only
     python examples/3_rom_identification/run_identification_sweep.py --repolar
@@ -80,6 +83,7 @@ from awetrim.aerostructural.case import (
     resolve_kite_paths,
     runtime_config,
 )
+from awetrim.aerostructural.coupled.awesio_structure import load_structure
 from awetrim.aerostructural.results import save_sim_output
 from awetrim.identification import aerostructural_dataset as ds
 
@@ -173,6 +177,17 @@ def _at(config: dict, *, wind_speed=None, power_tape=None, steering=None) -> dic
     if steering is not None:
         changes["steering_tape_extension"] = float(steering)
     return dataclasses.replace(case, **changes).apply(config)
+
+
+def built_power_tape_length(spec: dict, kite: str) -> float:
+    """Rest length [m] of the depower tape in the structure file, the length
+    the depower chains start from (what ``prepare(...).power_tape_length``
+    reads off a freshly built structure)."""
+    path = PROJECT_DIR / "data" / kite / spec.get("fem_geometry", DEFAULT_STRUC_GEOMETRY_FILENAME)
+    tapes = [s for s in load_structure(path).bridle_segments if s.get("line") == "depower_tape"]
+    if len(tapes) != 1:
+        raise ValueError(f"{path}: expected one depower_tape segment, found {len(tapes)}")
+    return float(tapes[0]["rest_length"])
 
 
 def open_case(fidelity: str, spec: dict, kite: str):
@@ -461,8 +476,8 @@ def main() -> None:
                         "at higher wind; combine with --chains)")
     parser.add_argument("--list", action="store_true", help="list the chains and exit")
     parser.add_argument("--base-only", action="store_true",
-                        help="solve the base states (start_from_converged) and exit; "
-                        "run this first before launching parallel --chains runs")
+                        help="solve the base states and exit; only with start_from_converged in "
+                        "identification.yaml, then run it before launching parallel --chains runs")
     parser.add_argument("--repolar", action="store_true",
                         help="solve the polars of the saved anchors again over the current "
                         "polar_d_alpha_deg (wireframe; with --chains, those chains only)")
@@ -474,13 +489,14 @@ def main() -> None:
     if args.wind_speeds:
         spec["wind_speeds"] = list(args.wind_speeds)
     out = PROJECT_DIR / "results" / args.kite / "identification" / fidelity / "sweep"
+    if args.list:
+        # the chains need only the built tape length, not a structural model
+        for chain in build_chains(spec, built_power_tape_length(spec, args.kite)):
+            print(f"{chain.name}: {len(chain.steps)} states, wind {chain.wind_speed} m/s")
+        return
     driver, case = open_case(fidelity, spec, args.kite)
     built = prepare(driver, case, spec, case.config).power_tape_length
     chains = build_chains(spec, built)
-    if args.list:
-        for chain in chains:
-            print(f"{chain.name}: {len(chain.steps)} states, wind {chain.wind_speed} m/s")
-        return
     if args.chains:
         unknown = set(args.chains) - {c.name for c in chains}
         if unknown:
