@@ -54,11 +54,11 @@ dependencies = [
   # (VSM.core.panel_kernels), its quarter-chord induction
   # (BodyAerodynamics.compute_quarter_chord_AIC_matrices) and its CasADi
   # panel function with the polar tables as inputs, so a VSM change there
-  # moves the CasADi trim. ae5515c = VSM develop with PR #167 (polar tables as CasADi
+  # moves the CasADi trim. v2.3.0 = the release with PR #167 (polar tables as CasADi
   # inputs) and PR #166 (quarter-chord xp kernels, faster filament
   # kernels); move the pin
   # only together with tests/aerodynamics/test_trim_casadi*.py.
-  "VSM @ git+https://github.com/awegroup/Vortex-Step-Method.git@ae5515cb512b696d96d27c42f443e304da73aaf9",
+  "VSM @ git+https://github.com/awegroup/Vortex-Step-Method.git@v2.3.0",
   # EKF-AWE: the shared KCU drag model (awetrim.aerodynamics.kcu_drag). Its flight
   # reconstructions are read by awetrim.flight_data, not produced here.
   "awes-ekf @ git+https://github.com/awegroup/EKF-AWE.git@52579b914fefa070e8298539e68677cbcdb7c4b8",
