@@ -52,6 +52,7 @@ from awetrim.kinematics.parametrized_patterns import (
     reelin_control_point_mask,
 )
 from awetrim.system.factory import create_system_model_from_yaml
+from awetrim.timeseries import roll_assist
 from awetrim.timeseries.phase import Phase
 
 # ---------------------------------------------------------------------------
@@ -152,61 +153,27 @@ configure_kite(DEFAULT_KITE)
 # ROLL_ASSIST_MAX_HALVINGS times. The power and polish stages always run at
 # scale 1: the result is the kite's own optimum. A seed that trims at scale 1
 # is optimized exactly as before.
-ROLL_ASSIST_SCALES = (1.0, 1.25, 1.5, 1.75, 2.0)
-ROLL_ASSIST_MIN_STEP = 0.05
-ROLL_ASSIST_MAX_HALVINGS = 4
-
-
-def _fully_trimmed(phase, pattern_config) -> bool:
-    n = int(pattern_config["sim_parameters"]["n_points"])
-    return phase is not None and np.asarray(phase.return_variable("s")).size >= n
+# The ladder, the march and the halving schedule are awetrim.timeseries.
+# roll_assist (shared with the reel-out server's cold solve).
 
 
 def march_with_roll_assist(system_model, pattern_config, *, run_plots=False,
                            seed_warm_start=False, scales=None):
-    """Forward-simulate ``pattern_config`` at the smallest roll-gain scale that
-    trims it. Returns ``(cycle, phase, scale, failure)``: the Phase object
-    (its kite left at that scale), the simulated phase, the scale, and the
-    error of the scale-1 attempt (None if it succeeded). When no scale trims
-    it, ``cycle`` and ``phase`` are the attempt that got furthest (``None``
-    if all raised; the kite left at its scale, which the returned
-    ``reached_scale`` attribute of ``phase`` records) and ``scale`` is None:
-    a seed tuner then works on the region the assisted march actually
-    reaches. (Not monotonic in the scale: too much roll gain can lose the
-    first node's root, so every scale is tried.) A strict config
-    (``require_full_trajectory``) raises on a failed node; a non-strict one
-    returns a truncated phase."""
-    best, first_failure = (None, None, None, -1), None
-    for scale in scales or ROLL_ASSIST_SCALES:
-        system_model.kite.gain_roll_scale = float(scale)
-        cycle = Phase(
+    """``roll_assist.march_with_roll_assist`` on a fresh Phase of
+    ``pattern_config`` started from ``build_start_state``. Returns ``(cycle,
+    phase, scale, failure)``; see there."""
+    return roll_assist.march_with_roll_assist(
+        system_model.kite,
+        lambda: Phase(
             system_model=system_model,
             pattern_config=pattern_config,
             start_state=build_start_state(pattern_config),
-        )
-        try:
-            phase, _ = cycle.run_simulation(
-                run_plots=run_plots, phase_sim=True, seed_warm_start=seed_warm_start
-            )
-        except RuntimeError as exc:
-            print(f"  roll gain x {scale:g}: march failed ({exc})")
-            first_failure = first_failure or exc
-            continue
-        if _fully_trimmed(phase, pattern_config):
-            if scale != 1.0:
-                print(f"Roll-gain assist: the seed trims at {scale:g} x k(u_p) "
-                      f"(not at 1: {first_failure}); the optimizer continues it back to 1")
-            return cycle, phase, float(scale), first_failure
-        reached = int(np.asarray(phase.return_variable("s")).size)
-        print(f"  roll gain x {scale:g}: trim truncated at node {reached}")
-        first_failure = first_failure or RuntimeError(f"trim truncated at node {reached}")
-        if reached > best[3]:
-            best = (cycle, phase, float(scale), reached)
-    cycle, phase, scale, _ = best
-    system_model.kite.gain_roll_scale = scale or 1.0
-    if phase is not None:
-        phase.reached_scale = scale
-    return cycle, phase, None, first_failure
+        ),
+        int(pattern_config["sim_parameters"]["n_points"]),
+        scales=scales,
+        run_plots=run_plots,
+        seed_warm_start=seed_warm_start,
+    )
 
 
 def _roll_assist_stages(stages, assist):
@@ -214,11 +181,7 @@ def _roll_assist_stages(stages, assist):
     if not assist or assist == 1.0:
         return [dict(stage, roll_scale=1.0) for stage in stages]
     plan = [dict(stages[0], roll_scale=assist)]
-    scale = assist
-    while scale > 1.0:
-        scale = 1.0 + (scale - 1.0) / 2.0
-        if scale - 1.0 < ROLL_ASSIST_MIN_STEP:
-            scale = 1.0
+    for scale in roll_assist.continuation_scales(assist):
         plan.append(dict(stages[0], roll_scale=scale, continuation=True, halvings=0,
                          label=f"roll-gain continuation | k(u_p) x {scale:g}"))
     return plan + [dict(stage, roll_scale=1.0) for stage in stages[1:]]
@@ -227,7 +190,7 @@ def _roll_assist_stages(stages, assist):
 def _retry_continuation(stages, i) -> bool:
     """Insert the midpoint before a failed continuation step ``i``."""
     stage = stages[i]
-    if not stage.get("continuation") or stage["halvings"] >= ROLL_ASSIST_MAX_HALVINGS:
+    if not stage.get("continuation") or stage["halvings"] >= roll_assist.ROLL_ASSIST_MAX_HALVINGS:
         return False
     previous = stages[i - 1]["roll_scale"]
     mid = 0.5 * (previous + stage["roll_scale"])
@@ -780,7 +743,7 @@ def main(
             print(f"Baseline forward simulation failed: {failure}")
             print(
                 "The fitted initial guess cannot be trimmed over the whole cycle, "
-                f"not even at {max(ROLL_ASSIST_SCALES):g} x the roll gain; re-tune "
+                f"not even at {max(roll_assist.ROLL_ASSIST_SCALES):g} x the roll gain; re-tune "
                 "fit_periodic_cycle_config.py and regenerate the config before "
                 "optimizing."
             )
