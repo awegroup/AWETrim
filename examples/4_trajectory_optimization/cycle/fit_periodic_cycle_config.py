@@ -1758,8 +1758,9 @@ def _auto_tune(arr=None, max_iter=AUTO_MAX_ITER, curvature_limit=None):
         print(f"    {key}: {best_art.get(key)}")
     if duration_s is not None:
         print(
-            f"    (measured cycle duration {duration_s:.1f} s; set "
-            f"CYCLE_DURATION_S = {duration_s * 3.0 / best_art['n_loops']:.0f} "
+            f"    (measured cycle duration {duration_s:.1f} s; set the profile's "
+            f"seed.cycle_duration_s, the 3-lobe prior, to "
+            f"{duration_s * 3.0 / best_art['n_loops']:.0f} (now {CYCLE_DURATION_S:.0f}) "
             "to reproduce n_points without a sim)"
         )
     return config, phase, system_model, best_art

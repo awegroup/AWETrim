@@ -20,10 +20,13 @@ from awetrim.utils.config_paths import (
 from awetrim.utils.utils import load_cycle_config_from_yaml
 
 """
-Reelout pattern simulation using YAML configuration files.
+Reelout pattern simulation and optimisation using YAML configuration files.
+
+Flies the seed circle forward, then optimises its path (C_phi, C_beta) and
+the depower for mean power, and flies the optimised loop again.
 
 Configuration is split into two YAML files:
-- System properties: data/LEI-V3-KITE/lei_v3_system_config.yaml
+- System properties: data/LEI-V3-KITE/system.yaml
 - Cycle parameters: data/LEI-V3-KITE/cycle_configs/helix_spline.yaml
 
 To modify parameters:
@@ -55,9 +58,12 @@ INITIAL_GUESS = {
     "n_fit": 400,
     "s_init": 0.0,
     "s_final": 2.0 * np.pi,
-    "az_amp0": 0.1,
+    # 0.2 rad = a 46 m circle at r0 230 m, the smallest the ROM's steering box
+    # flies all round (0.1 rad, 23 m, needed more steering at every node and
+    # the seed stopped trimming at node 75: its loop metrics were meaningless)
+    "az_amp0": 0.2,
     "beta0": 0.35,
-    "beta_amp0": 0.1,
+    "beta_amp0": 0.2,
     "downloops": True,
 }
 
@@ -159,6 +165,9 @@ def main(run_plots=False):
     # plt.plot(t, np.degrees(aoa))
     # plt.show()
     solution = reelout.run_simulation_opti(optimization_params=optimization_params)
+    if solution is None:
+        raise SystemExit("helix optimisation failed (see the IPOPT log and the constraint "
+                         "report above); nothing was written")
     depower_prefix = "depower_" if "input_depower" in optimization_params else ""
     filename = f"{depower_prefix}helix_optimized_config_wind_{WIND_CONFIG['speed_wind_at_100']}_z0_{WIND_CONFIG['z0']}_{WIND_CONFIG['model_type']}_spline.yaml"
 

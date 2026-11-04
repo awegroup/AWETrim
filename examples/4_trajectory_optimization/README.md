@@ -15,8 +15,8 @@ parameters from `data/<kite>/cycle_configs/*.yaml`. The path patterns themselves
 
 | Script | What it does |
 |--------|--------------|
-| [`downloop_pattern.py`](reelout/downloop_pattern.py) | Simulate a periodic-spline **downloop** production loop from `cycle_configs/downloop_spline.yaml`. |
-| [`helix_pattern.py`](reelout/helix_pattern.py) | Same for a **helix** pattern. |
+| [`downloop_pattern.py`](reelout/downloop_pattern.py) | Simulate a periodic-spline **downloop** production loop from `cycle_configs/downloop_spline.yaml`, then optimise its path and depower for mean power (turn radius ≥ 30 m and α 2° below the stall by default; `--min-turn-radius`, `--stall-margin`, `--up-band`) and fly the optimised loop. |
+| [`helix_pattern.py`](reelout/helix_pattern.py) | Same for a **helix** pattern (circles; the seed is a 46 m circle, the smallest the ROM's steering flies all round). |
 | [`generate_spline_config.py`](reelout/generate_spline_config.py) | Generate a reel-out periodic-B-spline cycle config from a simple named initial curve (writes `cycle_configs/generated_spline.yaml`, or `--output`; does not simulate). |
 
 Each pattern script builds a `Phase`, simulates the loop, saves the timeseries
