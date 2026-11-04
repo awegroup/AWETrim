@@ -22,6 +22,9 @@
   instead of taking one `least_squares` trim. A trim just short of its root is
   taken as a step, flagged `trim_inexact`, and can only end the coupled loop below
   `CASADI_FINAL_RESIDUAL`.
+- **`run_identification_sweep.py` survives a failed trim**: it ends that chain,
+  records the step in `trim_failed.txt`, lists it at the end of the run and goes on
+  with the next chain.
 - **The LEI-V3 trim attitude box is +-30 deg**, one box with no `pre_loop` block
   (was +-4 deg in the loop, +-15 deg before it): the first trim of a steered state
   can need more, and with its root outside the box Newton has no solution.
