@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **VSM is pinned to the release `v2.3.0`** instead of the develop commit `ae5515c`:
+  `src/VSM/core` and the solver are unchanged between the two.
+
 ### Continuation of the wireframe solve
 
 - **`wireframe.driver.solve_step` continues from the solve before it**: the

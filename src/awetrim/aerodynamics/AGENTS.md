@@ -51,7 +51,7 @@ stated: `VSM_SOLVER_DEFAULTS` (Solver kwargs) and `VSM_BODY_DEFAULTS`
 `make_vsm_solver(**overrides)` / `BodyAerodynamics.instantiate(...,
 **vsm_body_kwargs())`, never a bare `Solver()`, whose defaults follow the
 installed VSM (develop: `is_aoa_corrected=True`, automatic relaxation).
-The model (VSM ae5515c, PRs #166/#167): 3/4-chord VSM circulation with the force
+The model (VSM v2.3.0, PRs #166/#167): 3/4-chord VSM circulation with the force
 directions from the quarter-chord flow (`is_aoa_corrected=True`, since
 2026-11-03; verified against the Trefftz-plane induced drag on inviscid
 wings in VSM 62c53af and PR #165 -- see
