@@ -129,9 +129,9 @@ DEFAULT_OPTI_LIMITS = {
     # caps tension in the NLP; this bound should never bind.
     "tension_tether_ground": (300, 8.4e6),
     # Standardised u_s (identification.controls: 1.4 m x u_s = steering-tape
-    # half-difference; 2019 V3 u_s = -kcu/200). The 2019 flight max deflection
-    # kcu +-35 is +-0.175 (was +-0.35 in the legacy -kcu/100 unit).
-    "input_steering": (-0.175, 0.175),
+    # half-difference; 2019 V3 u_s = -kcu/100). The 2019 flight max deflection
+    # kcu +-35 is +-0.35 (0.49 m of tape).
+    "input_steering": (-0.35, 0.35),
     "s_dot": (0.0, 40),  # Range for s_dot: 0 to 30
     "s_ddot": (-100, 100),  # Range for s_ddot: -100 to 100
     "s": (0, 300),  # Range for s: 0 to 10

@@ -78,10 +78,10 @@ components:
         # awetrim.utils.defaults.DEFAULT_OPTI_LIMITS.
         steering:
           # Standardised u_s (identification.controls): 1.4 m x u_s = the
-          # steering-tape half-difference. 2019 KCU: u_s = -kcu/200, so its
-          # +-35 % deflection is +-0.175 (was +-0.35 in the legacy -kcu/100).
-          range: [-0.175, 0.175]  # u_s [-]
-          rate: [-0.145, 0.145]   # d(u_s)/dt [1/s] (2019 flight max ~29 kcu/s)
+          # steering-tape half-difference. 2019 KCU: u_s = -kcu/100, so its
+          # +-35 % deflection is +-0.35 (0.49 m of tape).
+          range: [-0.35, 0.35]  # u_s [-]
+          rate: [-0.29, 0.29]   # d(u_s)/dt [1/s] (2019 flight max ~29 kcu/s)
         depower:
           # power-tape length l_dp [m]: the band identified with gust margins
           # (identification.yaml fit validity: 1.30 stall margin, 2.60 the
