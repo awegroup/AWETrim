@@ -22,8 +22,8 @@ Pure NumPy, so the cycle scripts and their tests share one definition.
 import numpy as np
 
 # Standardised steering below which a node counts as "centred": the hardware
-# saturates at +-0.175 (``DEFAULT_OPTI_LIMITS["input_steering"]``), so 0.02
-# is ~11% of the stroke -- small enough to keep genuine lobe-to-lobe
+# saturates at +-0.35 (``DEFAULT_OPTI_LIMITS["input_steering"]``), so 0.02
+# is ~6% of the stroke (28 mm of tape) -- small enough to keep genuine lobe-to-lobe
 # reversals, large enough to ignore the trim chatter around zero.
 STEERING_DEADBAND = 0.02
 

@@ -220,7 +220,8 @@ mapped onto the ROM's u_p (`flight_depower_to_power_tape_length(.., match)`,
 the match required: the flown tape is not known from the logs, the 1.7 / 2.1
 m that stood in `controls` until 2026-10-29 was the previous model's match;
 the cycle and flight scripts pass it, `cycle_profile.yaml` is stated in it) and
-`rom_config_aerostructural_flight_corrected.yaml` (NOT YET REVIEWED by the
+`rom_config_aerostructural_flight_corrected.yaml` (STALE since the 2019 steering
+scale moved to kcu/100, to be redone; NOT YET REVIEWED by the
 author -- provisional, check it thoroughly before relying on it: the 2019
 flight correction of that ROM, redone 2026-10-29 with the flight depower read through
 flight_match, on the 2019 EKF re-run with the bridle in the kite mass;
@@ -281,7 +282,7 @@ included, since 2026-10; before, every C_D term was |monomial|, a kink at 0);
 `abs: true` on a term asks for |monomial| and is kept only for the legacy
 steering-drag terms. `u_s` is the STANDARDISED steering of
 `identification.controls` (1.4 m x u_s = steering-tape half-difference; 2019
-V3 u_s = -kcu/200, KCU limit +-0.175) in every V3 file and in
+V3 u_s = -kcu/100, KCU limit +-0.35) in every V3 file and in
 DEFAULT_OPTI_LIMITS.
 `aerodynamics.params.angle_of_attack_stall` is the ROM's stall angle; the
 optimiser's `sim_parameters.stall_margin_deg` keeps alpha that far below it at

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The 2019 steering scale is `u_s = -kcu/100`, as in 2025** (was `/200`): the
+  flown +-35 % is 0.49 m of half-difference, `u_s` +-0.35. With it, the zero offset
+  is -0.0329 m of tape (was -0.01645 m, the same in KCU counts), `system.yaml`'s
+  steering range +-0.35 and rate +-0.29 /s, and `DEFAULT_OPTI_LIMITS` +-0.35. The
+  ROM's `validity.input_steering_abs_max` still clips the optimizer's box. Anything
+  fitted to 2019 steering on the old scale is stale:
+  `rom_config_aerostructural_flight_corrected.yaml` (roll gain, steering drag) must
+  be redone.
+
 - **VSM is pinned to the release `v2.3.0`** instead of the develop commit `ae5515c`:
   `src/VSM/core` and the solver are unchanged between the two.
 
