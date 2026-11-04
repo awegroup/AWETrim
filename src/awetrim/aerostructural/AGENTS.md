@@ -1424,8 +1424,10 @@ Both coupled drivers rotate the structure by every trim's roll/pitch/yaw
 `*_bounds_deg` limit a per-iteration INCREMENT, while on the pre-loop trim
 (undeformed geometry) they limit the whole attitude. Keys in the optional
 `pre_loop` sub-block override the block's own for that one call
-(`aerodynamic_vsm.pre_loop_trim_config`). The LEI-V3 `as_config.yaml` sets
-roll/pitch/yaw to +-15 deg there and keeps +-4 deg in the loop. Why: at 40 deg
+(`aerodynamic_vsm.pre_loop_trim_config`). The LEI-V3 `as_config.yaml` used to
+set roll/pitch/yaw to +-15 deg there and +-4 deg in the loop; since 2026-11 it has
+one +-30 deg box and no `pre_loop` block, because a root outside the box leaves
+Newton without a solution. Why the first trim needed more: at 40 deg
 elevation the first trim needs ~10 deg of yaw; pinned at 4 it closed the yaw
 moment with a ~2 rad/s course rate, the tips stalled, the first structural
 step swung the kite ~22 deg about the KCU and VSM returned NaN. Same date:
@@ -1474,11 +1476,15 @@ ran cold.
 A cold CasADi trim starts its true-polar stage from the attached predictor's
 solution when that converged (``_solve_trim_casadi``): the cold circulation guess
 can be an asymmetric, unconverged one Newton does not recover from. A stated seed
-stands, with the predictor as one retry if Newton fails on it; a trim that still
-fails takes one ``least_squares`` trim for that iteration (``run_vsm_package``),
-not the direct-solve fallback, whose result the strut-lever load transfer cannot
-use. The ``max_nfev`` truncation rule applies to ``least_squares`` only: with the
-key in the config it used to pass a failed Newton solve on as a success. Cold at
+stands, with the predictor as one retry if Newton fails on it. A trim that still
+fails raises ``CasadiTrimFailed`` (``run_vsm_package``): no ``least_squares`` rescue
+(capped at ``max_nfev`` it returned its seed, so only the structure moved) and not
+the direct-solve fallback, whose result the strut-lever load transfer cannot use.
+Newton stopping just short of the root (``CASADI_INEXACT_RESIDUAL``, off the bounds,
+finite forces: cycling on a polar corner) is taken as a step, flagged
+``trim_inexact``; the loop only ends on such a trim below ``CASADI_FINAL_RESIDUAL``
+(``trim_may_end_loop``), and the run's metadata carries the flag. The ``max_nfev``
+truncation rule applies to ``least_squares`` only. Cold at
 every state now gives the warm result to round-off on the LEI-V3 depower and
 steering chains.
 

@@ -229,21 +229,15 @@ coupling:
     # Narrower bounds = fewer evaluations, faster convergence, but risk missing solutions.
     # Wider bounds = more thorough search but slower optimization.
     kite_speed_bounds_ms: !!seq [-2.0, 50.0]      # m/s - apparent wind relative speed
-    roll_bounds_deg: !!seq [-4.0, 4.0]            # degrees - wing roll angle
-    pitch_bounds_deg: !!seq [-4.0, 4.0]           # degrees - pitch angle
-    yaw_bounds_deg: !!seq [-4.0, 4.0]             # degrees - yaw angle
+    # Each trim's roll/pitch/yaw are applied to the structure as a rotation, so
+    # in the coupled loop these limit the per-iteration INCREMENT, and on the
+    # first trim the whole attitude. They are a sanity box, not a step limit: a
+    # root outside them leaves Newton with no solution (a steered first trim can
+    # need 16 deg of yaw; at +-4 or +-15 it wandered and the trim failed).
+    roll_bounds_deg: !!seq [-30.0, 30.0]          # degrees - wing roll angle
+    pitch_bounds_deg: !!seq [-30.0, 30.0]         # degrees - pitch angle
+    yaw_bounds_deg: !!seq [-30.0, 30.0]           # degrees - yaw angle
     course_rate_bounds_rad_s: !!seq [-2.5, 2.5]   # rad/s - angular velocity about vertical axis
-
-    # Overrides for the PRE-LOOP trim only (the first trim, on the undeformed
-    # geometry). Each trim's roll/pitch/yaw are applied to the structure as a
-    # rotation, so in the coupled loop the bounds above limit the per-iteration
-    # INCREMENT, but here they limit the whole attitude. At 40 deg elevation the
-    # first trim needs ~10 deg of yaw; pinned at 4 it closed the moment with a
-    # ~2 rad/s course rate, stalled the tips and VSM returned NaN.
-    pre_loop:
-      roll_bounds_deg: !!seq [-15.0, 15.0]
-      pitch_bounds_deg: !!seq [-15.0, 15.0]
-      yaw_bounds_deg: !!seq [-15.0, 15.0]
 
   ## the fixed-point loop between the aerodynamics and the structure
   loop:
