@@ -41,6 +41,7 @@ from awetrim.utils.reference_frames import (
 )
 from awetrim import State
 from awetrim.system.kite import Kite
+from awetrim.system.turn_radius import steering_limit
 from awetrim.system.winch import Winch
 from dataclasses import dataclass
 import logging
@@ -975,10 +976,30 @@ class PhaseParameterized(TimeSeries):
             alpha_function = None
         rate_index = 1 if use_williams else 2
         rate_previous = [None]  # path rate s_dot of the last returned node root
+        # Second branch rule: prefer a root the kite holds within the
+        # optimizer's steering box. Besides the high-lift root the node
+        # residual can have a low-lift one (alpha ~1-2 deg, tension at the
+        # winch's minimum force) that needs several times the steering for
+        # the same turn; landing on it at node 0 (LEI-V3 simulation-only ROM,
+        # server down-loop) asked the NLP for |u_s| 0.5 on a seed the kite
+        # flies at 0.135. A pre-stall root beyond the box is kept as a
+        # fallback (smallest |u_s|) while the retries look for one within it.
+        # Only node 0 and retries can change branch: a first attempt that
+        # converges later on continues the previous root and is accepted, and
+        # the search stops while the previous node was beyond the box, so a
+        # path that is genuinely too tight does not retry every node.
+        # sim_parameters.seed_prefer_steering_box (default True).
+        steering_index = 0 if use_williams else 1
+        steering_box = None
+        if sim_params.get("seed_prefer_steering_box", True):
+            steering_box = steering_limit(self.kite_model)
+        steering_in_box_previous = [True]
 
         def _solve_node(z_guess, p_solver, node_index):
             last_error = None
             fallback = None  # (|s_dot - s_dot_previous|, solution, alpha)
+            steer_fallback = None  # (|u_s|, solution): pre-stall, beyond the box
+            search_box = steering_box is not None and steering_in_box_previous[0]
             accept_residual_norm = float(
                 sim_params.get("solver_accept_residual_norm", 1e-5)
             )
@@ -1022,6 +1043,15 @@ class PhaseParameterized(TimeSeries):
                             fallback = (jump, sol_candidate, alpha_node)
                         continue
                 if accepted and finite:
+                    steering = abs(float(sol_candidate["x"][steering_index]))
+                    if (
+                        search_box
+                        and (attempt > 0 or node_index == 0)
+                        and steering > steering_box
+                    ):
+                        if steer_fallback is None or steering < steer_fallback[0]:
+                            steer_fallback = (steering, sol_candidate)
+                        continue
                     if attempt:
                         logger.info(
                             "Phase solver recovered at node %d with retry %d",
@@ -1029,12 +1059,25 @@ class PhaseParameterized(TimeSeries):
                             attempt,
                         )
                     rate_previous[0] = float(sol_candidate["x"][rate_index])
+                    steering_in_box_previous[0] = (
+                        steering_box is None or steering <= steering_box
+                    )
                     return sol_candidate
 
                 last_error = RuntimeError(
                     f"status={stats.get('return_status')}, finite={finite}, "
                     f"||g||={residual_norm:.3e}"
                 )
+
+            if steer_fallback is not None:
+                logger.info(
+                    "Phase node %d: no root within the steering box (|u_s| <= %.3f); "
+                    "continuing on the pre-stall one with the least steering (%.3f)",
+                    node_index, steering_box, steer_fallback[0],
+                )
+                rate_previous[0] = float(steer_fallback[1]["x"][rate_index])
+                steering_in_box_previous[0] = False
+                return steer_fallback[1]
 
             if fallback is not None:
                 logger.info(

@@ -15,6 +15,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import casadi as ca
+from awetrim.kinematics.parametrized_patterns import geodesic_curvature_numerator
 from awetrim.utils.reference_frames import (
     transformation_AZR_from_W,
     transformation_C_from_W,
@@ -380,13 +381,10 @@ class ParametrizedKinematics:
         constraint written as ``|R_min * numerator| <= r * sigma'^3`` has
         bounded gradients where the ``R_min * |kappa| <= r`` form blows up.
         """
-        u = self.dphi_ds * ca.cos(self.beta)
-        v = self.dbeta_ds
-        du_ds = self.dphi_ds2 * ca.cos(self.beta) - self.dphi_ds * self.dbeta_ds * ca.sin(
-            self.beta
+        return geodesic_curvature_numerator(
+            self.beta, self.dphi_ds, self.dbeta_ds, self.dphi_ds2, self.dbeta_ds2,
+            self.dsigma_ds, ca,
         )
-        dv_ds = self.dbeta_ds2
-        return du_ds * v - u * dv_ds - ca.sin(self.beta) * self.dphi_ds * self.dsigma_ds**2
 
     @property
     def sqrt_A(self):
