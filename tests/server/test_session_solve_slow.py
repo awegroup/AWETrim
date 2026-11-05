@@ -14,6 +14,7 @@ import pytest
 pytest.importorskip("pydantic")
 
 from awetrim.server.session import ReeloutSession, SessionState
+from awetrim.system.turn_radius import steering_limit
 
 pytestmark = pytest.mark.slow
 
@@ -30,8 +31,7 @@ def test_cold_and_warm_step_converge_on_the_default_rom():
     # the reply is the optimum at the ROM's own roll gain
     assert sess.system_model.kite.gain_roll_scale == 1.0
     steering = np.asarray(sess.trajectory()["table"]["input_steering"], float)
-    rom_limit = 0.1429  # validity.input_steering_abs_max of the LEI-V3 ROMs
-    assert np.abs(steering).max() <= rom_limit + 1e-3
+    assert np.abs(steering).max() <= steering_limit(sess.system_model) + 1e-3
 
     # a later warm step (longer tether) converges too
     sess.step_blocking(distance_radial=220.0)

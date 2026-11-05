@@ -50,13 +50,17 @@ nodes per second of the MEASURED cycle duration -- the ``CYCLE_DURATION_S``
 prior can be over 2x off at other winds/shapes.
 
 Usage:
-    python .../fit_periodic_cycle_config.py [--auto] [--loops N]
+    python .../fit_periodic_cycle_config.py [--size | --auto] [--loops N]
                                             [--reelin smooth|cross]
                                             [--cross-at P]
                                             [--reentry opposite|same]
                                             [--check] [--plot]
                                             [--curvature-limit K]
 
+    --size   refit the path to the turns the kite holds at the target wind:
+             the first margin on the steering-limited turn radius whose
+             forward sim is complete and inside the steering limit at the
+             kite's own roll gain. Writes nothing if none is
     --auto   auto-tune the shape knobs (one forward sim per iteration)
              until every node of the seed trims inside the NLP bounds at the
              kite profile's wind -- use this to generate a seed for ANY wind
@@ -139,7 +143,18 @@ from awetrim.kinematics.parametrized_patterns import (  # noqa: E402
     full_cycle_n_loops_for_half_figures,
     full_cycle_visible_half_figures,
     make_full_cycle_bspline_path_parameters,
+    periodic_bspline_basis_matrices,
 )
+from awetrim.kinematics.steering_limited_eight import (  # noqa: E402
+    BlendedTurnLimit,
+    CourseTurnLimit,
+    fit_spline_to_turn_limit,
+)
+from awetrim.system.turn_radius import (  # noqa: E402
+    steering_limit,
+    steering_limited_turn_radius,
+)
+from awetrim.system.winch import Winch  # noqa: E402
 from awetrim.utils.defaults import DEFAULT_OPTI_LIMITS  # noqa: E402
 from awetrim.utils.system_config import get_kite  # noqa: E402
 
@@ -951,6 +966,9 @@ def build_config(
                 # the one-sided close_radial_cycle pin, which left the last
                 # node unconstrained and the seam uncounted).
                 "periodic_wrap": True,
+                # s in [0, 1] over a whole cycle: the march's solves keep their
+                # warm start at this small path rate (PhaseParameterized).
+                "slow_path_rate": True,
             },
         }
     }
@@ -1281,6 +1299,145 @@ def _measured_cycle_duration(phase, n_points):
         return None
     t = np.asarray(phase.return_variable("t"), dtype=float)
     return float(t[-1] - t[0])
+
+
+# --size: the path's turn radius is held at margin x the tightest turn the kite
+# holds on that course (system.turn_radius), and the first margin whose march is
+# complete and inside the steering limit at the kite's own roll gain is kept.
+SIZE_MARGINS = (1.4, 1.6, 1.8, 2.0)
+SIZE_HEIGHT_CLEARANCE_M = 2.0
+SIZE_FIT_SAMPLES = 900
+SIZE_FIT_MIN_RATIO = 0.99
+
+
+def _size_turn_limit(config, system_model):
+    """``limit(margin)`` of the seed: the steering-limited turn radius at its
+    reel-out and at its reel-in depower and mean elevation, blended along the
+    path by the depower profile. Also returns the seed's elevation samples."""
+    reelout = config["reelout"]
+    path = reelout["path_parameters"]
+    r0 = float(path["r0"])
+    profile = np.asarray(reelout["sim_parameters"]["input_depower_profile"], dtype=float)
+    s_profile = np.linspace(0.0, 1.0, profile.size)
+    powered, depowered = float(profile.min()), float(profile.max())
+
+    def weight(u):
+        return np.clip(
+            (np.interp(u, s_profile, profile) - powered) / (depowered - powered), 0.0, 1.0
+        )
+
+    u = np.linspace(0.0, 1.0, 1000, endpoint=False)
+    basis = periodic_bspline_basis_matrices(u, int(path["M"]))[0]
+    elevation = basis @ np.asarray(path["C_beta"], dtype=float)
+    winch = Winch(pattern_config=reelout["radial_parameters"])
+    tables = []
+    for depower, mask in (
+        (powered, weight(u) < 0.5),
+        (depowered, weight(u) >= 0.5),
+    ):
+        table = steering_limited_turn_radius(
+            system_model,
+            distance_radial=r0,
+            angle_elevation=float(elevation[mask].mean()),
+            input_depower=depower,
+            winch=winch,
+        )
+        print(f"[size] depower {depower:.2f}: {table.summary()}")
+        tables.append(table)
+
+    def limit(margin):
+        first, second = (CourseTurnLimit(t.radius, r0=r0, margin=margin) for t in tables)
+        return BlendedTurnLimit(first, second, weight)
+
+    return limit, elevation
+
+
+def _march_own_roll_gain(config, system_model):
+    """Forward simulation at the kite's own roll gain, without the assist:
+    ``(phase, max |u_s|, reason)``, reason None when complete and within limits."""
+    import run_full_cycle_opti as rfco
+
+    reelout = copy.deepcopy(config["reelout"])
+    reelout["sim_parameters"]["require_full_trajectory"] = False
+    n_points = int(reelout["sim_parameters"]["n_points"])
+    system_model.kite.gain_roll_scale = 1.0
+    try:
+        phase, _ = rfco.Phase(
+            system_model=system_model,
+            pattern_config=reelout,
+            start_state=rfco.build_start_state(reelout),
+        ).run_simulation(phase_sim=True, seed_warm_start=False)
+    except RuntimeError as exc:
+        return None, None, f"march failed ({exc})"
+    steering = np.abs(np.asarray(phase.return_variable("input_steering"), dtype=float))
+    if steering.size < n_points:
+        return phase, float(steering.max()), f"march stopped at node {steering.size}/{n_points}"
+    if steering.max() > steering_limit(system_model):
+        return phase, float(steering.max()), (
+            f"max |u_s| {steering.max():.3f} over the limit "
+            f"{steering_limit(system_model):.3f}"
+        )
+    return phase, float(steering.max()), None
+
+
+def _size_seed(config, arr, curvature_limit, margins=SIZE_MARGINS):
+    """The seed path refitted to the turns the kite holds at this wind, for the
+    first of ``margins`` that marches. ``(config, phase, system_model)``,
+    config None when none does."""
+    import run_full_cycle_opti as rfco
+
+    from awetrim.system.factory import create_system_model_from_yaml
+
+    system_model = create_system_model_from_yaml(yaml_path=SYSTEM_CONFIG_PATH)
+    system_model.wind = rfco.build_wind_model(**rfco.WIND_CONFIG)
+    print(f"[size] wind: {rfco.describe_wind(rfco.WIND_CONFIG)}")
+    limit, elevation = _size_turn_limit(config, system_model)
+    reelout = config["reelout"]
+    r0 = float(reelout["path_parameters"]["r0"])
+    override = reelout["sim_parameters"].get("opti_limits_override") or {}
+    height_min = override.get("height", DEFAULT_OPTI_LIMITS["height"])[0]
+    for margin in margins:
+        fitted, report = fit_spline_to_turn_limit(
+            reelout["path_parameters"],
+            limit(margin),
+            M=None,
+            mirror=False,
+            el_min=float(np.arcsin((float(height_min) + SIZE_HEIGHT_CLEARANCE_M) / r0)),
+            el_max=float(elevation.max()) + 0.05,
+            n_samples=SIZE_FIT_SAMPLES,
+        )
+        print(
+            f"[size] margin {margin:g}: {report['status']}, ratio {report['ratio']:.2f}, "
+            f"turns >= {report['turn_radius_min_m']:.1f} m, moved "
+            f"{np.degrees(report['max_move']):.1f} deg"
+        )
+        if report["ratio"] < SIZE_FIT_MIN_RATIO:
+            continue
+        trial = copy.deepcopy(config)
+        trial["reelout"]["path_parameters"] = fitted
+        phase, steering, reason = _march_own_roll_gain(trial, system_model)
+        if reason is None:
+            n_old = int(trial["reelout"]["sim_parameters"]["n_points"])
+            measured = _measured_cycle_duration(phase, n_old)
+            n_new = int(np.clip(np.ceil(measured * NPOINTS_PER_SECOND), 50, N_POINTS_MAX))
+            if abs(n_new - n_old) > 0.1 * n_old:
+                print(
+                    f"[size] measured cycle duration {measured:.1f} s -> "
+                    f"n_points {n_old} -> {n_new}"
+                )
+                trial = build_config(
+                    arr,
+                    depower_depth=DEPOWER_DEPTH,
+                    duration_s=measured,
+                    curvature_limit=curvature_limit,
+                )
+                trial["reelout"]["path_parameters"] = fitted
+                phase, steering, reason = _march_own_roll_gain(trial, system_model)
+        if reason is None:
+            print(f"[size] margin {margin:g} marches: max |u_s| {steering:.3f}")
+            return trial, phase, system_model
+        print(f"[size] margin {margin:g}: {reason}")
+    return None, None, system_model
 
 
 def _dist_to_reelin_center(s_v, center):
@@ -1850,8 +2007,12 @@ def main(
     wind_speed: float = None,
     wind_height: float = None,
     output: str = None,
+    size: bool = False,
 ) -> int:
     global SHAPE_SOURCE, OUTPUT_PATH, SEED_PLOT_PATH
+    if auto and size:
+        print("--auto and --size are two ways to fit the seed: pick one")
+        return 1
     if shape:
         SHAPE_SOURCE = shape
     configure_kite(kite or KITE_DIR)
@@ -1979,7 +2140,16 @@ def main(
         config = build_config(
             arr, depower_depth=DEPOWER_DEPTH, curvature_limit=curvature_limit
         )
-        if check:
+        if size:
+            config, phase, system_model = _size_seed(config, arr, curvature_limit)
+            if config is None:
+                print(
+                    f"\nNo margin of {SIZE_MARGINS} marches at this wind -- NOT "
+                    "written. Continue from a neighbouring wind instead "
+                    "(run_full_cycle_opti.py --continue-from)."
+                )
+                return 1
+        elif check:
             # Bootstrap sim: calibrate n_points to the MEASURED cycle duration
             # before the config is validated and written (one rebuild + re-sim
             # when the CYCLE_DURATION_S prior was materially off).
@@ -2173,6 +2343,14 @@ if __name__ == "__main__":
         f"cycle_configs/{SEED_FILENAME} (pass it to run_full_cycle_opti.py "
         "--config); the seed-path figure goes next to it",
     )
+    parser.add_argument(
+        "--size",
+        action="store_true",
+        help="Refit the seed path to the turns the kite holds at this wind: "
+        f"the first of the margins {SIZE_MARGINS} on the steering-limited turn "
+        "radius whose forward simulation is complete and inside the steering "
+        "limit at the kite's own roll gain. Writes nothing if none is",
+    )
     args = parser.parse_args()
     raise SystemExit(
         main(
@@ -2190,5 +2368,6 @@ if __name__ == "__main__":
             wind_speed=args.wind_speed,
             wind_height=args.wind_height,
             output=args.output,
+            size=args.size,
         )
     )

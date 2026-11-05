@@ -814,6 +814,11 @@ class PhaseParameterized(TimeSeries):
                     clipped.append(cg)
             return clipped
 
+        # sim_parameters.slow_path_rate: the path parameter spans a whole cycle
+        # (s in [0, 1] over ~100 s, s_dot ~0.005, not ~0.2 on a 2 pi loop).
+        slow_path_rate = bool(sim_params.get("slow_path_rate", False))
+        s_dot_floor = 1e-4 if slow_path_rate else 0.2
+
         def _fallback_z_guesses(z_guess, p_solver, node_index):
             """Conservative alternate seeds for a failed per-node residual solve."""
             guesses = [z_guess]
@@ -843,7 +848,7 @@ class PhaseParameterized(TimeSeries):
                     path_rate_or_accel = (
                         s_dot_guess_profile[node_index]
                         if s_dot_guess_profile is not None
-                        else max(abs(_finite_or(z_arr[speed_idx], 0.2)), 0.2)
+                        else max(abs(_finite_or(z_arr[speed_idx], 0.2)), s_dot_floor)
                     )
                 else:
                     path_rate_or_accel = np.clip(
@@ -872,6 +877,9 @@ class PhaseParameterized(TimeSeries):
                         multipliers=(0.5, 2.0),
                         positive=True,
                     )
+                    # Around the last root first, then the usual scale.
+                    if slow_path_rate and not sim_params.get("solver_retry_s_dot"):
+                        rate_candidates.append(0.2)
                 else:
                     rate_candidates = _perturb_list(
                         "solver_retry_s_ddot",
@@ -3589,6 +3597,12 @@ class PhaseParameterized(TimeSeries):
             "acceptable_iter": 5,
             "sb": ipopt_sb,
         }
+        if self.pattern_config.get("sim_parameters", {}).get("slow_path_rate", False):
+            # Keep the warm start where it is. IPOPT's default pushes it 0.01
+            # off a bound, but a full cycle's path rate s_dot is ~0.005 (s in
+            # [0, 1] over ~100 s), so the previous node's root was moved to
+            # twice the true rate and the solve could leave for another root.
+            ipopt_opts.update({"bound_push": 1e-8, "bound_frac": 1e-8})
         if use_williams:
             # The Williams NLP mixes variables of very different orders
             # (angles ~1, lengths ~100, tension ~1e4-1e6). Keep the default

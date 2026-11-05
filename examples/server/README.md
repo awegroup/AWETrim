@@ -218,8 +218,16 @@ turn the kite holds on each course at this wind and fits the configured eight
 to 1.2 x that, when it is tighter somewhere. On the LEI-V3 default ROM this
 takes ~10 s at `/init` and the first `/step` then converges in one solve at the
 ROM's own roll gain (~15 s) from 4 to 10 m/s. The init reply's `kite_sized_seed`
-says whether the seed was refitted. If the solve does not converge from the
-fitted seed, the configured one is tried.
+says whether the seed was refitted.
+
+A first `/step` that does not converge is retried before it fails, each solve
+capped at 300 iterations unless you send `max_iter`: the seed refitted at 1.4 x
+the turn; then a cold solve at 0.5 and 1 m/s above and 0.5 m/s below your wind,
+stepped warm to your wind; then the configured seed. A wind that needs them
+takes minutes instead of seconds (about 10 minutes before a final failure). On
+the LEI-V3 default ROM this covers 3.5 to 12 m/s with `depower` mode `profile`.
+With `optimize` (one value for the whole path) it covers 3.5 to 11 m/s, and the
+power falls above 10 m/s, where one value cannot shed the extra force.
 
 ### Pattern limits — keeping the optimizer out of shapes you do not want
 
