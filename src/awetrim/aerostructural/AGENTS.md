@@ -196,6 +196,9 @@ src/awetrim/aerostructural/
                                    frozen_alpha_polar_and_down_circulation: the polar marched up
                                    and back (the rows of the march down) and the
                                    circulation on the down branch.
+                                   frozen_alpha_polar_and_down_circulation: the polar marched up
+                                   and back (the rows of the march down) and the
+                                   circulation on the down branch.
                                    run_frozen_alpha_polar_about_trim: the alpha
                                    polar of a TRIMMED body on its frozen shape
                                    (freestream turned in the FRD centre-panel
