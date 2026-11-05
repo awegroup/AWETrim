@@ -789,8 +789,7 @@ rate \SI{20}{\percent} low that has nothing to do with the gain.
 \subsection{Flight validation}
 \label{sec:flight-validation}
 The 2019 flight is reconstructed sample by sample with the ROM's quasi-steady solver
-on the flown hardware. The logged steering, plus the rig's zero offset ($-0.0329/1.4$
-after the \SI{0.3}{\second} lag), is the input, and the ROM solves the turn rate, the
+on the flown hardware. The logged steering, plus the rig's zero offset ($-0.0329/1.4$), is the input, and the ROM solves the turn rate, the
 tension and the speed. Cycles 60--67 are held out of the flight correction of
 Sect.~\ref{sec:flight-correction}. The flown tapes are not logged in the model's
 coordinate, so flight depower is mapped onto $u_p$ through the tapes that reproduce the
