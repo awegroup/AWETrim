@@ -14,6 +14,7 @@ Moved here from ``examples/2_aerostructural/run_simulation_PSM.py`` on
 import copy
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -287,6 +288,8 @@ def _deformed_aero_geometry(aero_geometry, nodes, le_indices, te_indices, mapper
     )
 
 
+GEOMETRY_REPLACE_ATTEMPTS = 40
+GEOMETRY_REPLACE_WAIT_S = 0.25  # [s]
 _READER_FIELDS = (
     "struc_nodes", "m_arr", "le_indices", "te_indices", "power_tape_index",
     "steering_tape_indices", "pulley_node_indices", "kite_connectivity",
@@ -1207,7 +1210,15 @@ def build_case_reduced_fem(
     write_awesio(
         wireframe_to_awesio(reduced, name=f"{kite_name} wireframe"), partial
     )
-    os.replace(partial, reduced_path)
+    # Windows refuses the move while another process has the file open
+    for attempt in range(GEOMETRY_REPLACE_ATTEMPTS):
+        try:
+            os.replace(partial, reduced_path)
+            break
+        except PermissionError:
+            if attempt == GEOMETRY_REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(GEOMETRY_REPLACE_WAIT_S)
     logging.info(
         "wireframe reduced from %s: %d wing + %d bridle nodes, wing %.3f kg, "
         "bridle %.3f kg -> %s",

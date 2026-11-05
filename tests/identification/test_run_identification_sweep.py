@@ -52,6 +52,7 @@ class Case:
 
 
 SPEC = {
+    "settle_on_down_branch": False,
     "depower": {"step": 0.05}, "steering": {"step": 0.025},
     "polar_d_alpha_deg": [-1.0, 1.0, 1.0], "max_stalled_fraction": 1.0,
     "wind_speeds": [4.0, 6.0], "start_from_converged": {"max_passes": 3},
@@ -70,7 +71,7 @@ def _scripted_rows(monkeypatch, sweep):
     return written
 
 
-def test_a_failed_trim_ends_the_chain_and_records_the_step(sweep, monkeypatch, tmp_path):
+def test_a_trim_that_keeps_failing_ends_the_chain_and_records_the_step(sweep, monkeypatch, tmp_path):
     monkeypatch.setattr(sweep, "prepare", lambda *_: Prepared())
     written = _scripted_rows(monkeypatch, sweep)
     driver = ScriptedDriver(failing=[1])
@@ -83,6 +84,76 @@ def test_a_failed_trim_ends_the_chain_and_records_the_step(sweep, monkeypatch, t
     assert (tmp_path / chain.name / "step_01" / sweep.TRIM_FAILED_FILE).read_text(encoding="utf-8") == "scripted\n"
     assert not (tmp_path / chain.name / "step_01" / "sim_output.h5").exists()
     assert (tmp_path / chain.name / sweep.DONE_MARKER).exists()
+
+
+def test_every_state_is_moved_to_the_down_branch_by_default(sweep, monkeypatch, tmp_path):
+    monkeypatch.setattr(sweep, "prepare", lambda *_: Prepared())
+    written = _scripted_rows(monkeypatch, sweep)
+    settled = []
+
+    def settle(_driver, _case, _spec, prepared, tracking, meta, final_state, config, *_):
+        settled.append(True)
+        return prepared, tracking, meta, final_state, config
+
+    monkeypatch.setattr(sweep, "settle_on_down_branch", settle)
+    spec = {k: v for k, v in SPEC.items() if k != "settle_on_down_branch"}
+    sweep.solve_chain(ScriptedDriver(), Case, _chain(sweep), {**spec, "start_from_converged": None}, tmp_path)
+    assert len(settled) == 3 == len(written)
+
+
+def test_the_down_branch_re_solve_starts_from_the_down_march(sweep, monkeypatch):
+    prepared = Prepared()
+    prepared.vsm_solver = "solver"
+    monkeypatch.setattr(sweep.aerodynamic_vsm, "down_branch_circulation", lambda *_, **__: np.full(3, 7.0))
+
+    class Driver(ScriptedDriver):
+        @staticmethod
+        def _trim_seed_of(opt_x, gamma):
+            return {"x": opt_x, "gamma": gamma}
+
+        def solve_step(self, case, prep, config, final_state):
+            result = super().solve_step(case, prep, config, final_state)
+            final_state["results_aero"] = {"tether_force": 900.0, "aoa_deg": 9.0}
+            return result
+
+    first = {"results_aero": {"tether_force": 1000.0, "aoa_deg": 8.0, "opt_x": np.zeros(5)}, "body_aero": "body"}
+    out = sweep.settle_on_down_branch(
+        Driver(), Case, SPEC, prepared, "t", {"converged": True}, first, {}, [1.0], "saved", "a/00"
+    )
+    np.testing.assert_array_equal(prepared.trim_seed["gamma"], np.full(3, 7.0))
+    assert out[3]["results_aero"]["tether_force"] == 900.0  # the re-solved state is the anchor
+
+
+def test_a_failed_down_branch_re_solve_goes_back_to_the_first_solve(sweep, monkeypatch):
+    fresh = Prepared()
+    monkeypatch.setattr(sweep, "prepare", lambda *_: fresh)
+    monkeypatch.setattr(sweep.aerodynamic_vsm, "down_branch_circulation", lambda *_, **__: np.zeros(3))
+
+    class Driver(ScriptedDriver):
+        _trim_seed_of = staticmethod(lambda opt_x, gamma: {})
+
+    prepared = Prepared()
+    prepared.vsm_solver = "solver"
+    first = {"results_aero": {"tether_force": 1000.0, "aoa_deg": 8.0, "opt_x": np.zeros(5)}, "body_aero": "body"}
+    out = sweep.settle_on_down_branch(
+        Driver(failing=[0]), Case, SPEC, prepared, "t", {"converged": True}, first, {}, [1.0], "saved", "a/00"
+    )
+    assert out[0] is fresh and fresh.restored == ["saved"]
+    assert out[3] is first
+
+
+def test_the_lock_waits_when_windows_refuses_a_file_being_deleted(sweep, monkeypatch, tmp_path):
+    real_open, calls = sweep.os.open, []
+
+    def refuse_once(path, flags, *args):
+        calls.append(path)
+        if len(calls) == 1:
+            raise PermissionError(13, "Permission denied", str(path))
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(sweep.os, "open", refuse_once)
+    with sweep.sweep_files_lock(tmp_path):
+        assert len(calls) == 2
 
 
 def test_a_failed_base_state_goes_back_to_the_last_saved_shape(sweep, monkeypatch, tmp_path):
@@ -109,3 +180,16 @@ def test_base_states_that_keep_failing_stop_the_sweep_by_name(sweep, monkeypatch
     with pytest.raises(SystemExit, match=r"6\.0 m/s .*unconverged"):
         sweep.solve_base_states(ScriptedDriver(failing=[1, 3]), Case, SPEC, tmp_path)
     assert not (tmp_path / sweep.BASE_DIR / sweep.DONE_MARKER).exists()
+
+
+def test_steering_chains_can_run_past_the_stall_stop_of_the_depower_chains(sweep):
+    spec = {"depower": {"targets": [1.8], "step": 0.1},
+            "steering": {"power_tape_lengths": [1.5], "max": 0.1, "step": 0.1,
+                         "max_stalled_fraction": 1.0},
+            "wind_speeds": [5.0], "max_stalled_fraction": 0.2}
+    depower, steering = sweep.build_chains(spec, 1.9)
+    assert depower.max_stalled_fraction == 0.2
+    assert steering.max_stalled_fraction == 1.0
+
+    del spec["steering"]["max_stalled_fraction"]
+    assert sweep.build_chains(spec, 1.9)[1].max_stalled_fraction == 0.2

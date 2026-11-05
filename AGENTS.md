@@ -241,11 +241,14 @@ public step 3 on the FEM-reduced wireframe with canopy billowing and the
 strut-lever load transfer (`fidelity: wireframe` of `identification.yaml`):
 `examples/3_rom_identification/run_identification_sweep.py` then
 `identify_rom_aerostructural.py`, both reading `data/<kite>/identification.yaml`,
-writing under `results/<kite>/identification/<fidelity>/`; band 1.30-2.60 m,
+writing under `results/<kite>/identification/<fidelity>/`; band 1.50-2.60 m (fitted
+from 1.40 m), every state settled on the realistic stall branch marched DOWN, stall
+10.27 deg measured from that branch's onset, optimiser's upper alpha 7.27 deg
+(`validity.angle_of_attack_deg`, the stall less `fit.stall_margin_deg`),
 tension floor `validity.min_tether_force_n` 602 N, roll gain k(u_p) quadratic;
 the factory clips the optimizer's depower box to `validity.input_depower`,
-its steering box to `validity.input_steering_abs_max` (0.143, the 0.20 m the
-steering chains reached) and raises the tension bound to the floor;
+its steering box to `validity.input_steering_abs_max` (0.357, the longer tapes' 0.50 m; at
+1.50 m the chains stop at a failed trim at 0.45 m, a limit per tape is still open) and raises the tension bound to the floor;
 `fit.fidelities.wireframe.flight_match` records the model tapes that reproduce
 the 2019 reel-out / reel-in, to be updated whenever the match is redone, and
 `identification.controls.flight_depower_match` reads it so flight depower is
@@ -254,21 +257,18 @@ the match required: the flown tape is not known from the logs, the 1.7 / 2.1
 m that stood in `controls` until 2026-10-29 was the previous model's match;
 the cycle and flight scripts pass it, `cycle_profile.yaml` is stated in it) and
 `rom_config_aerostructural_flight_corrected.yaml` (NOT YET REVIEWED by the
-author -- provisional, check it thoroughly before relying on it: the 2019
-flight correction of that ROM, redone 2026-10-29 with the flight depower read through
-flight_match, on the 2019 EKF re-run with the bridle in the kite mass;
-hold-out cycles 60-67, median tension / v_tau error: reel-out +3.7 % / +1.0 %
-(uncorrected +3.8 % / +2.3 %), reel-in +30 % / +6 % (uncorrected +57 % /
-+38 %); the roll gain is ONE scale on the whole k(u_p);
-the method:
-theta_b and a single-input dC_D(u_p, u_s^2) fitted to 2019 flight, cycles 60-67
-held out: `identify_rom_flight_correction.py` (equation error: theta_b from the
-flight LIFT, drag at equal lift) then `refine_rom_flight_output_error.py` (both
-in `examples/5_flight_data/`)
-(output error on the quasi-steady tension and v_tau, with the roll gain set by
-the turn-rate law -- the solved steering regressing 1:1 on the logged steering
--- which edits the file in place; the equation-error values alone do not transfer to the rigid-tether
-quasi-steady solve)). The paper's semi-empirical ROM
+author -- provisional, check it before relying on it: the simulation-only ROM with
+one scale, 1.17, on its whole roll gain, so that the turn rate regressed on the 2019
+flight's has a slope of 1. `examples/5_flight_data/identify_rom_flight_correction.py`
+also identifies `flight_match` (1.95 / 2.48 m, the tapes that best zero the median
+tension and speed errors, logged steering in, lumped tether, training cycles), which
+reads the flight for both ROMs. Hold-out cycles 60-67, median tension / v_tau error:
+simulation-only reel-out +11.2 % / +12.5 %, reel-in +16.2 % / +9.6 %; flight-corrected
++10.0 % / +11.7 %, +16.3 % / +9.5 %. Drag is deliberately not fitted: on the wing's C_D
+it tilts the bridle resultant and raises alpha). The coupled trims carry a 10-element
+Williams tether, which lacks drag against the lumped one (speed +5.5 %, tension +9 %
+at 1.95 m; it converges on the lumped tether with elements), so every ROM solve uses
+the lumped tether. The paper's semi-empirical ROM
 (`rom_config_semi_empirical.yaml`) was removed on 2026-10-07 after the
 comparison in `docs/identification/`; it lives in git history (last at
 commit bad8a9b).
@@ -293,7 +293,9 @@ pitch theta_b(u_p) in the PAPER sign, `alpha_w = alpha_b - theta_b`;
 `gain_roll_steering` is k_phi,s (`phi_a,w = k u_s`, asymmetric steering), made
 depower-dependent by the optional `gain_roll_steering_depower: [k1, k2, ...]`
 (`k(u_p) = gain_roll_steering + k1 u_p + k2 u_p^2 ...`, `Kite.gain_roll_steering_for`;
-absent = the paper's constant gain); both
+absent = the paper's constant gain) and steering-dependent by the optional
+`gain_roll_steering_squared: [s0, s1, ...]` (`k + (s0 + s1 u_p ...) u_s^2`; the formula is
+`kite.roll_gain`); both
 angles are taken in the paper's App. D apparent-wind frame, which
 `Kite._force_in_wind_frame` builds from the v_a VECTOR (until 2026-10-06 an
 Euler-angle frame with a mirrored yaw sign put the bridle pitch 2-3 deg off
@@ -314,7 +316,7 @@ included, since 2026-10; before, every C_D term was |monomial|, a kink at 0);
 `abs: true` on a term asks for |monomial| and is kept only for the legacy
 steering-drag terms. `u_s` is the STANDARDISED steering of
 `identification.controls` (1.4 m x u_s = steering-tape half-difference; 2019
-V3 u_s = -kcu/200, KCU limit +-0.175) in every V3 file and in
+V3 u_s = -kcu/100, KCU limit +-0.35) in every V3 file and in
 DEFAULT_OPTI_LIMITS.
 `aerodynamics.params.angle_of_attack_stall` is the ROM's stall angle; the
 optimiser's `sim_parameters.stall_margin_deg` keeps alpha that far below it at

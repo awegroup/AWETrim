@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+### LEI-V3 re-identified on the realistic stall branch
+
+- **New `rom_config_aerostructural.yaml` and flight-corrected ROM** (the latter not
+  reviewed yet), on the merged sweep and VSM changes and the kcu/100 steering scale.
+  Band 1.50-2.60 m, fitted from 1.40 m. Against the shipped ROM's tension at 5 m/s wind:
+  +23 % at 1.50 m, +4 % at 1.95 m, +3 % above 2.10 m.
+- **The sweep settles every state on the stall branch marched down**
+  (`settle_on_down_branch`, on by default) and marches its polars past the stall and back
+  (`polar_d_alpha_deg` to +22 deg). Marching up stays attached about 6 deg past it.
+- **The stall angle is measured, not fitted**: the median 5 % lift-drop onset of the
+  states near their stall (`fit.stall_onset_tapes`), 10.27 deg. The coefficients are fitted
+  up to 8 deg past it, on states below `fit.max_stalled_fraction`. Past the stall the ROM
+  no longer reproduces the lift drop.
+- **`validity.angle_of_attack_deg` now states what may be flown**: its upper end is the
+  stall less `fit.stall_margin_deg`, 7.27 deg, not how far the data reach. The optimiser's
+  alpha room at the powered end is small: the 1.50 m trim sits near 6.5 deg.
+- **Steering chains run past the stall stop**, to 0.50 m or a state that does not converge
+  (`steering.max_stalled_fraction`). At 1.50 m they end at a failed trim at 0.45 m.
+- **The roll gain depends on the steering**: `gain_roll_steering_squared: [s0, s1, ...]`,
+  `k + s(u_p) u_s^2`, one formula in `kite.roll_gain`. Absent = as before.
+- **The trim's Newton solve returns its best iterate**, not its last, which ended six chains
+  at a residual it had already passed.
+- **The flight correction is now the tapes and one gain scale.**
+  `identify_rom_flight_correction.py` identifies `flight_match`, 1.95 / 2.48 m, and a scale of
+  1.17 on the roll gain, on the ROM's own solve with the logged steering. The fits of
+  `theta_b` and `dC_D` and `refine_rom_flight_output_error.py` are gone: reel-in tension on
+  the held-out cycles went from +32 % to +16 %, reel-in speed from +7 % to +10 %.
+- New `plot_identification.py`. A fit with no polar
+  sample left now stops. The geometry-cache move retries when Windows refuses it.
+- `docs/identification/rom_aerostructural.tex` rewritten around the method.
+
+- **The 2019 steering scale is `u_s = -kcu/100`, as in 2025** (was `/200`): the
+  flown +-35 % is 0.49 m of half-difference, `u_s` +-0.35. With it, the zero offset
+  is -0.0329 m of tape (was -0.01645 m, the same in KCU counts), `system.yaml`'s
+  steering range +-0.35 and rate +-0.29 /s, and `DEFAULT_OPTI_LIMITS` +-0.35. The
+  ROM's `validity.input_steering_abs_max` still clips the optimizer's box. Anything
+  fitted to 2019 steering on the old scale is stale:
+  `rom_config_aerostructural_flight_corrected.yaml` (roll gain, steering drag) must
+  be redone.
+
 - **VSM is pinned to the release `v2.3.0`** instead of the develop commit `ae5515c`:
   `src/VSM/core` and the solver are unchanged between the two.
 

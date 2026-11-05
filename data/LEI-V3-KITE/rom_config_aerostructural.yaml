@@ -6,8 +6,8 @@ metadata:
     coupled VSM + Billow (wireframe) solutions at the centre of the wind window (gravity
     off), no flight data.'
   identified_by: examples/3_rom_identification/identify_rom_aerostructural.py
-  identified_on: '2026-10-29'
-  source: 'run_identification_sweep.py: 235 anchors (coupled trims) plus 1397 frozen-shape
+  identified_on: '2026-11-05'
+  source: 'run_identification_sweep.py: 444 anchors (coupled trims) plus 6661 frozen-shape
     polar samples'
   control_convention: u_p is the power-tape length l_dp [m]; u_s is the steering-tape
     half-difference / 1.4 m.
@@ -16,106 +16,96 @@ metadata:
     KCU length/diameter/turbine through awetrim.aerodynamics.kcu_drag, at the bridle
     point. The tether drag is the ROM tether model''s.'
   fit_quality:
-    CL_cv_rmse: 0.041216155004155805
-    CD_cv_rmse: 0.004244050246708543
-    theta_b_rms_deg: 0.19179110353257314
-    roll_rms_deg: 0.05427765036556834
+    CL_cv_rmse: 0.03956866017585244
+    CD_cv_rmse: 0.0067245869001907
+    theta_b_rms_deg: 0.19920944413488473
+    roll_rms_deg: 0.04443684920985977
 controls:
   input_depower:
-    powered: 1.3
+    powered: 1.5
     depowered: 2.6
 validity:
   angle_of_attack_deg:
   - -7.0
-  - 28.0
+  - 7.27
   input_depower:
-  - 1.3
+  - 1.5
   - 2.6
-  input_steering_abs_max: 0.1429
+  input_steering_abs_max: 0.3571
   min_tether_force_n: 602.0
 aerodynamics:
   model: coeffs
   reference_area: 19.75
   kcu_drag_in_coefficients: false
   params:
-    CL0: 0.6634252201643439
-    CD0: 0.09991064438574407
-    angle_pitch_tether_0: -0.3537740707616797
-    slope_angle_pitch_tether_depower: 0.249126112389575
-    gain_roll_steering: 1.5380122472696431
+    CL0: 0.597767234185764
+    CD0: 0.0892101549026935
+    angle_pitch_tether_0: -0.339795440362184
+    slope_angle_pitch_tether_depower: 0.24149994044139636
+    gain_roll_steering: 0.8465551667684714
     gain_roll_steering_depower:
-    - -1.9826490595169153
-    - 0.46832300928228254
-    angle_of_attack_stall: 0.23561944901923448
-    width_stall: 0.008726646259971648
+    - -1.14537533755902
+    - 0.2469981071255628
+    gain_roll_steering_squared:
+    - -0.8452575544834191
+    - 0.6255664637195684
+    angle_of_attack_stall: 0.17929417882367096
+    width_stall: 0.017453292519943295
   coefficients:
     CL:
+    - var: alpha
+      power: 1
+      coef: 4.417703387460008
+    - vars:
+        stall: 1
+        alpha: 2
+      coef: -4.196591654646768
     - vars:
         alpha: 1
+        u_s: 2
+      coef: -6.239607710799857
+    - var: u_s
+      power: 2
+      coef: -4.848732184393723
+    - var: alpha
+      power: 2
+      coef: -6.923212318739559
+    - vars:
+        stall: 1
         u_p: 1
-      coef: 0.48105642506748053
+      coef: 0.036645011584245435
+    - var: u_p
+      power: 2
+      coef: -0.033406991272491596
+    - vars:
+        u_p: 1
+        u_s: 2
+      coef: 1.8197550295778402
     - vars:
         alpha: 2
         u_p: 1
-      coef: -1.2378700700404468
-    - var: u_p
-      power: 1
-      coef: -0.1103454054075795
-    - var: stall
-      power: 1
-      coef: 1.2261317754293828
-    - var: alpha
-      power: 1
-      coef: 3.261705608648631
-    - vars:
-        alpha: 1
-        u_s: 2
-      coef: -13.30792724487698
-    - vars:
-        stall: 1
-        u_s: 2
-      coef: -8.671866827144711
-    - vars:
-        stall: 1
-        alpha: 1
-      coef: -4.990789977989704
-    - var: u_s
-      power: 2
-      coef: -1.530928491601441
+      coef: 1.909052904548726
     CD:
     - var: alpha
       power: 2
-      coef: 1.8969803043190523
-    - var: alpha
-      power: 1
-      coef: 0.23935403741473682
-    - vars:
-        alpha: 1
-        u_s: 2
-      coef: -4.9165713820231405
-    - vars:
-        stall: 1
-        u_s: 2
-      coef: 0.5500442199968468
-    - vars:
-        stall: 1
-        alpha: 2
-      coef: -2.5866452264933404
-    - vars:
-        stall: 1
-        alpha: 1
-      coef: 1.3741931562984313
-    - var: stall
-      power: 1
-      coef: -0.19197346866469855
+      coef: 1.6201663957133507
     - vars:
         u_p: 1
         u_s: 2
-      coef: -0.1646384824044203
-    - var: u_p
-      power: 2
-      coef: -0.0015221709895366507
+      coef: -0.06671176375118532
+    - vars:
+        alpha: 1
+        u_s: 2
+      coef: -1.8409646764822336
+    - var: alpha
+      power: 1
+      coef: 0.2838734581542694
+    - vars:
+        alpha: 1
+        u_p: 1
+      coef: -0.06677090951392811
+    - var: stall
+      power: 1
+      coef: 0.007315888925396749
 tether:
-  # The tether a ROM run flies with (system.factory.load_rom_tether):
-  # rigid_lumped, the straight tether of the point-mass model.
   model: rigid_lumped

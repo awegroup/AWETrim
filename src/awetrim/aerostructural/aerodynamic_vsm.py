@@ -1172,13 +1172,26 @@ def body_centre_panel_axes(body_aero) -> np.ndarray:
     return compute_centre_panel_axes(nodes, np.arange(n), np.arange(n, 2 * n)).axes
 
 
-def run_frozen_alpha_polar_about_trim(
+def run_frozen_alpha_polar_about_trim(body_aero, solver, d_alpha_deg, **kwargs) -> list[dict]:
+    """Rows of :func:`frozen_alpha_polar_and_down_circulation`."""
+    return frozen_alpha_polar_and_down_circulation(body_aero, solver, d_alpha_deg, **kwargs)[0]
+
+
+def down_branch_circulation(body_aero, solver, d_alpha_deg, **kwargs) -> np.ndarray:
+    """The circulation at the trim's own inflow on the DOWN branch: seeding the
+    coupled solve with it puts the state on the realistic stall branch, where a
+    state walked up in angle of attack may have stayed attached past the stall."""
+    return frozen_alpha_polar_and_down_circulation(body_aero, solver, d_alpha_deg, **kwargs)[1]
+
+
+def frozen_alpha_polar_and_down_circulation(
     body_aero,
     solver,
     d_alpha_deg,
     *,
     body_axes: np.ndarray | None = None,
-) -> list[dict]:
+    gamma_trim: np.ndarray | None = None,
+) -> tuple[list[dict], np.ndarray | None]:
     """Angle-of-attack polar of a TRIMMED body on its frozen shape.
 
     ``body_aero`` is the body a trim returned (``coupled_solver.main``'s
@@ -1192,9 +1205,13 @@ def run_frozen_alpha_polar_about_trim(
     trim's own aerodynamics: compare its force with the trim's
     ``total_aero_force_vec`` to check the polar is about the right state.
 
-    The solves march outward from ``d_alpha = 0`` in both directions, each
-    seeded with its neighbour's circulation, and land on the attached solution
-    whenever one exists (``solve_vsm_attached_first``, as the trims do).
+    The circulation problem is hysteretic near stall: marching up in alpha stays
+    attached far past the stall of the same wing marched down (LEI-V3, 1.40 m:
+    C_L max 1.46 at 16 deg up, 1.15 at 10 deg down), and the stall that agrees
+    with reality is the DOWN branch. So the solves march up from ``d_alpha = 0``
+    to the largest increment, each seeded with its neighbour's circulation, only
+    to get past the stall, and then down to the smallest: every row but the 0 one
+    is of the march down. The 0 row is the trim's own solve.
 
     Args:
         body_aero: the trimmed VSM body (not modified; a copy is solved).
@@ -1202,9 +1219,14 @@ def run_frozen_alpha_polar_about_trim(
         d_alpha_deg: angle-of-attack increments [deg]; 0 is added if absent.
         body_axes: FRD rows in the body's frame; default
             :func:`body_centre_panel_axes` of ``body_aero``.
+        gamma_trim: the trim's circulation. The 0 step is then one plain VSM
+            solve seeded with it, which returns the trim's own force; a cold
+            one can land on another solution of the same inflow (~1 % lower
+            force on the LEI-V3), and the polar would not be about the trim.
 
     Returns:
-        One dict per increment, sorted by it: ``d_alpha_deg``,
+        ``(rows, gamma_down)``, ``gamma_down`` the march down's circulation at
+        ``d_alpha = 0``. ``rows``: one dict per increment, sorted by it: ``d_alpha_deg``,
         ``alpha_body_deg`` (FRD angle of attack of the freestream),
         ``va_world`` and ``force_world`` (VSM wing force, bridle-line drag
         included when the body carries the bridle) as 3-vectors in the body's
@@ -1237,7 +1259,7 @@ def run_frozen_alpha_polar_about_trim(
     steps = np.unique(steps)
     body = copy.deepcopy(body_aero)
 
-    def solve_at(d_alpha, seed):
+    def solve_at(d_alpha, seed, plain=False):
         alpha = alpha0 + np.deg2rad(d_alpha)
         v_new = speed * np.array(
             [np.cos(alpha) * np.cos(beta0), np.sin(beta0), np.sin(alpha) * np.cos(beta0)]
@@ -1248,7 +1270,10 @@ def run_frozen_alpha_polar_about_trim(
                 body, va, body_rates=rate, body_axis=axis,
                 reference_point=r0, rates_in_body_frame=True,
             )
-            res = solve_vsm_attached_first(solver, body, seed, accepts_seed=accepts_seed)
+            res = (
+                solver.solve(body, gamma_distribution=np.array(seed, dtype=float)) if plain
+                else solve_vsm_attached_first(solver, body, seed, accepts_seed=accepts_seed)
+            )
             force = np.array([res["Fx"], res["Fy"], res["Fz"]], dtype=float)
             converged = bool(res.get("gamma_converged", True))
             gamma = res.get("gamma_distribution")
@@ -1267,13 +1292,16 @@ def run_frozen_alpha_polar_about_trim(
         return row, (gamma if converged else seed)
 
     rows = {}
-    centre, centre_gamma = solve_at(0.0, None)
+    centre, seed = solve_at(0.0, gamma_trim, plain=gamma_trim is not None)
+    for d_alpha in steps[steps > 0.0]:
+        rows[float(d_alpha)], seed = solve_at(float(d_alpha), seed, plain=True)
+    gamma_down = seed if steps.max() == 0.0 else None
+    for d_alpha in steps[steps < steps.max()][::-1]:
+        rows[float(d_alpha)], seed = solve_at(float(d_alpha), seed, plain=True)
+        if d_alpha == 0.0:
+            gamma_down = seed
     rows[0.0] = centre
-    for branch in (steps[steps > 0.0], steps[steps < 0.0][::-1]):
-        seed = centre_gamma
-        for d_alpha in branch:
-            rows[float(d_alpha)], seed = solve_at(float(d_alpha), seed)
-    return [rows[float(d)] for d in steps]
+    return [rows[float(d)] for d in steps], gamma_down
 
 
 def plot_aero_forces_with_frames(

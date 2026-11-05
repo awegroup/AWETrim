@@ -131,3 +131,16 @@ def test_identification_settings_merge_the_fidelity_block(tmp_path):
     assert billow["steering"]["power_tape_lengths"] == [2.1]
     with pytest.raises(ValueError):
         ds.identification_settings(path, "sweep", "pss")
+
+
+def test_stall_onset_is_where_the_lift_leaves_the_attached_curve():
+    d_alpha = np.arange(-6.0, 12.0, 1.0)
+    lift = 1.0 + 0.05 * d_alpha
+    lift[d_alpha >= 4.0] *= 0.8
+    assert 3.0 < ds.stall_onset_increment(d_alpha, lift) < 4.0
+
+
+def test_a_polar_without_a_stall_has_no_onset():
+    d_alpha = np.arange(-6.0, 12.0, 1.0)
+    assert np.isnan(ds.stall_onset_increment(d_alpha, 1.0 + 0.05 * d_alpha))
+    assert np.isnan(ds.stall_onset_increment(np.array([-1.0, 0.0]), np.array([1.0, 1.05])))
