@@ -10,6 +10,7 @@ from awetrim.environment.wind_factory import create_wind_model
 from awetrim.system.kite import Kite
 from awetrim.system.tether import RigidLumpedTether
 from awetrim.timeseries.phase import Phase
+from awetrim.timeseries.seed_sizing import size_reelout_seed
 from awetrim.system.factory import create_system_model_from_yaml
 from awetrim.kinematics.parametrized_patterns import (
     make_bspline_path_parameters_from_named_curve,
@@ -163,6 +164,8 @@ def main(run_plots=False, rom=None, system="optimisation", results_dir=None,
 
     wind_model = build_wind_model(**WIND_CONFIG)
     system_model.wind = wind_model
+    # The kite must hold the eight's turns at this wind.
+    size_reelout_seed(system_model, REELOUT_CONFIG)
     reelout = Phase(
         system_model=system_model,
         pattern_config=REELOUT_CONFIG,
@@ -186,6 +189,8 @@ def main(run_plots=False, rom=None, system="optimisation", results_dir=None,
     # plt.plot(t, np.degrees(aoa))
     # plt.show()
     solution = reelout.run_simulation_opti(optimization_params=optimization_params)
+    if solution is None:
+        raise SystemExit("The optimization did not converge; nothing written.")
     depower_prefix = "depower_" if "input_depower" in optimization_params else ""
     filename = f"{depower_prefix}downloop_optimized_config_wind_{WIND_CONFIG['speed_wind_at_100']}_z0_{WIND_CONFIG['z0']}_{WIND_CONFIG['model_type']}_spline.yaml"
 

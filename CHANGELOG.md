@@ -25,6 +25,17 @@
 - **`sim_parameters.slow_path_rate`**: the march of a path parameter spanning a whole
   cycle keeps its warm start. Off for reel-out, whose solves are unchanged.
 - **The tracked LEI-V3 cycle seed is regenerated with `--size`.**
+- **`helix_pattern.py` and `downloop_pattern.py` size their path the same way**
+  (`timeseries.seed_sizing.size_reelout_seed`, shared with the server), and report a
+  failed solve. The LEI-V3 helix at 10 m/s now converges in 47 iterations (29.12 kW);
+  its fixed path could not be flown on the new ROM.
+- **Removed `fit_periodic_cycle_config.py --auto`**: `--size` does its job, in a
+  minute instead of 15 or more. It is last at commit 8d88e40.
+- **Removed `--shape experimental`**, the seed fitted to one flown cycle: too rough
+  to trim, refused by the validator on the current ROM, and in need of a flight file
+  that is not in the repository. Last at commit 8d88e40. `cycle_profile.yaml` keeps
+  `flight.year`, which picks the depower match; its other `flight` keys are ignored,
+  and `m_per_second` now raises like any unknown key.
 
 ### LEI-V3 re-identified on the realistic stall branch
 
