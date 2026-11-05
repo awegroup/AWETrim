@@ -11,6 +11,7 @@ from awetrim.kinematics.parametrized_patterns import (
     periodic_bspline_basis_matrices,
 )
 from awetrim.kinematics.steering_limited_eight import (
+    BlendedTurnLimit,
     CourseTurnLimit,
     fit_spline_to_turn_limit,
     spline_turn_geometry,
@@ -129,3 +130,33 @@ def test_fit_holds_the_limit_on_the_spline_and_stays_an_eight():
     B0 = periodic_bspline_basis_matrices(np.linspace(0.0, 1.0, 800, endpoint=False), M)[0]
     assert (B0 @ beta).min() >= 0.2 - 1e-3
     assert count_self_crossings(B0 @ phi, B0 @ beta) == 1
+
+
+def test_blended_limit_goes_from_first_to_second_along_the_path():
+    first = CourseTurnLimit(lambda course, sign: np.full_like(course, 20.0), r0=200.0, margin=1.0)
+    second = CourseTurnLimit(lambda course, sign: np.full_like(course, 40.0), r0=200.0, margin=1.0)
+    limit = BlendedTurnLimit(first, second, lambda u: np.asarray(u) >= 0.5)
+    course = np.zeros(2)
+    sign = np.ones(2)
+    u = np.array([0.25, 0.75])
+
+    assert limit.required_radius(course, sign, u) == pytest.approx([20.0, 40.0], rel=1e-3)
+    assert limit.scale == first.scale
+    up, lo = limit.bounds(ca.DM(course), u)
+    assert np.asarray(up).ravel() == pytest.approx(200.0 / np.array([20.0, 40.0]), rel=1e-3)
+    assert np.asarray(lo).ravel() == pytest.approx(200.0 / np.array([20.0, 40.0]), rel=1e-3)
+
+
+@pytest.mark.slow
+def test_fit_without_mirror_keeps_m_and_holds_a_blended_limit():
+    seed = circle_path(0.2, direction=-1.0, M=20)
+    tight = CourseTurnLimit(lambda course, sign: np.full_like(course, 30.0), r0=200.0)
+    wide = CourseTurnLimit(lambda course, sign: np.full_like(course, 45.0), r0=200.0)
+    limit = BlendedTurnLimit(tight, wide, lambda u: np.clip(2.0 * np.asarray(u) - 0.5, 0.0, 1.0))
+
+    fitted, report = fit_spline_to_turn_limit(seed, limit, M=None, mirror=False, n_samples=800)
+
+    assert fitted["M"] == 20
+    assert report["ratio"] >= 0.99
+    phi = np.array(fitted["C_phi"])
+    assert phi[10:] != pytest.approx(-phi[:10])  # not the mirror rows

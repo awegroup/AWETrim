@@ -615,9 +615,10 @@ class InitRequest(BaseModel):
     kite_sized_seed: bool = Field(
         default=True,
         description="Fit the cycle config's starting eight to the turns the "
-        "kite can hold at its steering limit at this wind (x1.2 margin) when "
-        "it is tighter than that somewhere; ignored when trajectory or "
-        "initial_guess is given. The init reply says whether it was applied.",
+        "kite can hold at its steering limit at this wind (x1.2 margin, x1.4 "
+        "when the first solve does not converge) when it is tighter than that "
+        "somewhere; ignored when trajectory or initial_guess is given. The "
+        "init reply says whether it was applied.",
     )
 
 

@@ -103,7 +103,13 @@ class CourseTurnLimit:
         self.lower = ca.interpolant("turn_limit_lower", "bspline", [grid], tile(k_minus))
         self.scale = float(k_plus.max())
 
-    def required_radius(self, course, sign):
+    def bounds(self, course, u):
+        """``(K_+, K_-)`` at the CasADi ``course`` column of the samples ``u``
+        of the path (unused here: the bound is the same along the path)."""
+        n = course.shape[0]
+        return self.upper.map(n)(course.T).T, self.lower.map(n)(course.T).T
+
+    def required_radius(self, course, sign, u=None):
         """The bound as a radius [m] (margin included), NumPy, for checks."""
         course = np.mod(np.asarray(course, dtype=float) + np.pi, 2.0 * np.pi) - np.pi
         row = course.reshape(1, -1)
@@ -113,6 +119,30 @@ class CourseTurnLimit:
             np.asarray(self.lower.map(row.size)(row)).ravel(),
         )
         return self.r0 / np.maximum(k, 1e-12)
+
+
+class BlendedTurnLimit:
+    """Curvature bounds that change along the path: ``weight(u)`` in [0, 1]
+    goes from ``first`` to ``second`` (:class:`CourseTurnLimit`), e.g. a full
+    cycle from its reel-out to its reel-in depower."""
+
+    def __init__(self, first, second, weight):
+        self.first, self.second, self.weight = first, second, weight
+        self.r0 = first.r0
+        self.scale = max(first.scale, second.scale)
+
+    def bounds(self, course, u):
+        w = ca.DM(np.asarray(self.weight(u), dtype=float))
+        up_a, lo_a = self.first.bounds(course, u)
+        up_b, lo_b = self.second.bounds(course, u)
+        return (1.0 - w) * up_a + w * up_b, (1.0 - w) * lo_a + w * lo_b
+
+    def required_radius(self, course, sign, u=None):
+        w = np.asarray(self.weight(u), dtype=float)
+        k = (1.0 - w) / self.first.required_radius(course, sign) + w / self.second.required_radius(
+            course, sign
+        )
+        return 1.0 / k
 
 
 def resample_periodic_path(path_parameters, M, n_fit=600):
@@ -135,6 +165,7 @@ def fit_spline_to_turn_limit(
     limit,
     *,
     M=16,
+    mirror=True,
     el_min=None,
     el_max=MAX_ELEVATION,
     max_move=MAX_MOVE,
@@ -142,41 +173,47 @@ def fit_spline_to_turn_limit(
     speed_floor=0.25,
     precision=6,
 ):
-    """The mirror-symmetric periodic spline nearest ``path_parameters``
-    whose every turn is within ``limit`` (a :class:`CourseTurnLimit`).
+    """The periodic spline nearest ``path_parameters`` whose every turn is
+    within ``limit`` (:class:`CourseTurnLimit` or :class:`BlendedTurnLimit`).
 
-    ``path_parameters`` is a one-eight down-loop periodic spline (s in [0,
-    1], e.g. the server's cycle file), resampled onto ``M`` (even)
-    coefficients. Unknowns: half the coefficients (``C_phi[k + M/2] =
-    -C_phi[k]``, ``C_beta[k + M/2] = C_beta[k]``); objective: the squared
-    coefficient move; rows at ``n_samples`` points: ``-K_-(chi) <= kappa_g
-    <= K_+(chi)`` (normalized), ``el_min <= beta <= el_max`` [rad] and ``|q'|^2 >=
-    speed_floor`` x its seed minimum (without it the bound can be met by
-    stalling the parametrization into a cusp); every coefficient stays
-    within ``max_move`` [rad] of the seed's. Returns ``(path_parameters,
-    report)``; ``report`` has ``converged`` (IPOPT success), ``ratio`` (min
-    over a 4x finer grid of spline radius / required radius, >= 1 = holds),
-    ``turn_radius_min_m``, ``max_move`` (rad, largest coefficient move),
-    ``self_crossings`` (1 for an eight), azimuth/elevation extent.
+    ``path_parameters`` is a down-loop periodic spline (s in [0, 1]), resampled
+    onto ``M`` coefficients (None = its own). With ``mirror`` it is one eight
+    and half the coefficients are the unknowns (``C_phi[k + M/2] = -C_phi[k]``,
+    ``C_beta[k + M/2] = C_beta[k]``, M even); without, all of them (a full
+    cycle). Objective: the squared coefficient move; rows at ``n_samples``
+    points: ``-K_-(chi) <= kappa_g <= K_+(chi)`` (normalized), ``el_min <=
+    beta <= el_max`` [rad] and ``|q'|^2 >= speed_floor`` x its seed minimum
+    (without it the bound can be met by stalling the parametrization into a
+    cusp); every coefficient stays within ``max_move`` [rad] of the seed's.
+    Returns ``(path_parameters, report)``; ``report`` has ``converged`` (IPOPT
+    success), ``ratio`` (min over a 4x finer grid of spline radius / required
+    radius, >= 1 = holds), ``turn_radius_min_m``, ``max_move`` (rad, largest
+    coefficient move), ``self_crossings`` and the azimuth/elevation extent.
     """
     if not path_parameters.get("downloops", True):
         raise ValueError("fit_spline_to_turn_limit expects a down-loop (downloops: True) path")
-    M = int(M)
-    if M % 2:
+    M = int(path_parameters["M"] if M is None else M)
+    if mirror and M % 2:
         raise ValueError(f"M must be even for the mirror rows, got {M}")
     r0 = float(path_parameters["r0"])
-    seed = resample_periodic_path(path_parameters, M)
-    phi0, beta0 = symmetrize_periodic_coefficients(seed["C_phi"], seed["C_beta"])
-    h = M // 2
+    seed = (
+        path_parameters if M == int(path_parameters["M"])
+        else resample_periodic_path(path_parameters, M)
+    )
+    phi0 = np.asarray(seed["C_phi"], dtype=float).ravel()
+    beta0 = np.asarray(seed["C_beta"], dtype=float).ravel()
+    if mirror:
+        phi0, beta0 = symmetrize_periodic_coefficients(phi0, beta0)
+    h = M // 2 if mirror else M
     n = int(n_samples)
 
     u = np.linspace(0.0, 1.0, n, endpoint=False)
     B0n, B1n, B2n = periodic_bspline_basis_matrices(u, M)
-    B0, B1, B2 = ca.DM(B0n), ca.DM(B1n), ca.DM(B2n)
+    B0, B1, B2 = (ca.sparsify(ca.DM(B)) for B in (B0n, B1n, B2n))
     a = ca.MX.sym("a", h)
     b = ca.MX.sym("b", h)
-    C_phi = ca.vertcat(a, -a)
-    C_beta = ca.vertcat(b, b)
+    C_phi = ca.vertcat(a, -a) if mirror else a
+    C_beta = ca.vertcat(b, b) if mirror else b
     beta = ca.mtimes(B0, C_beta)
     dphi, dbeta = ca.mtimes(B1, C_phi), ca.mtimes(B1, C_beta)
     ddphi, ddbeta = ca.mtimes(B2, C_phi), ca.mtimes(B2, C_beta)
@@ -184,8 +221,7 @@ def fit_spline_to_turn_limit(
     dsigma = ca.sqrt(speed2)
     kappa = geodesic_curvature_numerator(beta, dphi, dbeta, ddphi, ddbeta, dsigma, ca) / dsigma**3
     course = ca.atan2(dphi * ca.cos(beta), dbeta)
-    k_up = limit.upper.map(n)(course.T).T
-    k_lo = limit.lower.map(n)(course.T).T
+    k_up, k_lo = limit.bounds(course, u)
 
     seed_speed2 = (B1n @ beta0) ** 2 + ((B1n @ phi0) * np.cos(B0n @ beta0)) ** 2
     floor = float(speed_floor) * float(seed_speed2.min())
@@ -197,11 +233,15 @@ def fit_spline_to_turn_limit(
     g = ca.vertcat(*rows)
     x = ca.vertcat(a, b)
     x_ref = np.r_[phi0[:h], beta0[:h]]
+    options = {"ipopt.print_level": 0, "print_time": 0, "ipopt.sb": "yes",
+               "ipopt.max_iter": 500, "ipopt.tol": 1e-8}
+    if not mirror:
+        # A full cycle's M coefficients: the exact Hessian is too slow to build.
+        options["ipopt.hessian_approximation"] = "limited-memory"
     solver = ca.nlpsol(
         "turn_limit_fit", "ipopt",
         {"x": x, "f": ca.sumsqr(x - x_ref), "g": g},
-        {"ipopt.print_level": 0, "print_time": 0, "ipopt.sb": "yes",
-         "ipopt.max_iter": 500, "ipopt.tol": 1e-8},
+        options,
     )
     sol = solver(x0=x_ref, lbx=x_ref - float(max_move), ubx=x_ref + float(max_move),
                  ubg=np.zeros(g.shape[0]))
@@ -210,12 +250,13 @@ def fit_spline_to_turn_limit(
 
     a_s, b_s = xs[:h], xs[h:]
     out = {**seed,
-           "C_phi": np.round(np.r_[a_s, -a_s], int(precision)).tolist(),
-           "C_beta": np.round(np.r_[b_s, b_s], int(precision)).tolist(),
+           "C_phi": np.round(np.r_[a_s, -a_s] if mirror else a_s, int(precision)).tolist(),
+           "C_beta": np.round(np.r_[b_s, b_s] if mirror else b_s, int(precision)).tolist(),
            "s_init": 0.0, "s_final": 1.0, "downloops": True}
+    u_c = np.linspace(0.0, 1.0, 4 * n, endpoint=False)
     course_c, radius_c, sign_c = spline_turn_geometry(out, r0, n=4 * n)
-    ratio = radius_c / limit.required_radius(course_c, sign_c)
-    B0c = periodic_bspline_basis_matrices(np.linspace(0.0, 1.0, 4 * n, endpoint=False), M)[0]
+    ratio = radius_c / limit.required_radius(course_c, sign_c, u_c)
+    B0c = periodic_bspline_basis_matrices(u_c, M)[0]
     az_c, el_c = B0c @ np.asarray(out["C_phi"]), B0c @ np.asarray(out["C_beta"])
     report = {
         "converged": bool(stats["success"]),
@@ -223,10 +264,11 @@ def fit_spline_to_turn_limit(
         "iterations": int(stats.get("iter_count", -1)),
         "ratio": float(ratio.min()),
         "course_binding": float(course_c[int(np.argmin(ratio))]),
+        "s_binding": float(u_c[int(np.argmin(ratio))]),
         "turn_radius_min_m": float(radius_c.min()),
         "max_move": float(np.max(np.abs(xs - x_ref))),
         "self_crossings": int(count_self_crossings(az_c, el_c)),
-        "azimuth_max": float(az_c.max()),
+        "azimuth_max": float(np.max(np.abs(az_c))),
         "elevation_range": (float(el_c.min()), float(el_c.max())),
         "M": M,
     }

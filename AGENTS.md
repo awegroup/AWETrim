@@ -90,14 +90,18 @@ src/awetrim/
                          CourseTurnLimit (signed curvature bounds per course,
                          mirror-symmetric, from required(course, sign), e.g.
                          system.turn_radius.TurnRadiusTable.radius, x margin);
+                         BlendedTurnLimit goes from one such limit to another
+                         along the path (a cycle's reel-out to reel-in depower);
                          fit_spline_to_turn_limit moves the control points of
-                         a one-eight down-loop spline the least (IPOPT, half
-                         the coefficients as unknowns, height + speed floors,
-                         MAX_MOVE trust box) so the SPLINE holds it;
+                         a down-loop spline the least (IPOPT, height + speed
+                         floors, MAX_MOVE trust box) so the SPLINE holds it:
+                         one eight with half the coefficients as unknowns, or
+                         mirror=False for a full cycle (all of them, L-BFGS);
                          spline_turn_geometry checks it. The kernels
                          geodesic_curvature_numerator (also Kinematics) and
                          heading_rate_turn live in parametrized_patterns.
-                         Reel-out only so far: full-cycle seeds do not use it
+                         Full-cycle seeds use it through
+                         fit_periodic_cycle_config.py --size
   timeseries/        ✅  PhaseParameterized, ReeloutSimple, ReelinSimple, Cycle
                          (opti_phase sim_parameters.periodic_wrap: the seam
                          interval node N-1 -> node 0 of a one-period periodic
@@ -121,6 +125,11 @@ src/awetrim/
                          dependent and their multipliers not unique; the
                          clean fix is elimination (declare only the first
                          half as variables) -- open follow-up.
+                         sim_parameters.slow_path_rate: the march for a path
+                         parameter spanning a whole cycle (s_dot ~0.005): IPOPT
+                         keeps the warm start (bound_push, bound_frac 1e-8) and
+                         s_dot is not floored at 0.2; cycle seeds and
+                         run_full_cycle_opti.py set it, reel-out must not.
                          sim_parameters.fix_depower_profile: per-node depower
                          held at its warm start (the full-cycle closing
                          stage). sim_parameters.depower_anchor_weight: the
@@ -174,10 +183,15 @@ src/awetrim/
                          InitRequest.kite_sized_seed (default on, echoed;
                          never for a client trajectory or initial_guess):
                          the configured eight is fitted at /init to the turns
-                         the kite holds at this wind (SEED_TURN_MARGIN 1.2)
-                         when it is tighter somewhere; a failed fit keeps it,
-                         a cold solve that fails from the fitted seed retries
-                         the configured one.
+                         the kite holds at this wind (SEED_TURN_MARGINS 1.2)
+                         when it is tighter somewhere; a failed fit keeps it.
+                         A cold first solve that fails (COLD_MAX_ITER 300 per
+                         solve) retries the seed at margin 1.4, then a cold
+                         solve at COLD_WIND_OFFSETS stepped warm to the wind
+                         asked, then the configured seed. Each retry runs on a
+                         NEW SystemModel (_renew_system_model): an NLP leaves
+                         its variables in the model it was built on and
+                         solve_quasi_steady then raises on them.
                          tests/server/test_session_solve_slow.py runs it
                          unmocked on the kite's default ROM.
                          Co-sim structs: WinchParams {mode, k_v, f_min,
@@ -274,6 +288,8 @@ comparison in `docs/identification/`; it lives in git history (last at
 commit bad8a9b).
 
 Full-cycle optimisation scripts (`optimization/cycle/`): `fit_periodic_cycle_config.py`
+(`--size` fits the path to the turns the kite holds at the wind, SIZE_MARGINS 1.4-2.0, first complete march inside the steering limit at the kite's own gain; `--auto` is the slower knob search)
++ `run_cycle_power_curve.py` (the two scripts over a range of winds: outward from a start wind, cold until a wind stalls, then `--continue-from` the last converged one; resumes)
 + `run_full_cycle_opti.py` (multi-lobe cycle; closed through the `periodic_wrap` seam, the closing stage uses the one-sided `close_radial_cycle` pin; step boxes ±0.15 rad / ±50 m in the closing stage, 4x that in the power stage and polish; `--step-scale` scales the latter; the closing stage holds the depower profile, except on a `--continue-from` run, where it anchors it with `depower_anchor_weight` 0.05 so a wind continuation can depower into the rated region; the power stages carry the smoothness term at `REG_FRACTION` 0.1 of the objective, without which the reel-in of a kite steering at its band zigzags. Roll-gain assist (`awetrim.timeseries.roll_assist`, used by both scripts and the server's cold solve): when the seed does not trim at the kite's roll gain, it is marched at 1.25-2 x k(u_p) (`Kite.gain_roll_scale`, not a ROM parameter) and the optimizer inserts continuation stages that halve the excess back to 1 (midpoint retry on failure) before the power stages, so a kite with little roll authority (the bare LEI-V3 ROM, x1.75 at 6 m/s) still starts at the reel-in top). Studies
 built on them live in `optimization/studies/` (see its README), e.g.
 `run_uploop_eight_opti.py` + `plot_uploop_eight_comparison.py` (ONE slanted up-loop figure eight per period: low lobe

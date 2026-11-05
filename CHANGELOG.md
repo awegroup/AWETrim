@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Trajectory optimisation: seed fitted to the kite, on every wind
+
+- **`fit_periodic_cycle_config.py --size`** fits the seed path to the turns the
+  kite holds at the wind, in about a minute, at the first margin (1.4 to 2.0) whose
+  march is complete and inside the steering limit at the kite's own roll gain. It
+  needs neither `--auto` nor the roll-gain assist, and `--size` replaces `--auto`
+  in the documented commands. LEI-V3 at 8 m/s: 12.92 kW in 375 s, against 12.78 kW
+  in 1432 s through `--auto`.
+- **New `run_cycle_power_curve.py`**: outward from a start wind, cold until a wind
+  stalls, then each wind from the last converged one. LEI-V3 (explog profile, wind
+  at 6 m): converges from 4 to 12 m/s, cold up to 8.5 m/s, about 13.3 kW above 9 m/s;
+  3.5 m/s does not converge either way. The plateau scatters by about +-0.3 kW:
+  these are local optima, and continuing gives 0.15 to 0.2 kW more than a cold solve
+  at 8 and 8.5 m/s.
+- **The reel-out server retries a first solve that does not converge**, each solve
+  capped at 300 iterations: seed at margin 1.4, then a cold solve at a neighbouring
+  wind stepped warm to the one asked, then the configured seed. LEI-V3 (log profile,
+  z0 0.03 m, 3.5 to 12 m/s): per-node depower converges everywhere and holds the
+  rated 29.4 kW from 6.5 m/s up, but for 29.13 kW at 11 m/s; one depower value does
+  not converge at 11.5 and 12 m/s, and falls to about 23 kW above 10 m/s.
+- **`sim_parameters.slow_path_rate`**: the march of a path parameter spanning a whole
+  cycle keeps its warm start. Off for reel-out, whose solves are unchanged.
+- **The tracked LEI-V3 cycle seed is regenerated with `--size`.**
+
 ### LEI-V3 re-identified on the realistic stall branch
 
 - **New `rom_config_aerostructural.yaml` and flight-corrected ROM** (the latter not

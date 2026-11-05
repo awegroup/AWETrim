@@ -691,6 +691,8 @@ def main(
     else:
         validate_full_cycle_config(reelout_config)
     sim = reelout_config["sim_parameters"]
+    # A seed or continuation file written before the key: every cycle has this rate.
+    sim.setdefault("slow_path_rate", True)
     if N_POINTS:
         _downsample_n_points(reelout_config, N_POINTS)
 

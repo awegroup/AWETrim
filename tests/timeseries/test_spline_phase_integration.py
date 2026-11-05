@@ -33,10 +33,10 @@ _S_FINAL = 2.0 * np.pi
 _CURVE_KWARGS = dict(az_amp0=0.32, beta0=0.3, beta_amp0=0.15, downloops=True)
 # The figure test_spline_phase_runs_quasi_steady FLIES node by node (also the
 # generate_spline_config.py default): one the
-# LEI-V3 can fly at 10 m/s inside its ROM's identified steering (|u_s| <= 0.143;
-# 0.133 at most on all three curves, lowest point 0.1 rad above the horizon).
-# The 0.32 / 0.15 rad one at 230 m above needs |u_s| up to 0.47 and post-stall
-# roots (2026-10-29).
+# LEI-V3 can fly at 10 m/s inside its ROM's identified steering (0.18 at most on
+# all three curves, lowest point 0.1 rad above the horizon).
+# 60 nodes: on 30 the step between nodes can land the march on the low-lift root
+# (|u_s| ~2.2, alpha ~-5 deg).
 _FLOWN_R0 = 300.0
 _FLOWN_CURVE_KWARGS = dict(az_amp0=0.65, beta0=0.4, beta_amp0=0.30, downloops=True)
 
@@ -115,7 +115,7 @@ def test_lissajous_and_helix_differ():
 def test_spline_phase_runs_quasi_steady(curve_type):
     from awetrim.timeseries.phase_parametrized import PhaseParameterized
 
-    n_points = 30
+    n_points = 60
     config = _reelout_config(
         curve_type, n_points=n_points, r0=_FLOWN_R0, curve_kwargs=_FLOWN_CURVE_KWARGS
     )
@@ -124,9 +124,9 @@ def test_spline_phase_runs_quasi_steady(curve_type):
     start_state = {
         "t": 0.0,
         "s": _S_INIT,
-        "s_dot": 3.0,
+        "s_dot": 0.3,
         "input_steering": 0.0,
-        "tension_tether_ground": 8.4e4,  # initial guess (N)
+        "tension_tether_ground": 8.4e3,  # initial guess (N)
         "speed_radial": 0.0,
         "distance_radial": config["path_parameters"]["r0"],
     }
