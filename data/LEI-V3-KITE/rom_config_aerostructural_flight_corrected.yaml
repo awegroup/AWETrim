@@ -12,8 +12,8 @@ metadata:
     identified together with the steering drag. Lift polynomial and stall are the
     aerostructural ones.'
   identified_by: examples/5_flight_data/identify_rom_flight_correction.py
-  identified_on: '2026-10-29'
-  source: 'run_identification_sweep.py: 235 anchors (coupled trims) plus 1397 frozen-shape
+  identified_on: '2026-11-05'
+  source: 'run_identification_sweep.py: 444 anchors (coupled trims) plus 6661 frozen-shape
     polar samples'
   control_convention: u_p is the power-tape length l_dp [m]; u_s is the steering-tape
     half-difference / 1.4 m.
@@ -22,10 +22,10 @@ metadata:
     KCU length/diameter/turbine through awetrim.aerodynamics.kcu_drag, at the bridle
     point. The tether drag is the ROM tether model''s.'
   fit_quality:
-    CL_cv_rmse: 0.041216155004155805
-    CD_cv_rmse: 0.004244050246708543
-    theta_b_rms_deg: 0.19179110353257314
-    roll_rms_deg: 0.05427765036556834
+    CL_cv_rmse: 0.03956866017585244
+    CD_cv_rmse: 0.0067245869001907
+    theta_b_rms_deg: 0.19920944413488473
+    roll_rms_deg: 0.04443684920985977
   base_rom: rom_config_aerostructural.yaml
   flight_correction:
     alpha_source: lift
@@ -34,144 +34,149 @@ metadata:
     - 67
     theta_b:
       aerostructural:
-        angle_pitch_tether_0: -0.3537740707616797
-        slope_angle_pitch_tether_depower: 0.249126112389575
+        angle_pitch_tether_0: -0.339795440362184
+        slope_angle_pitch_tether_depower: 0.24149994044139636
       flight:
-        angle_pitch_tether_0: -0.3535229196037927
-        slope_angle_pitch_tether_depower: 0.249126112389575
+        angle_pitch_tether_0: -0.47273297859462515
+        slope_angle_pitch_tether_depower: 0.3095600196095697
       selection_path:
       - - '1'
-        - 0.07184899000681456
-      cv_rmse_deg: 4.116643889668103
+        - 0.06732664592377373
+      - - +u_p
+        - 0.06617818220096913
+      cv_rmse_deg: 3.791730535963316
       invertible_fraction: 1.0
     drag_law: C_D = C_D,AS + dC_D, dC_D single-input terms in u_p, u_s^2
-    dCD_intercept: -0.14395892401651714
+    dCD_intercept: -0.09290777596412586
     dCD_terms:
-      u_s^2: 3.6691121859145377
-      u_p: 0.061710558878276284
+      u_s^2: 0.9374999237168213
+      u_p: 0.041809382190143324
     dCD_selection_path:
     - - '1'
-      - 0.041649995958587885
+      - 0.04217725724842776
     - - +u_s^2
-      - 0.0293109908916069
+      - 0.02821347473676879
     - - +u_p
-      - 0.027130968591664684
-    dCD_cv_rmse: 0.027130968591664684
+      - 0.027240816408463327
+    dCD_cv_rmse: 0.027240816408463327
     roll_gain:
-      gain_roll_steering: 2.5205381714796804
+      gain_roll_steering: 0.9111184816388352
       gain_roll_steering_depower:
-      - -3.249221613177794
-      - 0.7675010544121333
+      - -1.232728449874023
+      - 0.2658356468261421
+      gain_roll_steering_squared:
+      - -0.9097219057494862
+      - 0.6732758702118126
       lag_s: 0.3
-      r2: 0.9135182932146225
-      rms_deg: 1.1601526078613447
-      gain_without_lag: 2.47551296569234
-      gain_free_intercept: 2.517870310804004
-      offset_deg: -0.07699811340523895
+      r2: 0.9163874125616411
+      rms_deg: 1.1400549245904485
+      gain_without_lag: 0.8952753485456995
+      gain_free_intercept: 0.910938847793651
+      offset_deg: -0.010638693441162058
       per_phase:
-        reel-in: 1.929488450853919
-        reel-out: 2.535196906532905
-      n: 17917
+        reel-in: 0.5842757202847544
+        reel-out: 0.9227533982162802
+      n: 17911
     bootstrap:
       angle_pitch_tether_0:
-        std: 0.0024368104617214343
+        std: 0.013929420327033985
         ci95:
-        - -0.3585009135802496
-        - -0.34855051765678535
+        - -0.49868875228327436
+        - -0.44526632114490206
       slope_angle_pitch_tether_depower:
-        std: 0.0
+        std: 0.006308906352984714
         ci95:
-        - 0.249126112389575
-        - 0.249126112389575
+        - 0.2975045275563546
+        - 0.32104463733456207
       gain_roll_steering:
-        std: 0.010743239368104581
+        std: 0.003971453737316004
         ci95:
-        - 2.4998310139064346
-        - 2.542795684231212
+        - 0.9034649721688421
+        - 0.9193253758781557
       'dCD: 1':
-        std: 0.008620118707028734
+        std: 0.009104510505110772
         ci95:
-        - -0.16046588750424362
-        - -0.12703304527982834
+        - -0.11031805361789097
+        - -0.07472783420011593
       'dCD: u_s^2':
-        std: 0.01763195695877192
+        std: 0.004237323889480463
         ci95:
-        - 3.6344695811072953
-        - 3.7045274095556886
+        - 0.9292453704800996
+        - 0.9456943764860689
       'dCD: u_p':
-        std: 0.0035044187272099763
+        std: 0.0037234482173840685
         ci95:
-        - 0.054829692524602555
-        - 0.06845993435864706
+        - 0.03444237742085829
+        - 0.04881321892424643
     dCD_before:
       fit:
         reel-in:
-          median: 0.004603992494184181
-          mean: 0.005693933515046194
-          rms: 0.0245899216567805
+          median: 0.007161332005107622
+          mean: 0.008284663912365115
+          rms: 0.025250871883592475
           n: 3926
         reel-out:
-          median: -0.008613882707055112
-          mean: 0.0006567191258791217
-          rms: 0.045167874770918756
-          n: 13991
+          median: 0.003697730625262713
+          mean: 0.013108507010767963
+          rms: 0.047634895443315936
+          n: 13985
       holdout:
         reel-in:
-          median: 0.008671800846028269
-          mean: 0.011728856113936101
-          rms: 0.026937979886258304
+          median: 0.011990070813848827
+          mean: 0.0143044220147761
+          rms: 0.028204749958739752
           n: 405
         reel-out:
-          median: 0.004450204096463906
-          mean: 0.01714134040357523
-          rms: 0.04595160424571844
-          n: 1362
+          median: 0.017146475765579025
+          mean: 0.030115761369332677
+          rms: 0.0525692288675882
+          n: 1361
     dCD_after:
       fit:
         reel-in:
-          median: -0.0010191658619362123
-          mean: -0.00013505770811248014
-          rms: 0.023686494185037925
+          median: -0.001239540062289636
+          mean: -0.00025911914817521194
+          rms: 0.0235530199301181
           n: 3926
         reel-out:
-          median: 0.0008030974277359881
-          mean: 3.789840340635198e-05
-          rms: 0.02775518975029398
-          n: 13991
+          median: 0.0007628886225948817
+          mean: 7.274235078613323e-05
+          rms: 0.027910293329882787
+          n: 13985
       holdout:
         reel-in:
-          median: 0.0030722511104859934
-          mean: 0.005858006628538649
-          rms: 0.024938354653694882
+          median: 0.0032440887827517445
+          mean: 0.005720526030423602
+          rms: 0.024880502300417516
           n: 405
         reel-out:
-          median: 0.0180084071684739
-          mean: 0.0171385738106974
-          rms: 0.02840791150773008
-          n: 1362
+          median: 0.018991865861126014
+          mean: 0.017810574984626983
+          rms: 0.02869813236495782
+          n: 1361
     dCL_not_corrected:
       fit:
         reel-in:
           median: 5.551115123125783e-17
-          mean: 2.7628321320906213e-17
-          rms: 4.473680430401074e-16
+          mean: 3.3566855074632215e-17
+          rms: 3.791643675282667e-16
           n: 3926
         reel-out:
           median: 0.0
-          mean: 5.533260775292128e-17
-          rms: 4.0158916548682656e-16
-          n: 13991
+          mean: 5.58922073998814e-17
+          rms: 3.567738711457646e-16
+          n: 13985
       holdout:
         reel-in:
-          median: 0.0
-          mean: 2.2204460492503132e-17
-          rms: 4.3127732612736193e-16
+          median: 5.551115123125783e-17
+          mean: 5.1399214103016507e-17
+          rms: 3.8190245592664193e-16
           n: 405
         reel-out:
-          median: 1.1102230246251565e-16
-          mean: 4.4017652958706644e-17
-          rms: 3.909869052001753e-16
-          n: 1362
+          median: 0.0
+          mean: 4.9760179648886515e-17
+          rms: 3.5226796358507667e-16
+          n: 1361
   output_error_refinement:
     rom: aerostructural_flight
     phases: both
@@ -214,157 +219,147 @@ metadata:
     solver:
       success: true
       message: '`xtol` termination condition is satisfied.'
-      evaluations: 27
-      objective_start: 0.8684546697734261
-      objective: 0.38437257821635984
+      evaluations: 23
+      objective_start: 0.9042606431860372
+      objective: 0.4053833044949536
       valid_start: 0.9958333333333333
-      valid: 0.9608333333333333
-      steering_slope: 1.0001417244731072
-      steering_slope_samples: 588
+      valid: 0.9441666666666667
+      steering_slope: 0.9948339578943874
+      steering_slope_samples: 539
     start_values:
-      theta0: -0.3535229196037927
-      theta1: 0.249126112389575
-      cd0: -0.04404827963077307
-      cd_up: 0.061710558878276284
-      cd_us2: 3.6691121859145377
-      gain: 2.5205381714796804
+      theta0: -0.47273297859462515
+      theta1: 0.3095600196095697
+      cd0: -0.0036976210614323574
+      cd_up: 0.041809382190143324
+      cd_us2: 0.9374999237168213
+      gain: 0.9111184816388352
     refined_values:
-      theta0: -0.45692732192516383
-      theta1: 0.3087731380814062
-      cd0: -0.0033019887176190324
-      cd_up: 0.05041278014350952
-      cd_us2: 1.9413653802268331
-      gain: 2.3605594690425002
+      theta0: -0.523013336799909
+      theta1: 0.3402276861262757
+      cd0: -0.08420181333064705
+      cd_up: 0.0815660802555312
+      cd_us2: 0.9129389764746273
+      gain: 0.8334955157369688
     training_errors_before:
       reel-out:
-        tension_median_%: -0.6237048017055935
-        v_tau_median_%: -0.5161484937048433
+        tension_median_%: 12.78687492941193
+        v_tau_median_%: 4.016820026593281
         n: 600
-        steering_rms: 0.03388198074661453
+        steering_rms: 0.19073485089834302
         solved: 600
       reel-in:
-        tension_median_%: 53.275382779574684
-        v_tau_median_%: 23.674069847450916
+        tension_median_%: 18.73000209744955
+        v_tau_median_%: 1.7407589692028824
         n: 600
-        steering_rms: 0.011998824232815387
+        steering_rms: 0.02557865123420194
         solved: 600
     training_errors_after:
       reel-out:
-        tension_median_%: -6.9185501381509145
-        v_tau_median_%: -5.386571744812457
+        tension_median_%: 0.8358361108081969
+        v_tau_median_%: 0.0556047756566036
         n: 600
-        steering_rms: 0.0360778988181881
-        solved: 588
+        steering_rms: 0.06660437664457271
+        solved: 539
       reel-in:
-        tension_median_%: 13.208252862171289
-        v_tau_median_%: -10.075402016824809
+        tension_median_%: 14.52552146423407
+        v_tau_median_%: -9.599840336477817
         n: 600
-        steering_rms: 0.010231009022174168
-        solved: 565
-    refined_by: identification/refine_rom_flight_output_error.py (available on request)
-    refined_on: '2026-10-29'
+        steering_rms: 0.02330290741367627
+        solved: 594
+    refined_by: examples/5_flight_data/refine_rom_flight_output_error.py
+    refined_on: '2026-11-05'
 controls:
   input_depower:
-    powered: 1.3
+    powered: 1.5
     depowered: 2.6
 validity:
   angle_of_attack_deg:
   - -7.0
-  - 28.0
+  - 7.27
   input_depower:
-  - 1.3
+  - 1.5
   - 2.6
-  input_steering_abs_max: 0.1429
+  input_steering_abs_max: 0.3571
   min_tether_force_n: 602.0
 aerodynamics:
   model: coeffs
   reference_area: 19.75
   kcu_drag_in_coefficients: false
   params:
-    CL0: 0.6634252201643439
-    CD0: -0.0033019887176190324
-    angle_pitch_tether_0: -0.45692732192516383
-    slope_angle_pitch_tether_depower: 0.3087731380814062
-    gain_roll_steering: 2.3605594690425002
+    CL0: 0.597767234185764
+    CD0: -0.08420181333064705
+    angle_pitch_tether_0: -0.523013336799909
+    slope_angle_pitch_tether_depower: 0.3402276861262757
+    gain_roll_steering: 0.8334955157369688
     gain_roll_steering_depower:
-    - -3.0429933308654205
-    - 0.7187877184296275
-    angle_of_attack_stall: 0.23561944901923448
-    width_stall: 0.008726646259971648
+    - -1.1277058426509565
+    - 0.24318771270458853
+    gain_roll_steering_squared:
+    - -0.8322179214782451
+    - 0.6159159648107086
+    angle_of_attack_stall: 0.17929417882367096
+    width_stall: 0.017453292519943295
   coefficients:
     CL:
+    - var: alpha
+      power: 1
+      coef: 4.417703387460008
+    - vars:
+        stall: 1
+        alpha: 2
+      coef: -4.196591654646768
     - vars:
         alpha: 1
+        u_s: 2
+      coef: -6.239607710799857
+    - var: u_s
+      power: 2
+      coef: -4.848732184393723
+    - var: alpha
+      power: 2
+      coef: -6.923212318739559
+    - vars:
+        stall: 1
         u_p: 1
-      coef: 0.48105642506748053
+      coef: 0.036645011584245435
+    - var: u_p
+      power: 2
+      coef: -0.033406991272491596
+    - vars:
+        u_p: 1
+        u_s: 2
+      coef: 1.8197550295778402
     - vars:
         alpha: 2
         u_p: 1
-      coef: -1.2378700700404468
-    - var: u_p
-      power: 1
-      coef: -0.1103454054075795
-    - var: stall
-      power: 1
-      coef: 1.2261317754293828
-    - var: alpha
-      power: 1
-      coef: 3.261705608648631
-    - vars:
-        alpha: 1
-        u_s: 2
-      coef: -13.30792724487698
-    - vars:
-        stall: 1
-        u_s: 2
-      coef: -8.671866827144711
-    - vars:
-        stall: 1
-        alpha: 1
-      coef: -4.990789977989704
-    - var: u_s
-      power: 2
-      coef: -1.530928491601441
+      coef: 1.909052904548726
     CD:
     - var: alpha
       power: 2
-      coef: 1.8969803043190523
-    - var: alpha
-      power: 1
-      coef: 0.23935403741473682
-    - vars:
-        alpha: 1
-        u_s: 2
-      coef: -4.9165713820231405
-    - vars:
-        stall: 1
-        u_s: 2
-      coef: 0.5500442199968468
-    - vars:
-        stall: 1
-        alpha: 2
-      coef: -2.5866452264933404
-    - vars:
-        stall: 1
-        alpha: 1
-      coef: 1.3741931562984313
-    - var: stall
-      power: 1
-      coef: -0.19197346866469855
+      coef: 1.6201663957133507
     - vars:
         u_p: 1
         u_s: 2
-      coef: -0.1646384824044203
-    - var: u_p
-      power: 2
-      coef: -0.0015221709895366507
+      coef: -0.06671176375118532
+    - vars:
+        alpha: 1
+        u_s: 2
+      coef: -1.8409646764822336
+    - var: alpha
+      power: 1
+      coef: 0.2838734581542694
+    - vars:
+        alpha: 1
+        u_p: 1
+      coef: -0.06677090951392811
+    - var: stall
+      power: 1
+      coef: 0.007315888925396749
     - var: u_s
       power: 2
-      coef: 1.9413653802268331
+      coef: 0.9129389764746273
     - var: u_p
       power: 1
-      coef: 0.05041278014350952
+      coef: 0.0815660802555312
 tether:
-  # The tether a ROM run flies with (system.factory.load_rom_tether):
-  # rigid_lumped, the straight tether of the point-mass model.
   model: rigid_lumped

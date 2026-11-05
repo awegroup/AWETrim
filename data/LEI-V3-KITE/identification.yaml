@@ -181,8 +181,8 @@ fit:
       # fit does not read it). Matched on near-straight samples of the 2019
       # flight: the model's u_s = 0 tether force vs v_a against the flight's
       # binned medians (the wes-quasi-steady u_dp attribution). Reel-in is
-      # anchored at the flown v_a; force alone gives ~2.50 with a ~12 % curve
-      # shape mismatch, as in the paper. UPDATE whenever the sweep model
+      # anchored at the flown tape delta; force alone gives ~2.35, on few samples
+      # at the kcu/100 steering filter. UPDATE whenever the sweep model
       # changes and the match is redone; the steering tapes follow it.
       flight_match:
         flight: 2019

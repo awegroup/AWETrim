@@ -208,11 +208,14 @@ public step 3 on the FEM-reduced wireframe with canopy billowing and the
 strut-lever load transfer (`fidelity: wireframe` of `identification.yaml`):
 `examples/3_rom_identification/run_identification_sweep.py` then
 `identify_rom_aerostructural.py`, both reading `data/<kite>/identification.yaml`,
-writing under `results/<kite>/identification/<fidelity>/`; band 1.30-2.60 m,
+writing under `results/<kite>/identification/<fidelity>/`; band 1.50-2.60 m (fitted
+from 1.40 m), every state settled on the realistic stall branch marched DOWN, stall
+10.27 deg measured from that branch's onset, optimiser's upper alpha 7.27 deg
+(`validity.angle_of_attack_deg`, the stall less `fit.stall_margin_deg`),
 tension floor `validity.min_tether_force_n` 602 N, roll gain k(u_p) quadratic;
 the factory clips the optimizer's depower box to `validity.input_depower`,
-its steering box to `validity.input_steering_abs_max` (0.143, the 0.20 m the
-steering chains reached) and raises the tension bound to the floor;
+its steering box to `validity.input_steering_abs_max` (0.357, the longer tapes' 0.50 m; at
+1.50 m the chains stop at a failed trim at 0.45 m, a limit per tape is still open) and raises the tension bound to the floor;
 `fit.fidelities.wireframe.flight_match` records the model tapes that reproduce
 the 2019 reel-out / reel-in, to be updated whenever the match is redone, and
 `identification.controls.flight_depower_match` reads it so flight depower is
@@ -220,14 +223,13 @@ mapped onto the ROM's u_p (`flight_depower_to_power_tape_length(.., match)`,
 the match required: the flown tape is not known from the logs, the 1.7 / 2.1
 m that stood in `controls` until 2026-10-29 was the previous model's match;
 the cycle and flight scripts pass it, `cycle_profile.yaml` is stated in it) and
-`rom_config_aerostructural_flight_corrected.yaml` (STALE since the 2019 steering
-scale moved to kcu/100, to be redone; NOT YET REVIEWED by the
+`rom_config_aerostructural_flight_corrected.yaml` (NOT YET REVIEWED by the
 author -- provisional, check it thoroughly before relying on it: the 2019
-flight correction of that ROM, redone 2026-10-29 with the flight depower read through
+flight correction of that ROM, redone 2026-11-05 with the flight depower read through
 flight_match, on the 2019 EKF re-run with the bridle in the kite mass;
-hold-out cycles 60-67, median tension / v_tau error: reel-out +3.7 % / +1.0 %
-(uncorrected +3.8 % / +2.3 %), reel-in +30 % / +6 % (uncorrected +57 % /
-+38 %); the roll gain is ONE scale on the whole k(u_p);
+hold-out cycles 60-67 with the logged steering in, median tension / v_tau error:
+reel-out +8.8 % / +8.9 % (uncorrected +18.1 % / +15.0 %), reel-in +31.9 % / +6.8 %
+(uncorrected +75.8 % / +54.5 %); the roll gain is ONE scale on the whole k(u_p);
 the method:
 theta_b and a single-input dC_D(u_p, u_s^2) fitted to 2019 flight, cycles 60-67
 held out: `identify_rom_flight_correction.py` (equation error: theta_b from the
