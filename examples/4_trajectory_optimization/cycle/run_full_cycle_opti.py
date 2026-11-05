@@ -77,7 +77,7 @@ from awetrim.timeseries.phase import Phase
 #                      ``speed_wind_ref`` at ``height_ref``; every other key is
 #                      forwarded to ``create_wind_model`` (see
 #                      build_wind_model). Regenerate the seed
-#                      (fit_periodic_cycle_config.py --auto) after changing
+#                      (fit_periodic_cycle_config.py --size) after changing
 #                      it: an old seed will not be trim-feasible at a
 #                      different wind. Wind DIRECTION is irrelevant (the whole
 #                      cycle lives in the course-aligned wind frame).

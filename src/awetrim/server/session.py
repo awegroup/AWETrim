@@ -48,21 +48,14 @@ from awetrim.kinematics.parametrized_patterns import (
     fit_bspline_pattern_to_trajectory,
     make_bspline_path_parameters_from_named_curve,
 )
-from awetrim.kinematics.steering_limited_eight import (
-    MAX_ELEVATION,
-    CourseTurnLimit,
-    fit_spline_to_turn_limit,
-    spline_turn_geometry,
-)
 from awetrim.utils.defaults import DEFAULT_OPTI_LIMITS
 from awetrim.system.factory import (
     create_system_model_from_yaml,
     resolve_rom_config_path,
 )
-from awetrim.system.turn_radius import steering_limited_turn_radius
-from awetrim.system.winch import Winch
 from awetrim.timeseries import roll_assist
 from awetrim.timeseries.phase import Phase
+from awetrim.timeseries.seed_sizing import SEED_TURN_MARGINS, size_reelout_seed
 from awetrim.utils.config_paths import (
     LEI_V3_DOWNLOOP_SPLINE_CONFIG,
     LEI_V3_SYSTEM_CONFIG,
@@ -71,17 +64,12 @@ from awetrim.utils.utils import load_cycle_config_from_yaml
 
 logger = logging.getLogger(__name__)
 
-#: Margins of the kite-sized seed over the steering-limited turn radius, the
-#: later ones tried when the cold solve from the earlier ones does not converge.
-SEED_TURN_MARGINS = (1.2, 1.4)
 #: IPOPT iterations of one cold attempt, unless the client states its own: a
 #: solve that will converge has by then, and the next attempt costs less.
 COLD_MAX_ITER = 300
 #: Winds [m/s, offset from the requested one] a cold first solve is started from
 #: when it does not converge at the requested one. Stepping down goes best.
 COLD_WIND_OFFSETS = (0.5, 1.0, -0.5)
-#: Clearance [m] of the kite-sized seed above the optimizer's height floor.
-SEED_HEIGHT_CLEARANCE_M = 2.0
 
 # Timeseries variables returned by /trajectory?resimulate=true
 RESIM_VARIABLES = [
@@ -414,89 +402,12 @@ class ReeloutSession:
         pattern_limits: Optional[Dict[str, Any]],
         margin: float = SEED_TURN_MARGINS[0],
     ) -> bool:
-        """Refit the seed eight to the turns the kite holds at this wind.
-
-        The kite's steering-limited turn radius per course
-        (``system.turn_radius``, at the seed's tether length, mean elevation
-        and depower, with the winch law) times ``margin``, and at
-        least the client's ``min_turn_radius``, bounds the seed spline's
-        curvature (``kinematics.steering_limited_eight``); the elevation
-        stays within the client's pattern limits, else above the seed's own
-        lowest point and the optimizer's height floor. Applied only when the
-        seed is tighter than
-        that somewhere; a failed fit keeps the seed (the roll-gain assist of
-        the cold solve is the fallback). Mutates ``reelout_config`` and
-        returns whether the seed was replaced.
-        """
-        seed = reelout_config["path_parameters"]
-        sim_parameters = reelout_config.get("sim_parameters", {})
-        input_depower = sim_parameters.get("input_depower")
-        if (
-            reelout_config.get("pattern_type") != "spline_periodic"
-            or not seed.get("downloops", True)
-            or input_depower is None
-        ):
-            return False
-        r0 = float(seed["r0"])
-        # Sizing is optional: whatever goes wrong in it must not fail /init.
-        try:
-            el_seed = np.asarray(
-                create_pattern_from_dict("spline_periodic", seed).elevation(
-                    r0, np.linspace(0.0, 1.0, 400, endpoint=False)
-                )
-            ).ravel()
-            table = steering_limited_turn_radius(
-                system_model,
-                distance_radial=r0,
-                angle_elevation=float(np.mean(el_seed)),
-                input_depower=float(input_depower),
-                winch=Winch(pattern_config=reelout_config["radial_parameters"]),
-            )
-            floor = float(min_turn_radius or 0.0)
-
-            def required(course, sign):
-                return np.fmax(table.radius(course, sign), floor)
-
-            limit = CourseTurnLimit(required, r0=r0, margin=margin)
-            course, radius, sign = spline_turn_geometry(seed, r0)
-            if np.all(radius >= limit.required_radius(course, sign)):
-                return False
-            limits = pattern_limits or {}
-            el_min = limits.get("elevation_min")
-            el_max = limits.get("elevation_max")
-            # The optimizer's height row holds at every node: start above it.
-            override = sim_parameters.get("opti_limits_override") or {}
-            height_min = override.get("height", DEFAULT_OPTI_LIMITS["height"])[0]
-            el_floor = max(
-                float(el_seed.min()),
-                math.asin((float(height_min) + SEED_HEIGHT_CLEARANCE_M) / r0),
-            )
-            fitted, report = fit_spline_to_turn_limit(
-                seed,
-                limit,
-                el_min=math.radians(el_min) if el_min is not None else el_floor,
-                el_max=math.radians(el_max) if el_max is not None else MAX_ELEVATION,
-            )
-        except Exception as exc:
-            logger.warning("kite-sized seed: %s; keeping the configured seed", exc)
-            return False
-        if not (report["converged"] and report["ratio"] >= 0.99
-                and report["self_crossings"] == 1):
-            logger.warning(
-                "kite-sized seed did not fit (%s, ratio %.2f, %d crossings); "
-                "keeping the configured seed",
-                report["status"], report["ratio"], report["self_crossings"],
-            )
-            return False
-        logger.info(
-            "kite-sized seed: M %d, turns >= %.1f m, azimuth <= %.1f deg, "
-            "elevation %.1f-%.1f deg",
-            report["M"], report["turn_radius_min_m"],
-            math.degrees(report["azimuth_max"]),
-            *(math.degrees(e) for e in report["elevation_range"]),
+        """The seed eight refitted to the turns the kite holds at this wind
+        (``timeseries.seed_sizing``); returns whether it was replaced."""
+        return size_reelout_seed(
+            system_model, reelout_config, margin=margin,
+            min_turn_radius=min_turn_radius, pattern_limits=pattern_limits,
         )
-        reelout_config["path_parameters"] = fitted
-        return True
 
     @staticmethod
     def _resolve_wind_spec(inflow: Optional[Dict[str, Any]]) -> Dict[str, Any]:

@@ -31,7 +31,7 @@ three files in its folder.
                                   the figure-eight / reel-in size; any other
                                   fit_periodic_cycle_config.ARTIFICIAL knob
                                   may be added to override its default
-                       m_per_second, min_turn_radius, flight   optional
+                       min_turn_radius, flight.year   optional
                        uploop_eight  optional  inputs of
                                   studies/run_uploop_eight_opti.py (the single
                                   slanted figure-eight cycle; everything
@@ -107,7 +107,6 @@ _SECTIONS = {
     "wind",
     "winch_law",
     "seed",
-    "m_per_second",
     "min_turn_radius",
     "flight",
     "uploop_eight",
@@ -179,14 +178,6 @@ def resolve_kite(kite: str | Path | None = None) -> dict:
         opti_limits_override["angle_of_attack"] = [math.radians(float(a)) for a in aoa]
 
     flight = dict(profile.get("flight") or {})
-    if "h5" in flight and not Path(flight["h5"]).is_absolute():
-        flight["h5"] = folder / flight["h5"]
-    if flight.get("loader") == "ekf_results" and "h5" not in flight:
-        # The EKF-AWE output, where step 5 keeps it: results/<kite>/ekf/.
-        date = f'{flight["year"]}-{flight["month"]}-{flight["day"]}'
-        flight["h5"] = (DATA_DIR.parent / "results" / folder.name / "ekf"
-                        / f'{flight["kite_model"]}_{date}.h5')
-
     depower_match = flight_depower_match(folder, flight.get("year"))
     return {
         "name": folder.name,
@@ -210,9 +201,7 @@ def resolve_kite(kite: str | Path | None = None) -> dict:
         "cycle_duration_s": cycle_duration_s,
         "artificial": seed,
         "opti_limits_override": opti_limits_override,
-        "m_per_second": profile.get("m_per_second"),
         "min_turn_radius": profile.get("min_turn_radius"),
-        "flight": flight,
         "uploop_eight": dict(profile.get("uploop_eight") or {}),
         "symmetric_eight": dict(profile.get("symmetric_eight") or {}),
     }

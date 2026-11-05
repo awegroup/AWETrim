@@ -11,6 +11,7 @@ import pytest
 pytest.importorskip("pydantic")
 
 import awetrim.server.session as session_mod
+from awetrim.timeseries import seed_sizing
 from awetrim.server.session import (
     NoTrajectoryError,
     ReeloutSession,
@@ -1120,7 +1121,7 @@ def test_seed_sizing_failure_keeps_the_seed_and_init_succeeds(monkeypatch):
     def broken(*args, **kwargs):
         raise KeyError("anything")
 
-    monkeypatch.setattr(session_mod, "steering_limited_turn_radius", broken)
+    monkeypatch.setattr(seed_sizing, "steering_limited_turn_radius", broken)
     config = _base_config()
     before = dict(config["path_parameters"])
     assert not ReeloutSession._size_seed_to_kite(SimpleNamespace(), config, None, None)

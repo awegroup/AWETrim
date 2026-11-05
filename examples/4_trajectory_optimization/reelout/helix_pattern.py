@@ -13,6 +13,7 @@ from awetrim.system.factory import create_system_model_from_yaml
 from awetrim.kinematics.parametrized_patterns import (
     make_bspline_path_parameters_from_named_curve,
 )
+from awetrim.timeseries.seed_sizing import SEED_TURN_MARGINS, size_reelout_seed
 from awetrim.utils.config_paths import (
     LEI_V3_HELIX_SPLINE_CONFIG,
     LEI_V3_SYSTEM_CONFIG,
@@ -38,6 +39,7 @@ KITE_CONFIG_PATH = LEI_V3_SYSTEM_CONFIG
 CYCLE_CONFIG_PATH = LEI_V3_HELIX_SPLINE_CONFIG
 
 SAVE_TIMESERIES = True
+SEED_MARGIN = SEED_TURN_MARGINS[-1]  # over the steering-limited turn radius
 
 RESULTS_DIR = Path("results") / KITE_CONFIG_PATH.parent.name / "optimization" / "helix"
 
@@ -130,6 +132,9 @@ def main(run_plots=False):
 
     wind_model = build_wind_model(**WIND_CONFIG)
     system_model.wind = wind_model
+    # The kite must hold the helix's turns at this wind (one circle: no crossing).
+    size_reelout_seed(system_model, REELOUT_CONFIG, margin=SEED_MARGIN, mirror=False,
+                      self_crossings=0)
     reelout = Phase(
         system_model=system_model,
         pattern_config=REELOUT_CONFIG,
@@ -159,6 +164,8 @@ def main(run_plots=False):
     # plt.plot(t, np.degrees(aoa))
     # plt.show()
     solution = reelout.run_simulation_opti(optimization_params=optimization_params)
+    if solution is None:
+        raise SystemExit("The optimization did not converge; nothing written.")
     depower_prefix = "depower_" if "input_depower" in optimization_params else ""
     filename = f"{depower_prefix}helix_optimized_config_wind_{WIND_CONFIG['speed_wind_at_100']}_z0_{WIND_CONFIG['z0']}_{WIND_CONFIG['model_type']}_spline.yaml"
 
