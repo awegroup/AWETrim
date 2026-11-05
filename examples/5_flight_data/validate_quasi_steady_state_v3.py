@@ -49,6 +49,9 @@ _parser.add_argument("--cycles", default="64",
                      help="cycle numbers, e.g. 64 or 60-67 (default: %(default)s)")
 _parser.add_argument("--no-show", action="store_true", help="never open windows")
 _parser.add_argument(
+    "--depower-match", nargs=2, type=float, default=None, metavar=("REEL_OUT", "REEL_IN"),
+    help="model tapes the flown depower maps to [m] (default: identification.yaml flight_match)")
+_parser.add_argument(
     "--tether", choices=("rigid", "williams"), default="rigid",
     help="rigid: the ROM's straight lumped tether (default); williams: the "
     "discretised Williams tether (sag, distributed weight and drag)")
@@ -225,7 +228,9 @@ azimuth = np.arctan2(results.kite_position_y, results.kite_position_x)
 #         (identification.yaml flight_match)
 #   u_s = standardised steering (identification.controls, 2019 norm)
 # Do not feed the legacy normalised flight_data["up"] / ["us"] columns into the ROM.
-DEPOWER_MATCH = flight_depower_match(LEI_V3_DATA_DIR, 2019)
+DEPOWER_MATCH = (
+    tuple(ARGS.depower_match) if ARGS.depower_match else flight_depower_match(LEI_V3_DATA_DIR, 2019)
+)
 flight_data["input_depower"] = flight_dataframe_depower_to_power_tape_length(
     flight_data, DEPOWER_MATCH
 )

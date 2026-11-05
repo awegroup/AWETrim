@@ -38,9 +38,8 @@ LEI_V3_SYSTEM_FLOWN_CONFIG = LEI_V3_SYSTEM_FLOWN_2019_CONFIG
 # 2026-10-29), and its 2019 flight correction. (The WES paper's semi-empirical
 # ROM is in git history: git show bad8a9b:data/LEI-V3-KITE/rom_config_semi_empirical.yaml.)
 LEI_V3_ROM_AEROSTRUCTURAL_CONFIG = LEI_V3_DATA_DIR / "rom_config_aerostructural.yaml"
-# theta_b, dC_D(u_p, u_s) and the roll-gain scale fitted to 2019 flight on
-# the aerostructural ROM (examples/5_flight_data/identify_rom_flight_correction.py
-# + the output-error refinement).
+# The aerostructural ROM with a scale on its roll gain from the 2019 flight
+# (examples/5_flight_data/identify_rom_flight_correction.py).
 LEI_V3_ROM_AEROSTRUCTURAL_FLIGHT_CONFIG = (
     LEI_V3_DATA_DIR / "rom_config_aerostructural_flight_corrected.yaml"
 )

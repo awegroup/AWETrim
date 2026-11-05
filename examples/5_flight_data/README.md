@@ -10,7 +10,7 @@ and place the output at `results/LEI-V3-KITE/ekf/LEI-V3 Kite_2019-10-08.h5`.
 
 | Script | What it does | Writes |
 |--------|--------------|--------|
-| [`identify_rom_flight_correction.py`](identify_rom_flight_correction.py) (**not yet reviewed**: the flight correction is provisional) | Keeps the step-3 lift polynomial and corrects, in two separate least-squares steps, the bridle pitch `theta_b(u_p)` (identified from lift, no angle-of-attack sensor needed) and the drag at equal lift `dC_D(u_p, u_s)`; held-out cycles check the result. | `data/<kite>/rom_config_aerostructural_flight_corrected.yaml` |
+| [`identify_rom_flight_correction.py`](identify_rom_flight_correction.py) (**not yet reviewed**: the flight correction is provisional) | Identifies, on the ROM's own solve with the logged steering and on the training cycles, the model tapes that reproduce the flown depower (`flight_match`, used by both ROMs) and one scale on the roll gain that matches the flown turn rate. Lift, drag and `theta_b` stay simulated. | `data/LEI-V3-KITE/identification.yaml` (`flight_match`), `rom_config_aerostructural_flight_corrected.yaml`, `results/LEI-V3-KITE/identification/rom_flight_correction/` |
 | [`validate_quasi_steady_state_v3.py`](validate_quasi_steady_state_v3.py) | Takes the measured kinematics and wind as given and solves the ROM's quasi-steady force balance for tether force, steering input and tangential speed; compares predicted and measured. `--rom` picks the ROM file, `--tether rigid` or `williams`. | `results/<kite>/rom_validation/` |
 | [`validate_spline_v3.py`](validate_spline_v3.py) | Fits B-spline patterns to the measured trajectory cycle by cycle, simulates them with the ROM and compares against the flight. | |
 

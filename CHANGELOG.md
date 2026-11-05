@@ -24,7 +24,12 @@
   `k + s(u_p) u_s^2`, one formula in `kite.roll_gain`. Absent = as before.
 - **The trim's Newton solve returns its best iterate**, not its last, which ended six chains
   at a residual it had already passed.
-- `flight_match` redone: 1.93 / 2.38 m. New `plot_identification.py`. A fit with no polar
+- **The flight correction is now the tapes and one gain scale.**
+  `identify_rom_flight_correction.py` identifies `flight_match`, 1.95 / 2.48 m, and a scale of
+  1.17 on the roll gain, on the ROM's own solve with the logged steering. The fits of
+  `theta_b` and `dC_D` and `refine_rom_flight_output_error.py` are gone: reel-in tension on
+  the held-out cycles went from +32 % to +16 %, reel-in speed from +7 % to +10 %.
+- New `plot_identification.py`. A fit with no polar
   sample left now stops. The geometry-cache move retries when Windows refuses it.
 - `docs/identification/rom_aerostructural.tex` rewritten around the method.
 

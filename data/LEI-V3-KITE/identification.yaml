@@ -103,7 +103,7 @@ sweep:
         targets: [1.10, 2.60]
         step: 0.05
       # Across the ROM band (fit: depower_band; 1.50 m is its powered end), through both flight-match
-      # tapes (fit: flight_match): 1.95 ~ reel-out, 2.40 = reel-in; 1.70 / 2.10
+      # tapes (fit: flight_match): 1.95 = reel-out, 2.40 near reel-in; 1.70 / 2.10
       # the previous model's match. To 0.50 m = |u_s| 0.36, past the flown +-35 %
       # KCU (0.49 m at u_s = kcu/100; a multiple of step, so a chain can be extended
       # and resumed); the stall stop ends a chain earlier where the tip stalls.
@@ -177,15 +177,13 @@ fit:
         # the ROM band (the optimiser's depower box is clipped to it)
         input_depower: [1.50, 2.60]
         min_tether_force_n: 602.0
-      # The model tape that reproduces each flown phase (documentation; the
-      # fit does not read it). Matched on near-straight samples of the 2019
-      # flight: the model's u_s = 0 tether force vs v_a against the flight's
-      # binned medians (the wes-quasi-steady u_dp attribution). Reel-in is
-      # anchored at the flown tape delta; force alone gives ~2.35, on few samples
-      # at the kcu/100 steering filter. UPDATE whenever the sweep model
-      # changes and the match is redone; the steering tapes follow it.
+      # The model tape that reproduces each flown phase (the fit does not read it): the
+      # one that best zeroes the median tension and speed errors of the ROM's own solve,
+      # logged steering in, 2019 training cycles. Written by
+      # examples/5_flight_data/identify_rom_flight_correction.py; re-run it whenever the
+      # ROM changes. The steering tapes follow it.
       flight_match:
         flight: 2019
         date: 2026-11-05
-        reel_out: 1.93
-        reel_in: 2.38
+        reel_out: 1.95
+        reel_in: 2.48
