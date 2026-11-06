@@ -1152,3 +1152,32 @@ def test_dynamic_node_alpha_function_exists():
     )
     phase.residual_solver(phase.substitute_parametrized_kinematics(pattern))
     assert phase._node_alpha_function is not None
+
+
+@pytest.mark.slow
+def test_dynamic_nlp_couples_each_node_to_its_predecessor():
+    """quasi_steady=False builds the NLP with the march's implicit Euler: no
+    rows or decisions are added, and each node's trim residual depends on the
+    previous node's s_dot and v_r (s_ddot and dv_r/dt as backward differences;
+    on a periodic wrap node 0's predecessor is node N-1). Quasi-steady, it
+    depends on its own node only."""
+    import casadi as ca
+
+    overrides = {**_WRAP_FORMULATIONS["free_speed+depower"][0], "periodic_wrap": True}
+    built = {}
+    for qs in (True, False):
+        phase, start = _wrap_phase(_N_WRAP, dict(overrides))
+        phase.quasi_steady = qs
+        opti, opti_vars, obj = phase.opti_phase(start_state=start, opti_params={})
+        trim = obj["constraint_report"]["trim_residual (scaled)"]["expr"]
+        built[qs] = (opti, opti_vars, trim)
+    (opti_qs, _, _), (opti_dyn, vars_dyn, trim_dyn) = built[True], built[False]
+    assert opti_dyn.g.numel() == opti_qs.g.numel()
+    assert opti_dyn.x.numel() == opti_qs.x.numel()
+    _, vars_qs, trim_qs = built[True]
+    for name in ("s_dot", "speed_radial"):
+        for trim, opti_vars, expected in ((trim_qs, vars_qs, {0}), (trim_dyn, vars_dyn, {0, _N_WRAP - 1})):
+            # node 0's three trim rows against every node's variable
+            jac = ca.jacobian(trim[0:3], opti_vars[name])
+            columns = {int(c) for c in np.nonzero(np.asarray(ca.DM(ca.Sparsity(jac.sparsity()), 1)).any(axis=0))[0]}
+            assert columns == expected, (name, columns)

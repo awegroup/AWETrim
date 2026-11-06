@@ -28,6 +28,16 @@
 - **The kite's radial acceleration was zero in dynamic runs**: the kinematics'
   `dot_vr` keeps only `s_ddot * v_r / s_dot` (`dr_ds2` is identically zero). The
   march now uses `dv_r/dt`, the same for the kite and the winch drum.
+- **The cycle NLP can be dynamic too** (`quasi_steady=False`, `run_full_cycle_opti.py
+  --dynamic`): the node functions take `s_ddot` and `dv_r/dt` as two more inputs, fed
+  with the same backward differences as the march (node 0's predecessor is node N-1
+  on a periodic wrap). No rows or decisions are added; quasi-steady, the NLP is
+  unchanged. The tension bound then holds with the kite's and the drum's inertia in.
+- **The march tells a fold from a solver failure.** When every attempt at a node
+  fails, a least-squares solve from the guess either finds a root IPOPT missed (taken
+  if the branch rules accept it) or stalls where the Jacobian goes singular: a fold,
+  reported with the balance that runs out ("the kite cannot follow the path here")
+  and kept in `phase.stop_reason`.
 - **Dynamic runs reject post-stall roots again.** The node's angle of attack still
   held `s_ddot`, so its function could not be built and the march's stall check was
   silently off in dynamic runs; the implicit `s_ddot` now goes into it as into the

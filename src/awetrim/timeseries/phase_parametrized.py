@@ -181,6 +181,53 @@ def _eval_path_kinematic(expr, s_value, state_obj, default=0.0):
 
 
 
+# A node's least-squares minimum is a fold when the smallest singular value of
+# its (column-scaled) Jacobian falls below this fraction of the largest.
+FOLD_SINGULAR_RATIO = 1e-6
+
+
+def _node_equation_names(n_rows, use_williams):
+    """Names of the node residual's rows, for the march's failure report."""
+    if use_williams and n_rows == 7:
+        return ["tangential", "normal (turn)", "radial", "ground x", "ground y",
+                "ground z", "winch law"]
+    names = ["tangential", "normal (turn)", "radial", "winch law"]
+    return names[:n_rows] + [f"row {k}" for k in range(len(names), n_rows)]
+
+
+def _least_squares_node(solver, z_guess, p_value, lbx, ubx):
+    """Minimise |g(z, p)| near ``z_guess`` within the bounds.
+
+    Returns ``(z, g, singular_values, left_null_vector)`` at the minimum,
+    the Jacobian column-scaled by the guess's magnitudes. A residual that
+    reaches zero is a root the node's IPOPT attempts missed; one that stalls
+    where a singular value vanishes is a fold: the node equations have no
+    root nearby.
+    """
+    from scipy.optimize import least_squares
+
+    g_fn = solver.get_function("nlp_g")
+    z0 = np.asarray(ca.DM(z_guess)).ravel()
+    p_value = ca.DM(p_value)
+    scale = np.maximum(np.abs(z0), 1e-3)
+    lo = np.asarray(lbx, dtype=float) / scale
+    hi = np.asarray(ubx, dtype=float) / scale
+    u0 = np.clip(z0 / scale, lo + 1e-9 * (hi - lo), hi - 1e-9 * (hi - lo))
+
+    def residual(u):
+        return np.asarray(g_fn(u * scale, p_value)).ravel()
+
+    result = least_squares(residual, u0, bounds=(lo, hi), method="trf",
+                           xtol=1e-14, ftol=1e-14, gtol=1e-14,
+                           max_nfev=200 * z0.size)
+    z = result.x * scale
+    zs = ca.MX.sym("z", z0.size)
+    jac = ca.Function("node_jac", [zs], [ca.jacobian(g_fn(zs, p_value), zs)])
+    J = np.asarray(jac(z)) * scale[None, :]
+    U, sv, _ = np.linalg.svd(J)
+    return z, residual(result.x), sv, U[:, -1]
+
+
 def _expand_node_function(fun):
     """SX-expand a per-node CasADi Function used N times in the NLP graph.
 
@@ -1008,15 +1055,71 @@ class PhaseParameterized(TimeSeries):
                 rate_previous[0] = float(fallback[1]["x"][rate_index])
                 return fallback[1]
 
+            # Every attempt failed: a least-squares solve from the guess tells
+            # a root IPOPT missed (taken, if the branch rules accept it) from a
+            # fold, where the node equations have no root: the kite cannot
+            # follow the path here (e.g. its turn needs more side force than
+            # it can make at the speed it carries).
+            kind = "solver"
+            detail = ""
+            try:
+                z_ls, g_ls, sv, left = _least_squares_node(
+                    qs_solver, z_guess, p_solver, lbx, ubx
+                )
+            except Exception as exc:  # the diagnosis must not mask the failure
+                z_ls = None
+                detail = f"least-squares check failed: {exc}"
+            if z_ls is not None:
+                norm = float(np.linalg.norm(g_ls))
+                ok = norm <= accept_residual_norm
+                if ok and steering_box is not None and steering_in_box_previous[0]:
+                    ok = abs(float(z_ls[steering_index])) <= steering_box
+                if ok and alpha_function is not None:
+                    ok = float(alpha_function(z_ls, p_solver)) < float(alpha_stall)
+                if ok:
+                    logger.info(
+                        "Phase node %d: root found by least squares after the "
+                        "IPOPT attempts failed", node_index,
+                    )
+                    rate_previous[0] = float(z_ls[rate_index])
+                    steering_in_box_previous[0] = (
+                        steering_box is None
+                        or abs(float(z_ls[steering_index])) <= steering_box
+                    )
+                    return {"x": ca.DM(z_ls), "g": ca.DM(g_ls)}
+                names = _node_equation_names(g_ls.size, use_williams)
+                if sv[-1] <= FOLD_SINGULAR_RATIO * sv[0]:
+                    kind = "fold"
+                    equation = names[int(np.argmax(np.abs(left)))]
+                    detail = (
+                        f"fold: no root, the {equation} balance runs out "
+                        f"(|g| {norm:.3g} at the closest point, singular "
+                        f"value ratio {sv[-1] / sv[0]:.1e}); the kite cannot "
+                        "follow the path here"
+                    )
+                else:
+                    detail = (
+                        f"no root found (|g| {norm:.3g} at the closest point, "
+                        f"Jacobian regular: singular value ratio "
+                        f"{sv[-1] / sv[0]:.1e})"
+                    )
+            self.stop_reason = {
+                "node": int(node_index),
+                "s": float(np.asarray(ca.DM(p_solver)).ravel()[0]),
+                "kind": kind,
+                "detail": detail,
+            }
             message = (
                 f"Phase residual solve failed at node {node_index} after "
-                f"{len(candidates)} attempts"
+                f"{len(candidates)} attempts: {detail}"
             )
             if not allow_failure:
                 raise RuntimeError(message) from last_error
-            logger.warning("%s: %s", message, last_error)
+            logger.warning("%s (last IPOPT: %s)", message, last_error)
             return None
 
+        # Why the march stopped early (None: it did not), see _solve_node.
+        self.stop_reason = None
         # Previous-node state for the inertia terms: (v_r, 1 / the step from
         # it, s_dot); none (inv_time_step 0) at the first node.
         drum_state = (0.0, 0.0, 0.0)
@@ -2007,6 +2110,20 @@ class PhaseParameterized(TimeSeries):
             opti.subject_to(distance_scaled[-1] == distance_scaled[0])
 
         # --- Build model functions
+        # Dynamic NLP (quasi_steady=False): the same implicit Euler as the
+        # forward march. The node functions take the kite's s_ddot and dv_r/dt
+        # as two more inputs (after distance_radial), fed at each node with
+        # the backward differences to the previous node (_dyn_args): the
+        # kinematics' dot_vtau keeps its s_ddot, and the radial acceleration
+        # replaces the kinematics' dot_vr, which is not the reel acceleration.
+        # Quasi-steady, the inputs and the NLP are unchanged.
+        dynamic = not self.quasi_steady
+        timeder_speed_radial_in = (
+            ca.MX.sym("timeder_speed_radial_node") if dynamic else None
+        )
+        dyn_syms = [self.s_ddot, timeder_speed_radial_in] if dynamic else []
+        if dynamic:
+            km_copy.timeder_speed_radial = timeder_speed_radial_in
         km_copy.establish_residual()
         flat_syms = [ca.vertcat(*opti_params.values())] if opti_params else []
         if not "input_depower" in opti_params:
@@ -2024,6 +2141,7 @@ class PhaseParameterized(TimeSeries):
                 km_copy.speed_radial,
                 km_copy.distance_radial,
             ]
+            + dyn_syms
             + flat_syms,
             [km_copy.residual],
         )
@@ -2037,6 +2155,7 @@ class PhaseParameterized(TimeSeries):
                 km_copy.speed_radial,
                 km_copy.distance_radial,
             ]
+            + dyn_syms
             + flat_syms,
             [km_copy.expression("angle_of_attack")],
         )
@@ -2067,6 +2186,7 @@ class PhaseParameterized(TimeSeries):
                 km_copy.speed_radial,
                 km_copy.distance_radial,
             ]
+            + dyn_syms
             + flat_syms,
             [
                 path_kin.curvature_geodesic,
@@ -2121,7 +2241,7 @@ class PhaseParameterized(TimeSeries):
             km_copy.tension_tether_ground,
             km_copy.speed_radial,
             km_copy.distance_radial,
-        ]
+        ] + dyn_syms
 
         def _node_functions(k):
             """(residual, aoa, curvature, path) SX Functions for knot interval k."""
@@ -2129,6 +2249,8 @@ class PhaseParameterized(TimeSeries):
             if fns is None:
                 pat_k = pattern.local_support(k)
                 km_k = self.substitute_parametrized_kinematics(pattern=pat_k)
+                if dynamic:
+                    km_k.timeder_speed_radial = timeder_speed_radial_in
                 km_k.establish_residual()
                 kin_k = ParametrizedKinematics(pat_k, self)
                 ins = _node_in_base + _node_fn_syms
@@ -2632,6 +2754,25 @@ class PhaseParameterized(TimeSeries):
                 return opti_vars["speed_radial"][N - 1], opti_vars["s_dot"][N - 1] / ds
             return None, 0.0
 
+        def _dyn_args(i):
+            """The dynamic NLP's (s_ddot, dv_r/dt) at node i, backward
+            differences over the step ending at it, as in the forward march
+            (dt = ds / s_dot of the previous node). None quasi-steady; zero at
+            a first node without a predecessor (no periodic wrap)."""
+            if not dynamic:
+                return []
+            if i > 0:
+                j, ds = i - 1, s_grid[i] - s_grid[i - 1]
+            elif periodic_wrap:
+                j, ds = N - 1, s_grid[N] - s_grid[N - 1]
+            else:
+                return [0.0, 0.0]
+            inv_dt = opti_vars["s_dot"][j] / ds
+            return [
+                (opti_vars["s_dot"][i] - opti_vars["s_dot"][j]) * inv_dt,
+                (opti_vars["speed_radial"][i] - opti_vars["speed_radial"][j]) * inv_dt,
+            ]
+
         def _inertia_energy(i_from, i_to):
             """-d(m v^2 / 2) over one interval: the drum's kinetic energy,
             taken from or given back to the shaft (exact, so it telescopes)."""
@@ -2733,6 +2874,7 @@ class PhaseParameterized(TimeSeries):
                 T_i,
                 opti_vars["speed_radial"][i],
                 opti_vars["distance_radial"][i],
+                *_dyn_args(i),
                 *node_syms,
             )
             opti.subject_to(res_i[0] / S_res[0] == 0)
@@ -2779,6 +2921,7 @@ class PhaseParameterized(TimeSeries):
                     T_i,
                     opti_vars["speed_radial"][i],
                     opti_vars["distance_radial"][i],
+                    *_dyn_args(i),
                     *node_syms,
                 )
                 if np.isfinite(limits["angle_of_attack"][1]):
@@ -2808,6 +2951,7 @@ class PhaseParameterized(TimeSeries):
                     T_i,
                     opti_vars["speed_radial"][i],
                     opti_vars["distance_radial"][i],
+                    *_dyn_args(i),
                     *node_syms,
                 )
                 R_ik = opti_vars["distance_radial"][i] / ca.sqrt(kappa_ik**2 + 1e-6)
@@ -2870,6 +3014,7 @@ class PhaseParameterized(TimeSeries):
                 T_last,
                 opti_vars["speed_radial"][i_last],
                 opti_vars["distance_radial"][i_last],
+                *_dyn_args(i_last),
                 *_node_syms(i_last),
             )
             if np.isfinite(limits["angle_of_attack"][1]):
