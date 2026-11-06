@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Dynamic march: implicit Euler, with the reel acceleration
+
+- **The dynamic forward march (`quasi_steady=False`) is now implicit (backward) Euler.**
+  A dynamic node solves the quasi-steady node's unknowns `[T, u_s, s_dot, v_r]` with
+  the inertia of the step ending at it: `s_ddot = (s_dot - s_dot_prev) / dt` and
+  `dv_r/dt = (v_r - v_r_prev) / dt`. The old explicit step (`s_ddot` solved, `s_dot`
+  stepped forward) oscillated with a growing amplitude at a cycle's node spacing
+  (dt about 0.4 s, longer than the kite's speed response) and broke the march; the
+  implicit one is stable at any spacing and costs what a quasi-steady node costs.
+- **The kite's radial acceleration was zero in dynamic runs**: the kinematics'
+  `dot_vr` keeps only `s_ddot * v_r / s_dot` (`dr_ds2` is identically zero). The
+  march now uses `dv_r/dt`, the same for the kite and the winch drum.
+- **Node 0 is the quasi-steady solve**, so a dynamic run no longer starts from a
+  separate quasi-steady start state, which on a cycle starting in reel-in landed on
+  another root.
+- `TimeSeries.to_dataframe` derives the `State` fields the march leaves unset
+  (`speed_tangential`, the angles) instead of returning them all-NaN.
+- `examples/4_trajectory_optimization/studies/compare_dynamic_quasi_steady_winch.py`
+  (+ `plot_*`) compares the full dynamic model with the quasi-steady one, drivetrain
+  friction in both. A dynamic kite with the drum's inertia cannot follow an eight
+  sized at the quasi-steady turn limit (margin 1.2; it flies at 1.6), and on the
+  9 m/s cycle optimum it jumps to the low-lift root at the reel-out transition,
+  which the march still accepts.
+
 ### Winch: drivetrain inertia and friction, simulated and optimised
 
 - **`awetrim.system.winch.Drivetrain`**: the drum between the tether and the motor,

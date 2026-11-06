@@ -112,6 +112,18 @@ src/awetrim/
                          Full-cycle seeds use it through
                          fit_periodic_cycle_config.py --size
   timeseries/        ✅  PhaseParameterized, ReeloutSimple, ReelinSimple, Cycle
+                         (dynamic march, quasi_steady=False: implicit
+                         (backward) Euler. A dynamic node is a quasi-steady
+                         node, unknowns [T, u_s, s_dot, v_r], plus the inertia
+                         of the step ending at it: s_ddot = (s_dot -
+                         s_dot_prev)/dt in the kinematics' dot_vtau, dv_r/dt =
+                         (v_r - v_r_prev)/dt for kite and drum (the kinematics'
+                         dot_vr is NOT the reel acceleration). The previous
+                         node's (v_r, 1/dt, s_dot) are node-solver parameters
+                         (_n_previous_state / _drivetrain_p); node 0 has none
+                         and is quasi-steady; dt = ds / s_dot as in the
+                         quasi-steady march. studies/
+                         compare_dynamic_quasi_steady_winch.py + plot_*)
                          (winch drivetrain, PhaseParameterized.
                          _resolve_drivetrain: sim_parameters.winch_drivetrain
                          true = system.yaml drums[0] inertia + friction;

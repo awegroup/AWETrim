@@ -270,7 +270,8 @@ class ParametrizedKinematics:
     def dr_ds(self):
         return self.vr / self.s_dot
 
-    # TODO: This is not correct, important for the dynamic case with vr_dot not equal to zero
+    # Identically zero: v_r and s_dot are independent symbols, not functions
+    # of s. The reel speed's rate is not a path property; see dot_vr.
     @property
     def dr_ds2(self):
         return ca.gradient(self.dr_ds, self.s)
@@ -295,7 +296,9 @@ class ParametrizedKinematics:
         # real and its derivative finite without changing the physical solution.
         return ca.sqrt(ca.fmax(self.vk**2 - self.vr**2, 1e-10))
 
-    # TODO: This is not correct, important for the dynamic case with vr_dot not equal to zero
+    # NOT the reel acceleration: dr_ds2 is identically zero, so this keeps
+    # only s_ddot * v_r / s_dot. The dynamic march replaces it with the
+    # backward difference of v_r (PhaseParameterized.residual_solver).
     @property
     def dot_vr(self):
         return self.dr_ds2 * self.s_dot**2 + self.s_ddot * self.dr_ds

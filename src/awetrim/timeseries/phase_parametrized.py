@@ -443,22 +443,17 @@ class PhaseParameterized(TimeSeries):
         state_obj = (
             State(**start_state) if isinstance(start_state, dict) else start_state
         )
-        # For dynamic runs, align the first state via quasi-steady residual solve
-        if not self.quasi_steady:
-            km_copy = self.substitute_parametrized_kinematics(
-                pattern, quasi_steady=True
-            )
-            state_obj = self._quasi_steady_start_state(state_obj, km_copy)
         km_copy = self.substitute_parametrized_kinematics(pattern)
         self.km_param = km_copy
         self.states = []
         use_williams = isinstance(km_copy.tether, WilliamsTether)
 
-        # unknowns to solve at each s-node
-        if self.quasi_steady:
-            unknown_vars = ["length_tether", "input_steering", "s_dot", "speed_radial"]
-        else:
-            unknown_vars = ["length_tether", "input_steering", "s_ddot", "speed_radial"]
+        # One node layout in both modes, the quasi-steady one: a dynamic node
+        # is a quasi-steady node plus the inertia of the step that ends at it
+        # (implicit Euler, residual_solver), with the previous node's
+        # (v_r, 1 / dt, s_dot) as parameters; node 0 has none and is quasi-
+        # steady. The time step is the quasi-steady march's, dt = ds / s_dot.
+        unknown_vars = ["length_tether", "input_steering", "s_dot", "speed_radial"]
 
         if km_copy.is_tether_rigid:
             unknown_vars[0] = "tension_tether_ground"
@@ -532,39 +527,22 @@ class PhaseParameterized(TimeSeries):
 
         # pack initial guesses / states
         s_dot_guess = state_obj.s_dot if state_obj.s_dot is not None else 2.0
-        if use_williams and self.quasi_steady:
+        if use_williams:
             s_dot_guess = max(s_dot_guess, 0.1)
-        if self.quasi_steady:
-            # z = [tension_tether_ground, input_steering, s_dot, speed_radial]
-            z = ca.vertcat(
-                state_obj.tension_tether_ground,
-                state_obj.input_steering,
-                s_dot_guess,
-                state_obj.speed_radial,
-            )
-            # x = [s, distance_radial, input_depower, wind_speed_ref]
-            x = ca.vertcat(
-                s_grid[0],
-                state_obj.distance_radial,
-                u_dep_profile[0],
-                wind_profile[0],
-            )
-        else:
-            # z = [tension_tether_ground, input_steering, s_ddot, speed_radial]
-            z = ca.vertcat(
-                state_obj.tension_tether_ground,
-                state_obj.input_steering,
-                0.01,  # initial guess for s_ddot
-                state_obj.speed_radial,
-            )
-            # x = [s, s_dot, distance_radial, input_depower, wind_speed_ref]
-            x = ca.vertcat(
-                s_grid[0],
-                state_obj.s_dot,
-                state_obj.distance_radial,
-                u_dep_profile[0],
-                wind_profile[0],
-            )
+        # z = [tension_tether_ground, input_steering, s_dot, speed_radial]
+        z = ca.vertcat(
+            state_obj.tension_tether_ground,
+            state_obj.input_steering,
+            s_dot_guess,
+            state_obj.speed_radial,
+        )
+        # x = [s, distance_radial, input_depower, wind_speed_ref]
+        x = ca.vertcat(
+            s_grid[0],
+            state_obj.distance_radial,
+            u_dep_profile[0],
+            wind_profile[0],
+        )
 
         lbx, ubx, lbg, ubg = self.get_boundaries(state_obj, unknown_vars, km_copy)
         # Williams initial guesses + bounds: mirror the
@@ -644,7 +622,7 @@ class PhaseParameterized(TimeSeries):
         # PhaseParameterized.WILLIAMS_TENSION_SCALE) — divide the physical
         # seed and bounds before they go into z/lbx/ubx.
         tension_scale = self.WILLIAMS_TENSION_SCALE
-        if use_williams and self.quasi_steady:
+        if use_williams:
             z = ca.vertcat(
                 state_obj.input_steering,
                 s_dot_guess,
@@ -670,30 +648,6 @@ class PhaseParameterized(TimeSeries):
             ]
             lbg = [0.0] * 7
             ubg = [0.0] * 7
-        elif use_williams:
-            # Dynamic Williams: same decision layout as QS but with s_ddot in
-            # place of s_dot -> [input_steering, s_ddot, speed_radial,
-            # tension_kite, elev_last, az_last, length].
-            z = ca.vertcat(
-                state_obj.input_steering,
-                0.01,  # s_ddot guess
-                state_obj.speed_radial,
-                tension_kite_seed / tension_scale,
-            )
-            lbx = [
-                DEFAULT_BOUNDS["input_steering"][0],
-                DEFAULT_BOUNDS["s_ddot"][0],
-                DEFAULT_BOUNDS["speed_radial"][0],
-                DEFAULT_BOUNDS["tension_tether_kite"][0] / tension_scale,
-            ]
-            ubx = [
-                DEFAULT_BOUNDS["input_steering"][1],
-                DEFAULT_BOUNDS["s_ddot"][1],
-                DEFAULT_BOUNDS["speed_radial"][1],
-                1.0e6 / tension_scale,
-            ]
-            lbg = [0.0] * 7
-            ubg = [0.0] * 7
         if use_williams:
             z = ca.vertcat(z, elev_guess, az_guess, length_guess)
             # Tether length is bounded to ``[r, r + 10]`` — physically the
@@ -709,27 +663,6 @@ class PhaseParameterized(TimeSeries):
         # lbg = ca.vertcat(lbg, DEFAULT_OPTI_LIMITS["speed_radial"][0])
         # ubg = ca.vertcat(ubg, DEFAULT_OPTI_LIMITS["speed_radial"][1])
         t = float(state_obj.t)
-
-        # --- helper: stable Δt from ds, v, a  (ds = v*dt + 0.5*a*dt^2)
-        def _dt_from_ds_v_a(ds_scalar, v_s, a_s):
-            """
-            Numerically stable positive root:
-                dt = 2*ds / ( v + sqrt(v*v + 2*a*ds) )
-            - uses CasADi ops so it works with DM/MX/SX.
-            - if discriminant < 0: clip to 0 if allow_failure else raise.
-            """
-            disc = v_s * v_s + 2.0 * a_s * ds_scalar
-            if allow_failure:
-                disc = ca.fmax(
-                    disc, 0.0
-                )  # clip; produces the limiting solution if negative
-            else:
-                # optional hard check
-                if isinstance(disc, (float, int)) and disc < 0:
-                    raise ValueError(f"Negative discriminant: v^2+2*a*ds={disc}")
-            denom = v_s + ca.sqrt(disc)
-            # add tiny epsilon to avoid divide-by-zero when v≈0 and a→0
-            return 2.0 * ds_scalar / (denom + 1e-12)
 
         # --- main loop
         debug_solver = bool(sim_params.get("debug_solver", False))
@@ -830,7 +763,7 @@ class PhaseParameterized(TimeSeries):
             if z_arr.size == 0:
                 return guesses
 
-            r_idx = 1 if self.quasi_steady else 2
+            r_idx = 1
             r_current = float(p_solver[r_idx])
             s_current = float(p_solver[0])
             if not use_williams:
@@ -848,18 +781,11 @@ class PhaseParameterized(TimeSeries):
                         DEFAULT_BOUNDS["input_steering"][1],
                     )
                 )
-                if self.quasi_steady:
-                    path_rate_or_accel = (
-                        s_dot_guess_profile[node_index]
-                        if s_dot_guess_profile is not None
-                        else max(abs(_finite_or(z_arr[speed_idx], 0.2)), s_dot_floor)
-                    )
-                else:
-                    path_rate_or_accel = np.clip(
-                        _finite_or(z_arr[speed_idx], 0.0),
-                        DEFAULT_BOUNDS["s_ddot"][0],
-                        DEFAULT_BOUNDS["s_ddot"][1],
-                    )
+                path_rate_or_accel = (
+                    s_dot_guess_profile[node_index]
+                    if s_dot_guess_profile is not None
+                    else max(abs(_finite_or(z_arr[speed_idx], 0.2)), s_dot_floor)
+                )
                 speed_radial = (
                     speed_radial_profile[node_index]
                     if speed_radial_profile is not None
@@ -874,22 +800,15 @@ class PhaseParameterized(TimeSeries):
                         "solver_retry_length_tether",
                         [r_current, 1.02 * r_current, r_current + 5.0],
                     )
-                if self.quasi_steady:
-                    rate_candidates = _perturb_list(
-                        "solver_retry_s_dot",
-                        path_rate_or_accel,
-                        multipliers=(0.5, 2.0),
-                        positive=True,
-                    )
-                    # Around the last root first, then the usual scale.
-                    if slow_path_rate and not sim_params.get("solver_retry_s_dot"):
-                        rate_candidates.append(0.2)
-                else:
-                    rate_candidates = _perturb_list(
-                        "solver_retry_s_ddot",
-                        path_rate_or_accel,
-                        offsets=(0.5, -0.5),
-                    )
+                rate_candidates = _perturb_list(
+                    "solver_retry_s_dot",
+                    path_rate_or_accel,
+                    multipliers=(0.5, 2.0),
+                    positive=True,
+                )
+                # Around the last root first, then the usual scale.
+                if slow_path_rate and not sim_params.get("solver_retry_s_dot"):
+                    rate_candidates.append(0.2)
                 radial_candidates = _perturb_list(
                     "solver_retry_speed_radial", speed_radial, offsets=(1.5, -1.5)
                 )
@@ -920,27 +839,17 @@ class PhaseParameterized(TimeSeries):
                     DEFAULT_BOUNDS["input_steering"][1],
                 )
             )
-            if self.quasi_steady:
-                path_rate = (
-                    s_dot_guess_profile[node_index]
-                    if s_dot_guess_profile is not None
-                    else max(abs(_finite_or(z_arr[1], 0.2)), 0.2)
-                )
-                rate_candidates = _perturb_list(
-                    "solver_retry_s_dot",
-                    path_rate,
-                    multipliers=(0.5, 2.0),
-                    positive=True,
-                )
-            else:
-                path_rate = np.clip(
-                    _finite_or(z_arr[1], 0.0),
-                    DEFAULT_BOUNDS["s_ddot"][0],
-                    DEFAULT_BOUNDS["s_ddot"][1],
-                )
-                rate_candidates = _perturb_list(
-                    "solver_retry_s_ddot", path_rate, offsets=(0.5, -0.5)
-                )
+            path_rate = (
+                s_dot_guess_profile[node_index]
+                if s_dot_guess_profile is not None
+                else max(abs(_finite_or(z_arr[1], 0.2)), 0.2)
+            )
+            rate_candidates = _perturb_list(
+                "solver_retry_s_dot",
+                path_rate,
+                multipliers=(0.5, 2.0),
+                positive=True,
+            )
             speed_radial = (
                 speed_radial_profile[node_index]
                 if speed_radial_profile is not None
@@ -1110,49 +1019,47 @@ class PhaseParameterized(TimeSeries):
             logger.warning("%s: %s", message, last_error)
             return None
 
-        # Drum state for the drivetrain inertia: (v_r at the previous node,
-        # 1 / the step from it); steady (0) at the first node.
-        drum_state = (0.0, 0.0)
+        # Previous-node state for the inertia terms: (v_r, 1 / the step from
+        # it, s_dot); none (inv_time_step 0) at the first node.
+        drum_state = (0.0, 0.0, 0.0)
+        implicit_dynamics = not self.quasi_steady
         for i in range(N):
             # 1) solve residuals at current s-grid node
             # Update wind speed for this grid point
             km_copy.wind.speed_wind_ref = float(wind_profile[i])
             if use_williams:
-                r_idx = 1 if self.quasi_steady else 2
+                r_idx = 1
                 r_current = float(x[r_idx])
                 # Tether length is essentially the chord plus a small slack.
                 # Allowing the wide ``[0.5 r, 3 r]`` box gave IPOPT too much
                 # freedom; ``[r, r + 10]`` matches the physics of a taut tether.
                 lbx[-1] = r_current
                 ubx[-1] = r_current + 10.0
-                if self.quasi_steady:
-                    input_guess = (
-                        input_steering_guess_profile[i]
-                        if input_steering_guess_profile is not None
-                        else float(z[0])
-                    )
-                    s_dot_guess_i = (
-                        s_dot_guess_profile[i]
-                        if s_dot_guess_profile is not None
-                        else float(z[1])
-                    )
-                    speed_radial_guess = (
-                        speed_radial_profile[i]
-                        if speed_radial_profile is not None
-                        else float(z[2])
-                    )
-                    # Seed tether_length slightly slack vs the chord so the
-                    # ground-residual constraint starts on the feasibility
-                    # side (mirrors solve_single_state.py).
-                    z = ca.vertcat(
-                        input_guess,
-                        s_dot_guess_i,
-                        speed_radial_guess,
-                        z[3:-1],
-                        1.02 * r_current,
-                    )
-                else:
-                    z = ca.vertcat(z[:-1], 1.02 * r_current)
+                input_guess = (
+                    input_steering_guess_profile[i]
+                    if input_steering_guess_profile is not None
+                    else float(z[0])
+                )
+                s_dot_guess_i = (
+                    s_dot_guess_profile[i]
+                    if s_dot_guess_profile is not None
+                    else float(z[1])
+                )
+                speed_radial_guess = (
+                    speed_radial_profile[i]
+                    if speed_radial_profile is not None
+                    else float(z[2])
+                )
+                # Seed tether_length slightly slack vs the chord so the
+                # ground-residual constraint starts on the feasibility
+                # side (mirrors solve_single_state.py).
+                z = ca.vertcat(
+                    input_guess,
+                    s_dot_guess_i,
+                    speed_radial_guess,
+                    z[3:-1],
+                    1.02 * r_current,
+                )
             # The drum's previous state (inertia only): v_r at the previous
             # node and 1 / the step from it; steady at the first node.
             p_solver = self._drivetrain_p(x, *drum_state)
@@ -1168,7 +1075,7 @@ class PhaseParameterized(TimeSeries):
                     p_solver,
                     lbx,
                     ubx,
-                    quasi_steady=self.quasi_steady,
+                    quasi_steady=True,
                 )
             sol = _solve_node(z, p_solver, i)
             if sol is None:
@@ -1193,7 +1100,7 @@ class PhaseParameterized(TimeSeries):
                 residual_norm = float(np.linalg.norm(g_vec))
                 # g layout for QS+Williams: [force_residual(3) / F_scale,
                 # ground_position(3) / r0, winch(1) / F_scale]
-                if self.quasi_steady and g_vec.size == 7:
+                if g_vec.size == 7:
                     parts = (
                         f"||force||={np.linalg.norm(g_vec[0:3]):.2e}, "
                         f"||ground||={np.linalg.norm(g_vec[3:6]):.2e}, "
@@ -1212,120 +1119,65 @@ class PhaseParameterized(TimeSeries):
             z = sol["x"]  # CasADi DM
 
             # 2) record current state (BEFORE stepping to next s)
-            if self.quasi_steady:
-                if use_williams:
-                    speed_radial = float(z[2])
-                    if self._williams_tension_ground_function is not None:
-                        tension_ground = self._williams_tension_ground_function(
-                            sol["x"], p_solver
-                        )
-                    else:
-                        tension_ground = self.winch_model.tension_curve(
-                            speed_radial, input_depower=float(x[2])
-                        )
-                    curr_state = State(
-                        t=t,
-                        s=float(x[0]),
-                        input_steering=float(z[0]),
-                        tension_tether_ground=float(tension_ground),
-                        s_dot=float(z[1]),
-                        distance_radial=float(x[1]),
-                        speed_radial=speed_radial,
-                        input_depower=float(x[2]),
-                        # Williams tether decisions (QS layout:
-                        # [input_steering, s_dot, speed_radial, tension_kite,
-                        #  elev_last, az_last, length]). z[3] is the *scaled*
-                        # tension decision; unscale for recording.
-                        tension_tether_kite=float(z[3]) * self.WILLIAMS_TENSION_SCALE,
-                        elevation_last_element=float(z[4]),
-                        azimuth_last_element=float(z[5]),
-                        tether_length=float(z[6]),
+            if use_williams:
+                speed_radial = float(z[2])
+                if self._williams_tension_ground_function is not None:
+                    tension_ground = self._williams_tension_ground_function(
+                        sol["x"], p_solver
                     )
                 else:
-                    curr_state = State(
-                        t=t,
-                        s=float(x[0]),
-                        input_steering=float(z[1]),
-                        tension_tether_ground=float(z[0]),
-                        s_dot=float(z[2]),
-                        distance_radial=float(x[1]),
-                        speed_radial=float(z[3]),
-                        input_depower=float(x[2]),
+                    tension_ground = self.winch_model.tension_curve(
+                        speed_radial, input_depower=float(x[2])
                     )
+                curr_state = State(
+                    t=t,
+                    s=float(x[0]),
+                    input_steering=float(z[0]),
+                    tension_tether_ground=float(tension_ground),
+                    s_dot=float(z[1]),
+                    distance_radial=float(x[1]),
+                    speed_radial=speed_radial,
+                    input_depower=float(x[2]),
+                    # Williams tether decisions (QS layout:
+                    # [input_steering, s_dot, speed_radial, tension_kite,
+                    #  elev_last, az_last, length]). z[3] is the *scaled*
+                    # tension decision; unscale for recording.
+                    tension_tether_kite=float(z[3]) * self.WILLIAMS_TENSION_SCALE,
+                    elevation_last_element=float(z[4]),
+                    azimuth_last_element=float(z[5]),
+                    tether_length=float(z[6]),
+                )
             else:
-                if use_williams:
-                    # Dynamic Williams z: [input_steering, s_ddot, speed_radial,
-                    #  tension_kite, elev_last, az_last, length]. Ground tension
-                    # is derived from the shape, not a decision.
-                    speed_radial_dyn = float(z[2])
-                    if self._williams_tension_ground_function is not None:
-                        tension_ground = self._williams_tension_ground_function(
-                            sol["x"], p_solver
-                        )
-                    else:
-                        tension_ground = self.winch_model.tension_curve(
-                            speed_radial_dyn, input_depower=float(x[3])
-                        )
-                    curr_state = State(
-                        t=t,
-                        s=float(x[0]),
-                        s_dot=float(x[1]),
-                        input_steering=float(z[0]),
-                        tension_tether_ground=float(tension_ground),
-                        s_ddot=float(z[1]),
-                        distance_radial=float(x[2]),
-                        speed_radial=speed_radial_dyn,
-                        input_depower=float(x[3]),
-                        tension_tether_kite=float(z[3]) * self.WILLIAMS_TENSION_SCALE,
-                        elevation_last_element=float(z[4]),
-                        azimuth_last_element=float(z[5]),
-                        tether_length=float(z[6]),
-                    )
-                else:
-                    curr_state = State(
-                        t=t,
-                        s=float(x[0]),
-                        s_dot=float(x[1]),
-                        input_steering=float(z[1]),
-                        tension_tether_ground=float(z[0]),
-                        s_ddot=float(z[2]),
-                        distance_radial=float(x[2]),
-                        speed_radial=float(z[3]),
-                        input_depower=float(x[3]),
-                    )
+                curr_state = State(
+                    t=t,
+                    s=float(x[0]),
+                    input_steering=float(z[1]),
+                    tension_tether_ground=float(z[0]),
+                    s_dot=float(z[2]),
+                    distance_radial=float(x[1]),
+                    speed_radial=float(z[3]),
+                    input_depower=float(x[2]),
+                )
+            if implicit_dynamics:
+                # The accelerations this node was solved with (backward
+                # differences; zero at node 0).
+                curr_state.s_ddot = (curr_state.s_dot - drum_state[2]) * drum_state[1]
+                curr_state.timeder_speed_radial = (
+                    curr_state.speed_radial - drum_state[0]
+                ) * drum_state[1]
             self.states.append(curr_state.to_dict())
 
             # 4) step to next s using appropriate time increment
             ds = float(s_grid[i + 1] - s_grid[i])  # scalar number
 
-            if self.quasi_steady:
-                # a_s = 0 => dt = ds / v_s
-                v_s = z[1] if use_williams else z[2]  # s_dot from QS solve
-                speed_radial = z[2] if use_williams else z[3]
-                dt = ds / (v_s + 1e-12)  # small epsilon to avoid division by zero
-                drum_state = (float(speed_radial), float(1.0 / dt))
-                next_r = x[1] + speed_radial * dt
-                next_u_dep = u_dep_profile[i + 1]
-                x = ca.vertcat(s_grid[i + 1], next_r, next_u_dep, wind_profile[i + 1])
-            else:
-                # dynamic: ds = v*dt + 0.5*a*dt^2
-                # Williams z: [input_steering, s_ddot, speed_radial, ...];
-                # rigid z:    [tension_ground, input_steering, s_ddot, speed_radial].
-                v_s = x[1]  # current s_dot (state)
-                a_s = z[1] if use_williams else z[2]  # current s_ddot (solve result)
-                dt = _dt_from_ds_v_a(ds, v_s, a_s)
-                drum_state = (float(z[2] if use_williams else z[3]), float(1.0 / dt))
-
-                next_s_dot = v_s + a_s * dt
-                speed_radial = z[2] if use_williams else z[3]
-                next_r = x[2] + speed_radial * dt
-                x = ca.vertcat(
-                    s_grid[i + 1],
-                    next_s_dot,
-                    next_r,
-                    u_dep_profile[i + 1],
-                    wind_profile[i + 1],
-                )
+            # a_s = 0 => dt = ds / v_s
+            v_s = z[1] if use_williams else z[2]  # s_dot from QS solve
+            speed_radial = z[2] if use_williams else z[3]
+            dt = ds / (v_s + 1e-12)  # small epsilon to avoid division by zero
+            drum_state = (float(speed_radial), float(1.0 / dt), float(v_s))
+            next_r = x[1] + speed_radial * dt
+            next_u_dep = u_dep_profile[i + 1]
+            x = ca.vertcat(s_grid[i + 1], next_r, next_u_dep, wind_profile[i + 1])
 
             # 5) advance time (dt is a CasADi scalar DM; cast to float)
             t += float(dt)
@@ -1383,7 +1235,8 @@ class PhaseParameterized(TimeSeries):
                     state_obj.distance_radial,
                     state_obj.input_depower,
                     wind_speed_init,
-                )
+                ),
+                quasi_steady=True,
             )
             r0 = float(state_obj.distance_radial)
             lbx_init = [
@@ -1419,7 +1272,8 @@ class PhaseParameterized(TimeSeries):
                     state_obj.distance_radial,
                     state_obj.input_depower,
                     wind_speed_init,
-                )
+                ),
+                quasi_steady=True,
             )
             lbx_init, ubx_init, lbg_init, ubg_init = km_copy.get_boundaries(
                 state_obj, qs_unknown_vars
@@ -1532,17 +1386,41 @@ class PhaseParameterized(TimeSeries):
             load_fraction=load_fraction,
         )
 
-    def _drivetrain_p(self, p, speed_radial_prev=0.0, inv_time_step=0.0):
-        """Node-solver parameters plus the drum's previous state, when inertia is on.
+    def _n_previous_state(self, quasi_steady=None):
+        """How many previous-node values a node solve takes as parameters.
 
-        ``residual_solver`` appends (v_r at the previous node, 1 / the step from
-        it) to the parameter vector only for a drivetrain with inertia; every
-        caller passes its ``p`` through here. ``inv_time_step`` 0 = steady drum
-        (no previous state: start states, warm starts, node 0).
+        0: none. 2: (v_r, 1 / dt) for the drum inertia of the drivetrain's law
+        row. 3: (v_r, 1 / dt, s_dot) in the dynamic march, whose accelerations
+        are backward differences over the step ending at the node (implicit
+        Euler): s_ddot = (s_dot - s_dot_prev) / dt for the kite's tangential
+        speed, dv_r/dt = (v_r - v_r_prev) / dt for kite and drum alike (the
+        tether a rigid link).
         """
-        if not self.winch_model.drivetrain.inertia_mass:
+        quasi_steady = self.quasi_steady if quasi_steady is None else quasi_steady
+        if not quasi_steady:
+            return 3
+        return 2 if self.winch_model.drivetrain.inertia_mass else 0
+
+    def _drivetrain_p(
+        self,
+        p,
+        speed_radial_prev=0.0,
+        inv_time_step=0.0,
+        s_dot_prev=0.0,
+        quasi_steady=None,
+    ):
+        """Node-solver parameters plus the previous-node values it takes.
+
+        ``residual_solver`` appends (v_r, 1 / dt, s_dot) of the previous node,
+        as many as :meth:`_n_previous_state` says; every caller passes its ``p``
+        through here, with the ``quasi_steady`` of the solver it calls.
+        ``inv_time_step`` 0 = no previous node (start states, warm starts,
+        node 0): the inertia terms vanish and the node is quasi-steady.
+        """
+        n = self._n_previous_state(quasi_steady)
+        if not n:
             return p
-        return ca.vertcat(p, speed_radial_prev, inv_time_step)
+        return ca.vertcat(p, *(speed_radial_prev, inv_time_step, s_dot_prev)[:n])
 
     def _resolve_opti_limits(self) -> dict:
         """``DEFAULT_OPTI_LIMITS`` overlaid with the system's hardware limits.
@@ -3525,82 +3403,63 @@ class PhaseParameterized(TimeSeries):
         # drum's previous state (see _drivetrain_p), the law row then being an
         # implicit Euler step of the drum.
         self.winch_model.drivetrain = self._resolve_drivetrain()
-        drum_prev = (
-            (ca.MX.sym("speed_radial_prev"), ca.MX.sym("inv_time_step"))
-            if self.winch_model.drivetrain.inertia_mass
-            else (None, 0.0)
-        )
+        # Previous-node values (see _n_previous_state). One node layout for
+        # both modes, the quasi-steady one, [T, u_s, s_dot, v_r]: a dynamic
+        # node is a quasi-steady node plus the inertia of the step that ends
+        # at it (implicit Euler), so it is stable at any node spacing and has
+        # the march's root selection and retries unchanged.
+        previous = [
+            ca.MX.sym("speed_radial_prev"),
+            ca.MX.sym("inv_time_step"),
+            ca.MX.sym("s_dot_prev"),
+        ][: self._n_previous_state(quasi_steady)]
+        drum_prev = (previous[0], previous[1]) if previous else (None, 0.0)
+        if not quasi_steady:
+            # Kite radial acceleration: the backward difference of v_r, the
+            # drum's own (rigid tether). The path kinematics' dot_vr misses it
+            # (dr_ds2 is identically zero: v_r is a state, not a function of s).
+            km_copy.timeder_speed_radial = (
+                km_copy.speed_radial - drum_prev[0]
+            ) * drum_prev[1]
+            km_copy.establish_residual()
         # Scaled tension decision variable for Williams; substituted into the
         # algebraic below as ``tension_kite_scaled * WILLIAMS_TENSION_SCALE``.
         tension_kite_scaled = ca.MX.sym("tension_kite_scaled") if use_williams else None
-        if quasi_steady:
-            if use_williams:
-                z = ca.vertcat(
-                    km_copy.input_steering,
-                    self.s_dot,
-                    km_copy.speed_radial,
-                    tension_kite_scaled,
-                )
-                p = ca.vertcat(
-                    self.s,
-                    km_copy.distance_radial,
-                    km_copy.input_depower,
-                    wind_speed_ref,
-                )
-            elif km_copy.is_tether_rigid:
-                z = ca.vertcat(
-                    km_copy.tension_tether_ground,
-                    km_copy.input_steering,
-                    self.s_dot,
-                )
-            else:
-                z = ca.vertcat(
-                    km_copy.length_tether,
-                    km_copy.input_steering,
-                    km_copy.s_dot,
-                )
-            if not use_williams:
-                p = ca.vertcat(
-                    self.s,
-                    km_copy.distance_radial,
-                    km_copy.input_depower,
-                    wind_speed_ref,
-                )
-
-        else:
-            if use_williams:
-                # Mirror the QS Williams layout, with s_ddot in place of s_dot.
-                # Ground tension is derived from the shape (not a free symbol),
-                # so it is NOT a decision here (the old code put the derived
-                # expression in z[0], which broke nlpsol).
-                z = ca.vertcat(
-                    km_copy.input_steering,
-                    self.s_ddot,
-                    km_copy.speed_radial,
-                    tension_kite_scaled,
-                )
-            elif km_copy.is_tether_rigid:
-                z = ca.vertcat(
-                    km_copy.tension_tether_ground,
-                    km_copy.input_steering,
-                    self.s_ddot,
-                )
-            else:
-                z = ca.vertcat(
-                    km_copy.length_tether,
-                    km_copy.input_steering,
-                    self.s_ddot,
-                )
+        if use_williams:
+            z = ca.vertcat(
+                km_copy.input_steering,
+                self.s_dot,
+                km_copy.speed_radial,
+                tension_kite_scaled,
+            )
             p = ca.vertcat(
                 self.s,
+                km_copy.distance_radial,
+                km_copy.input_depower,
+                wind_speed_ref,
+            )
+        elif km_copy.is_tether_rigid:
+            z = ca.vertcat(
+                km_copy.tension_tether_ground,
+                km_copy.input_steering,
                 self.s_dot,
+            )
+        else:
+            z = ca.vertcat(
+                km_copy.length_tether,
+                km_copy.input_steering,
+                km_copy.s_dot,
+            )
+        if not use_williams:
+            p = ca.vertcat(
+                self.s,
                 km_copy.distance_radial,
                 km_copy.input_depower,
                 wind_speed_ref,
             )
 
-        if drum_prev[0] is not None:
-            p = ca.vertcat(p, *drum_prev)
+        if previous:
+            p = ca.vertcat(p, *previous)
 
         alg = km_copy.residual
         williams_force_scale = max(
@@ -3650,59 +3509,42 @@ class PhaseParameterized(TimeSeries):
             tether_force_course = T_C_from_Wind @ tether_shape["tether_force_kite"]
             force_residual = force_kite_course + tether_force_course
             tension_ground = ca.norm_2(tether_shape["tether_force_ground"])
-            if quasi_steady:
-                alg = ca.vertcat(
-                    force_residual[0] / williams_force_scale,
-                    force_residual[1] / williams_force_scale,
-                    force_residual[2] / williams_force_scale,
-                    tether_shape["ground_position"] / williams_length_scale,
-                    self.winch_model.radial_equation(
-                        tension_tether_ground=tension_ground,
-                        speed_radial=km_copy.speed_radial,
-                        input_depower=km_copy.input_depower,
-                        speed_radial_prev=drum_prev[0],
-                        inv_time_step=drum_prev[1],
-                    )
-                    / williams_force_scale,
+            alg = ca.vertcat(
+                force_residual[0] / williams_force_scale,
+                force_residual[1] / williams_force_scale,
+                force_residual[2] / williams_force_scale,
+                tether_shape["ground_position"] / williams_length_scale,
+                self.winch_model.radial_equation(
+                    tension_tether_ground=tension_ground,
+                    speed_radial=km_copy.speed_radial,
+                    input_depower=km_copy.input_depower,
+                    speed_radial_prev=drum_prev[0],
+                    inv_time_step=drum_prev[1],
                 )
-            else:
-                # Full 3D force balance + ground closure, same as the QS branch.
-                # The inertial term in force_residual already carries the dynamic
-                # (s_ddot / radial) accelerations, so imposing all three force
-                # components is correct here. The winch radial equation is
-                # appended below for the dynamic case.
-                alg = ca.vertcat(
-                    force_residual[0] / williams_force_scale,
-                    force_residual[1] / williams_force_scale,
-                    force_residual[2] / williams_force_scale,
-                    tether_shape["ground_position"] / williams_length_scale,
-                )
+                / williams_force_scale,
+            )
         else:
             tension_ground = km_copy.tension_tether_ground
         # aoa = km_copy.angle_of_attack
-        if not (use_williams and quasi_steady):
+        if not use_williams:
             alg = ca.vertcat(
                 alg,
-                (
-                    self.winch_model.radial_equation(
-                        tension_tether_ground=tension_ground,
-                        speed_radial=km_copy.speed_radial,
-                        input_depower=km_copy.input_depower,
-                        speed_radial_prev=drum_prev[0],
-                        inv_time_step=drum_prev[1],
-                    )
-                    / williams_force_scale
-                    if use_williams
-                    else self.winch_model.radial_equation(
-                        tension_tether_ground=tension_ground,
-                        speed_radial=km_copy.speed_radial,
-                        input_depower=km_copy.input_depower,
-                        speed_radial_prev=drum_prev[0],
-                        inv_time_step=drum_prev[1],
-                    )
+                self.winch_model.radial_equation(
+                    tension_tether_ground=tension_ground,
+                    speed_radial=km_copy.speed_radial,
+                    input_depower=km_copy.input_depower,
+                    speed_radial_prev=drum_prev[0],
+                    inv_time_step=drum_prev[1],
                 ),
-                # km_copy.speed_radial,
             )
+        if not quasi_steady:
+            # Tangential: s_ddot in the kinematics' dot_vtau, implicit.
+            s_ddot_implicit = (self.s_dot - previous[2]) * previous[1]
+            alg = ca.substitute(alg, self.s_ddot, s_ddot_implicit)
+            if use_williams:
+                tension_ground = ca.substitute(
+                    tension_ground, self.s_ddot, s_ddot_implicit
+                )
         if not use_williams:
             z = ca.vertcat(z, km_copy.speed_radial)
         if use_williams:
