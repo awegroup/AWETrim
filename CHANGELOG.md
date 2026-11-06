@@ -13,8 +13,8 @@
   at the kite, along itself as `m_t`. Quasi-steady, its centrifugal, Coriolis and turn
   terms remain; the dynamic march adds the accelerations. Off by default, so every
   run is unchanged; not available on the Williams tether.
-- The dynamic-vs-quasi-steady study (`studies/compare_dynamic_quasi_steady_winch.py`)
-  now runs with and without it, with and without winch friction.
+- The dynamic-vs-quasi-steady study (`compare_dynamic_quasi_steady_winch.py`, available
+  on request) now runs with and without it, with and without winch friction.
 
 ### Dynamic march: implicit Euler, with the reel acceleration
 
@@ -38,9 +38,8 @@
   another root.
 - `TimeSeries.to_dataframe` derives the `State` fields the march leaves unset
   (`speed_tangential`, the angles) instead of returning them all-NaN.
-- `examples/4_trajectory_optimization/studies/compare_dynamic_quasi_steady_winch.py`
-  (+ `plot_*`) compares the full dynamic model with the quasi-steady one, drivetrain
-  friction in both. A dynamic kite with the drum's inertia cannot follow an eight
+- A study comparing the full dynamic model with the quasi-steady one, drivetrain
+  friction in both (`compare_dynamic_quasi_steady_winch.py`, available on request). A dynamic kite with the drum's inertia cannot follow an eight
   sized at the quasi-steady turn limit (margin 1.2; it flies at 1.6), and on the
   9 m/s cycle optimum it jumps to the low-lift root at the reel-out transition,
   which the march still accepts.
