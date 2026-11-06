@@ -53,7 +53,18 @@ def create_tether_from_config(
 
     model = str(tether_cfg.get("model", "rigid_lumped")).lower()
     if model in ("rigid_lumped", "rigid", "lumped"):
-        return RigidLumpedTether(diameter=diameter, density=density)
+        # ``inertia: true`` adds the straight tether's inertial load at the
+        # kite (Tether.force_inertia_tether_at_kite_for); default off.
+        return RigidLumpedTether(
+            diameter=diameter,
+            density=density,
+            inertia=bool(tether_cfg.get("inertia", False)),
+        )
+    if tether_cfg.get("inertia"):
+        raise ValueError(
+            "tether inertia is implemented for the lumped tether only, not "
+            f"'{tether_cfg.get('model')}'"
+        )
     if model == "williams":
         return WilliamsTether(
             diameter=diameter,

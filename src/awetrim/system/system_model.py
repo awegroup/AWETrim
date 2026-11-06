@@ -186,6 +186,7 @@ class SystemModel(KiteKinematics):
             + self.expression("force_gravity")[2]
             + self.expression("drag_tether_at_kite")[2]
             + self.expression("force_gravity_tether_at_kite")[2]
+            + self.expression("force_inertia_tether_at_kite")[2]
         )
 
     @property

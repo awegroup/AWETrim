@@ -22,12 +22,15 @@ from scipy import integrate
 
 
 class Tether(ABC):
-    def __init__(self, E=132e9, diameter=0.01, density=970):
+    def __init__(self, E=132e9, diameter=0.01, density=970, inertia=False):
         self.E = E
         self.diameter_tether = diameter
         self.area_tether = np.pi * (self.diameter_tether / 2) ** 2
         self.drag_coefficient_tether = 1.1
         self.density_tether = density
+        # Tether inertia at the kite (lumped tethers; opt-in, see
+        # force_inertia_tether_at_kite_for).
+        self.inertia = bool(inertia)
 
     @property
     def mass_tether(self):
@@ -56,6 +59,45 @@ class Tether(ABC):
 
     def force_gravity_tether_at_kite_for(self, model):
         return ca.MX.zeros(3, 1)
+
+    @property
+    def force_inertia_tether_at_kite(self):
+        return self.force_inertia_tether_at_kite_for(self)
+
+    def force_inertia_tether_at_kite_for(self, model):
+        """Inertial load of a straight, inextensible tether on the kite [N].
+
+        Course frame (tangential x, normal y, radial z), zero unless
+        ``self.inertia``. The tether, of mass m_t = mu r, is pinned at the
+        anchor; its material moves along it at v_r and turns with
+        Omega = e_r x de_r/dt (|Omega| = v_tau / r exactly; spin about the
+        tether moves no material). Integrating mu a over its length, the
+        moments about the anchor for the cross components (tether reeled at
+        the anchor carries no angular momentum):
+
+            -(m_t/3) (v_tau_dot + 2 v_tau v_r / r)    tangential
+            -(m_t/3) v_tau w_z                         normal (turn)
+            -m_t (v_r_dot - v_tau^2 / (2 r))           radial
+
+        w_z is the course frame's rotation about e_r, the kite's own turn
+        term (KiteKinematics.velocity_rotation_course_frame). The tether
+        acts as m_t/3 at the kite across itself (with twice the kite's
+        reeling term) and as m_t along itself (with half its centrifugal
+        term). The anchor takes the rest. Quasi-steady (v_tau_dot = v_r_dot
+        = 0) only the centrifugal, Coriolis and turn terms remain.
+        """
+        if not getattr(self, "inertia", False):
+            return ca.MX.zeros(3, 1)
+        m_t = self.mass_tether_for(model)
+        v_tau = model.speed_tangential
+        v_r = model.speed_radial
+        r = model.distance_radial
+        w_z = model.velocity_rotation_course_frame[2]
+        return -ca.vertcat(
+            m_t / 3 * (model.timeder_speed_tangential + 2 * v_tau * v_r / r),
+            m_t / 3 * v_tau * w_z,
+            m_t * (model.timeder_speed_radial - v_tau**2 / (2 * r)),
+        )
 
     # ------------------------------------------------------------------
     # Hooks for tethers that contribute their own decision variables and
@@ -159,8 +201,8 @@ class FlexibleLinkTether(Tether):
 
 class RigidLumpedTether(Tether):
 
-    def __init__(self, E=132e9, diameter=0.01, density=970):
-        super().__init__(E, diameter, density)
+    def __init__(self, E=132e9, diameter=0.01, density=970, inertia=False):
+        super().__init__(E, diameter, density, inertia=inertia)
         self.tension_tether_ground = ca.MX.sym("tension_tether_ground")
         self.is_tether_rigid = True
 
@@ -172,7 +214,8 @@ class RigidLumpedTether(Tether):
         force_tension = ca.vertcat(0, 0, -model.tension_tether_ground)
         force_drag = self.drag_tether_at_kite_for(model)
         force_gravity = self.force_gravity_tether_at_kite_for(model)
-        return force_tension + force_drag + force_gravity
+        force_inertia = self.force_inertia_tether_at_kite_for(model)
+        return force_tension + force_drag + force_gravity + force_inertia
 
     @property
     def tension_kite(self):
@@ -299,8 +342,8 @@ class DistributedDragTether(Tether):
 
 class FlexibleLumpedTether(Tether):
 
-    def __init__(self, E=132e9, diameter=0.01, density=970):
-        super().__init__(E, diameter, density)
+    def __init__(self, E=132e9, diameter=0.01, density=970, inertia=False):
+        super().__init__(E, diameter, density, inertia=inertia)
         self.length_tether = ca.MX.sym("length_tether")
         self.timeder_length_tether = ca.MX.sym("timeder_length_tether")
         self.is_tether_rigid = False
@@ -313,7 +356,8 @@ class FlexibleLumpedTether(Tether):
         force_tension = ca.vertcat(0, 0, -self.tension_kite_for(model))
         force_drag = self.drag_tether_at_kite_for(model)
         force_gravity = self.force_gravity_tether_at_kite_for(model)
-        return force_tension + force_drag + force_gravity
+        force_inertia = self.force_inertia_tether_at_kite_for(model)
+        return force_tension + force_drag + force_gravity + force_inertia
 
     @property
     def tension_kite(self):
@@ -334,6 +378,7 @@ class FlexibleLumpedTether(Tether):
             self.tension_kite
             - self.drag_tether_at_kite[2]
             - self.force_gravity_tether_at_kite[2]
+            - self.force_inertia_tether_at_kite[2]
         )
 
     def tension_tether_ground_for(self, model):
@@ -341,6 +386,7 @@ class FlexibleLumpedTether(Tether):
             self.tension_kite_for(model)
             - self.drag_tether_at_kite_for(model)[2]
             - self.force_gravity_tether_at_kite_for(model)[2]
+            - self.force_inertia_tether_at_kite_for(model)[2]
         )
 
     @property
