@@ -243,6 +243,10 @@ class ParametrizedKinematics:
         self.vr = phase.kite_model.speed_radial
         self.s_dot = phase.s_dot
         self.s_ddot = phase.s_ddot
+        # The reel acceleration is its own symbol: v_r is a state, not a
+        # function of s, so it cannot be derived from the path (a phase
+        # without the symbol keeps the path part only).
+        self.vr_dot = getattr(phase, "timeder_speed_radial", None)
 
     @property
     def beta(self):
@@ -270,12 +274,6 @@ class ParametrizedKinematics:
     def dr_ds(self):
         return self.vr / self.s_dot
 
-    # Identically zero: v_r and s_dot are independent symbols, not functions
-    # of s. The reel speed's rate is not a path property; see dot_vr.
-    @property
-    def dr_ds2(self):
-        return ca.gradient(self.dr_ds, self.s)
-
     @property
     def dR_ds(self):
         return ca.vertcat(
@@ -296,12 +294,13 @@ class ParametrizedKinematics:
         # real and its derivative finite without changing the physical solution.
         return ca.sqrt(ca.fmax(self.vk**2 - self.vr**2, 1e-10))
 
-    # NOT the reel acceleration: dr_ds2 is identically zero, so this keeps
-    # only s_ddot * v_r / s_dot. The dynamic march replaces it with the
-    # backward difference of v_r (PhaseParameterized.residual_solver).
     @property
     def dot_vr(self):
-        return self.dr_ds2 * self.s_dot**2 + self.s_ddot * self.dr_ds
+        """The reel acceleration dv_r/dt: the phase's ``timeder_speed_radial``
+        symbol, which the march and the NLP set from their time scheme."""
+        if self.vr_dot is not None:
+            return self.vr_dot
+        return self.s_ddot * self.dr_ds
 
     @property
     def dot_vtau(self):

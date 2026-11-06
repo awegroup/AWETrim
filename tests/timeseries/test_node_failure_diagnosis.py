@@ -35,3 +35,14 @@ def test_a_root_the_solver_missed_is_found():
 def test_equation_names_follow_the_node_layout():
     assert _node_equation_names(4, False) == ["tangential", "normal (turn)", "radial", "winch law"]
     assert _node_equation_names(7, True)[-1] == "winch law"
+
+
+def test_the_node_jacobian_is_built_once_per_solver():
+    x, p = ca.MX.sym("x", 2), ca.MX.sym("p")
+    solver = _solver(ca.vertcat(x[0] - p, x[0] + 3 * x[1]), x, p)
+    cache = {}
+    _least_squares_node(solver, [0.5, 0.5], [2.0], [-10.0, -10.0], [10.0, 10.0], cache=cache)
+    built = cache[id(solver)]
+    z, _, _, _ = _least_squares_node(solver, [1.0, 0.0], [3.0], [-10.0, -10.0], [10.0, 10.0], cache=cache)
+    assert cache[id(solver)] is built and len(cache) == 1
+    np.testing.assert_allclose(z, [3.0, -1.0], atol=1e-8)

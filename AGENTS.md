@@ -118,29 +118,39 @@ src/awetrim/
                          Full-cycle seeds use it through
                          fit_periodic_cycle_config.py --size
   timeseries/        ✅  PhaseParameterized, ReeloutSimple, ReelinSimple, Cycle
-                         (dynamic march, quasi_steady=False: implicit
-                         (backward) Euler. A dynamic node is a quasi-steady
-                         node, unknowns [T, u_s, s_dot, v_r], plus the inertia
-                         of the step ending at it: s_ddot = (s_dot -
-                         s_dot_prev)/dt in the kinematics' dot_vtau, dv_r/dt =
-                         (v_r - v_r_prev)/dt for kite and drum (the kinematics'
-                         dot_vr is NOT the reel acceleration). The previous
-                         node's (v_r, 1/dt, s_dot) are node-solver parameters
-                         (_n_previous_state / _drivetrain_p; time_scheme
-                         bdf2: eight, step and tether length trapezoidal in
-                         the node, BDF2 accelerations, quasi-steady too); node 0 has none
-                         and is quasi-steady; dt = ds / s_dot as in the
-                         quasi-steady march. The NLP is dynamic too
-                         (opti_phase: node functions take s_ddot, dv_r/dt
-                         after distance_radial, fed by _dyn_args;
-                         run_full_cycle_opti.py --dynamic). A node where every
-                         attempt fails is diagnosed by least squares
-                         (_least_squares_node): a missed root is taken, a fold
-                         (singular Jacobian, FOLD_SINGULAR_RATIO) is reported
-                         with the balance that runs out, phase.stop_reason. The
-                         dynamic-vs-quasi-steady study,
-                         compare_dynamic_quasi_steady_winch.py, is available
-                         on request)
+                         (dynamic march, quasi_steady=False: implicit. A
+                         dynamic node is a quasi-steady node, unknowns [T, u_s,
+                         s_dot, v_r], plus the inertia of the steps ending at
+                         it: the kinematics' s_ddot (in dot_vtau) and
+                         timeder_speed_radial (= dot_vr, its own symbol, named
+                         like the State field) are replaced by the time
+                         scheme's differences, for kite and drum alike.
+                         sim_parameters.time_scheme: euler (left step ds /
+                         s_dot_prev, explicit tether length, backward
+                         differences; first order) or bdf2 (trapezoidal step
+                         and tether length solved in the node, BDF2
+                         differences; second order); default bdf2 dynamic,
+                         euler quasi-steady. The kernels are
+                         utils/time_scheme.py, the one source for the march,
+                         the node solver, the NLP and the winch. The previous
+                         node's values are node-solver parameters
+                         (_n_previous_state / _drivetrain_p: euler 3 dynamic,
+                         2 with only drum inertia; bdf2 8); node 0 has none.
+                         The integrator path (run_simulation,
+                         phase_sim=False) is quasi-steady only. The NLP takes
+                         the same scheme (opti_phase: node functions take
+                         s_ddot, dv_r/dt after distance_radial, fed by
+                         _rate / _dyn_args; continuity, energy, time and slew
+                         rates over _step; run_full_cycle_opti.py --dynamic).
+                         The march checks every attempt against the steering
+                         box. A node where every attempt fails is diagnosed by
+                         least squares (_least_squares_node, its Jacobian
+                         built once per solver): a root IPOPT missed is taken,
+                         a fold (singular Jacobian, FOLD_SINGULAR_RATIO) is
+                         reported with the balance that runs out,
+                         phase.stop_reason. The dynamic-vs-quasi-steady
+                         study, compare_dynamic_quasi_steady_winch.py, is
+                         available on request)
                          (winch drivetrain, PhaseParameterized.
                          _resolve_drivetrain: sim_parameters.winch_drivetrain
                          true = system.yaml drums[0] inertia + friction;
@@ -287,7 +297,9 @@ src/awetrim/
   flight_data/       ✅  reader of EKF-AWE output (load_flight -> FlightData); raw-log
                          processing and the EKF itself live in EKF-AWE
   plotting/          ✅  shared plotting helpers — see src/awetrim/plotting/AGENTS.md
-  utils/             ✅  defaults, reference frames, control_metrics
+  utils/             ✅  defaults, reference frames, control_metrics,
+                         time_scheme (the march's / NLP's step and rate
+                         kernels, euler and bdf2, numpy or casadi)
                          (steering-reversal count / pairs outside a deadband,
                          seam pair counted on a periodic history)
   identification/    🟡  ROM aero-coefficient identification: the
@@ -401,7 +413,7 @@ every node and then REPLACES the generic alpha box (no lower bound, no other
 upper bound). Quasi-steady roots are selected by being BELOW THE STALL (alpha <
 angle_of_attack_stall): the phase seed march prefers pre-stall roots
 (`seed_reject_post_stall`), and among those one inside the optimizer's steering
-box at node 0 and on retries (`seed_prefer_steering_box`: the node residual also
+box on every attempt (`seed_prefer_steering_box`: the node residual also
 has a low-lift root, tension at the winch minimum, needing several times the
 steering), and keeps simulating on the closest post-stall one
 when none exists; `setup_qs_solver` exposes `_qs_alpha_function` for other

@@ -19,6 +19,7 @@ from dataclasses import dataclass
 import casadi as ca
 import numpy as np
 from awetrim.utils.defaults import DEFAULT_WINCH_CONFIG
+from awetrim.utils.time_scheme import backward_rate
 
 # Floor on v_sat - speed_radial in the inverse soft v_sat clamp [m/s], see
 # Winch._undo_v_sat_clamp.
@@ -177,8 +178,8 @@ class Drivetrain:
             # a higher-order scheme's dv_r/dt, given directly
             return force - self.inertia_mass * acceleration
         if self.inertia_mass and speed_radial_prev is not None:
-            force = force - self.inertia_mass * (
-                speed_radial - speed_radial_prev
+            force = force - self.inertia_mass * backward_rate(
+                speed_radial, speed_radial_prev, 1.0
             ) * inv_time_step
         return force
 

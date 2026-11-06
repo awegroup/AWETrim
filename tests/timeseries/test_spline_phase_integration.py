@@ -137,6 +137,11 @@ def test_bdf2_march_steps_and_length_are_trapezoidal(quasi_steady):
     h = np.diff(t)
     np.testing.assert_allclose(h, 2 * np.diff(s) / (s_dot[:-1] + s_dot[1:]), rtol=1e-9)
     np.testing.assert_allclose(np.diff(r), h * (v[:-1] + v[1:]) / 2, rtol=1e-9, atol=1e-9)
+    # Quantities that depend on the accelerations (alpha through the bridle
+    # resultant) are derived from the recorded states after the march: the
+    # scheme's symbols are named like the State fields.
+    alpha = np.asarray(phase.return_variable("angle_of_attack"), dtype=float)
+    assert alpha.size == n_points and np.all(np.isfinite(alpha))
 
 
 # --- slow: run the parametrised QS phase along each spline ------------------
@@ -1187,15 +1192,19 @@ def test_dynamic_node_alpha_function_exists():
 
 
 @pytest.mark.slow
-def test_dynamic_nlp_couples_each_node_to_its_predecessor():
-    """quasi_steady=False builds the NLP with the march's implicit Euler: no
-    rows or decisions are added, and each node's trim residual depends on the
-    previous node's s_dot and v_r (s_ddot and dv_r/dt as backward differences;
-    on a periodic wrap node 0's predecessor is node N-1). Quasi-steady, it
-    depends on its own node only."""
+@pytest.mark.parametrize("scheme, back", [("euler", 1), ("bdf2", 2)])
+def test_dynamic_nlp_couples_each_node_to_its_predecessors(scheme, back):
+    """quasi_steady=False builds the NLP with the march's time scheme: no rows
+    or decisions are added, and each node's trim residual depends on the
+    previous nodes' s_dot and v_r (euler: one back, bdf2: two; on a periodic
+    wrap node 0's predecessors are N-1, N-2). Quasi-steady, on its own node
+    only."""
     import casadi as ca
 
-    overrides = {**_WRAP_FORMULATIONS["free_speed+depower"][0], "periodic_wrap": True}
+    overrides = {
+        **_WRAP_FORMULATIONS["free_speed+depower"][0], "periodic_wrap": True,
+        "time_scheme": scheme,
+    }
     built = {}
     for qs in (True, False):
         phase, start = _wrap_phase(_N_WRAP, dict(overrides))
@@ -1208,7 +1217,8 @@ def test_dynamic_nlp_couples_each_node_to_its_predecessor():
     assert opti_dyn.x.numel() == opti_qs.x.numel()
     _, vars_qs, trim_qs = built[True]
     for name in ("s_dot", "speed_radial"):
-        for trim, opti_vars, expected in ((trim_qs, vars_qs, {0}), (trim_dyn, vars_dyn, {0, _N_WRAP - 1})):
+        coupled = {0} | {_N_WRAP - k for k in range(1, back + 1)}
+        for trim, opti_vars, expected in ((trim_qs, vars_qs, {0}), (trim_dyn, vars_dyn, coupled)):
             # node 0's three trim rows against every node's variable
             jac = ca.jacobian(trim[0:3], opti_vars[name])
             columns = {int(c) for c in np.nonzero(np.asarray(ca.DM(ca.Sparsity(jac.sparsity()), 1)).any(axis=0))[0]}
@@ -1240,3 +1250,20 @@ def test_time_scheme_previous_node_parameters():
     phase, _ = _wrap_phase(_N_WRAP, {"time_scheme": "rk4"})
     with pytest.raises(ValueError, match="time_scheme"):
         phase._time_scheme()
+
+def test_drivetrain_is_resolved_when_the_phase_is_built():
+    """Every path that builds a winch row (march, integrator, NLP) sees the
+    sim_parameters' drivetrain from the start, not only after residual_solver."""
+    phase, _ = _wrap_phase(_N_WRAP, {"winch_drivetrain": True})
+    dt_ = phase.winch_model.drivetrain
+    assert (dt_.inertia_mass, dt_.friction_coulomb) == (300.7, 122.0)
+
+
+@pytest.mark.slow
+def test_integrator_path_refuses_a_dynamic_phase():
+    """run_simulation (the integrator path) is quasi-steady only; a dynamic
+    phase is marched by run_simulation_phase."""
+    phase, start = _wrap_phase(_N_WRAP, {})
+    phase.quasi_steady = False
+    with pytest.raises(NotImplementedError, match="run_simulation_phase"):
+        phase.run_simulation(start)
