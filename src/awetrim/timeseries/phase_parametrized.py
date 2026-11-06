@@ -3596,12 +3596,25 @@ class PhaseParameterized(TimeSeries):
                 alpha_expr, km_copy.tether.tension_tether_kite,
                 tension_kite_scaled * self.WILLIAMS_TENSION_SCALE,
             )
+        if not quasi_steady:
+            # alpha sees the kite's inertia too (bridle resultant): the same
+            # implicit s_ddot as the force balance.
+            alpha_expr = ca.substitute(alpha_expr, self.s_ddot, s_ddot_implicit)
         known = {sym.name() for sym in ca.symvar(z)} | {sym.name() for sym in ca.symvar(p)}
+        unknown = [
+            sym.name() for sym in ca.symvar(alpha_expr) if sym.name() not in known
+        ]
         self._node_alpha_function = (
             ca.Function("node_angle_of_attack", [z, p], [alpha_expr], ["x", "p"], ["alpha"])
-            if all(sym.name() in known for sym in ca.symvar(alpha_expr))
+            if not unknown
             else None
         )
+        if unknown:
+            # Without it the march cannot reject post-stall roots: say so.
+            logger.warning(
+                "Node angle of attack depends on %s, outside the node solve: "
+                "the march will not reject post-stall roots", unknown,
+            )
         if use_williams:
             self._williams_tension_ground_function = ca.Function(
                 "williams_tension_tether_ground",

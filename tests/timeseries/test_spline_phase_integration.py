@@ -1136,3 +1136,19 @@ def test_winch_inertia_rows_in_the_nlp(formulation):
     e_off = float(opti_off.debug.value(obj_off["energy"], opti_off.initial()))
     e_on = float(opti_on.debug.value(obj_on["energy"], opti_on.initial()))
     assert e_on == pytest.approx(e_off, rel=1e-9)
+
+
+@pytest.mark.slow
+def test_dynamic_node_alpha_function_exists():
+    """The dynamic march's node angle of attack is a function of the node's
+    unknowns and parameters only (the implicit s_ddot substituted), so the
+    march can reject post-stall roots in dynamic runs too."""
+    from awetrim.kinematics.parametrized_patterns import create_pattern_from_dict
+
+    phase, _ = _wrap_phase(_N_WRAP, {})
+    phase.quasi_steady = False
+    pattern = create_pattern_from_dict(
+        phase.pattern_config["pattern_type"], phase.pattern_config["path_parameters"]
+    )
+    phase.residual_solver(phase.substitute_parametrized_kinematics(pattern))
+    assert phase._node_alpha_function is not None
