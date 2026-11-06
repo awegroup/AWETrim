@@ -122,9 +122,17 @@ src/awetrim/
                          node's (v_r, 1/dt, s_dot) are node-solver parameters
                          (_n_previous_state / _drivetrain_p); node 0 has none
                          and is quasi-steady; dt = ds / s_dot as in the
-                         quasi-steady march. The dynamic-vs-quasi-steady
-                         study, compare_dynamic_quasi_steady_winch.py, is
-                         available on request)
+                         quasi-steady march. The NLP is dynamic too
+                         (opti_phase: node functions take s_ddot, dv_r/dt
+                         after distance_radial, fed by _dyn_args;
+                         run_full_cycle_opti.py --dynamic). A node where every
+                         attempt fails is diagnosed by least squares
+                         (_least_squares_node): a missed root is taken, a fold
+                         (singular Jacobian, FOLD_SINGULAR_RATIO) is reported
+                         with the balance that runs out, phase.stop_reason. The
+                         dynamic-vs-quasi-steady study,
+                         compare_dynamic_quasi_steady_winch.py, is available
+                         on request)
                          (winch drivetrain, PhaseParameterized.
                          _resolve_drivetrain: sim_parameters.winch_drivetrain
                          true = system.yaml drums[0] inertia + friction;

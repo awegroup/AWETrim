@@ -86,6 +86,8 @@ KITE_DIR = None
 KITE_CONFIG_PATH = None
 CYCLE_CONFIG_PATH = None
 RESULTS_DIR = None
+# Kite (and tether) dynamics in the march and the NLP: --dynamic.
+QUASI_STEADY = True
 DEPOWER_BAND = None
 WIND_CONFIG = None
 
@@ -168,6 +170,7 @@ def march_with_roll_assist(system_model, pattern_config, *, run_plots=False,
             system_model=system_model,
             pattern_config=pattern_config,
             start_state=build_start_state(pattern_config),
+            quasi_steady=QUASI_STEADY,
         ),
         int(pattern_config["sim_parameters"]["n_points"]),
         scales=scales,
@@ -651,6 +654,7 @@ def main(
     winch_inertia_mass: float = None,
     winch_friction=None,
     winch_drivetrain: bool = False,
+    dynamic: bool = False,
 ) -> int:
     """``config_path`` overrides the kite's seed YAML (a variant such as the
     same seed with ``winch_mode: force_law``); ``run_tag`` is appended to the
@@ -665,8 +669,11 @@ def main(
     model that cannot march the start shape (another ROM, say) would fail.
     The baseline is then simulated only for the comparison, and skipped if it
     cannot be trimmed."""
-    global WIND_CONFIG
+    global WIND_CONFIG, QUASI_STEADY
     configure_kite(kite or KITE_DIR)
+    QUASI_STEADY = not dynamic
+    if dynamic:
+        print("Dynamic model: kite accelerations (implicit Euler) in the march and the NLP")
     WIND_CONFIG = override_wind(WIND_CONFIG, wind_speed, wind_height)
     print(f"Kite: {KITE_NAME} ({KITE_CONFIG_PATH}); wind: {describe_wind()}")
     if stage_repeats:
@@ -722,6 +729,7 @@ def main(
         system_model=system_model,
         pattern_config=reelout_config,
         start_state=build_start_state(reelout_config),
+        quasi_steady=QUASI_STEADY,
     )
     if warm_start_csv:
         import pandas as pd
@@ -1021,6 +1029,12 @@ if __name__ == "__main__":
         help="Fly the system file's winch drivetrain (drum inertia + friction, "
         "system.yaml drums[0]) in the forward simulation and the NLP",
     )
+    parser.add_argument(
+        "--dynamic",
+        action="store_true",
+        help="Kite (and tether) accelerations in the forward march and the NLP "
+        "(implicit Euler over the node steps) instead of quasi-steady",
+    )
     args = parser.parse_args()
     if args.winch_friction is not None:
         args.winch_friction = (
@@ -1043,6 +1057,7 @@ if __name__ == "__main__":
         winch_inertia_mass=args.winch_inertia_mass,
         winch_friction=args.winch_friction,
         winch_drivetrain=args.winch_drivetrain,
+        dynamic=args.dynamic,
     )
     if args.plot:
         import matplotlib.pyplot as plt
