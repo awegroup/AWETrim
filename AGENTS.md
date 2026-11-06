@@ -284,10 +284,10 @@ tension and speed errors, logged steering in, lumped tether, training cycles), w
 reads the flight for both ROMs. Hold-out cycles 60-67, median tension / v_tau error:
 simulation-only reel-out +11.2 % / +12.5 %, reel-in +16.2 % / +9.6 %; flight-corrected
 +10.0 % / +11.7 %, +16.3 % / +9.5 %. Drag is deliberately not fitted: on the wing's C_D
-it tilts the bridle resultant and raises alpha). The coupled trims carry a 10-element
-Williams tether, which lacks drag against the lumped one (speed +5.5 %, tension +9 %
-at 1.95 m; it converges on the lumped tether with elements), so every ROM solve uses
-the lumped tether. The paper's semi-empirical ROM
+it tilts the bridle resultant and raises alpha). The stored coupled trims carry a
+10-element Williams tether with its former first-order loads, which lacks drag against
+the lumped one (speed +5.5 %, tension +9 % at 1.95 m; second-order loads since remove
+this, but only a re-run sweep shows it), so every ROM solve uses the lumped tether. The paper's semi-empirical ROM
 (`rom_config_semi_empirical.yaml`) was removed on 2026-10-07 after the
 comparison in `docs/identification/`; it lives in git history (last at
 commit bad8a9b).
@@ -409,7 +409,9 @@ Every governing equation should trace back to one of:
 - **Trajectory optimisation:** Cayon & Schmehl (2026) Torque extended abstract
 - **Discretised tether (distributed-mass, lumped-element):** Williams (2017)
   *J. Guid. Control Dynam.* 40, 1779–1788, https://doi.org/10.2514/1.G002354
-  — basis for `system/williams_tether.py` (`WilliamsTether`)
+  — the shooting of `system/williams_tether.py` (`WilliamsTether`); its load placement
+  (at each segment's centre, half to each end node, second order) is Nguyen & Oland
+  (2026) *Aerospace* 13, 943, App. A, https://doi.org/10.3390/aerospace13100943
 
 ---
 
