@@ -238,8 +238,13 @@ class PhaseParameterized(TimeSeries):
         self.sharpness_beta = sharpness_beta
         self.tension_min = tension_min
         self.tension_max = tension_max
+        # The drivetrain is resolved here, once, so every path that builds a
+        # winch row (the march's node solver, the integrator, the NLP) flies
+        # the same one; residual_solver re-resolves it in case sim_parameters
+        # changed since.
         self.winch_model = Winch(
-            pattern_config=self.pattern_config["radial_parameters"]
+            pattern_config=self.pattern_config["radial_parameters"],
+            drivetrain=self._resolve_drivetrain(),
         )
 
         pattern = create_pattern_from_dict(
