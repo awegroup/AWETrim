@@ -28,6 +28,15 @@
 - **The kite's radial acceleration was zero in dynamic runs**: the kinematics'
   `dot_vr` keeps only `s_ddot * v_r / s_dot` (`dr_ds2` is identically zero). The
   march now uses `dv_r/dt`, the same for the kite and the winch drum.
+- **Second-order march: `sim_parameters.time_scheme: bdf2`** (default `euler`). The
+  step is `h = 2 ds / (s_dot_prev + s_dot)` and the tether length
+  `r = r_prev + h (v_r_prev + v_r) / 2`, both solved in the node, and the dynamic
+  march's (and the drum's) accelerations are variable-step BDF2 differences, which damp
+  the stiff drum mode as backward Euler does. On a 9 m/s LEI-V3 eight the dynamic
+  march's power error falls from +2.9 % (euler) to -0.3 % at 25 nodes and its tension
+  error from 148 to 44 N at 100 nodes, for 5-10 % more time; the euler "gain" of the
+  dynamic model over the quasi-steady one (+3 % at 25 nodes) was numerical, the
+  converged difference is -0.15 %.
 - **The cycle NLP can be dynamic too** (`quasi_steady=False`, `run_full_cycle_opti.py
   --dynamic`): the node functions take `s_ddot` and `dv_r/dt` as two more inputs, fed
   with the same backward differences as the march (node 0's predecessor is node N-1
