@@ -14,6 +14,10 @@
 - **The kite's radial acceleration was zero in dynamic runs**: the kinematics'
   `dot_vr` keeps only `s_ddot * v_r / s_dot` (`dr_ds2` is identically zero). The
   march now uses `dv_r/dt`, the same for the kite and the winch drum.
+- **Dynamic runs reject post-stall roots again.** The node's angle of attack still
+  held `s_ddot`, so its function could not be built and the march's stall check was
+  silently off in dynamic runs; the implicit `s_ddot` now goes into it as into the
+  force balance, and the march warns whenever that function cannot be built.
 - **The march checks every node attempt against the steering box**, not only node 0
   and retries: from the previous node's values a first attempt can converge on the
   other (high-steering, low-lift) root, which the dynamic 9 m/s cycle did at its
