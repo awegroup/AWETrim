@@ -61,8 +61,11 @@ def _evaluate_shape(tether, env, *, omega):
         azimuth_last=0.0,
     )
     keys = (
+        "drag_per_segment",
+        "lift_per_segment",
         "drag_per_node",
         "lift_per_node",
+        "gravity_per_node",
         "velocities_apparent_wind",
         "angle_va_tether",
         "tensions",
@@ -91,11 +94,10 @@ def test_node_aero_matches_crossflow_plus_friction():
     c_n = tether.drag_coefficient_tether
     l_unstrained = res["length"] / n
 
-    # Interior nodes 1..n-1 carry the segment aero (rows 0 and N are zero).
-    for k in range(1, n):
+    for k in range(n):
         speed = float(res["velocities_apparent_wind"][k, 0])
         theta = float(res["angle_va_tether"][k, 0])
-        force = res["drag_per_node"][k] + res["lift_per_node"][k]
+        force = res["drag_per_segment"][k] + res["lift_per_segment"][k]
 
         q = 0.5 * env.rho * speed**2 * l_unstrained * diameter
         expected = q * np.hypot(
@@ -119,8 +121,62 @@ def test_node_aero_is_normal_to_segment_without_friction():
     res = _evaluate_shape(tether, env, omega=[0.0, 0.1, 0.0])
     tensions = res["tensions"]  # row k is the tension in segment k (axis dir)
 
-    for k in range(1, n):
+    for k in range(n):
         ej = tensions[k] / (np.linalg.norm(tensions[k]) + 1e-12)
-        force = res["drag_per_node"][k] + res["lift_per_node"][k]
+        force = res["drag_per_segment"][k] + res["lift_per_segment"][k]
         magnitude = np.linalg.norm(force)
-        assert abs(float(np.dot(force, ej))) <= 1e-6 * (magnitude + 1e-9)
+        # The load is evaluated once on the direction before the last correction.
+        assert abs(float(np.dot(force, ej))) <= 1e-3 * (magnitude + 1e-9)
+
+
+def test_every_segment_load_reaches_exactly_two_nodes():
+    """Half of each segment to each end node: nothing lost, the kite holds a half."""
+    n = 8
+    tether = WilliamsTether(
+        diameter=0.01, density=950.0, n_elements=n, elastic=False, cf=0.01
+    )
+    env = _Env(rho=1.225, g=9.81, wind=_UniformWind(speed=12.0))
+    res = _evaluate_shape(tether, env, omega=[0.0, 0.1, 0.0])
+
+    segments = res["drag_per_segment"].sum(axis=0)
+    assert res["drag_per_node"].sum(axis=0) == pytest.approx(segments)
+    assert res["drag_per_node"][n] == pytest.approx(0.5 * res["drag_per_segment"][n - 1])
+    assert res["drag_per_node"][0] == pytest.approx(0.5 * res["drag_per_segment"][0])
+    weight = 950.0 * np.pi * 0.01**2 / 4 * res["length"] * 9.81
+    assert res["gravity_per_node"].sum(axis=0)[2] == pytest.approx(-weight)
+    assert res["gravity_per_node"][1, 2] == pytest.approx(-weight / n)
+    assert res["gravity_per_node"][n, 2] == pytest.approx(-weight / n / 2)
+
+
+def test_kite_drag_share_converges_at_second_order():
+    """The solved pull of a straight rotating tether in still air.
+
+    The tether is pinned at the anchor, so the transverse part of the pull balances
+    the moment of the drag about it: 1/4 of the dynamic pressure on the whole tether
+    in the limit, 1/4 - 1/(8 n^2) with the load at each segment's centre.
+    """
+    length, elevation, tension = 300.0, np.deg2rad(30.0), 1.0e7
+    rho, diameter, speed = 1.225, 0.01, 40.0
+    r_kite = length * np.array([np.cos(elevation), 0.0, np.sin(elevation)])
+    omega = ca.DM([0.0, speed / length, 0.0])  # rotates in the plane of the tether
+    env = _Env(rho=rho, g=0.0, wind=None)
+    for n in (2, 4, 8, 16):
+        tether = WilliamsTether(
+            diameter=diameter, density=1e-9, n_elements=n, elastic=False, cf=0.0
+        )
+        q_total = 0.5 * rho * speed**2 * length * diameter * tether.drag_coefficient_tether
+        kwargs = dict(
+            env=env,
+            force_kite_resultant=ca.DM(tension * r_kite / length),
+            omega=omega,
+        )
+        residual, _ = tether.residual_function(**kwargs)
+        jacobian, _ = tether.residual_jacobian_function(**kwargs)
+        x = np.array([elevation, 0.0, length])
+        for _ in range(8):
+            x = x - np.linalg.solve(
+                np.asarray(jacobian(x=x, p=r_kite)["jac"]),
+                np.asarray(residual(x=x, p=r_kite)["residual"]).ravel(),
+            )
+        share = tension * abs(np.sin(x[0] - elevation)) / q_total
+        assert share == pytest.approx(0.25 - 1.0 / (8.0 * n**2), rel=2e-3)

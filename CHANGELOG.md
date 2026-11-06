@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Tether: second-order load placement in `WilliamsTether`
+
+- **Each segment's load now acts at its centre and goes half to each end node**
+  (Nguyen & Oland 2026, *Aerospace* 13, 943, App. A), the kite and the anchor taking a
+  half each. Williams' (2017) lumping, one segment per interior node and none at the
+  kite, is first order: the kite's share of the tether drag is 1/4 (1 - 1/n)^2, against
+  1/4 - 1/(8 n^2) now. All of them reach the same limit.
+- **`tension_tether_kite`, the direction unknowns and `kite_tension_vector` now state the
+  force at the kite**, which differs from the last segment's tension by the kite's half.
+  `tether_force_ground` is the anchor's reaction. Row k of `velocities_apparent_wind` and
+  `angle_va_tether` is segment k at its centre, with new `*_per_segment` outputs;
+  `*_per_node` are the nodes' shares and sum to the whole tether.
+- **`n_elements: 10` now carries the right drag.** Stored coupled trims and the ROM
+  identified on them used the old loads, which read tension about 9 % and speed about 5 %
+  high at 10 elements. They change when the sweep is re-run.
+- The frozen CasADi trim reference (`tests/aerodynamics/data/casadi_trim_aoa_false_reference.npz`)
+  was regenerated for its Williams-tether entries; the tetherless ones are unchanged.
+
 ### Trajectory optimisation: seed fitted to the kite, on every wind
 
 - **`fit_periodic_cycle_config.py --size`** fits the seed path to the turns the
