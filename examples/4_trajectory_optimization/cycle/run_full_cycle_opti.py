@@ -656,6 +656,7 @@ def main(
     winch_drivetrain: bool = False,
     dynamic: bool = False,
     tether_inertia: bool = False,
+    n_points: int = None,
 ) -> int:
     """``config_path`` overrides the kite's seed YAML (a variant such as the
     same seed with ``winch_mode: force_law``); ``run_tag`` is appended to the
@@ -670,7 +671,11 @@ def main(
     model that cannot march the start shape (another ROM, say) would fail.
     The baseline is then simulated only for the comparison, and skipped if it
     cannot be trimmed."""
-    global WIND_CONFIG, QUASI_STEADY
+    global WIND_CONFIG, QUASI_STEADY, N_POINTS
+    if n_points:
+        # Node-grid resolution study: resample the cycle's grid (the spline
+        # shape is independent of it); the warm start must be on the same grid.
+        N_POINTS = int(n_points)
     configure_kite(kite or KITE_DIR)
     QUASI_STEADY = not dynamic
     if dynamic:
@@ -1049,6 +1054,13 @@ if __name__ == "__main__":
         help="Lumped tether with its inertia at the kite (centrifugal, Coriolis "
         "and turn terms; with --dynamic also its accelerations)",
     )
+    parser.add_argument(
+        "--n-points",
+        type=int,
+        default=None,
+        help="Resample the cycle to this many nodes (resolution study); a "
+        "--warm-start must be on that grid",
+    )
     args = parser.parse_args()
     if args.winch_friction is not None:
         args.winch_friction = (
@@ -1073,6 +1085,7 @@ if __name__ == "__main__":
         winch_drivetrain=args.winch_drivetrain,
         dynamic=args.dynamic,
         tether_inertia=args.tether_inertia,
+        n_points=args.n_points,
     )
     if args.plot:
         import matplotlib.pyplot as plt
