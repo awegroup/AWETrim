@@ -1240,3 +1240,10 @@ def test_time_scheme_previous_node_parameters():
     phase, _ = _wrap_phase(_N_WRAP, {"time_scheme": "rk4"})
     with pytest.raises(ValueError, match="time_scheme"):
         phase._time_scheme()
+
+def test_drivetrain_is_resolved_when_the_phase_is_built():
+    """Every path that builds a winch row (march, integrator, NLP) sees the
+    sim_parameters' drivetrain from the start, not only after residual_solver."""
+    phase, _ = _wrap_phase(_N_WRAP, {"winch_drivetrain": True})
+    dt_ = phase.winch_model.drivetrain
+    assert (dt_.inertia_mass, dt_.friction_coulomb) == (300.7, 122.0)
