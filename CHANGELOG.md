@@ -2,17 +2,19 @@
 
 ## Unreleased
 
-### Tether: inertia of the lumped tether (opt-in)
+### Tether: inertia of the lumped tether (on by default)
 
-- **`tether.inertia: true`** (lumped tether, in a ROM's or as_config's `tether`
-  block) adds the inertial load of a straight, inextensible tether of mass
+- **The lumped tether carries its inertia** (`inertia: false` in a ROM's or
+  as_config's `tether` block, or `run_full_cycle_opti.py --no-tether-inertia`, drops
+  it): the inertial load of a straight, inextensible tether of mass
   `m_t = rho A r` to the force at the kite, in the course frame:
   `-(m_t/3)(v_tau_dot + 2 v_tau v_r / r)` tangentially, `-(m_t/3) v_tau w_z` in the
   turn and `-m_t (v_r_dot - v_tau^2 / (2 r))` along the tether
   (`Tether.force_inertia_tether_at_kite_for`). Across itself the tether acts as `m_t/3`
   at the kite, along itself as `m_t`. Quasi-steady, its centrifugal, Coriolis and turn
-  terms remain; the dynamic march adds the accelerations. Off by default, so every
-  run is unchanged; not available on the Williams tether.
+  terms remain; the dynamic march adds the accelerations. On by default, so
+  quasi-steady results shift by about 0.1-0.2 % (LEI-V3 at 9 m/s); not available on the
+  Williams tether.
 - The dynamic-vs-quasi-steady study (`compare_dynamic_quasi_steady_winch.py`, available
   on request) now runs with and without it, with and without winch friction.
 

@@ -58,8 +58,10 @@ def _evaluate(expr, values):
     return np.array(f(*[values[s.name()] for s in symbols])).ravel()
 
 
-def test_tether_inertia_is_off_by_default():
+def test_tether_inertia_is_on_by_default_and_can_be_switched_off():
     model = SystemModel(tether=RigidLumpedTether())
+    assert len(ca.symvar(model.expression("force_inertia_tether_at_kite"))) > 0
+    model = SystemModel(tether=RigidLumpedTether(inertia=False))
     assert _is_zero_expr(model.expression("force_inertia_tether_at_kite"))
 
 
@@ -92,7 +94,7 @@ def test_tether_inertia_enters_the_force_at_the_kite():
     """The load is part of force_tether_at_kite (so of the force balance and of
     the bridle resultant), nowhere else."""
     on = SystemModel(tether=RigidLumpedTether(inertia=True), quasi_steady=False)
-    off = SystemModel(tether=RigidLumpedTether(), quasi_steady=False)
+    off = SystemModel(tether=RigidLumpedTether(inertia=False), quasi_steady=False)
     diff = on.expression("force_tether_at_kite") - ca.substitute(
         off.expression("force_tether_at_kite"),
         ca.vertcat(*ca.symvar(off.expression("force_tether_at_kite"))),

@@ -409,9 +409,10 @@ def test_extract_hardware_limits_maps_drum_inertia():
 def test_lumped_tether_inertia_from_config():
     from awetrim.system.factory import create_tether_from_config
 
-    assert not create_tether_from_config({"model": "rigid_lumped"}, diameter=0.008, density=724.0).inertia
-    assert create_tether_from_config(
-        {"model": "rigid_lumped", "inertia": True}, diameter=0.008, density=724.0
+    assert create_tether_from_config({"model": "rigid_lumped"}, diameter=0.008, density=724.0).inertia
+    assert create_tether_from_config(None, diameter=0.008, density=724.0).inertia
+    assert not create_tether_from_config(
+        {"model": "rigid_lumped", "inertia": False}, diameter=0.008, density=724.0
     ).inertia
     with pytest.raises(ValueError, match="lumped tether only"):
         create_tether_from_config(

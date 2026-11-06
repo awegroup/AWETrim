@@ -655,7 +655,7 @@ def main(
     winch_friction=None,
     winch_drivetrain: bool = False,
     dynamic: bool = False,
-    tether_inertia: bool = False,
+    tether_inertia: bool = True,
     n_points: int = None,
 ) -> int:
     """``config_path`` overrides the kite's seed YAML (a variant such as the
@@ -727,12 +727,12 @@ def main(
     # in place, and the comparison plots need the original to compare against.
     seed_config = copy.deepcopy(reelout_config)
 
-    # --tether-inertia: the lumped tether with its inertial load at the kite
-    # (Tether.force_inertia_tether_at_kite_for); else the ROM's tether block.
+    # The ROM's tether block (lumped, with its inertia by default);
+    # --no-tether-inertia drops the tether's inertial load at the kite.
     system_model = create_system_model_from_yaml(
         yaml_path=KITE_CONFIG_PATH,
         tether_config=(
-            {"model": "rigid_lumped", "inertia": True} if tether_inertia else None
+            None if tether_inertia else {"model": "rigid_lumped", "inertia": False}
         ),
     )
     system_model.wind = build_wind_model(**WIND_CONFIG)
@@ -1049,10 +1049,11 @@ if __name__ == "__main__":
         "(implicit Euler over the node steps) instead of quasi-steady",
     )
     parser.add_argument(
-        "--tether-inertia",
-        action="store_true",
-        help="Lumped tether with its inertia at the kite (centrifugal, Coriolis "
-        "and turn terms; with --dynamic also its accelerations)",
+        "--no-tether-inertia",
+        dest="tether_inertia",
+        action="store_false",
+        help="Drop the lumped tether's inertia at the kite (on by default: "
+        "centrifugal, Coriolis and turn terms; with --dynamic also its accelerations)",
     )
     parser.add_argument(
         "--n-points",

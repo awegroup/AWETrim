@@ -53,12 +53,12 @@ def create_tether_from_config(
 
     model = str(tether_cfg.get("model", "rigid_lumped")).lower()
     if model in ("rigid_lumped", "rigid", "lumped"):
-        # ``inertia: true`` adds the straight tether's inertial load at the
-        # kite (Tether.force_inertia_tether_at_kite_for); default off.
+        # The straight tether's inertial load at the kite
+        # (Tether.force_inertia_tether_at_kite_for); ``inertia: false`` drops it.
         return RigidLumpedTether(
             diameter=diameter,
             density=density,
-            inertia=bool(tether_cfg.get("inertia", False)),
+            inertia=bool(tether_cfg.get("inertia", True)),
         )
     if tether_cfg.get("inertia"):
         raise ValueError(

@@ -68,7 +68,8 @@ class Tether(ABC):
         """Inertial load of a straight, inextensible tether on the kite [N].
 
         Course frame (tangential x, normal y, radial z), zero unless
-        ``self.inertia``. The tether, of mass m_t = mu r, is pinned at the
+        ``self.inertia`` (on by default for the lumped tethers, which carry the
+        tether's mass; off for the massless links). The tether, of mass m_t = mu r, is pinned at the
         anchor; its material moves along it at v_r and turns with
         Omega = e_r x de_r/dt (|Omega| = v_tau / r exactly; spin about the
         tether moves no material). Integrating mu a over its length, the
@@ -201,7 +202,7 @@ class FlexibleLinkTether(Tether):
 
 class RigidLumpedTether(Tether):
 
-    def __init__(self, E=132e9, diameter=0.01, density=970, inertia=False):
+    def __init__(self, E=132e9, diameter=0.01, density=970, inertia=True):
         super().__init__(E, diameter, density, inertia=inertia)
         self.tension_tether_ground = ca.MX.sym("tension_tether_ground")
         self.is_tether_rigid = True
@@ -342,7 +343,7 @@ class DistributedDragTether(Tether):
 
 class FlexibleLumpedTether(Tether):
 
-    def __init__(self, E=132e9, diameter=0.01, density=970, inertia=False):
+    def __init__(self, E=132e9, diameter=0.01, density=970, inertia=True):
         super().__init__(E, diameter, density, inertia=inertia)
         self.length_tether = ca.MX.sym("length_tether")
         self.timeder_length_tether = ca.MX.sym("timeder_length_tether")

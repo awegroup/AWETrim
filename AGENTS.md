@@ -22,8 +22,8 @@ src/awetrim/
                           Williams discretised distributed-mass)
                          + Tether.force_inertia_tether_at_kite_for: the
                          straight tether's inertial load at the kite (lumped
-                         tethers, opt-in via the tether block's `inertia:
-                         true`, create_tether_from_config): (m_t/3) across,
+                         tethers, on by default, the tether block's
+                         `inertia: false` drops it, create_tether_from_config): (m_t/3) across,
                          m_t along, with 2x the kite's Coriolis and 1/2 its
                          centrifugal term; in force_tether_at_kite
                          + winch.Drivetrain: drum inertia (tether-referred
