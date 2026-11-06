@@ -14,6 +14,11 @@
 - **The kite's radial acceleration was zero in dynamic runs**: the kinematics'
   `dot_vr` keeps only `s_ddot * v_r / s_dot` (`dr_ds2` is identically zero). The
   march now uses `dv_r/dt`, the same for the kite and the winch drum.
+- **The march checks every node attempt against the steering box**, not only node 0
+  and retries: from the previous node's values a first attempt can converge on the
+  other (high-steering, low-lift) root, which the dynamic 9 m/s cycle did at its
+  reel-out transition (u_s 0.85, the physical root at -0.10). Applies to the
+  quasi-steady march too.
 - **Node 0 is the quasi-steady solve**, so a dynamic run no longer starts from a
   separate quasi-steady start state, which on a cycle starting in reel-in landed on
   another root.

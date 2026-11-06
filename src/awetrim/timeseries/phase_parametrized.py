@@ -905,10 +905,12 @@ class PhaseParameterized(TimeSeries):
         # server down-loop) asked the NLP for |u_s| 0.5 on a seed the kite
         # flies at 0.135. A pre-stall root beyond the box is kept as a
         # fallback (smallest |u_s|) while the retries look for one within it.
-        # Only node 0 and retries can change branch: a first attempt that
-        # converges later on continues the previous root and is accepted, and
-        # the search stops while the previous node was beyond the box, so a
-        # path that is genuinely too tight does not retry every node.
+        # Every attempt is checked, the first one included: from the previous
+        # node's values a first attempt can converge on the other root (the
+        # dynamic 9 m/s LEI-V3 cycle did at its reel-out transition, u_s
+        # 0.85 for a physical root at -0.10). The search stops while the
+        # previous node was beyond the box, so a path that is genuinely too
+        # tight does not retry every node.
         # sim_parameters.seed_prefer_steering_box (default True).
         steering_index = 0 if use_williams else 1
         steering_box = None
@@ -965,11 +967,7 @@ class PhaseParameterized(TimeSeries):
                         continue
                 if accepted and finite:
                     steering = abs(float(sol_candidate["x"][steering_index]))
-                    if (
-                        search_box
-                        and (attempt > 0 or node_index == 0)
-                        and steering > steering_box
-                    ):
+                    if search_box and steering > steering_box:
                         if steer_fallback is None or steering < steer_fallback[0]:
                             steer_fallback = (steering, sol_candidate)
                         continue
