@@ -122,8 +122,9 @@ src/awetrim/
                          node's (v_r, 1/dt, s_dot) are node-solver parameters
                          (_n_previous_state / _drivetrain_p); node 0 has none
                          and is quasi-steady; dt = ds / s_dot as in the
-                         quasi-steady march. studies/
-                         compare_dynamic_quasi_steady_winch.py + plot_*)
+                         quasi-steady march. The dynamic-vs-quasi-steady
+                         study, compare_dynamic_quasi_steady_winch.py, is
+                         available on request)
                          (winch drivetrain, PhaseParameterized.
                          _resolve_drivetrain: sim_parameters.winch_drivetrain
                          true = system.yaml drums[0] inertia + friction;
