@@ -655,6 +655,7 @@ def main(
     winch_friction=None,
     winch_drivetrain: bool = False,
     dynamic: bool = False,
+    tether_inertia: bool = False,
 ) -> int:
     """``config_path`` overrides the kite's seed YAML (a variant such as the
     same seed with ``winch_mode: force_law``); ``run_tag`` is appended to the
@@ -721,7 +722,14 @@ def main(
     # in place, and the comparison plots need the original to compare against.
     seed_config = copy.deepcopy(reelout_config)
 
-    system_model = create_system_model_from_yaml(yaml_path=KITE_CONFIG_PATH)
+    # --tether-inertia: the lumped tether with its inertial load at the kite
+    # (Tether.force_inertia_tether_at_kite_for); else the ROM's tether block.
+    system_model = create_system_model_from_yaml(
+        yaml_path=KITE_CONFIG_PATH,
+        tether_config=(
+            {"model": "rigid_lumped", "inertia": True} if tether_inertia else None
+        ),
+    )
     system_model.wind = build_wind_model(**WIND_CONFIG)
 
     assist = 1.0
@@ -1035,6 +1043,12 @@ if __name__ == "__main__":
         help="Kite (and tether) accelerations in the forward march and the NLP "
         "(implicit Euler over the node steps) instead of quasi-steady",
     )
+    parser.add_argument(
+        "--tether-inertia",
+        action="store_true",
+        help="Lumped tether with its inertia at the kite (centrifugal, Coriolis "
+        "and turn terms; with --dynamic also its accelerations)",
+    )
     args = parser.parse_args()
     if args.winch_friction is not None:
         args.winch_friction = (
@@ -1058,6 +1072,7 @@ if __name__ == "__main__":
         winch_friction=args.winch_friction,
         winch_drivetrain=args.winch_drivetrain,
         dynamic=args.dynamic,
+        tether_inertia=args.tether_inertia,
     )
     if args.plot:
         import matplotlib.pyplot as plt
