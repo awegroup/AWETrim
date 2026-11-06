@@ -156,7 +156,13 @@ class Drivetrain:
         return speed_radial * self.friction_force(speed_radial, tension, xp=xp)
 
     def motor_force(
-        self, tension, speed_radial, speed_radial_prev=None, inv_time_step=0.0, xp=np
+        self,
+        tension,
+        speed_radial,
+        speed_radial_prev=None,
+        inv_time_step=0.0,
+        xp=np,
+        acceleration=None,
     ):
         """F_motor = T - F_f(v) - m (v - v_prev) / dt [N], tether-referred.
 
@@ -167,6 +173,9 @@ class Drivetrain:
         ``speed_radial_prev``) = steady drum, no inertia term.
         """
         force = tension - self.friction_force(speed_radial, tension, xp=xp)
+        if self.inertia_mass and acceleration is not None:
+            # a higher-order scheme's dv_r/dt, given directly
+            return force - self.inertia_mass * acceleration
         if self.inertia_mass and speed_radial_prev is not None:
             force = force - self.inertia_mass * (
                 speed_radial - speed_radial_prev
@@ -447,6 +456,7 @@ class Winch:
         input_depower=None,
         speed_radial_prev=None,
         inv_time_step=0.0,
+        speed_radial_rate=None,
     ):
         """Algebraic equation for radial dynamics when using force control.
 
@@ -492,6 +502,7 @@ class Winch:
                     speed_radial_prev=speed_radial_prev,
                     inv_time_step=inv_time_step,
                     xp=ca,
+                    acceleration=speed_radial_rate,
                 )
             # Use the unified tension_curve property
             tension_curve_val = self.tension_curve(

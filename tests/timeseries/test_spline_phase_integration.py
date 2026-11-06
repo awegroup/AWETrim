@@ -107,6 +107,38 @@ def test_lissajous_and_helix_differ():
     assert not np.allclose(liss["C_beta"], heli["C_beta"])
 
 
+
+@pytest.mark.slow
+@pytest.mark.parametrize("quasi_steady", [True, False])
+def test_bdf2_march_steps_and_length_are_trapezoidal(quasi_steady):
+    """time_scheme bdf2 marches the whole path, quasi-steady and dynamic, with
+    each step h = 2 ds / (s_dot_prev + s_dot) and each tether-length change
+    h (v_r_prev + v_r) / 2, solved in the node."""
+    from awetrim.timeseries.phase_parametrized import PhaseParameterized
+
+    n_points = 40
+    config = _reelout_config(
+        "lissajous", n_points=n_points, r0=_FLOWN_R0, curve_kwargs=_FLOWN_CURVE_KWARGS
+    )
+    config["sim_parameters"]["time_scheme"] = "bdf2"
+    start_state = {
+        "t": 0.0, "s": _S_INIT, "s_dot": 0.3, "input_steering": 0.0,
+        "tension_tether_ground": 8.4e3, "speed_radial": 0.0,
+        "distance_radial": config["path_parameters"]["r0"],
+    }
+    phase = PhaseParameterized(_v3_system_model(), quasi_steady=quasi_steady, pattern_config=config)
+    phase.run_simulation_phase(start_state=start_state, allow_failure=False)
+    assert len(phase.states) == n_points
+    t, s, s_dot, v, r = (
+        np.asarray(phase.return_variable(k), dtype=float)
+        for k in ("t", "s", "s_dot", "speed_radial", "distance_radial")
+    )
+    assert np.all(np.isfinite(np.c_[t, s_dot, v, r]))
+    h = np.diff(t)
+    np.testing.assert_allclose(h, 2 * np.diff(s) / (s_dot[:-1] + s_dot[1:]), rtol=1e-9)
+    np.testing.assert_allclose(np.diff(r), h * (v[:-1] + v[1:]) / 2, rtol=1e-9, atol=1e-9)
+
+
 # --- slow: run the parametrised QS phase along each spline ------------------
 
 
@@ -1181,3 +1213,30 @@ def test_dynamic_nlp_couples_each_node_to_its_predecessor():
             jac = ca.jacobian(trim[0:3], opti_vars[name])
             columns = {int(c) for c in np.nonzero(np.asarray(ca.DM(ca.Sparsity(jac.sparsity()), 1)).any(axis=0))[0]}
             assert columns == expected, (name, columns)
+
+
+@pytest.mark.slow
+def test_time_scheme_previous_node_parameters():
+    """The node solver's previous-node parameters per scheme and mode: euler
+    takes none quasi-steady (no drum inertia) and three dynamic; bdf2 takes
+    eight in both (step and tether length are solved in the node). An unknown
+    scheme is refused."""
+    from awetrim.kinematics.parametrized_patterns import create_pattern_from_dict
+
+    counts = {}
+    for scheme in ("euler", "bdf2"):
+        for qs in (True, False):
+            phase, _ = _wrap_phase(_N_WRAP, {"time_scheme": scheme})
+            phase.quasi_steady = qs
+            pattern = create_pattern_from_dict(
+                phase.pattern_config["pattern_type"], phase.pattern_config["path_parameters"]
+            )
+            solver = phase.residual_solver(phase.substitute_parametrized_kinematics(pattern))
+            counts[(scheme, qs)] = solver.size_in("p")[0]
+    base = counts[("euler", True)]
+    assert counts[("euler", False)] == base + 3
+    assert counts[("bdf2", True)] == base + 8
+    assert counts[("bdf2", False)] == base + 8
+    phase, _ = _wrap_phase(_N_WRAP, {"time_scheme": "rk4"})
+    with pytest.raises(ValueError, match="time_scheme"):
+        phase._time_scheme()

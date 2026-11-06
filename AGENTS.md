@@ -120,7 +120,9 @@ src/awetrim/
                          (v_r - v_r_prev)/dt for kite and drum (the kinematics'
                          dot_vr is NOT the reel acceleration). The previous
                          node's (v_r, 1/dt, s_dot) are node-solver parameters
-                         (_n_previous_state / _drivetrain_p); node 0 has none
+                         (_n_previous_state / _drivetrain_p; time_scheme
+                         bdf2: eight, step and tether length trapezoidal in
+                         the node, BDF2 accelerations, quasi-steady too); node 0 has none
                          and is quasi-steady; dt = ds / s_dot as in the
                          quasi-steady march. The NLP is dynamic too
                          (opti_phase: node functions take s_ddot, dv_r/dt

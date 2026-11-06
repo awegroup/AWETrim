@@ -769,3 +769,12 @@ class TestDrivetrain:
                 drivetrain_loss_power(v, 122.0, 30.6, tension=2000.0, load_fraction=0.05)
             )
             assert dt_.loss_power(v, 2000.0) >= 0.0
+
+    def test_motor_force_takes_a_given_acceleration(self):
+        """A higher-order scheme passes dv_r/dt directly: m a replaces the
+        backward difference."""
+        from awetrim.system.winch import Drivetrain
+
+        dt_ = Drivetrain(inertia_mass=300.7)
+        assert dt_.motor_force(5000.0, 3.0, acceleration=-1.5) == pytest.approx(5000.0 + 451.05)
+        assert dt_.motor_force(5000.0, 3.0, 1.0, 10.0, acceleration=0.0) == pytest.approx(5000.0)
