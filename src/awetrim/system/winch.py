@@ -14,6 +14,8 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
+from dataclasses import dataclass
+
 import casadi as ca
 import numpy as np
 from awetrim.utils.defaults import DEFAULT_WINCH_CONFIG
@@ -41,8 +43,139 @@ def _sp_inv(y):
     return y + ca.log(-ca.expm1(-y))
 
 
+def drivetrain_friction_force(
+    speed_radial,
+    friction_coulomb,
+    friction_viscous,
+    speed_smoothing=0.05,
+    xp=np,
+    tension=0.0,
+    load_fraction=0.0,
+):
+    """Drivetrain friction force at the tether [N], opposing the reel speed.
+
+    ``F_f = (F_c + k T) tanh(v / eps) + c_v v``: Coulomb friction F_c, an
+    optional load-proportional part ``k T`` (pulley bearings and rope bending,
+    belt, gear mesh: a fixed fraction of the transmitted force) and viscous
+    friction c_v, all tether-referred (a motor-side torque tau times n / r_drum).
+    The tanh smooths sign(v), so the Coulomb term has no kink at v = 0, where
+    v_r crosses twice per cycle and IPOPT needs second derivatives; same role as
+    smooth_sign in WinchModels.jl / SymbolicAWEModels.jl.
+
+    Args:
+        speed_radial: reel speed v_r [m/s], positive = reel-out.
+        friction_coulomb: F_c [N] (system.yaml drums[0].friction_coulomb).
+        friction_viscous: c_v [N s/m] (drums[0].friction_viscous).
+        speed_smoothing: eps [m/s] of the tanh sign.
+        xp: math namespace, ``numpy`` or ``casadi``.
+        tension: tether tension T [N] at the ground station (>= 0); only used
+            with ``load_fraction``.
+        load_fraction: k [-], load-proportional loss as a fraction of T
+            (drums[0].friction_load_fraction).
+    """
+    v = speed_radial
+    force = friction_coulomb + load_fraction * tension
+    return force * xp.tanh(v / speed_smoothing) + friction_viscous * v
+
+
+def drivetrain_loss_power(
+    speed_radial,
+    friction_coulomb,
+    friction_viscous,
+    speed_smoothing=0.05,
+    xp=np,
+    tension=0.0,
+    load_fraction=0.0,
+):
+    """Power lost to winch drivetrain friction [W], >= 0 in both reel directions.
+
+    ``P_loss = v F_f(v)`` with F_f = :func:`drivetrain_friction_force`, i.e.
+    ``(F_c + k T) v tanh(v / eps) + c_v v^2``. The tanh under-counts F_c |v|
+    only for |v| < ~2 eps, by at most 0.28 F_c eps (1.7 W for F_c = 122 N at
+    |v| = 0.04 m/s). The drive power is then ``T v - P_loss``: the generator
+    gets less than the tether delivers on reel-out, the motor supplies more
+    than the tether absorbs on reel-in. Arguments as
+    :func:`drivetrain_friction_force`.
+    """
+    return speed_radial * drivetrain_friction_force(
+        speed_radial,
+        friction_coulomb,
+        friction_viscous,
+        speed_smoothing=speed_smoothing,
+        xp=xp,
+        tension=tension,
+        load_fraction=load_fraction,
+    )
+
+
+@dataclass(frozen=True)
+class Drivetrain:
+    """Winch drivetrain between the tether and the motor, tether-referred.
+
+    The drum obeys ``m dv_r/dt = T - F_f(v_r) - F_motor``: the tether force T
+    drives it, friction F_f (:func:`drivetrain_friction_force`) and the
+    motor/generator force F_motor brake it. ``inertia_mass`` is the rotating
+    inertia seen at the tether, ``m = J_total (n / r_drum)^2`` (J_total
+    motor-side, n the gear ratio). All zero = the ideal winch: F_motor = T.
+
+    The winch force law (:class:`Winch`) sets F_motor, as a torque-controlled
+    machine does (V3Kite's TorqueControlledMachine), so the tension the kite
+    feels is ``T = F_law(v) + F_f(v) + m dv/dt``.
+    """
+
+    inertia_mass: float = 0.0
+    friction_coulomb: float = 0.0
+    friction_viscous: float = 0.0
+    load_fraction: float = 0.0
+    speed_smoothing: float = 0.05
+
+    @property
+    def has_friction(self):
+        return bool(self.friction_coulomb or self.friction_viscous or self.load_fraction)
+
+    @property
+    def is_ideal(self):
+        return not self.inertia_mass and not self.has_friction
+
+    def friction_force(self, speed_radial, tension=0.0, xp=np):
+        """F_f [N] at the tether, see :func:`drivetrain_friction_force`."""
+        if not self.has_friction:
+            return 0.0
+        return drivetrain_friction_force(
+            speed_radial,
+            self.friction_coulomb,
+            self.friction_viscous,
+            speed_smoothing=self.speed_smoothing,
+            xp=xp,
+            tension=tension,
+            load_fraction=self.load_fraction,
+        )
+
+    def loss_power(self, speed_radial, tension=0.0, xp=np):
+        """Friction power [W], ``v F_f(v)``, >= 0."""
+        return speed_radial * self.friction_force(speed_radial, tension, xp=xp)
+
+    def motor_force(
+        self, tension, speed_radial, speed_radial_prev=None, inv_time_step=0.0, xp=np
+    ):
+        """F_motor = T - F_f(v) - m (v - v_prev) / dt [N], tether-referred.
+
+        The drum acceleration is the backward difference over the step that
+        ENDS at this state (implicit Euler: the drum's time constant, m over
+        the law's slope, is far below a node step, so an explicit step would
+        be unstable). ``inv_time_step`` = 1 / dt; 0 (or no
+        ``speed_radial_prev``) = steady drum, no inertia term.
+        """
+        force = tension - self.friction_force(speed_radial, tension, xp=xp)
+        if self.inertia_mass and speed_radial_prev is not None:
+            force = force - self.inertia_mass * (
+                speed_radial - speed_radial_prev
+            ) * inv_time_step
+        return force
+
+
 class Winch:
-    def __init__(self, pattern_config, config=DEFAULT_WINCH_CONFIG):
+    def __init__(self, pattern_config, config=DEFAULT_WINCH_CONFIG, drivetrain=None):
         self.max_tether_length = config["max_tether_length"]
         self.min_tether_length = config["min_tether_length"]
         self.max_speed = config["max_speed"]
@@ -51,6 +184,9 @@ class Winch:
         self.min_acceleration = config["min_acceleration"]
 
         self.pattern_config = pattern_config
+        # Drum inertia + friction between the tether and the motor; the force
+        # law sets the MOTOR force (see Drivetrain). Ideal by default.
+        self.drivetrain = drivetrain if drivetrain is not None else Drivetrain()
 
     def tension_curve(self, speed_radial, input_depower=None):
         """Nominal tether force model as a CasADi function f(v_r).
@@ -305,7 +441,12 @@ class Winch:
         return speed_radial - ca.log(-ca.expm1(-beta * gap)) / beta
 
     def radial_equation(
-        self, speed_radial=None, tension_tether_ground=None, input_depower=None
+        self,
+        speed_radial=None,
+        tension_tether_ground=None,
+        input_depower=None,
+        speed_radial_prev=None,
+        inv_time_step=0.0,
     ):
         """Algebraic equation for radial dynamics when using force control.
 
@@ -315,8 +456,14 @@ class Winch:
             input_depower: optional depower input forwarded to
                 :meth:`tension_curve` so the force law's offset can depend on the
                 depower setting (see that method).
+            speed_radial_prev, inv_time_step: reel speed at the previous
+                state and 1 / the step to this one, for the drum inertia of
+                :attr:`drivetrain` (implicit Euler); omitted = steady drum.
         Returns:
             radial_equation: Algebraic equation for radial dynamics, in newtons
+
+        With a non-ideal :attr:`drivetrain` the law applies to the MOTOR force
+        ``T - F_f(v) - m dv/dt`` instead of the tether tension T.
 
         When :meth:`uses_speed_law` holds, the residual blends the force form
         ``F - T(v)`` with the speed form ``K * (V(F) - v)`` (``V`` =
@@ -337,6 +484,14 @@ class Winch:
             if speed_radial is None or tension_tether_ground is None:
                 raise ValueError(
                     "speed_radial and tension_tether_ground must be provided for force control"
+                )
+            if not self.drivetrain.is_ideal:
+                tension_tether_ground = self.drivetrain.motor_force(
+                    tension_tether_ground,
+                    speed_radial,
+                    speed_radial_prev=speed_radial_prev,
+                    inv_time_step=inv_time_step,
+                    xp=ca,
                 )
             # Use the unified tension_curve property
             tension_curve_val = self.tension_curve(

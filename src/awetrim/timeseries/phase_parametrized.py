@@ -42,7 +42,7 @@ from awetrim.utils.reference_frames import (
 from awetrim import State
 from awetrim.system.kite import Kite
 from awetrim.system.turn_radius import steering_limit
-from awetrim.system.winch import Winch
+from awetrim.system.winch import Drivetrain, Winch
 from dataclasses import dataclass
 import logging
 
@@ -311,8 +311,10 @@ class PhaseParameterized(TimeSeries):
                 state_obj.s_dot,
                 state_obj.speed_radial,
             )
-            p = ca.vertcat(
-                state_obj.s, state_obj.distance_radial, depower_val, wind_ref_euler
+            p = self._drivetrain_p(
+                ca.vertcat(
+                    state_obj.s, state_obj.distance_radial, depower_val, wind_ref_euler
+                )
             )
             lbx, ubx, lbg, ubg = km_copy.get_boundaries(state_obj, unknown_vars)
             if use_williams:
@@ -334,7 +336,7 @@ class PhaseParameterized(TimeSeries):
                 lbg = list(lbg) + [0.0, 0.0, 0.0]
                 ubg = list(ubg) + [0.0, 0.0, 0.0]
             sol = qs_solver(x0=x0, p=p, lbg=lbg, ubg=ubg, lbx=lbx, ubx=ubx)
-            x0 = p
+            x0 = p[:4]
             z0 = sol["x"]
         else:
             x0 = ca.vertcat(
@@ -343,12 +345,14 @@ class PhaseParameterized(TimeSeries):
                 state_obj.s_dot,
                 state_obj.speed_radial,
             )
-            p = ca.vertcat(
-                state_obj.s,
-                state_obj.s_dot,
-                state_obj.distance_radial,
-                depower_val,
-                wind_ref_euler,
+            p = self._drivetrain_p(
+                ca.vertcat(
+                    state_obj.s,
+                    state_obj.s_dot,
+                    state_obj.distance_radial,
+                    depower_val,
+                    wind_ref_euler,
+                )
             )
             lbx, ubx, lbg, ubg = km_copy.get_boundaries(state_obj, unknown_vars)
             if use_williams:
@@ -370,7 +374,7 @@ class PhaseParameterized(TimeSeries):
                 lbg = list(lbg) + [0.0, 0.0, 0.0]
                 ubg = list(ubg) + [0.0, 0.0, 0.0]
             sol = qs_solver(x0=x0, p=p, lbg=lbg, ubg=ubg, lbx=lbx, ubx=ubx)
-            x0 = p
+            x0 = p[:5]
             z0 = sol["x"]
         # self.states.append(new_state.to_dict())
         t = self.pattern_config["sim_parameters"]["start_time"]
@@ -1106,6 +1110,9 @@ class PhaseParameterized(TimeSeries):
             logger.warning("%s: %s", message, last_error)
             return None
 
+        # Drum state for the drivetrain inertia: (v_r at the previous node,
+        # 1 / the step from it); steady (0) at the first node.
+        drum_state = (0.0, 0.0)
         for i in range(N):
             # 1) solve residuals at current s-grid node
             # Update wind speed for this grid point
@@ -1146,7 +1153,9 @@ class PhaseParameterized(TimeSeries):
                     )
                 else:
                     z = ca.vertcat(z[:-1], 1.02 * r_current)
-            p_solver = x
+            # The drum's previous state (inertia only): v_r at the previous
+            # node and 1 / the step from it; steady at the first node.
+            p_solver = self._drivetrain_p(x, *drum_state)
             if use_williams and debug_solver and i == 0:
                 # One-shot pre-solve diagnostic at node 0: dump z0, p, bounds,
                 # and residual evaluated at the initial guess (before IPOPT
@@ -1294,6 +1303,7 @@ class PhaseParameterized(TimeSeries):
                 v_s = z[1] if use_williams else z[2]  # s_dot from QS solve
                 speed_radial = z[2] if use_williams else z[3]
                 dt = ds / (v_s + 1e-12)  # small epsilon to avoid division by zero
+                drum_state = (float(speed_radial), float(1.0 / dt))
                 next_r = x[1] + speed_radial * dt
                 next_u_dep = u_dep_profile[i + 1]
                 x = ca.vertcat(s_grid[i + 1], next_r, next_u_dep, wind_profile[i + 1])
@@ -1304,6 +1314,7 @@ class PhaseParameterized(TimeSeries):
                 v_s = x[1]  # current s_dot (state)
                 a_s = z[1] if use_williams else z[2]  # current s_ddot (solve result)
                 dt = _dt_from_ds_v_a(ds, v_s, a_s)
+                drum_state = (float(z[2] if use_williams else z[3]), float(1.0 / dt))
 
                 next_s_dot = v_s + a_s * dt
                 speed_radial = z[2] if use_williams else z[3]
@@ -1366,11 +1377,13 @@ class PhaseParameterized(TimeSeries):
                 state_obj.angle_azimuth if state_obj.angle_azimuth is not None else 0.0,
                 state_obj.distance_radial,
             )
-            p_init = ca.vertcat(
-                state_obj.s,
-                state_obj.distance_radial,
-                state_obj.input_depower,
-                wind_speed_init,
+            p_init = self._drivetrain_p(
+                ca.vertcat(
+                    state_obj.s,
+                    state_obj.distance_radial,
+                    state_obj.input_depower,
+                    wind_speed_init,
+                )
             )
             r0 = float(state_obj.distance_radial)
             lbx_init = [
@@ -1400,11 +1413,13 @@ class PhaseParameterized(TimeSeries):
                 state_obj.s_dot,
                 state_obj.speed_radial,
             )
-            p_init = ca.vertcat(
-                state_obj.s,
-                state_obj.distance_radial,
-                state_obj.input_depower,
-                wind_speed_init,
+            p_init = self._drivetrain_p(
+                ca.vertcat(
+                    state_obj.s,
+                    state_obj.distance_radial,
+                    state_obj.input_depower,
+                    wind_speed_init,
+                )
             )
             lbx_init, ubx_init, lbg_init, ubg_init = km_copy.get_boundaries(
                 state_obj, qs_unknown_vars
@@ -1454,6 +1469,81 @@ class PhaseParameterized(TimeSeries):
             speed_radial=float(sol_init["x"][3]),
         )
 
+    def _resolve_drivetrain(self, limits=None) -> Drivetrain:
+        """The winch drivetrain the sim_parameters ask for (default ideal).
+
+        ``winch_drivetrain: true`` switches on the system file's inertia and
+        friction (system.yaml drums[0]: ``inertia_equivalent_mass``,
+        ``friction_coulomb`` / ``friction_viscous``). Each part can also be set
+        on its own, and an explicit key wins over the umbrella:
+
+        - ``winch_inertia_mass``: True (system file) or a mass [kg] at the
+          tether, J (n / r_drum)^2.
+        - ``winch_friction``: True (system file), an (F_c [N], c_v [N s/m])
+          pair or {"coulomb", "viscous"}.
+        - ``drivetrain_load_fraction``: True (drums[0].friction_load_fraction)
+          or a fraction k of the tension; not part of the umbrella.
+
+        Used by the forward march (the force law sets the motor force, see
+        :class:`awetrim.system.winch.Drivetrain`) and by the NLP alike.
+        """
+        sim = self.pattern_config.get("sim_parameters", {}) or {}
+        if limits is None:
+            limits = self._resolve_opti_limits()
+        umbrella = bool(sim.get("winch_drivetrain", False))
+
+        def _system(key, what):
+            if key not in limits:
+                raise ValueError(
+                    f"sim_parameters asks for the system file's {what} but "
+                    f"system.yaml drums[0] does not state it"
+                )
+            return limits[key]
+
+        mass = sim.get("winch_inertia_mass", None)
+        mass = umbrella if mass is None else mass
+        if mass is True:
+            mass = _system("winch_inertia_mass", "winch inertia (inertia_equivalent_mass)")
+        mass = float(mass or 0.0)
+        if mass < 0.0:
+            raise ValueError(f"winch_inertia_mass must be >= 0, got {mass}")
+
+        friction = sim.get("winch_friction", None)
+        friction = umbrella if friction is None else friction
+        if friction is True:
+            friction = _system(
+                "winch_friction", "winch friction (friction_coulomb / friction_viscous)"
+            )
+        elif isinstance(friction, dict):
+            friction = (friction["coulomb"], friction["viscous"])
+        friction = tuple(float(x) for x in friction) if friction else (0.0, 0.0)
+
+        load_fraction = sim.get("drivetrain_load_fraction", False)
+        if load_fraction is True:
+            load_fraction = _system(
+                "drivetrain_load_fraction", "load fraction (friction_load_fraction)"
+            )
+        load_fraction = float(load_fraction or 0.0)
+
+        return Drivetrain(
+            inertia_mass=mass,
+            friction_coulomb=friction[0],
+            friction_viscous=friction[1],
+            load_fraction=load_fraction,
+        )
+
+    def _drivetrain_p(self, p, speed_radial_prev=0.0, inv_time_step=0.0):
+        """Node-solver parameters plus the drum's previous state, when inertia is on.
+
+        ``residual_solver`` appends (v_r at the previous node, 1 / the step from
+        it) to the parameter vector only for a drivetrain with inertia; every
+        caller passes its ``p`` through here. ``inv_time_step`` 0 = steady drum
+        (no previous state: start states, warm starts, node 0).
+        """
+        if not self.winch_model.drivetrain.inertia_mass:
+            return p
+        return ca.vertcat(p, speed_radial_prev, inv_time_step)
+
     def _resolve_opti_limits(self) -> dict:
         """``DEFAULT_OPTI_LIMITS`` overlaid with the system's hardware limits.
 
@@ -1472,6 +1562,8 @@ class PhaseParameterized(TimeSeries):
             if key == "_max_tether_length":
                 lb = limits.get("distance_radial", (0.0, value))[0]
                 limits["distance_radial"] = (lb, float(value))
+            elif np.ndim(value) == 0:
+                limits[key] = float(value)  # scalar limits (drivetrain_load_fraction)
             else:
                 limits[key] = tuple(value)
         return limits
@@ -1663,6 +1755,37 @@ class PhaseParameterized(TimeSeries):
             )
         else:
             print("NLP winch mode: force_law (tension-curve equality per node)")
+        # Winch drivetrain (``_resolve_drivetrain``; ideal by default = NLP
+        # unchanged). The force law sets the MOTOR force, so the shaft power is
+        # F_motor v = T v - P_loss(v) - m a v: the energy integrand charges the
+        # friction loss, and the inertia part is the drum's kinetic-energy
+        # change, written exactly so it telescopes (zero over a closed cycle).
+        # force_law: the law row is Winch.radial_equation on the motor force,
+        # the drum acceleration the backward difference from the previous node
+        # (as the forward march). free_speed: the motor force is held below
+        # max_tether_force (only with inertia: without it the T band implies it).
+        drivetrain = self._resolve_drivetrain(limits)
+        if drivetrain.inertia_mass:
+            print(
+                f"NLP winch inertia: {drivetrain.inertia_mass:.1f} kg at the tether"
+            )
+        if drivetrain.has_friction:
+            print(
+                f"NLP winch friction: {drivetrain.friction_coulomb:.0f} N + "
+                f"{drivetrain.friction_viscous:.1f} N s/m"
+                + (
+                    f" + {drivetrain.load_fraction:.4f} T"
+                    if drivetrain.load_fraction
+                    else ""
+                )
+                + " (objective = shaft power)"
+            )
+
+        def _stage_power(T, v_r):
+            """Objective integrand: tether power, minus drivetrain friction."""
+            if not drivetrain.has_friction:
+                return T * v_r
+            return T * v_r - drivetrain.loss_power(v_r, T, xp=ca)
 
         tau = ca.DM(np.linspace(0, 1, N + 1))  # numeric grid (DM column vector)
 
@@ -1782,7 +1905,7 @@ class PhaseParameterized(TimeSeries):
                         f"not mirror-symmetric (max pair defect {_gap:.3g}); "
                         "build the seed with symmetrize_periodic_path"
                     )
-        winch_model = Winch(pattern_config=radial_params)
+        winch_model = Winch(pattern_config=radial_params, drivetrain=drivetrain)
         km_copy = self.substitute_parametrized_kinematics(pattern)
         self.km_param = km_copy
 
@@ -2617,6 +2740,29 @@ class PhaseParameterized(TimeSeries):
             _free_tf_hi = float(radial_params["max_tether_force"])
             _free_tf_lo = float(radial_params.get("min_tether_force", 0.0))
 
+        _rep_motor_force = []  # winch inertia: motor force per node [N]
+
+        def _drum_prev(i):
+            """(v_r at the previous node, 1 / the step from it) for node i.
+
+            The step is the left-rule interval ending at node i; node 0 has
+            one only on a periodic wrap (the seam), else the drum is steady.
+            """
+            if i > 0:
+                ds = s_grid[i] - s_grid[i - 1]
+                return opti_vars["speed_radial"][i - 1], opti_vars["s_dot"][i - 1] / ds
+            if periodic_wrap:
+                ds = s_grid[N] - s_grid[N - 1]
+                return opti_vars["speed_radial"][N - 1], opti_vars["s_dot"][N - 1] / ds
+            return None, 0.0
+
+        def _inertia_energy(i_from, i_to):
+            """-d(m v^2 / 2) over one interval: the drum's kinetic energy,
+            taken from or given back to the shaft (exact, so it telescopes)."""
+            v_a = opti_vars["speed_radial"][i_from]
+            v_b = opti_vars["speed_radial"][i_to]
+            return -0.5 * drivetrain.inertia_mass * (v_b * v_b - v_a * v_a)
+
         # Per-node expressions accumulated in the loop for the constraint report.
         _rep_aoa = []
         _rep_rates = {ctrl.name: [] for ctrl in node_controls}
@@ -2670,14 +2816,28 @@ class PhaseParameterized(TimeSeries):
                 opti.subject_to(T_i / S["T"] >= _free_tf_lo / S["T"])
                 opti.subject_to(T_i / S["T"] <= _free_tf_hi / S["T"])
                 _rep_tension.append(T_i)
+                if drivetrain.inertia_mass:
+                    v_prev, inv_dt = _drum_prev(i)
+                    if v_prev is not None:
+                        # The motor also brakes the drum: T - F_f - m a.
+                        f_motor = drivetrain.motor_force(
+                            T_i, opti_vars["speed_radial"][i], v_prev, inv_dt, xp=ca
+                        )
+                        opti.subject_to(f_motor / S["T"] <= _free_tf_hi / S["T"])
+                        _rep_motor_force.append(f_motor)
             else:
                 # The winch force law ties the tension to the reel speed:
                 # T_i - T(v_r), or its blend with the speed form near v_sat
                 # (Winch.radial_equation), same zero set, in newtons.
+                v_prev, inv_dt = (
+                    _drum_prev(i) if drivetrain.inertia_mass else (None, 0.0)
+                )
                 law_residual = winch_model.radial_equation(
                     speed_radial=opti_vars["speed_radial"][i],
                     tension_tether_ground=T_i,
                     input_depower=node_depower,
+                    speed_radial_prev=v_prev,
+                    inv_time_step=inv_dt,
                 )
 
                 # Scale the tether law residual
@@ -2730,8 +2890,10 @@ class PhaseParameterized(TimeSeries):
                     opti.subject_to(ctrl_rate >= ctrl.rate_limit[0])
                     _rep_rates[ctrl.name].append(ctrl_rate)
                 # Accumulate energy and time: power_i = T_i * v_r_i
-                energy += T_i * opti_vars["speed_radial"][i] * dt_i
+                energy += _stage_power(T_i, opti_vars["speed_radial"][i]) * dt_i
                 t_eff += dt_i
+                if drivetrain.inertia_mass:
+                    energy += _inertia_energy(i, i + 1)
 
                 # LImit angle of attack
                 aoa_i = aoa_i_fn(
@@ -2816,8 +2978,10 @@ class PhaseParameterized(TimeSeries):
                 opti.subject_to(ctrl_rate <= ctrl.rate_limit[1])
                 opti.subject_to(ctrl_rate >= ctrl.rate_limit[0])
                 _rep_rates[ctrl.name].append(ctrl_rate)
-            energy += T_last * opti_vars["speed_radial"][i_last] * dt_w
+            energy += _stage_power(T_last, opti_vars["speed_radial"][i_last]) * dt_w
             t_eff += dt_w
+            if drivetrain.inertia_mass:
+                energy += _inertia_energy(i_last, 0)
             aoa_w_fn = (
                 _node_functions(_knot_of(s_grid[i_last]))[1]
                 if local_support
@@ -3080,7 +3244,14 @@ class PhaseParameterized(TimeSeries):
                 (_free_tf_lo, _free_tf_hi),
                 "N",
             )
-        elif _rep_tension:
+        if _rep_motor_force:
+            _report_ineq(
+                "winch_motor_force (inertia)",
+                ca.vertcat(*_rep_motor_force),
+                (-np.inf, _free_tf_hi),
+                "N",
+            )
+        if _rep_tension and not free_speed:
             constraint_report["winch_tension_law (scaled)"] = {
                 "expr": ca.vertcat(*_rep_tension),
                 "equality": True,
@@ -3217,11 +3388,13 @@ class PhaseParameterized(TimeSeries):
                     max(s_dot_init, 0.1),
                     state_obj.speed_radial or 0.0,
                 )
-                p = ca.vertcat(
-                    s_grid[0],
-                    state_obj.distance_radial,
-                    u_dep_profile[0],
-                    wind_profile[0],
+                p = self._drivetrain_p(
+                    ca.vertcat(
+                        s_grid[0],
+                        state_obj.distance_radial,
+                        u_dep_profile[0],
+                        wind_profile[0],
+                    )
                 )
                 unknown_vars = [
                     "tension_tether_ground",
@@ -3348,6 +3521,15 @@ class PhaseParameterized(TimeSeries):
         km_copy.wind.speed_wind_ref = wind_speed_ref
         km_copy.establish_residual()
         use_williams = isinstance(km_copy.tether, WilliamsTether)
+        # Drivetrain of this run; with inertia the node solve also takes the
+        # drum's previous state (see _drivetrain_p), the law row then being an
+        # implicit Euler step of the drum.
+        self.winch_model.drivetrain = self._resolve_drivetrain()
+        drum_prev = (
+            (ca.MX.sym("speed_radial_prev"), ca.MX.sym("inv_time_step"))
+            if self.winch_model.drivetrain.inertia_mass
+            else (None, 0.0)
+        )
         # Scaled tension decision variable for Williams; substituted into the
         # algebraic below as ``tension_kite_scaled * WILLIAMS_TENSION_SCALE``.
         tension_kite_scaled = ca.MX.sym("tension_kite_scaled") if use_williams else None
@@ -3417,6 +3599,9 @@ class PhaseParameterized(TimeSeries):
                 wind_speed_ref,
             )
 
+        if drum_prev[0] is not None:
+            p = ca.vertcat(p, *drum_prev)
+
         alg = km_copy.residual
         williams_force_scale = max(
             float(
@@ -3475,6 +3660,8 @@ class PhaseParameterized(TimeSeries):
                         tension_tether_ground=tension_ground,
                         speed_radial=km_copy.speed_radial,
                         input_depower=km_copy.input_depower,
+                        speed_radial_prev=drum_prev[0],
+                        inv_time_step=drum_prev[1],
                     )
                     / williams_force_scale,
                 )
@@ -3501,6 +3688,8 @@ class PhaseParameterized(TimeSeries):
                         tension_tether_ground=tension_ground,
                         speed_radial=km_copy.speed_radial,
                         input_depower=km_copy.input_depower,
+                        speed_radial_prev=drum_prev[0],
+                        inv_time_step=drum_prev[1],
                     )
                     / williams_force_scale
                     if use_williams
@@ -3508,6 +3697,8 @@ class PhaseParameterized(TimeSeries):
                         tension_tether_ground=tension_ground,
                         speed_radial=km_copy.speed_radial,
                         input_depower=km_copy.input_depower,
+                        speed_radial_prev=drum_prev[0],
+                        inv_time_step=drum_prev[1],
                     )
                 ),
                 # km_copy.speed_radial,

@@ -786,6 +786,54 @@ def test_depower_anchor_is_an_objective_term_only():
         phase_both.opti_phase(start_state=start, opti_params={})
 
 
+@pytest.mark.slow
+def test_winch_friction_changes_only_the_objective():
+    """``winch_friction`` swaps the energy integrand T v for T v - P_loss(v)
+    (winch.drivetrain_loss_power): no rows or decisions are added, and at the
+    shared initial guess (v_r = 0.5 m/s at every node) the energy drops by
+    exactly P_loss(0.5) * total time. Off = NLP unchanged."""
+    from awetrim.system.winch import drivetrain_loss_power
+
+    overrides = {**_WRAP_FORMULATIONS["free_speed+depower"][0], "periodic_wrap": True}
+    phase_off, start = _wrap_phase(_N_WRAP, dict(overrides))
+    opti_off, _, obj_off = phase_off.opti_phase(start_state=start, opti_params={})
+    e_off = float(opti_off.debug.value(obj_off["energy"], opti_off.initial()))
+    for flag, law in (
+        (True, (122.0, 30.6)),  # LEI-V3 system.yaml drums[0]
+        ((122.0, 30.6), (122.0, 30.6)),
+        ({"coulomb": 122.0, "viscous": 30.6}, (122.0, 30.6)),
+    ):
+        phase_on, start = _wrap_phase(_N_WRAP, {**overrides, "winch_friction": flag})
+        opti_on, _, obj_on = phase_on.opti_phase(start_state=start, opti_params={})
+        assert opti_on.g.numel() == opti_off.g.numel()
+        assert opti_on.x.numel() == opti_off.x.numel()
+        e_on = float(opti_on.debug.value(obj_on["energy"], opti_on.initial()))
+        t_on = float(opti_on.debug.value(obj_on["total_time"], opti_on.initial()))
+        expected = float(drivetrain_loss_power(0.5, *law)) * t_on
+        assert e_off - e_on == pytest.approx(expected, rel=1e-9)
+
+
+@pytest.mark.slow
+def test_drivetrain_load_fraction_changes_only_the_objective():
+    """``drivetrain_load_fraction`` adds k T |v| to the loss in the energy
+    integrand (True -> system.yaml drums[0].friction_load_fraction): no rows or
+    decisions are added and, at the initial guess (v_r > 0, T > 0), the energy
+    only drops."""
+    overrides = {**_WRAP_FORMULATIONS["free_speed+depower"][0], "periodic_wrap": True}
+    phase_off, start = _wrap_phase(_N_WRAP, dict(overrides))
+    opti_off, _, obj_off = phase_off.opti_phase(start_state=start, opti_params={})
+    e_off = float(opti_off.debug.value(obj_off["energy"], opti_off.initial()))
+    for flag in (True, 0.05):
+        phase_on, start = _wrap_phase(
+            _N_WRAP, {**overrides, "drivetrain_load_fraction": flag}
+        )
+        opti_on, _, obj_on = phase_on.opti_phase(start_state=start, opti_params={})
+        assert opti_on.g.numel() == opti_off.g.numel()
+        assert opti_on.x.numel() == opti_off.x.numel()
+        e_on = float(opti_on.debug.value(obj_on["energy"], opti_on.initial()))
+        assert e_on < e_off
+
+
 # --- slow: mirror symmetry (half-period mirror rows) -------------------------
 
 
@@ -1038,3 +1086,53 @@ def test_max_climb_angle_adds_rows_per_sample():
         _build(False, max_climb_angle=np.radians(1.0))
     with pytest.raises(ValueError, match="max_climb_angle"):
         _build(True, max_climb_angle=-0.1)
+
+
+@pytest.mark.slow
+def test_winch_drivetrain_resolves_from_the_system_file():
+    """``winch_drivetrain`` takes the LEI-V3 system file's inertia and friction
+    (V3Kite's GS1 drivetrain); an explicit key wins over it; default ideal."""
+    phase, _ = _wrap_phase(_N_WRAP, {})
+    assert phase._resolve_drivetrain().is_ideal
+    phase, _ = _wrap_phase(_N_WRAP, {"winch_drivetrain": True})
+    dt_ = phase._resolve_drivetrain()
+    assert (dt_.inertia_mass, dt_.friction_coulomb, dt_.friction_viscous) == (300.7, 122.0, 30.6)
+    assert dt_.load_fraction == 0.0
+    phase, _ = _wrap_phase(_N_WRAP, {"winch_drivetrain": True, "winch_inertia_mass": 0})
+    dt_ = phase._resolve_drivetrain()
+    assert dt_.inertia_mass == 0.0 and dt_.friction_coulomb == 122.0
+
+
+@pytest.mark.slow
+def test_winch_inertia_extends_the_march_parameters_only():
+    """The node solver of the forward march takes the drum's previous state
+    (v_r, 1 / dt) as two more parameters with inertia, none with friction only."""
+    for sim, extra in (({}, 0), ({"winch_friction": True}, 0), ({"winch_drivetrain": True}, 2)):
+        phase, _ = _wrap_phase(_N_WRAP, dict(sim))
+        solver = phase.residual_solver(phase.km_param)
+        n_p = solver.size_in("p")[0]
+        if not sim:
+            n_base = n_p
+        assert n_p == n_base + extra, sim
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("formulation", sorted(_WRAP_FORMULATIONS))
+def test_winch_inertia_rows_in_the_nlp(formulation):
+    """force_law: the drum inertia lives inside the existing law row (no row
+    added). free_speed: one motor-force row per node with a previous one
+    (every node on a periodic wrap). Over a closed cycle the inertia part of
+    the shaft energy telescopes to zero."""
+    sim_overrides = {**_WRAP_FORMULATIONS[formulation][0], "periodic_wrap": True}
+    phase_off, start = _wrap_phase(_N_WRAP, dict(sim_overrides))
+    opti_off, _, obj_off = phase_off.opti_phase(start_state=start, opti_params={})
+    phase_on, start = _wrap_phase(_N_WRAP, {**sim_overrides, "winch_inertia_mass": 300.7})
+    opti_on, _, obj_on = phase_on.opti_phase(start_state=start, opti_params={})
+    extra = _N_WRAP if formulation.startswith("free_speed") else 0
+    assert opti_on.g.numel() == opti_off.g.numel() + extra
+    assert opti_on.x.numel() == opti_off.x.numel()
+    if extra:
+        assert obj_on["constraint_report"]["winch_motor_force (inertia)"]["expr"].numel() == _N_WRAP
+    e_off = float(opti_off.debug.value(obj_off["energy"], opti_off.initial()))
+    e_on = float(opti_on.debug.value(obj_on["energy"], opti_on.initial()))
+    assert e_on == pytest.approx(e_off, rel=1e-9)

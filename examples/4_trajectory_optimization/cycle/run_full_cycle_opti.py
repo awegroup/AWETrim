@@ -648,6 +648,9 @@ def main(
     wind_speed: float = None,
     wind_height: float = None,
     warm_start_csv=None,
+    winch_inertia_mass: float = None,
+    winch_friction=None,
+    winch_drivetrain: bool = False,
 ) -> int:
     """``config_path`` overrides the kite's seed YAML (a variant such as the
     same seed with ``winch_mode: force_law``); ``run_tag`` is appended to the
@@ -693,6 +696,16 @@ def main(
     sim = reelout_config["sim_parameters"]
     # A seed or continuation file written before the key: every cycle has this rate.
     sim.setdefault("slow_path_rate", True)
+    if winch_inertia_mass is not None:
+        # Drum + drive inertia reflected onto the tether [kg] (opti_phase).
+        sim["winch_inertia_mass"] = float(winch_inertia_mass)
+    if winch_friction is not None:
+        # Drivetrain friction in the objective: True = system.yaml drums[0],
+        # or a tether-referred (F_c [N], c_v [N s/m]) pair.
+        sim["winch_friction"] = winch_friction
+    if winch_drivetrain:
+        # The system file's drum inertia + friction, in the march and the NLP.
+        sim["winch_drivetrain"] = True
     if N_POINTS:
         _downsample_n_points(reelout_config, N_POINTS)
 
@@ -989,7 +1002,32 @@ if __name__ == "__main__":
         default=None,
         help="Height (m) of --wind-speed (default the profile's height_ref)",
     )
+    parser.add_argument(
+        "--winch-inertia-mass",
+        type=float,
+        default=None,
+        help="Winch inertia as an equivalent tether mass J/r_drum^2 (kg); the "
+        "drive force T - m dv_r/dt is then held below max_tether_force",
+    )
+    parser.add_argument(
+        "--winch-friction",
+        default=None,
+        help="Charge drivetrain friction in the objective: 'system' for "
+        "system.yaml drums[0], or 'F_c,c_v' tether-referred (N, N s/m)",
+    )
+    parser.add_argument(
+        "--winch-drivetrain",
+        action="store_true",
+        help="Fly the system file's winch drivetrain (drum inertia + friction, "
+        "system.yaml drums[0]) in the forward simulation and the NLP",
+    )
     args = parser.parse_args()
+    if args.winch_friction is not None:
+        args.winch_friction = (
+            True
+            if args.winch_friction == "system"
+            else [float(x) for x in args.winch_friction.split(",")]
+        )
     exit_code = main(
         run_plots=args.plot,
         optimize=not args.no_optimize,
@@ -1002,6 +1040,9 @@ if __name__ == "__main__":
         wind_speed=args.wind_speed,
         wind_height=args.wind_height,
         warm_start_csv=args.warm_start,
+        winch_inertia_mass=args.winch_inertia_mass,
+        winch_friction=args.winch_friction,
+        winch_drivetrain=args.winch_drivetrain,
     )
     if args.plot:
         import matplotlib.pyplot as plt

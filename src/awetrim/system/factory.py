@@ -398,6 +398,24 @@ def _extract_hardware_limits(
     acc_max = drum.get("max_winch_acceleration")
     if acc_max is not None:
         hw["winch_acceleration"] = (-float(acc_max), float(acc_max))
+    # Drivetrain friction (tether-referred Coulomb [N], viscous [N s/m]); only
+    # charged to the objective when sim_parameters["winch_friction"] is set.
+    # Emitted only when BOTH terms are given.
+    f_c = drum.get("friction_coulomb")
+    c_v = drum.get("friction_viscous")
+    if f_c is not None and c_v is not None:
+        hw["winch_friction"] = (float(f_c), float(c_v))
+    # Load-proportional drivetrain loss (fraction of the tension: pulleys, belt,
+    # gear mesh); only charged when sim_parameters["drivetrain_load_fraction"]
+    # is set.
+    k_load = drum.get("friction_load_fraction")
+    if k_load is not None:
+        hw["drivetrain_load_fraction"] = float(k_load)
+    # Drum + drive inertia seen at the tether, J (n / r_drum)^2 [kg]; only used
+    # when sim_parameters["winch_inertia_mass"] (or winch_drivetrain) is set.
+    m_w = drum.get("inertia_equivalent_mass")
+    if m_w is not None:
+        hw["winch_inertia_mass"] = float(m_w)
     return hw
 
 

@@ -220,6 +220,19 @@ def test_extract_hardware_limits_ignores_half_specified_winch_speed():
     assert "speed_radial" not in hw
 
 
+def test_extract_hardware_limits_maps_drum_friction_only_when_complete():
+    # drums[0].friction_coulomb / friction_viscous -> limits["winch_friction"],
+    # read by opti_phase only when sim_parameters.winch_friction is set.
+    from awetrim.system.factory import _extract_hardware_limits
+
+    hw = _extract_hardware_limits({}, {}, {"friction_coulomb": 122.0, "friction_viscous": 30.7})
+    assert hw["winch_friction"] == (122.0, 30.7)
+    assert "winch_friction" not in _extract_hardware_limits({}, {}, {"friction_coulomb": 122.0})
+    hw = _extract_hardware_limits({}, {}, {"friction_load_fraction": 0.05})
+    assert hw["drivetrain_load_fraction"] == 0.05
+    assert "drivetrain_load_fraction" not in _extract_hardware_limits({}, {}, {})
+
+
 def test_system_yaml_winch_envelope_reaches_the_optimizer_limits():
     from awetrim.timeseries.phase_parametrized import PhaseParameterized
     from awetrim.utils.config_paths import LEI_V3_SYSTEM_CONFIG
@@ -234,6 +247,7 @@ def test_system_yaml_winch_envelope_reaches_the_optimizer_limits():
 
     assert lim["speed_radial"] == model.hardware_limits["speed_radial"]
     assert lim["winch_acceleration"] == model.hardware_limits["winch_acceleration"]
+    assert lim["winch_friction"] == model.hardware_limits["winch_friction"]
 
 
 def test_depower_box_is_clipped_to_the_rom_validity_band():
@@ -381,3 +395,12 @@ def test_lei_v3_roms_fly_the_rigid_lumped_tether(rom):
 
     model = create_system_model_from_yaml(LEI_V3_SYSTEM_CONFIG, aero_yaml_path=rom)
     assert isinstance(model.tether, RigidLumpedTether)
+
+
+def test_extract_hardware_limits_maps_drum_inertia():
+    # drums[0].inertia_equivalent_mass [kg at the tether] -> limits["winch_inertia_mass"]
+    from awetrim.system.factory import _extract_hardware_limits
+
+    hw = _extract_hardware_limits({}, {}, {"inertia_equivalent_mass": 300.7})
+    assert hw["winch_inertia_mass"] == 300.7
+    assert "winch_inertia_mass" not in _extract_hardware_limits({}, {}, {})

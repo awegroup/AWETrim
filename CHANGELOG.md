@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+### Winch: drivetrain inertia and friction, simulated and optimised
+
+- **`awetrim.system.winch.Drivetrain`**: the drum between the tether and the motor,
+  tether-referred: inertia `m = J (n / r_drum)^2` and friction
+  `F_f = (F_c + k T) tanh(v / eps) + c_v v`. The winch force law now sets the MOTOR
+  force, as a torque-controlled machine does, so the kite feels
+  `T = F_law(v) + F_f(v) + m dv/dt`. The ideal drivetrain (the default) leaves every
+  run unchanged.
+- **The forward simulation flies it**, without optimising: an implicit Euler step of the
+  drum in each node's law row, the drum's previous state passed to the node solver.
+- **The cycle NLP uses the same model.** Its objective is the shaft power
+  `T v - P_loss - d(m v^2 / 2)`; `force_law` gets the drum in its law row, `free_speed`
+  holds the motor force below `max_tether_force`. Drivetrain friction in the objective
+  comes from `feat/winch-drivetrain-losses`.
+- **LEI-V3 values**: V3Kite.jl's GS1 drivetrain (`sim_settings_reelout.yaml`):
+  0.204 kg m2 motor side, i.e. 300.7 kg at the tether, and 122 N + 30.6 N s/m.
+  Switched on by `sim_parameters.winch_drivetrain` (or `run_full_cycle_opti.py
+  --winch-drivetrain`), or part by part.
+
 ### Tether: second-order load placement in `WilliamsTether`
 
 - **Each segment's load now acts at its centre and goes half to each end node**
