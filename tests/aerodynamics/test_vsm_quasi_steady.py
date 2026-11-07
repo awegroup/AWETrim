@@ -1636,3 +1636,16 @@ def test_nonlinear_rhs_chi_solves_the_normal_equation():
     out = full(perturbed)
     assert abs(out["normal_residual"]) < 1e-8
     assert np.isfinite(out["delta_chi_dot_turn"])
+
+
+def test_numeric_3vector_evaluates_a_constant_mx_graph():
+    """A load whose inputs are all numeric is a constant MX graph (no free
+    symbols); it is evaluated, not cast (DM(MX) is not defined). The lumped
+    tether's inertia in the quasi-steady trim is such a load."""
+    import casadi as ca
+    import numpy as np
+
+    from awetrim.aerodynamics.vsm_quasi_steady import _as_numeric_3vector
+
+    value = ca.vertcat(ca.MX(2.0) * 3, ca.MX(-1.0), ca.sqrt(ca.MX(16.0)))
+    np.testing.assert_allclose(_as_numeric_3vector(None, value), [6.0, -1.0, 4.0])

@@ -28,15 +28,25 @@ fidelity: wireframe
 
 sweep:
   system_file: system.yaml      # in this folder: the masses (KCU) and the tether
-  # Merged over as_config.yaml for every solve: the flight state (course-frame
-  # angles [deg], tether length [m], reel speed [m/s]) and gravity.
-  config_overrides:
-    angle_elevation_deg: 0.0
-    angle_azimuth_deg: 0.0
-    angle_course_deg: 90.0
+  # The flight state of every solve (awetrim.aerostructural.case.Case):
+  # course-frame angles [deg], tether length [m], reel speed [m/s], steady
+  # flight, and the wind law. The wind SPEED comes from wind_speeds and the
+  # tape command from the chains.
+  case:
+    elevation_deg: 0.0
+    azimuth_deg: 0.0
+    course_deg: 90.0
     distance_radial: 300.0
     speed_radial: 0.0
-    is_with_gravity: false
+    timeder_speed_tangential: 0.0
+    timeder_speed_radial: 0.0
+    wind:
+      model: uniform
+  # Merged over as_config.yaml for every solve (its subsystem blocks).
+  # Gravity off: the ROM adds the kite's weight itself in the point-mass model.
+  overrides:
+    coupling:
+      is_with_gravity: false
   # Wind at the reference height of the kite's wind model [m/s], one set of
   # chains per value. Without reel-out the kite flies at about 5 x the wind,
   # v_a 20 and 25 m/s: inside the flown band.
@@ -49,10 +59,16 @@ sweep:
     max: 0.10
     step: 0.025
   # A chain stops at the first state that does not converge or whose stalled
-  # span fraction exceeds this.
+  # span fraction exceeds this. `steering.max_stalled_fraction` overrides it for
+  # the steering chains. What enters the fit is the fit's own cut.
   max_stalled_fraction: 0.2
-  # Frozen-shape polar about every state: [min, max, step] increments [deg].
-  polar_d_alpha_deg: [-6.0, 14.0, 1.0]
+  # Frozen-shape polar about every state: [min, max, step] increments [deg]. The
+  # polar is the march DOWN from the maximum (the realistic stall), so that has to
+  # be well past the stall: from +14 the 1.40 m state had not fully stalled.
+  polar_d_alpha_deg: [-6.0, 22.0, 1.0]
+  # Every state is moved to that branch before its polar (the default; a chain
+  # alone stays attached past the realistic stall). False only to compare.
+  settle_on_down_branch: true
 
   fidelities:
     billow:
@@ -60,8 +76,8 @@ sweep:
       # circulation loop (with artificial viscosity the stalled tips trap the
       # Anderson loop). The canopy needs a tether force well above ~2000 N to
       # keep its symmetric equilibrium (aerostructural/AGENTS.md).
-      config_overrides:
-        aerodynamic:
+      overrides:
+        aerodynamics:
           n_aero_panels_per_struc_section: 2
           gamma_loop_type: base
       # Built at 1.90 m. The full model flies the flown reel-out loads at a
@@ -74,53 +90,50 @@ sweep:
     wireframe:
       fem_geometry: structure.yml
       system_file: system_flown_2019.yaml   # the hardware the shipped ROM used
-      # No bridle_modulus_factor: the FEM file's Dyneema is already the
-      # datasheet 109 GPa (the PSM file's 10 GPa needed x9). The fixed-
-      # stiffness model stays: no elongation-bound stiffening, one kite for
-      # the whole sweep, whatever order the states are solved in.
+      # The structure flies the FEM file's own stiffnesses: its Dyneema is the
+      # datasheet 109 GPa (the PSM file's 10 GPa needed a hand-applied x9 and
+      # an in-loop stiffening, both removed 2026-11-02).
       # The wireframe flies at about 3.8 x the wind: 6 m/s reaches v_a 23.
       wind_speeds: [4.0, 5.0, 6.0]
-      config_overrides:
-        aerodynamic:
-          # 27 FEM sections x 5 = 135 panels: within 0.5 % of 324 panels in
-          # CL and CD at 4-8 deg on the billowed wing (convergence study
-          # 2026-10-28, docs/aerostructural/)
-          n_aero_panels_per_struc_section: 5
-          # strut-to-strut trailing-edge contraction, LEI-V3 photogrammetry
-          # (Haanen 2026, Table 9.2: -5.23 % powered, -3.86 % depowered)
-          billowing:
-            contraction: 0.05
-          load_transfer: strut_lever
-        structural_pss:
-          update_stiffness: false
+      # The aerodynamics are as_config's: 135 panels on the billowed wing
+      # (5 % contraction) with the strut-lever load transfer.
       # Built at 1.90 m (the FEM file); the range covers the flown reel-out
       # and reel-in tapes and depowers enough to reel in.
       depower:
         targets: [1.10, 2.60]
         step: 0.05
-      # Across the ROM band (fit: depower_band), through both flight-match
-      # tapes (fit: flight_match): 1.95 ~ reel-out, 2.40 = reel-in; 1.70 / 2.10
-      # the previous model's match. To 0.20 m = |u_s| 0.14, toward the flown 0.175
-      # (KCU clip); the stall stop ends a chain earlier where the tip stalls.
+      # Across the ROM band (fit: depower_band; 1.50 m is its powered end), through both flight-match
+      # tapes (fit: flight_match): 1.95 = reel-out, 2.40 near reel-in; 1.70 / 2.10
+      # the previous model's match. To 0.50 m = |u_s| 0.36, past the flown +-35 %
+      # KCU (0.49 m at u_s = kcu/100; a multiple of step, so a chain can be extended
+      # and resumed); the stall stop ends a chain earlier where the tip stalls.
       steering:
-        power_tape_lengths: [1.40, 1.70, 1.95, 2.10, 2.40]
-        max: 0.20
+        power_tape_lengths: [1.40, 1.50, 1.70, 1.95, 2.10, 2.40]
+        max: 0.50
+        # Never stop on stall: the steering limit is read from what lies past it,
+        # so these chains end at `max` or at a state that does not converge.
+        max_stalled_fraction: 1.0
 
 fit:
   # The area the ROM's coefficients are normalised by [m2]: the EKF / flight
   # area, which the flight-corrected ROM keeps (system.yaml's 17.21 m2 is the
   # projected geometry).
   reference_area: 19.75
+  # States whose stalled span fraction exceeds this stay out of the coefficients
+  # and the roll gain: the ROM is the attached kite's, its stall from their polars.
+  max_stalled_fraction: 0.2
+  # The angle of attack the ROM may be flown to stays this far below its stall
+  # [deg]: a 1 m/s gust turns the inflow by atan(1 / v_a), 2.5-3.8 deg at the
+  # v_a of 6-4 m/s wind.
+  stall_margin_deg: 3.0
   # Steering-tape half-difference per unit of the ROM's u_s [m]
   # (awetrim.identification.controls: the standardised flight scale).
   steering_tape_per_unit_us: 1.4
-  # Written to the ROM file as its `tether` block.
+  # Written to the ROM file as its `tether` block: the tether a ROM run
+  # flies with. ROM runs use the rigid lumped tether; the aerostructural
+  # runs state theirs in as_config.
   rom_tether:
-    model: williams
-    n_elements: 10
-    wind_model: uniform
-    cf: 0.01
-    is_elastic: false
+    model: rigid_lumped
   # The u_p = l_dp range the coefficients are fitted on [m], and the ROM's
   # `controls` block: the tape lengths of the powered and depowered phases,
   # the band the trajectory optimiser works in. These are modelling choices
@@ -137,38 +150,40 @@ fit:
         input_depower:
           powered: 2.1
           depowered: 2.5
-    # From the sweep (2026-10-28) with gust margins (docs/aerostructural/
-    # lei_v3_wing_corrections.md): powered end 1.30 m = alpha + atan(1 m/s /
-    # v_a) below the frozen polar's stall onset at 4-6 m/s (the tether-force
-    # peak sits at 1.25-1.30 m); depowered end 2.60 m = end of the sweep, the
-    # C_L slope still linear 6 deg below every trim. The force margin (15 %
-    # lull, 2 x KCU weight: F_t >= 602 N) depends on the wind, so it is a
-    # tension floor for the optimiser, not a tape limit. Fitted down to 1.25 m
-    # so the ROM sees the force peak.
+    # Powered end 1.50 m: a 1 m/s gust (alpha + atan(1 m/s / v_a)) stays below the
+    # stall onset of the realistic (down) branch, 5 % C_L drop, by 1.5-2.6 deg at
+    # 4-6 m/s; at 1.40 m it does not (-0.65 deg at 4 m/s). Fitted down to 1.40 m, the
+    # shortest tape not itself stalled (1.35 m is, at 11 % less tension), so the
+    # band's edge is not extrapolated; a stalled depower setting is no operating
+    # point, so it is outside the fit, while the polars of 1.40 m still reach past
+    # the stall. Depowered end 2.60 m = end
+    # of the sweep, the C_L slope still linear 6 deg below every trim. The force
+    # margin (15 % lull, 2 x KCU weight: F_t >= 602 N) depends on the wind, so it
+    # is a tension floor for the optimiser, not a tape limit.
     wireframe:
-      depower_band: [1.25, 2.6]
+      depower_band: [1.40, 2.6]
+      # The states the ROM's stall angle is measured on: near their stall, where the
+      # onset is readable (on longer tapes the trim is too far below it).
+      stall_onset_tapes: [1.40, 1.70]
       controls:
         input_depower:
-          powered: 1.3
+          powered: 1.5
           depowered: 2.6
       # Copied into the ROM's validity block. Minimum kite-end tether force
       # [N]: 2 x KCU weight after a 15 % speed lull, 435 N / 0.85^2 (435 N =
       # 2 x 22.2 kg x g; the 2019 file's flown KCU is 22.0 kg, i.e. 597 N --
       # the 1 % is inside the margin's own precision).
       validity:
-        # the ROM band (the optimiser's depower box is clipped to it); the fit
-        # reaches 1.25 m only so the ROM sees the force peak
-        input_depower: [1.30, 2.60]
+        # the ROM band (the optimiser's depower box is clipped to it)
+        input_depower: [1.50, 2.60]
         min_tether_force_n: 602.0
-      # The model tape that reproduces each flown phase (documentation; the
-      # fit does not read it). Matched on near-straight samples of the 2019
-      # flight: the model's u_s = 0 tether force vs v_a against the flight's
-      # binned medians (the wes-quasi-steady u_dp attribution). Reel-in is
-      # anchored at the flown v_a; force alone gives ~2.50 with a ~12 % curve
-      # shape mismatch, as in the paper. UPDATE whenever the sweep model
-      # changes and the match is redone; the steering tapes follow it.
+      # The model tape that reproduces each flown phase (the fit does not read it): the
+      # one that best zeroes the median tension and speed errors of the ROM's own solve,
+      # logged steering in, 2019 training cycles. Written by
+      # examples/5_flight_data/identify_rom_flight_correction.py; re-run it whenever the
+      # ROM changes. The steering tapes follow it.
       flight_match:
         flight: 2019
-        date: 2026-10-28
-        reel_out: 1.94
-        reel_in: 2.40
+        date: 2026-11-05
+        reel_out: 1.95
+        reel_in: 2.48

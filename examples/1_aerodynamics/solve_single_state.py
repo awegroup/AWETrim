@@ -1,92 +1,78 @@
 """Solve one VSM aerodynamic trim state.
 
-To trim on a deformed shape from an aerostructural run, pass
-``--deformed-from <case_dir>`` (where ``case_dir`` contains the deformed
-``aero_geometry.yaml`` and ``structure.yml``). The deformed geometries
-are used by VSM and for plotting; mass and inertia tensor are still read from
-``system.yaml`` in ``--config-folder``. The centre of gravity defaults to the
-kite's own (the structure aggregate, deformed when ``--deformed-from`` is
-given); ``--center-of-gravity`` overrides it.
+Edit the Inputs block and run from the project root::
+
+    python examples/1_aerodynamics/solve_single_state.py
+
+The kite is the one ``data/<KITE>`` describes (``common.load_kite``): its
+wing, bridle, mass and model choices come from the data files, the operating
+point from ``CASE``. ``SHAPE`` picks the wing: ``"built"`` (structure.yml with
+as_config's billowing), or the deformed shape a step-2 run of the same CASE
+left (``"wireframe"`` / ``"billow"``); ``DEFORMED_FROM`` points at any other
+results case folder.
 """
 
 from __future__ import annotations
-
-import argparse
-from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 
 from common import (
-    add_common_arguments,
-    build_body,
-    build_system_model,
+    load_kite,
     output_dir,
-    parsed_common,
+    print_kite,
     print_trim_summary,
-    kite_rigid_body,
     save_figure,
+    trim,
     write_json,
 )
+from awetrim.aerostructural.case import Case
 from awetrim.plotting.kite_tether import draw_kite_tether, tether_info_str
 
-from awetrim.aerodynamics.vsm_quasi_steady import (
-    solve_vsm_qs_trim_with_williams_tether,
-    solve_vsm_quasi_steady_trim,
+# ---------------------------------------------------------------------------
+# Inputs
+# ---------------------------------------------------------------------------
+KITE = "LEI-V3-KITE"  # a folder under data/
+
+#: The step-2 PSM example's case (examples/2_aerostructural/run_simulation_PSM.py),
+#: so SHAPE = "wireframe" finds that example's result.
+CASE = Case(
+    elevation_deg=0.0,  # beta
+    azimuth_deg=0.0,  # phi
+    course_deg=90.0,  # chi
+    distance_radial=300.0,  # r [m]
+    speed_radial=1.5,  # v_r [m/s], positive = reeling out
+    timeder_speed_tangential=0.0,  # steady flight
+    timeder_speed_radial=0.0,
+    wind={"model": "uniform", "speed_wind_ref": 6.0},
+    # [m]; the built shape is at 0: a tape command needs a deformed SHAPE
+    power_tape_extension=0.0,
+    steering_tape_extension=0.0,
 )
-from awetrim.system.williams_tether import WilliamsTether
+SHAPE = "built"  # "built" | "wireframe" | "billow"
+DEFORMED_FROM = None  # a results case folder; overrides SHAPE
+WITH_GRAVITY = True
+
+OUTPUT_DIR = None  # default results/aerodynamics/single_state
+SHOW = True
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description="Solve one VSM aerodynamic trim state."
+    out_dir = output_dir("single_state", OUTPUT_DIR)
+    kite = load_kite(
+        KITE,
+        CASE,
+        shape=SHAPE,
+        deformed_from=DEFORMED_FROM,
+        overrides={"coupling": {"is_with_gravity": WITH_GRAVITY}},
     )
-    add_common_arguments(parser)
-    parser.add_argument("--output-json", default=None)
-    args = parser.parse_args()
-    values = parsed_common(args)
-    out_dir = output_dir(args, "single_state")
+    print_kite(kite)
 
-    body, body_props = build_body(args)
-    system_model = build_system_model(args)
-    center_of_gravity = kite_rigid_body(values, body_props, system_model)["center_of_gravity"]
-
-    use_williams = isinstance(getattr(system_model, "tether", None), WilliamsTether)
-
-    if use_williams:
-        print(
-            "Tether model: WilliamsTether -> running joint trim+tether least_squares."
-        )
-        result, _ = solve_vsm_qs_trim_with_williams_tether(
-            body_aero=body,
-            center_of_gravity=center_of_gravity,
-            reference_point=values["reference_point"],
-            system_model=system_model,
-            x_guess=values["x_guess"],
-            bounds_lower=values["bounds_lower"],
-            bounds_upper=values["bounds_upper"],
-            include_gravity=args.include_gravity,
-            moment_tolerance=args.moment_tolerance,
-            max_nfev=args.max_nfev,
-        )
-    else:
-        result, _ = solve_vsm_quasi_steady_trim(
-            body_aero=body,
-            center_of_gravity=center_of_gravity,
-            reference_point=values["reference_point"],
-            system_model=system_model,
-            x_guess=values["x_guess"],
-            bounds_lower=values["bounds_lower"],
-            bounds_upper=values["bounds_upper"],
-            include_gravity=args.include_gravity,
-            moment_tolerance=args.moment_tolerance,
-            return_timing_breakdown=True,
-            max_nfev=args.max_nfev,
-        )
-
+    result, _ = trim(kite)
     print_trim_summary(result)
 
-    if use_williams:
+    williams = "williams_tether_length" in result
+    if williams:
         print("--- Williams tether ---")
         print(f"  elevation_last [deg] : {result['williams_elevation_last_deg']:.4f}")
         print(f"  azimuth_last   [deg] : {result['williams_azimuth_last_deg']:.4f}")
@@ -96,10 +82,10 @@ def main() -> None:
             f"  |F_kite_resultant|   : {np.linalg.norm(result['force_kite_resultant']):.3f} N"
         )
 
-    json_path = (
-        Path(args.output_json) if args.output_json else out_dir / "trim_result.json"
+    write_json(
+        out_dir / "trim_result.json",
+        {"case": CASE.to_config(), "kite": kite.properties(), "trim": result},
     )
-    write_json(json_path, result)
 
     fig, ax = plt.subplots(figsize=(6, 4))
     labels = ["cmx", "cmy", "cmz", "cfx", "cfy"]
@@ -116,27 +102,23 @@ def main() -> None:
     ax.set_title("VSM aerodynamic trim residuals")
     fig.tight_layout()
     save_figure(fig, out_dir / "trim_residuals.pdf")
-    if args.no_show:
-        plt.close(fig)
 
-    if use_williams:
+    if williams:
         fig2 = plt.figure(figsize=(7, 6))
         ax2 = fig2.add_subplot(111, projection="3d")
-        draw_kite_tether(
-            ax2, result, system_model, body, body_props.get("struc_geometry_path")
-        )
+        draw_kite_tether(ax2, result, kite.system_model, kite.body, str(kite.structure_path))
         ax2.set_title(
             f"Williams tether shape (kite -> ground)\n"
-            f"[{tether_info_str(system_model)}]"
+            f"[{tether_info_str(kite.system_model)}]"
         )
         ax2.legend()
         fig2.tight_layout()
         save_figure(fig2, out_dir / "williams_tether_shape.pdf")
-        if args.no_show:
-            plt.close(fig2)
 
-    if not args.no_show:
+    if SHOW:
         plt.show()
+    else:
+        plt.close("all")
 
 
 if __name__ == "__main__":

@@ -32,14 +32,28 @@ def _angle_between(a, b):
     return ca.arctan2(ca.norm_2(ca.cross(a, b)), ca.dot(a, b))
 
 
+# Evaluations of a segment's load while marching: one on the direction predicted
+# from the force above it, one on the corrected direction.
+SEGMENT_LOAD_PASSES = 2
+
+
 class WilliamsTether(Tether):
-    """Williams distributed-mass tether iterated from kite -> ground.
+    """Quasi-static lumped tether, marched from kite -> ground.
+
+    The kite-to-ground shooting and rigid rotation are Williams (2017). The loads
+    follow Nguyen & Oland (2026, Aerospace 13, 943, App. A): each segment's load
+    acts at its centre and goes half to each of its two end nodes, so an interior
+    node carries one segment, the kite and the anchor half a segment each. This is
+    second order in the segment length: the kite's share of the drag is 1/4 -
+    1/(8 n^2) of the dynamic pressure on the whole tether for a straight tether.
+    Williams' own lumping, one segment per interior node and none at the kite, is
+    first order, 1/4 (1 - 1/n)^2.
 
     Decision variables (4) owned by the tether:
       - ``elevation_last_element`` and ``azimuth_last_element``: direction of
-        the kite-side segment in the wind frame.
+        the force the kite pulls the tether with, in the wind frame.
       - ``tether_length``: unstrained total tether length.
-      - ``tension_tether_kite``: tension magnitude at the kite end.
+      - ``tension_tether_kite``: magnitude of that force.
 
     Extra residuals (3): the iterated ground node must hit ``(0, 0, 0)``.
 
@@ -155,7 +169,7 @@ class WilliamsTether(Tether):
         )
 
     def force_tether_at_kite_for(self, model):
-        """Last-segment tether force on the kite, in the COURSE frame.
+        """Tether force on the kite, in the COURSE frame.
 
         Uses the tether-owned direction symbols and tension magnitude. The
         joint NLP's outer force balance pins these to the trim solution.
@@ -179,9 +193,9 @@ class WilliamsTether(Tether):
         return ca.norm_2(shape["tether_force_ground"])
 
     def _segment_aero_force(self, van, ej, rho, l_unstrained):
-        """Aerodynamic force on one tether segment, lumped at its node.
+        """Aerodynamic force on one tether segment.
 
-        ``van`` is the apparent wind at the node and ``ej`` the unit segment
+        ``van`` is the apparent wind at the segment centre and ``ej`` the unit segment
         axis (both 3-vectors). The cross-flow normal drag (coefficient
         ``drag_coefficient_tether``) and tangential skin friction (``cf``) are
         resolved into a drag along the apparent wind and a lift perpendicular to
@@ -213,6 +227,31 @@ class WilliamsTether(Tether):
         lift = dyn_pressure_area * cl_t * dir_L
         return drag, lift, theta
 
+    def _segment_net_load(self, centre, axis, omega, env, m_s, l_unstrained):
+        """Net load on one segment, all of it evaluated at the segment centre.
+
+        Returns aerodynamic drag and lift, weight, the inertial force, the apparent
+        wind speed and its angle to the axis. ``env`` may be None (no wind, standard
+        air, standard gravity).
+        """
+        rho = env.rho if env is not None else 1.225
+        g = env.g if env is not None else 9.81
+        wind = env.wind if env is not None else None
+        rho_at_height = getattr(env, "air_density_at_height", None)
+
+        velocity = ca.cross(omega, centre)
+        acceleration = ca.cross(omega, velocity)
+        if wind is not None:
+            z0 = getattr(wind, "z0", 0.01)
+            u_wind = wind.speed_wind_at_height(ca.fmax(centre[2], z0 * 1.001))
+        else:
+            u_wind = 0.0
+        apparent = u_wind * ca.vertcat(1, 0, 0) - velocity
+        rho_c = rho if rho_at_height is None else rho_at_height(centre[2])
+        drag, lift, theta = self._segment_aero_force(apparent, axis, rho_c, l_unstrained)
+        weight = ca.vertcat(0, 0, -m_s * g)
+        return drag, lift, weight, m_s * acceleration, ca.norm_2(apparent), theta
+
     def tether_shape_symbolic(
         self,
         env,
@@ -235,13 +274,21 @@ class WilliamsTether(Tether):
             placeholder symbol ``self.r_kite_sym``.
         omega : (3,) — angular velocity in the WIND frame. Defaults to zero.
 
-        Three ways to specify the kite-side boundary, in order of preference:
+        Three ways to specify the kite-side boundary, in order of preference. All
+        three state the force the kite pulls the tether with, which differs from
+        the tension in the last segment by the kite's half of that segment's load:
           1. ``kite_tension_vector`` (3-vector): full kite-end tether vector.
              Eliminates the direction unknowns. Use in coupled solves where
              the outer kite force balance is baked in.
           2. ``tension_kite`` (scalar) + free direction symbols (default).
           3. ``force_kite_resultant`` (3-vector): convenience for standalone
              shape solves where ``T_mag = ||F_resultant||``.
+
+        Row ``k`` of ``tensions`` and of the ``*_per_segment`` outputs is segment
+        ``k``, between nodes ``k`` and ``k + 1``. The ``*_per_node`` outputs are the
+        shares each node receives, the kite's and the anchor's included.
+        ``tether_force_ground`` is the anchor's reaction: the first segment's tension
+        plus the anchor's half of its load.
         """
 
         if r_kite is None:
@@ -264,18 +311,11 @@ class WilliamsTether(Tether):
         m_s = ca.pi * diameter**2 / 4 * l_unstrained * density
 
         omega = ca.reshape(omega, 3, 1)
-        rho = env.rho if env is not None else 1.225
-        # Height-dependent density, evaluated per node, when env has one.
-        rho_at_height = getattr(env, "air_density_at_height", None)
-        g = env.g if env is not None else 9.81
-        wind = env.wind if env is not None else None
 
         if kite_tension_vector is not None:
-            # Collapsed mode: F_resultant = T_mag * dir_last is given directly,
-            # so the kite-end tether boundary is fully determined and the only
+            # Collapsed mode: the force at the kite is given directly, so the only
             # remaining tether unknown is tether_length.
-            T_kite_mag = ca.norm_2(kite_tension_vector)
-            dir_last = kite_tension_vector / T_kite_mag
+            pull = ca.reshape(kite_tension_vector, 3, 1)
         else:
             elevation_last = (
                 self.elevation_last_element if elevation_last is None else elevation_last
@@ -291,130 +331,77 @@ class WilliamsTether(Tether):
                 if tension_kite is not None
                 else ca.norm_2(force_kite_resultant)
             )
+            pull = T_kite_mag * dir_last
+
+        def segment_length(tension_magnitude):
+            if self.elastic:
+                return (tension_magnitude / self.EA + 1) * l_unstrained
+            return l_unstrained
 
         tensions = ca.MX.zeros((N, 3))
         positions = ca.MX.zeros((N + 1, 3))
+        positions[N, :] = ca.reshape(r_kite, 1, 3)
 
-        # Boundary at the kite (node N).
-        positions[N, 0] = r_kite[0]
-        positions[N, 1] = r_kite[1]
-        positions[N, 2] = r_kite[2]
+        drag_per_segment = ca.MX.zeros((N, 3))
+        lift_per_segment = ca.MX.zeros((N, 3))
+        velocities_apparent_wind = ca.MX.zeros((N, 1))
+        angle_va_tether = ca.MX.zeros((N, 1))
+        gravity_per_segment = ca.MX.zeros((N, 3))
+        stretched_tether_length = 0.0
 
-        tensions[N - 1, 0] = T_kite_mag * dir_last[0]
-        tensions[N - 1, 1] = T_kite_mag * dir_last[1]
-        tensions[N - 1, 2] = T_kite_mag * dir_last[2]
+        # March from the kite: `carried` is the force node n passes downwards before
+        # the segment below it adds its half, the pull itself at the kite.
+        carried = pull
+        for n in range(N, 0, -1):
+            node = positions[n, :].T
+            t_norm = ca.norm_2(carried) + 1e-9
+            axis = carried / t_norm
+            l_s = segment_length(t_norm)
+            # The segment below is not known yet: predict it along the force above
+            # it, then correct. Both of its end nodes then share the same load.
+            for _ in range(SEGMENT_LOAD_PASSES):
+                drag, lift, weight, inertia, speed, theta = self._segment_net_load(
+                    node - 0.5 * l_s * axis, axis, omega, env, m_s, l_unstrained
+                )
+                net = drag + lift + weight - inertia
+                tension = carried + 0.5 * net
+                t_norm = ca.norm_2(tension) + 1e-9
+                axis = tension / t_norm
+                l_s = segment_length(t_norm)
 
-        if self.elastic:
-            l_s = (T_kite_mag / self.EA + 1) * l_unstrained
-        else:
-            l_s = l_unstrained
+            tensions[n - 1, :] = tension.T
+            positions[n - 1, :] = (node - l_s * axis).T
+            stretched_tether_length = stretched_tether_length + l_s
+            drag_per_segment[n - 1, :] = drag.T
+            lift_per_segment[n - 1, :] = lift.T
+            gravity_per_segment[n - 1, :] = weight.T
+            velocities_apparent_wind[n - 1, :] = speed
+            angle_va_tether[n - 1, :] = theta
+            carried = tension + 0.5 * net
 
-        # Step one segment down from the kite to node N-1.
-        positions[N - 1, 0] = positions[N, 0] - dir_last[0] * l_s
-        positions[N - 1, 1] = positions[N, 1] - dir_last[1] * l_s
-        positions[N - 1, 2] = positions[N, 2] - dir_last[2] * l_s
-
-        velocities_apparent_wind = ca.MX.zeros((N + 1, 1))
-        angle_va_tether = ca.MX.zeros((N + 1, 1))
-        # Per-node force decomposition (full-segment aero and gravity lumped
-        # onto each node). Rows 0 and N remain zero (boundary nodes — no force
-        # balance is solved there).
-        drag_per_node = ca.MX.zeros((N + 1, 3))
-        lift_per_node = ca.MX.zeros((N + 1, 3))
-        gravity_per_node = ca.MX.zeros((N + 1, 3))
-        stretched_tether_length = l_s
-
-        # Iterate from node n = N-1 down to n = 1, computing the tension in
-        # the segment immediately below (segment n-1) and the position of the
-        # next node below (node n-1).
-        for n in range(N - 1, 0, -1):
-            # Kinematics at lumped mass node n.
-            v_n = ca.cross(omega, positions[n, :].T)
-            a_n = ca.cross(omega, v_n)
-
-            # Local segment direction is the segment immediately above (already
-            # known), since the segment below is what we are solving for.
-            t_above = tensions[n, :].T
-            t_above_norm = ca.norm_2(t_above) + 1e-9
-            ej = t_above / t_above_norm
-
-            # Apparent wind at this node (true wind - segment velocity).
-            # ``wind`` and ``rho`` are pulled off the env passed in by the
-            # caller; the tether instance never owns them.
-            if wind is not None:
-                z0 = getattr(wind, "z0", 0.01)
-                z_local = ca.fmax(positions[n, 2], z0 * 1.001)
-                u_wind = wind.speed_wind_at_height(z_local)
-            else:
-                u_wind = 0.0
-            vwn = u_wind * ca.vertcat(1, 0, 0)
-            van = vwn - v_n
-
-            rho_n = rho if rho_at_height is None else rho_at_height(positions[n, 2])
-            drag_n, lift_n, theta = self._segment_aero_force(
-                van, ej, rho_n, l_unstrained
-            )
-
-            velocities_apparent_wind[n, :] = ca.norm_2(van)
-            angle_va_tether[n, :] = theta
-
-            # Full segment aero lumped at this node, matching the full segment
-            # mass used for gravity below and Williams Eq. (17). (An earlier
-            # 0.5 factor applied only half of one adjacent segment, which
-            # underestimated the total tether drag by roughly a factor of two.)
-            fa_n = drag_n + lift_n
-
-            fg_n = ca.vertcat(0, 0, -m_s * g)
-
-            # Record per-node force contributions for diagnostics / plotting.
-            drag_per_node[n, 0] = drag_n[0]
-            drag_per_node[n, 1] = drag_n[1]
-            drag_per_node[n, 2] = drag_n[2]
-            lift_per_node[n, 0] = lift_n[0]
-            lift_per_node[n, 1] = lift_n[1]
-            lift_per_node[n, 2] = lift_n[2]
-            gravity_per_node[n, 0] = fg_n[0]
-            gravity_per_node[n, 1] = fg_n[1]
-            gravity_per_node[n, 2] = fg_n[2]
-
-            # Force balance at node n: m*a = -T_{n-1} + T_n + f_g + f_a
-            # Solve for the tension in the segment BELOW node n.
-            t_below = t_above + fg_n + fa_n - m_s * a_n
-            tensions[n - 1, 0] = t_below[0]
-            tensions[n - 1, 1] = t_below[1]
-            tensions[n - 1, 2] = t_below[2]
-
-            t_below_norm = ca.norm_2(t_below) + 1e-9
-            if self.elastic:
-                l_s = (t_below_norm / self.EA + 1) * l_unstrained
-            else:
-                l_s = l_unstrained
-            stretched_tether_length += l_s
-
-            dir_below = t_below / t_below_norm
-            positions[n - 1, 0] = positions[n, 0] - dir_below[0] * l_s
-            positions[n - 1, 1] = positions[n, 1] - dir_below[1] * l_s
-            positions[n - 1, 2] = positions[n, 2] - dir_below[2] * l_s
-
-        # Tension in the last (kite-side) segment, with sign convention that
-        # this vector is the force the tether exerts on the kite (= +T_{N-1}
-        # since the segment pulls the kite toward the tether direction; the
-        # external resultant on the kite must balance it).
-        tension_kite = -tensions[N - 1, :].T
+        def node_shares(per_segment):
+            shares = ca.MX.zeros((N + 1, 3))
+            for k in range(N):
+                shares[k, :] = shares[k, :] + 0.5 * per_segment[k, :]
+                shares[k + 1, :] = shares[k + 1, :] + 0.5 * per_segment[k, :]
+            return shares
 
         res = {
             "kite_position": positions[N, :].T,
             "ground_position": positions[0, :].T,
-            "tether_force_kite": tension_kite,
-            "tether_force_ground": tensions[0, :].T,
+            "tether_force_kite": -pull,
+            "tether_force_ground": carried,
             "tether_length_stretched": stretched_tether_length,
             "positions": positions,
             "tensions": tensions,
             "velocities_apparent_wind": velocities_apparent_wind,
             "angle_va_tether": angle_va_tether,
-            "drag_per_node": drag_per_node,
-            "lift_per_node": lift_per_node,
-            "gravity_per_node": gravity_per_node,
+            "drag_per_segment": drag_per_segment,
+            "lift_per_segment": lift_per_segment,
+            "gravity_per_segment": gravity_per_segment,
+            "drag_per_node": node_shares(drag_per_segment),
+            "lift_per_node": node_shares(lift_per_segment),
+            "gravity_per_node": node_shares(gravity_per_segment),
         }
         return res
 

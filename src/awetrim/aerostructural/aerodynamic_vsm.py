@@ -303,6 +303,37 @@ def _run_vsm_direct_fallback(body_aero, solver, system_model, current_guess):
     }
 
 
+#: Largest residual of a Newton trim the coupled loop may step on (see its use below).
+CASADI_INEXACT_RESIDUAL = 0.05
+#: Largest residual of such a trim that may end the coupled loop.
+CASADI_FINAL_RESIDUAL = 5e-3
+
+
+class CasadiTrimFailed(RuntimeError):
+    """Newton found no trim. Not a ValueError, so the direct-solve fallback cannot take
+    it: an untrimmed state must not pass as a trim."""
+
+
+def _is_near_root(results) -> bool:
+    forces = np.asarray(results.get("F_distribution", [np.nan]), dtype=float)
+    return (
+        casadi_trim_residual(results) < CASADI_INEXACT_RESIDUAL
+        and not results.get("at_bound", False)
+        and bool(np.all(np.isfinite(forces)))
+    )
+
+
+def casadi_trim_residual(results) -> float:
+    """The last Newton pass's residual, infinite when the trim reports none."""
+    passes = (results.get("casadi_trim") or {}).get("passes") or [{}]
+    return float(passes[-1].get("residual", np.inf))
+
+
+def trim_may_end_loop(results) -> bool:
+    """False for an inexact Newton trim still too far from its root to be a result."""
+    return not results.get("trim_inexact") or casadi_trim_residual(results) < CASADI_FINAL_RESIDUAL
+
+
 def _solve_trim_casadi(
     *,
     body_aero,
@@ -367,9 +398,7 @@ def _solve_trim_casadi(
                 VSM_SOLVER_DEFAULTS["artificial_viscosity_factor"],
             )
         ),
-        # Refused inside CasadiTrim when True: the kernels are the
-        # freestream-direction law, so a config asking for the corrected
-        # directions must run the least_squares trims.
+        # The coupled solver's force law, either one (VSM's kernels).
         is_aoa_corrected=bool(
             getattr(solver, "is_aoa_corrected", VSM_SOLVER_DEFAULTS["is_aoa_corrected"])
         ),
@@ -399,7 +428,9 @@ def _solve_trim_casadi(
     # (~0.5 s at 45 panels) is paid once per coupled solve, not per
     # iteration. The attached-first stage swaps polars, so it gets its own
     # entry. Keyed on the system model's identity too (its wind, position and
-    # masses are baked into the graph numerically).
+    # masses are baked into the graph numerically). The trim bounds only clip
+    # the Newton steps, so the pre-loop trim's and the coupled iterations' share
+    # one graph.
     cache = getattr(solver, "_awetrim_casadi_trims", None)
     if cache is None:
         cache = {}
@@ -415,17 +446,16 @@ def _solve_trim_casadi(
         # check and fell back to an untrimmed direct VSM solve (2026-09-15:
         # every coupled iteration of the deep-depower reel-in grid points).
         key = (
-            CasadiTrim.geometry_signature(body_aero),
+            CasadiTrim.geometry_signature(body_aero, options.polar_interpolation),
             dataclasses.astuple(options),
             None if kcu_drag is None else dataclasses.astuple(kcu_drag),
-            tuple(np.asarray(bounds_lower, dtype=float).ravel().tolist()),
-            tuple(np.asarray(bounds_upper, dtype=float).ravel().tolist()),
             tuple(np.asarray(reference_point, dtype=float).ravel().tolist()),
         )
         entry = cache.get(key)
         if entry is not None and entry[0] is system_model:
             trim = entry[1]
             trim.update_geometry(body_aero, center_of_gravity)
+            trim.set_bounds(bounds_lower, bounds_upper)
         else:
             trim = CasadiTrim(
                 body_aero,
@@ -478,7 +508,19 @@ def _solve_trim_casadi(
 
     # Stage 2: the true model, from the caller's seed.
     predictor_converged = bool(results.get("converged", False))
+    # With no circulation to start from, the predictor's solution is the seed:
+    # the cold guess on the true polars can be an asymmetric, unconverged
+    # circulation that Newton does not recover from (a symmetric kite trimmed
+    # asymmetric, then the structure taking it apart). A caller's seed stands.
+    predictor = results if predictor_converged else None
+    cold = gamma_seed is None
+    if cold and predictor is not None:
+        x_guess, gamma_seed = predictor["opt_x"], predictor["gamma_distribution"]
     results, body = run_once()
+    if not results.get("converged", False) and not cold and predictor is not None:
+        # The caller's seed did not take; the attached solution is a second start.
+        x_guess, gamma_seed = predictor["opt_x"], predictor["gamma_distribution"]
+        results, body = run_once()
     results["av_stage"] = "stalled"
     results["attached_predictor_converged"] = predictor_converged
     return results, body
@@ -548,7 +590,7 @@ def initialize(
 
     # For QSM, wind speed comes from system model configuration (wind_speed_wind_ref).
     # Kite velocity is computed by the optimizer, so we initialize with wind direction.
-    wind_speed_ref = float(config.get("wind_speed_wind_ref", 6.0))
+    wind_speed_ref = float(config["wind_speed_wind_ref"])
     vel_app = np.array([wind_speed_ref, 0.0, 0.0])
     body_aero.va = vel_app
     wing = body_aero.wings[0]
@@ -668,6 +710,38 @@ def rebuild_bridle_line_system(body_aero, struc_nodes, bridle_line_specs) -> Non
     ]
 
 
+def trim_settings(config) -> dict:
+    """The config's ``quasi_steady_trim`` block (``quasi_steady`` is an alias)."""
+    config = config or {}
+    return config.get("quasi_steady_trim") or config.get("quasi_steady") or {}
+
+
+def trim_bounds(config) -> tuple[np.ndarray, np.ndarray]:
+    """``(lower, upper)`` search bounds of the five trim states.
+
+    The module constants above are the defaults; the config's
+    ``quasi_steady_trim`` block overrides them. Those YAML keys
+    (kite_speed_bounds_ms, roll_bounds_deg, ...) already existed in
+    as_config.yaml and read as if they configured this solve, but nothing
+    consulted them -- so the hard-coded values silently won. That matters for
+    near-stationary states: a kite whose trim speed is below
+    kite_speed_bounds[0] cannot be represented at all, and the optimiser
+    returns a bound-constrained point that is NOT an equilibrium.
+    """
+    qs_cfg = trim_settings(config)
+    bounds = [
+        tuple(qs_cfg.get("kite_speed_bounds_ms", kite_speed_bounds)),
+        tuple(qs_cfg.get("roll_bounds_deg", roll_bounds)),
+        tuple(qs_cfg.get("pitch_bounds_deg", pitch_bounds)),
+        tuple(qs_cfg.get("yaw_bounds_deg", yaw_bounds)),
+        tuple(qs_cfg.get("course_rate_bounds_rad_s", course_rate_bounds)),
+    ]
+    return (
+        np.array([float(b[0]) for b in bounds]),
+        np.array([float(b[1]) for b in bounds]),
+    )
+
+
 def run_vsm_package(
     body_aero,
     solver,
@@ -728,30 +802,9 @@ def run_vsm_package(
     # So we call the underlying setter method directly using the descriptor protocol
     # type(body_aero).va.fset(body_aero, va_vector)
 
-    # Trim search bounds. The module constants above are the defaults; a
-    # ``config`` with a ``quasi_steady`` block overrides them. Those YAML keys
-    # (kite_speed_bounds_ms, roll_bounds_deg, ...) already existed in
-    # as_config.yaml and read as if they configured this solve, but nothing
-    # consulted them -- so the hard-coded values silently won. That matters for
-    # near-stationary states: a kite whose trim speed is below
-    # kite_speed_bounds[0] cannot be represented at all, and the optimiser
-    # returns a bound-constrained point that is NOT an equilibrium.
-    # The kite configs name this block ``quasi_steady_trim``; ``quasi_steady``
-    # is accepted as an alias so either spelling works.
-    _cfg = config or {}
-    qs_cfg = _cfg.get("quasi_steady_trim") or _cfg.get("quasi_steady") or {}
-    speed_b = tuple(qs_cfg.get("kite_speed_bounds_ms", kite_speed_bounds))
-    roll_b = tuple(qs_cfg.get("roll_bounds_deg", roll_bounds))
-    pitch_b = tuple(qs_cfg.get("pitch_bounds_deg", pitch_bounds))
-    yaw_b = tuple(qs_cfg.get("yaw_bounds_deg", yaw_bounds))
-    rate_b = tuple(qs_cfg.get("course_rate_bounds_rad_s", course_rate_bounds))
-
-    bounds_lower = np.array(
-        [speed_b[0], roll_b[0], pitch_b[0], yaw_b[0], rate_b[0]]
-    )
-    bounds_upper = np.array(
-        [speed_b[1], roll_b[1], pitch_b[1], yaw_b[1], rate_b[1]]
-    )
+    qs_cfg = trim_settings(config)
+    bounds_lower, bounds_upper = trim_bounds(config)
+    speed_b = (bounds_lower[0], bounds_upper[0])
     # Trim evaluation cap (opt-in, quasi_steady_trim.max_nfev). Inside a
     # coupled loop a FULLY converged trim on an intermediate geometry is
     # wasted work -- the geometry moves right after. Capping least_squares to
@@ -773,12 +826,13 @@ def run_vsm_package(
     # Which trim solver (quasi_steady_trim.solver, 2026-09-15):
     #   'least_squares' -- the NumPy trims (scipy least_squares over the five
     #                      trim states, a full inner VSM solve per residual
-    #                      evaluation). The default; every stored result.
+    #                      evaluation). Without the key; every result before
+    #                      2026-11-03.
     #   'casadi'        -- awetrim.aerodynamics.trim_casadi: trim states and
     #                      circulations as ONE Newton problem with the exact
     #                      Jacobian. Same physics, no max_nfev (a converged
-    #                      trim per coupled iteration costs ~0.5 s at 45
-    #                      panels, most of it the graph build).
+    #                      trim per coupled iteration costs under 1 s at 135
+    #                      panels, past the one graph build). The LEI-V3 setting.
     trim_solver_name = str(qs_cfg.get("solver", "least_squares")).lower()
     if trim_solver_name not in ("least_squares", "casadi"):
         raise ValueError(
@@ -822,6 +876,43 @@ def run_vsm_package(
             "'least_squares'."
         )
 
+    def least_squares_trim(body):
+        if include_tether_in_trim:
+            return solve_vsm_qs_trim_with_williams_tether(
+                kcu_drag=kcu_drag,
+                body_aero=body,
+                center_of_gravity=center_of_gravity,
+                reference_point=reference_point,
+                system_model=system_model,
+                x_guess=current_guess,
+                solver=solver,
+                bounds_lower=bounds_lower,
+                bounds_upper=bounds_upper,
+                include_gravity=include_gravity,
+                tether_model=tether_model,
+                # Warm continuation across coupling iterations: the previous
+                # iteration's converged circulation seeds every inner solve of
+                # this trim. In deep stall a cold-started gamma loop is noisy
+                # enough that least_squares parks on a residual plateau
+                # (qs_cm ~ 3e-2 observed) and burns minutes per aero call; the
+                # fixed per-solve seed removes both while staying FD-smooth.
+                gamma_seed=gamma_seed,
+                max_nfev=trim_max_nfev,
+            )
+        return solve_quasi_steady_state(
+            kcu_drag=kcu_drag,
+            body_aero=body,
+            center_of_gravity=center_of_gravity,
+            reference_point=reference_point,
+            system_model=system_model,
+            x_guess=current_guess,
+            solver=solver,
+            bounds_lower=bounds_lower,
+            bounds_upper=bounds_upper,
+            include_gravity=include_gravity,
+            max_nfev=trim_max_nfev,
+        )
+
     # Primary path: quasi-steady trim solve.
     t_trim_start = time.perf_counter()
     try:
@@ -845,46 +936,28 @@ def run_vsm_package(
             )
             # A trim on a search bound is reported through ``trim_on_bounds``
             # below (the coupled loop's runaway stop counts it), as with
-            # least_squares, which also returns success there; only a Newton
-            # failure takes the direct-solve fallback.
+            # least_squares, which also returns success there.
             results["success"] = bool(results.get("converged", False))
-        elif include_tether_in_trim:
-            results, body_aero = solve_vsm_qs_trim_with_williams_tether(
-                kcu_drag=kcu_drag,
-                body_aero=body_aero,
-                center_of_gravity=center_of_gravity,
-                reference_point=reference_point,
-                system_model=system_model,
-                x_guess=current_guess,
-                solver=solver,
-                bounds_lower=bounds_lower,
-                bounds_upper=bounds_upper,
-                include_gravity=include_gravity,
-                tether_model=tether_model,
-                # Warm continuation across coupling iterations: the previous
-                # iteration's converged circulation seeds every inner solve of
-                # this trim. In deep stall a cold-started gamma loop is noisy
-                # enough that least_squares parks on a residual plateau
-                # (qs_cm ~ 3e-2 observed) and burns minutes per aero call; the
-                # fixed per-solve seed removes both while staying FD-smooth.
-                gamma_seed=gamma_seed,
-                max_nfev=trim_max_nfev,
-            )
+            if not results["success"] and _is_near_root(results):
+                # Newton cycling just short of the root (a polar corner): good enough
+                # for the structure's next step; trim_may_end_loop decides on the end.
+                logging.warning(
+                    "CasADi trim inexact, |r| %.1e: taken as a step.", casadi_trim_residual(results)
+                )
+                results["success"] = True
+                results["trim_inexact"] = True
+            if not results["success"]:
+                raise CasadiTrimFailed(
+                    f"CasADi trim did not converge: {(results.get('casadi_trim') or {}).get('passes')}, "
+                    f"on bounds {results.get('at_bound')}, x {results.get('opt_x')}"
+                )
         else:
-            results, body_aero = solve_quasi_steady_state(
-                kcu_drag=kcu_drag,
-                body_aero=body_aero,
-                center_of_gravity=center_of_gravity,
-                reference_point=reference_point,
-                system_model=system_model,
-                x_guess=current_guess,
-                solver=solver,
-                bounds_lower=bounds_lower,
-                bounds_upper=bounds_upper,
-                include_gravity=include_gravity,
-                max_nfev=trim_max_nfev,
-            )
-        if not results.get("success", False) and trim_max_nfev is not None:
+            results, body_aero = least_squares_trim(body_aero)
+        if (
+            not results.get("success", False)
+            and trim_max_nfev is not None
+            and trim_solver_name == "least_squares"  # the cap is scipy's; a Newton failure is a failure
+        ):
             # A capped trim reports success=False (status 0) while it is still
             # mid-convergence -- that partial step IS the point of the cap, so
             # keep it rather than discarding it through the direct-solve
@@ -1099,13 +1172,26 @@ def body_centre_panel_axes(body_aero) -> np.ndarray:
     return compute_centre_panel_axes(nodes, np.arange(n), np.arange(n, 2 * n)).axes
 
 
-def run_frozen_alpha_polar_about_trim(
+def run_frozen_alpha_polar_about_trim(body_aero, solver, d_alpha_deg, **kwargs) -> list[dict]:
+    """Rows of :func:`frozen_alpha_polar_and_down_circulation`."""
+    return frozen_alpha_polar_and_down_circulation(body_aero, solver, d_alpha_deg, **kwargs)[0]
+
+
+def down_branch_circulation(body_aero, solver, d_alpha_deg, **kwargs) -> np.ndarray:
+    """The circulation at the trim's own inflow on the DOWN branch: seeding the
+    coupled solve with it puts the state on the realistic stall branch, where a
+    state walked up in angle of attack may have stayed attached past the stall."""
+    return frozen_alpha_polar_and_down_circulation(body_aero, solver, d_alpha_deg, **kwargs)[1]
+
+
+def frozen_alpha_polar_and_down_circulation(
     body_aero,
     solver,
     d_alpha_deg,
     *,
     body_axes: np.ndarray | None = None,
-) -> list[dict]:
+    gamma_trim: np.ndarray | None = None,
+) -> tuple[list[dict], np.ndarray | None]:
     """Angle-of-attack polar of a TRIMMED body on its frozen shape.
 
     ``body_aero`` is the body a trim returned (``coupled_solver.main``'s
@@ -1119,9 +1205,13 @@ def run_frozen_alpha_polar_about_trim(
     trim's own aerodynamics: compare its force with the trim's
     ``total_aero_force_vec`` to check the polar is about the right state.
 
-    The solves march outward from ``d_alpha = 0`` in both directions, each
-    seeded with its neighbour's circulation, and land on the attached solution
-    whenever one exists (``solve_vsm_attached_first``, as the trims do).
+    The circulation problem is hysteretic near stall: marching up in alpha stays
+    attached far past the stall of the same wing marched down (LEI-V3, 1.40 m:
+    C_L max 1.46 at 16 deg up, 1.15 at 10 deg down), and the stall that agrees
+    with reality is the DOWN branch. So the solves march up from ``d_alpha = 0``
+    to the largest increment, each seeded with its neighbour's circulation, only
+    to get past the stall, and then down to the smallest: every row but the 0 one
+    is of the march down. The 0 row is the trim's own solve.
 
     Args:
         body_aero: the trimmed VSM body (not modified; a copy is solved).
@@ -1129,9 +1219,14 @@ def run_frozen_alpha_polar_about_trim(
         d_alpha_deg: angle-of-attack increments [deg]; 0 is added if absent.
         body_axes: FRD rows in the body's frame; default
             :func:`body_centre_panel_axes` of ``body_aero``.
+        gamma_trim: the trim's circulation. The 0 step is then one plain VSM
+            solve seeded with it, which returns the trim's own force; a cold
+            one can land on another solution of the same inflow (~1 % lower
+            force on the LEI-V3), and the polar would not be about the trim.
 
     Returns:
-        One dict per increment, sorted by it: ``d_alpha_deg``,
+        ``(rows, gamma_down)``, ``gamma_down`` the march down's circulation at
+        ``d_alpha = 0``. ``rows``: one dict per increment, sorted by it: ``d_alpha_deg``,
         ``alpha_body_deg`` (FRD angle of attack of the freestream),
         ``va_world`` and ``force_world`` (VSM wing force, bridle-line drag
         included when the body carries the bridle) as 3-vectors in the body's
@@ -1164,7 +1259,7 @@ def run_frozen_alpha_polar_about_trim(
     steps = np.unique(steps)
     body = copy.deepcopy(body_aero)
 
-    def solve_at(d_alpha, seed):
+    def solve_at(d_alpha, seed, plain=False):
         alpha = alpha0 + np.deg2rad(d_alpha)
         v_new = speed * np.array(
             [np.cos(alpha) * np.cos(beta0), np.sin(beta0), np.sin(alpha) * np.cos(beta0)]
@@ -1175,7 +1270,10 @@ def run_frozen_alpha_polar_about_trim(
                 body, va, body_rates=rate, body_axis=axis,
                 reference_point=r0, rates_in_body_frame=True,
             )
-            res = solve_vsm_attached_first(solver, body, seed, accepts_seed=accepts_seed)
+            res = (
+                solver.solve(body, gamma_distribution=np.array(seed, dtype=float)) if plain
+                else solve_vsm_attached_first(solver, body, seed, accepts_seed=accepts_seed)
+            )
             force = np.array([res["Fx"], res["Fy"], res["Fz"]], dtype=float)
             converged = bool(res.get("gamma_converged", True))
             gamma = res.get("gamma_distribution")
@@ -1194,13 +1292,16 @@ def run_frozen_alpha_polar_about_trim(
         return row, (gamma if converged else seed)
 
     rows = {}
-    centre, centre_gamma = solve_at(0.0, None)
+    centre, seed = solve_at(0.0, gamma_trim, plain=gamma_trim is not None)
+    for d_alpha in steps[steps > 0.0]:
+        rows[float(d_alpha)], seed = solve_at(float(d_alpha), seed, plain=True)
+    gamma_down = seed if steps.max() == 0.0 else None
+    for d_alpha in steps[steps < steps.max()][::-1]:
+        rows[float(d_alpha)], seed = solve_at(float(d_alpha), seed, plain=True)
+        if d_alpha == 0.0:
+            gamma_down = seed
     rows[0.0] = centre
-    for branch in (steps[steps > 0.0], steps[steps < 0.0][::-1]):
-        seed = centre_gamma
-        for d_alpha in branch:
-            rows[float(d_alpha)], seed = solve_at(float(d_alpha), seed)
-    return [rows[float(d)] for d in steps]
+    return [rows[float(d)] for d in steps], gamma_down
 
 
 def plot_aero_forces_with_frames(

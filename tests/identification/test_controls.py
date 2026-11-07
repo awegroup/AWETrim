@@ -42,8 +42,8 @@ def test_as_extension_adds_to_the_built_tape():
 
 
 def test_steering_conventions_for_flight_and_as_inputs():
-    # Standardised u_s: 2019 kcu/200, so 1.4*u_s is the tape half-difference.
-    np.testing.assert_allclose(flight_steering_to_us([10.0, -20.0]), [-0.05, 0.1])
+    # Standardised u_s: 2019 kcu/100, so 1.4*u_s is the tape half-difference.
+    np.testing.assert_allclose(flight_steering_to_us([10.0, -20.0]), [-0.1, 0.2])
     np.testing.assert_allclose(steering_extension_to_us([0.1, 0.2]), [0.1, 0.2])
 
 
@@ -60,7 +60,7 @@ def test_flight_dataframe_helpers_prefer_kcu_columns():
     np.testing.assert_allclose(
         flight_dataframe_depower_to_power_tape_length(df, MATCH), [1.94, 2.40]
     )
-    np.testing.assert_allclose(flight_dataframe_steering_to_us(df), [-0.05, 0.1])
+    np.testing.assert_allclose(flight_dataframe_steering_to_us(df), [-0.1, 0.2])
 
 
 def test_flight_dataframe_depower_rejects_legacy_up_only():

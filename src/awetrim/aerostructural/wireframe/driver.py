@@ -14,6 +14,7 @@ Moved here from ``examples/2_aerostructural/run_simulation_PSM.py`` on
 import copy
 import logging
 import os
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -25,6 +26,9 @@ from awesio.validator import validate as awesio_validate
 
 from awetrim.aerostructural import aerodynamic_vsm
 from awetrim.aerostructural.case import (
+    Case,
+    apply_structure,
+    runtime_config,
     build_actuation_case_folder,
     build_system_model,
     build_tether,
@@ -33,6 +37,7 @@ from awetrim.aerostructural.case import (
     WIREFRAME_STRUC_GEOMETRY_FILENAME,
     resolve_initial_geometry_rotation_kwargs,
     resolve_kite_paths,
+    system_model_state_key,
 )
 from awetrim.aerostructural.case_view import build_case_view, save_case_view
 from awetrim.aerostructural.coupled.awesio_structure import load_structure
@@ -252,6 +257,22 @@ def _resolve_starting_rest_lengths(
         return l0_arr_default
 
 
+def _runtime(case, overrides, config, config_path) -> dict:
+    """The runtime config of a call: ``case`` + ``overrides`` on ``as_config``,
+    or an already built ``config`` (never both)."""
+    if config is not None:
+        if case is not None or overrides:
+            raise ValueError("pass a Case (+ overrides) or a runtime config, not both")
+        try:
+            Case.from_config(config)
+        except KeyError as missing:
+            raise ValueError(f"config is not a runtime config: no case key {missing}") from None
+        return config
+    if case is None:
+        raise ValueError("a Case is required: the operating point is not in as_config")
+    return runtime_config(case, config_path, overrides)
+
+
 def _deformed_aero_geometry(aero_geometry, nodes, le_indices, te_indices, mapper):
     """The deformed aero geometry, at the skin's sections when there is one."""
     if mapper is None:
@@ -267,6 +288,8 @@ def _deformed_aero_geometry(aero_geometry, nodes, le_indices, te_indices, mapper
     )
 
 
+GEOMETRY_REPLACE_ATTEMPTS = 40
+GEOMETRY_REPLACE_WAIT_S = 0.25  # [s]
 _READER_FIELDS = (
     "struc_nodes", "m_arr", "le_indices", "te_indices", "power_tape_index",
     "steering_tape_indices", "pulley_node_indices", "kite_connectivity",
@@ -311,6 +334,14 @@ class PreparedWireframe:
     ``reader`` keeps the geometry reader's arrays by name, with ``l0`` the
     rest lengths the structure was built with. The VSM objects are this
     structure's own copies, carried across solves like the structure itself.
+
+    A continuation is carried here too, so :func:`solve_step` needs no seed from
+    its caller: ``system_model`` is reused while the flight state stays the same
+    (``system_model_key``; the CasADi trim's graph is tied to the object and
+    holds that state as numbers), and
+    ``trim_seed`` holds the last converged trim and circulation, which the next
+    solve starts from. A cold trim on a warm shape can land on another solution
+    or diverge (docs in aerostructural/AGENTS.md).
     """
 
     psystem: Any
@@ -321,6 +352,9 @@ class PreparedWireframe:
     body_aero: Any
     vsm_solver: Any
     initial_polar_data: Any
+    system_model: Any = None
+    system_model_key: tuple | None = None
+    trim_seed: dict | None = None
 
     def rest_length(self, element_index: int) -> float:
         """Live rest length [m] of one element (pulley arms split)."""
@@ -340,16 +374,6 @@ class PreparedWireframe:
             (self.reader["l0"][first] - self.rest_length(first))
             + (self.rest_length(second) - self.reader["l0"][second])
         )
-
-    def pin_bridle_modulus(self, factor: float) -> None:
-        """Every bridle line (tapes included) at ``factor`` x its own
-        stiffness, the wing at its own: the fixed-stiffness model. Pair it
-        with ``structural_pss.update_stiffness: false`` so the elongation
-        bound does not ratchet the stiffness from solve to solve."""
-        k = np.asarray(structural_wireframe.get_stiffnesses(self.psystem), dtype=float).copy()
-        n_bridle = len(self.reader["bridle_connectivity"])
-        k[len(k) - n_bridle:] *= float(factor)
-        structural_wireframe.set_stiffnesses(self.psystem, k)
 
     def restore(self, sim_output_path) -> None:
         """Put the structure back where a saved solve ended: its final node
@@ -387,12 +411,16 @@ class PreparedWireframe:
             structural_wireframe.set_stiffnesses(
                 self.psystem, np.asarray(metadata["final_stiffnesses"], dtype=float)
             )
+        self.trim_seed = _trim_seed_of(
+            metadata.get("opt_x"), metadata.get("gamma_distribution")
+        )
 
 
 def build_case(
-    config: dict | None = None,
+    case: Case | None = None,
+    overrides: dict | None = None,
     *,
-    config_overrides: dict | None = None,
+    config: dict | None = None,
     kite_name: str = DEFAULT_KITE_NAME,
     project_dir=None,
     tether_diameter: float | None = None,
@@ -408,12 +436,13 @@ def build_case(
     reduction :func:`build_case_reduced_fem` writes, or a deformed snapshot),
     or a retired PSM-format file, converted on the fly by ``load_structure``.
     Without it the wireframe is reduced from the kite's full structure
-    (:func:`build_case_reduced_fem`, which takes ``config_overrides`` key by
-    key and ``system.yaml`` as the default system file).
+    (:func:`build_case_reduced_fem`, which takes ``system.yaml`` as the
+    default system file).
 
-    ``config`` defaults to the kite's ``as_config.yaml``; ``config_overrides``
-    is merged over it at the TOP level only (a nested block replaces the
-    file's whole block -- pass a complete ``config`` for nested changes).
+    The run is ``case`` (the operating point) on the kite's ``as_config.yaml``
+    with ``overrides`` (subsystem blocks of as_config, or ``output``) merged
+    over it key by key (:func:`awetrim.aerostructural.case.runtime_config`);
+    or ``config``, a runtime config built that way (a continuation's).
     ``system_config_path`` defaults to ``system_flown_2019.yaml``.
     ``tether_diameter`` overrides the system file's.
     """
@@ -424,7 +453,8 @@ def build_case(
                 "the FEM reduction sets its own"
             )
         return build_case_reduced_fem(
-            config_overrides,
+            case,
+            overrides,
             config=config,
             kite_name=kite_name,
             project_dir=project_dir,
@@ -451,11 +481,9 @@ def build_case(
         system_config = _yaml.safe_load(_f)
     awesio_validate(system_config, restrictive=False)
 
-    if config is None:
-        config = load_yaml(config_path)
-    if config_overrides:
-        config = {**config, **config_overrides}
+    config = _runtime(case, overrides, config, config_path)
     structure = load_structure(struc_geometry_path)
+    config = apply_structure(config, structure)
     if not structure.is_wireframe:
         raise ValueError(
             f"{struc_geometry_path} is a full structure (it has tubes); the wireframe "
@@ -500,6 +528,20 @@ def build_case(
         structural_to_aero=structural_to_aero,
         panel_bays=panel_bays,
     )
+
+
+def _trim_seed_of(opt_x, gamma) -> dict | None:
+    """The config keys that start the next solve from this trim; None without a
+    usable trim state (a file older than ``gamma_distribution`` still seeds the
+    trim, and the circulation starts cold)."""
+    opt_x = None if opt_x is None else np.asarray(opt_x, dtype=float).ravel()
+    if opt_x is None or opt_x.size != 5 or not np.all(np.isfinite(opt_x)):
+        return None
+    seed = {"quasi_steady_initial_guess": opt_x.copy()}
+    gamma = None if gamma is None else np.asarray(gamma, dtype=float).ravel()
+    if gamma is not None and gamma.size:
+        seed["initial_gamma_distribution"] = gamma.copy()
+    return seed
 
 
 def prepare_structure(case: WireframeCase, config: dict | None = None) -> PreparedWireframe:
@@ -688,7 +730,19 @@ def solve_step(
     m_arr = prepared.m_arr
     mass_total = float(np.sum(m_arr))
     print(f"Total structural mass (sum of particle masses): {mass_total:.3f} kg")
-    system_model = build_system_model(case.system_config_path, tether, m_arr, config)
+    # Same flight state: the same object, which keeps the CasADi trim's graph.
+    # Another one: a new object, because that graph holds the wind and position
+    # as numbers and is matched by the object's identity; and nothing to continue
+    # from, unless this is the first solve after a restore.
+    state_key = system_model_state_key(config)
+    if prepared.system_model is None or state_key != prepared.system_model_key:
+        if prepared.system_model is not None:
+            prepared.trim_seed = None
+        prepared.system_model = build_system_model(case.system_config_path, tether, m_arr, config)
+        prepared.system_model_key = state_key
+    system_model = prepared.system_model
+    # A seed the caller states wins over the carried one.
+    config = {**(prepared.trim_seed or {}), **config}
     # Report the tether the system model ACTUALLY ends up with. The factory
     # inside build_system_model prints the tether it built from system.yaml and
     # is then overwritten by ``tether`` -- so that earlier line is stale and
@@ -745,15 +799,18 @@ def solve_step(
         structural_to_aero=case.structural_to_aero,
         final_state=final_state,
     )
+    if meta.get("converged"):
+        prepared.trim_seed = _trim_seed_of(meta.get("opt_x"), meta.get("gamma_distribution"))
     if final_state is not None:
         final_state["system_model"] = system_model
     return tracking_data, meta
 
 
 def solve_deformation(
-    config: dict | None = None,
+    case: Case | None = None,
+    overrides: dict | None = None,
     *,
-    config_overrides: dict | None = None,
+    config: dict | None = None,
     kite_name: str = DEFAULT_KITE_NAME,
     project_dir=None,
     results_dir=None,
@@ -776,10 +833,9 @@ def solve_deformation(
     :func:`solve_step`; a continuation calls :func:`solve_step` again on the
     same prepared structure.
 
-    ``config_overrides`` is merged over the kite's ``config.yaml`` -- use it to
-    set the flight condition (``angle_elevation_deg``, ``angle_azimuth_deg``,
-    ``angle_course_deg``, ``speed_radial``, ``distance_radial``,
-    ``wind_speed_wind_ref``) and ``is_save_geometry_snapshots``.
+    ``case`` is the operating point; ``overrides`` change a subsystem block
+    or the output (e.g. ``{"output": {"is_save_geometry_snapshots": False}}``);
+    ``config`` is an already built runtime config instead (:func:`build_case`).
 
     ``struc_geometry_path`` is a wireframe structure file (e.g. the reduction
     :func:`solve_deformation_reduced_fem` writes, or a deformed snapshot);
@@ -802,7 +858,8 @@ def solve_deformation(
                 "the FEM reduction sets its own"
             )
         return solve_deformation_reduced_fem(
-            config_overrides,
+            case,
+            overrides,
             config=config,
             kite_name=kite_name,
             project_dir=project_dir,
@@ -811,8 +868,9 @@ def solve_deformation(
             tether_diameter=tether_diameter,
         )
     case = build_case(
-        config,
-        config_overrides=config_overrides,
+        case,
+        overrides,
+        config=config,
         kite_name=kite_name,
         project_dir=project_dir,
         tether_diameter=tether_diameter,
@@ -921,8 +979,70 @@ def billowing_contraction(config) -> float:
     return float(block.get("contraction", 0.0))
 
 
+def fem_wing(structure, positions, le_nodes, te_nodes, contraction: float):
+    """``(le, te, strut_sections, wing)`` of the full structure's wing.
+
+    ``le`` / ``te``: the FEM sections' edge points (``Structure.resolved``'s
+    LE / TE node indices into ``positions``), span order +y to -y;
+    ``strut_sections``: the section of every strut, tips included; ``wing``:
+    the :func:`billowing.billow_wing` of contraction p, or None at p = 0 --
+    the built wing, which is NOT ``billow_wing(p=0)``: that one still draws
+    every inner bay's trailing edge as a circular arc, up to 23 mm off the
+    built canopy points on the LEI-V3.
+
+    Both carry the aerodynamic tip: each tip section's leading-edge point is
+    moved along the leading-edge tube's constant length until the tip bay is
+    a valid lifting-line bay (:func:`wing_tip.correct_tip_bays`). The
+    structure's own nodes are untouched.
+    """
+    from awetrim.aerostructural.billowing import billow_wing
+    from awetrim.aerostructural.wing_tip import correct_tip_bays
+
+    positions = np.asarray(positions, dtype=float)
+    fem_le, fem_te = np.asarray(le_nodes, dtype=int), np.asarray(te_nodes, dtype=int)
+    struts = sorted(structure.struts, key=lambda strut: -positions[strut["nodes"][0]][1])
+    sections = [int(np.flatnonzero(fem_le == strut["nodes"][0])[0]) for strut in struts]
+    if sections != sorted(sections):
+        raise ValueError(f"the struts do not follow the FEM sections: {sections}")
+    le, te = positions[fem_le], positions[fem_te]
+    wing = billow_wing(le, te, sections, contraction) if contraction > 0.0 else None
+    # billowing keeps the leading edge, so one corrected edge serves both
+    le = correct_tip_bays(le, te if wing is None else wing.trailing_edge)
+    if wing is not None:
+        wing.leading_edge = le.copy()
+    return le, te, sections, wing
+
+
+def wing_edges(structure, contraction: float, n_per_section: int):
+    """The wireframe's aerodynamic wing on the structure's BUILT positions:
+    ``(le, te)`` with ``n_per_section`` panels per FEM section.
+
+    What :func:`build_case_reduced_fem` flies before any deformation (its
+    wing nodes are held while the bridle relaxes), for a body that needs the
+    wing without the wireframe: the step-1 trims. p = 0 is the built wing,
+    linear between the FEM sections; p > 0 the billowed one
+    (:func:`billowing.refine_billowed_wing`).
+    """
+    from awetrim.aerostructural.billowing import refine_billowed_wing
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
+
+    structure = load_structure(structure)
+    reader = structure.resolved()
+    le, te, _, wing = fem_wing(structure, reader[0], reader[2], reader[3], contraction)
+    if wing is not None:
+        return refine_billowed_wing(wing, n_per_section)
+    t = np.arange(n_per_section)[:, None] / int(n_per_section)
+
+    def refine(points):
+        inner = [(1.0 - t) * a + t * b for a, b in zip(points[:-1], points[1:])]
+        return np.vstack([*inner, points[-1:]])
+
+    return refine(le), refine(te)
+
+
 def build_case_reduced_fem(
-    config_overrides: dict | None = None,
+    case: Case | None = None,
+    overrides: dict | None = None,
     *,
     kite_name: str = DEFAULT_KITE_NAME,
     project_dir=None,
@@ -964,14 +1084,12 @@ def build_case_reduced_fem(
     refined arc points are carried by the skin directly (one per anchor), so
     the arc survives the deformation.
 
-    ``config_overrides`` is merged key by key (nested dicts too) over the
-    kite's ``as_config.yaml`` (or over ``config`` when given);
-    ``system_config_path`` defaults to the kite's ``system.yaml``;
-    ``tether_diameter`` overrides the system file's.
+    ``case`` and ``overrides``, or a runtime ``config``, as in
+    :func:`build_case`; ``system_config_path`` defaults to the kite's
+    ``system.yaml``; ``tether_diameter`` overrides the system file's.
     """
-    from awetrim.aerostructural.billow.driver import merge_config
     from awetrim.aerostructural.billow.structural_billow import relax_bridle_nodes
-    from awetrim.aerostructural.billowing import billow_wing, refine_billowed_wing
+    from awetrim.aerostructural.billowing import refine_billowed_wing
     from awetrim.aerostructural.coupled.awesio_structure import (
         wireframe_to_awesio,
         write_awesio,
@@ -987,9 +1105,7 @@ def build_case_reduced_fem(
     )
     with system_config_path.open("r", encoding="utf-8") as handle:
         system_config = _yaml.safe_load(handle)
-    config = merge_config(
-        config if config is not None else load_yaml(config_path), config_overrides
-    )
+    config = _runtime(case, overrides, config, config_path)
 
     fem_path = project_dir / "data" / kite_name / fem_geometry_filename
     structure = load_structure(fem_path)
@@ -1013,20 +1129,15 @@ def build_case_reduced_fem(
     per_section = int(config["aerodynamic"]["n_aero_panels_per_struc_section"])
     n_ribs = len(reduced["wing_particles"]["data"]) // 2
     relaxed = np.asarray(relaxed, dtype=float)
-    fem_le, fem_te = np.asarray(reader[2], dtype=int), np.asarray(reader[3], dtype=int)
-    # the FEM section of every reduced rib (both run +y to -y)
-    rib_le_node = [
-        int(strut["nodes"][0])
-        for strut in sorted(structure.struts, key=lambda strut: -relaxed[strut["nodes"][0]][1])
-    ]
-    rib_sections = [int(np.flatnonzero(fem_le == node)[0]) for node in rib_le_node]
-    if rib_sections != sorted(rib_sections) or len(rib_sections) != n_ribs:
-        raise ValueError(f"reduced ribs do not follow the FEM sections: {rib_sections}")
-
-    le_points, te_points = relaxed[fem_le], relaxed[fem_te]
     contraction = billowing_contraction(config)
-    if contraction > 0.0:
-        wing = billow_wing(le_points, te_points, rib_sections, contraction)
+    le_points, te_points, rib_sections, wing = fem_wing(
+        structure, relaxed, reader[2], reader[3], contraction
+    )
+    if len(rib_sections) != n_ribs:
+        raise ValueError(f"reduced ribs do not follow the FEM sections: {rib_sections}")
+    n_sections = len(le_points)
+
+    if wing is not None:
         le_points, te_points = refine_billowed_wing(wing, per_section)
         skin_per_section = 1  # the arc points are anchored themselves
         # the ribs move with their struts; the wing members rest at the new shape
@@ -1083,7 +1194,7 @@ def build_case_reduced_fem(
         te_points=rotate_geometry(te_points, **rotation),
         n_panels_per_section=skin_per_section,
     )
-    n_panels_aero = (len(fem_le) - 1) * per_section
+    n_panels_aero = (n_sections - 1) * per_section
 
     work_dir = Path(
         work_dir
@@ -1099,7 +1210,15 @@ def build_case_reduced_fem(
     write_awesio(
         wireframe_to_awesio(reduced, name=f"{kite_name} wireframe"), partial
     )
-    os.replace(partial, reduced_path)
+    # Windows refuses the move while another process has the file open
+    for attempt in range(GEOMETRY_REPLACE_ATTEMPTS):
+        try:
+            os.replace(partial, reduced_path)
+            break
+        except PermissionError:
+            if attempt == GEOMETRY_REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(GEOMETRY_REPLACE_WAIT_S)
     logging.info(
         "wireframe reduced from %s: %d wing + %d bridle nodes, wing %.3f kg, "
         "bridle %.3f kg -> %s",
@@ -1111,7 +1230,7 @@ def build_case_reduced_fem(
         reduced_path,
     )
     return build_case(
-        config,
+        config=config,
         kite_name=kite_name,
         project_dir=project_dir,
         system_config_path=system_config_path,
@@ -1124,7 +1243,8 @@ def build_case_reduced_fem(
 
 
 def solve_deformation_reduced_fem(
-    config_overrides: dict | None = None,
+    case: Case | None = None,
+    overrides: dict | None = None,
     *,
     kite_name: str = DEFAULT_KITE_NAME,
     project_dir=None,
@@ -1139,18 +1259,13 @@ def solve_deformation_reduced_fem(
     ``<results_dir>/structure_wireframe.yml``), solved with
     :func:`solve_deformation`.
 
-    ``config_overrides`` is merged key by key (nested dicts too) over the
-    kite's ``as_config.yaml`` (or over ``config`` when given);
-    ``system_config_path`` defaults to the kite's ``system.yaml``;
-    ``tether_diameter`` overrides the system file's.
+    ``case`` and ``overrides``, or a runtime ``config``, as in
+    :func:`build_case`; ``system_config_path`` defaults to the kite's
+    ``system.yaml``; ``tether_diameter`` overrides the system file's.
     """
-    from awetrim.aerostructural.billow.driver import merge_config
-
     project_dir = Path(project_dir) if project_dir is not None else REPO_ROOT
     config_path, _, _ = resolve_kite_paths(project_dir, kite_name)
-    config = merge_config(
-        config if config is not None else load_yaml(config_path), config_overrides
-    )
+    config = _runtime(case, overrides, config, config_path)
     results_dir = Path(
         results_dir
         or aerostructural_results_root(project_dir, kite_name)

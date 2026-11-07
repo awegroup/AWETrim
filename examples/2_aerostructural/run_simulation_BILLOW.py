@@ -20,7 +20,7 @@ Solver settings come from data/<KITE>/as_config.yaml (block structural_billow).
 from pathlib import Path
 
 from awetrim.aerostructural.billow.driver import solve_deformation
-from awetrim.aerostructural.case import build_flight_case_folder
+from awetrim.aerostructural.case import Case
 from awetrim.aerostructural.results import aerostructural_results_root
 
 # ---------------------------------------------------------------------------
@@ -57,30 +57,38 @@ SHOW_RESULT = True  # print the trim table and open the 3-D viewer when done
 
 def main():
     project_dir = Path(__file__).resolve().parents[2]
+    case = Case(
+        elevation_deg=ELEVATION_DEG,
+        azimuth_deg=AZIMUTH_DEG,
+        course_deg=COURSE_DEG,
+        distance_radial=TETHER_LENGTH_M,
+        speed_radial=REEL_OUT_SPEED_MS,
+        timeder_speed_tangential=0.0,  # steady flight
+        timeder_speed_radial=0.0,
+        wind={"model": "uniform", "speed_wind_ref": WIND_SPEED_MS},
+        power_tape_extension=DEPOWER_TAPE_EXTENSION_M,
+        steering_tape_extension=STEERING_TAPE_EXTENSION_M,
+    )
     overrides = {
-        "angle_elevation_deg": ELEVATION_DEG,
-        "angle_azimuth_deg": AZIMUTH_DEG,
-        "angle_course_deg": COURSE_DEG,
-        "distance_radial": TETHER_LENGTH_M,
-        "speed_radial": REEL_OUT_SPEED_MS,
-        "wind_speed_wind_ref": WIND_SPEED_MS,
-        "is_with_gravity": WITH_GRAVITY,
-        "power_tape_final_extension": DEPOWER_TAPE_EXTENSION_M,
-        "steering_tape_final_extension": STEERING_TAPE_EXTENSION_M,
+        "coupling": {"is_with_gravity": WITH_GRAVITY},
         # The same aerodynamics in both scripts: 27 sections x 2 = 54 panels
         # of the full geometry's mesh, and VSM's base circulation loop. With
         # artificial viscosity on, the LEI-V3's stalled tips trap the Anderson
         # loop (as_config's) in a post-stall limit cycle and the tip loads
-        # never converge. The Billow studies use base too.
-        "aerodynamic": {"n_aero_panels_per_struc_section": 2, "gamma_loop_type": "base"},
+        # never converge. The Billow studies use base too. as_config pairs
+        # allowed_error with the loop type: base goes with 2e-6, never with
+        # Anderson's 1e-8, which base cannot reach (same result, ~40 % slower).
+        "aerodynamics": {"n_aero_panels_per_struc_section": 2, "gamma_loop_type": "base",
+                         "allowed_error": 2e-6},
     }
     results_dir = (
         aerostructural_results_root(project_dir, KITE)
         / "billow"
-        / build_flight_case_folder(overrides)
+        / case.folder_name()
     )
     result = solve_deformation(
-        config_overrides=overrides,
+        case,
+        overrides,
         kite_name=KITE,
         project_dir=project_dir,
         results_dir=results_dir,

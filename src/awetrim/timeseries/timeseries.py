@@ -170,7 +170,9 @@ class TimeSeries:
 
         df = pd.DataFrame(self.states)
         for var in derived:
-            if var in df.columns:
+            # State fields the march leaves unset (speed_tangential, the
+            # angles) come in as all-NaN columns: derive those too.
+            if var in df.columns and df[var].notna().any():
                 continue
             try:
                 df[var] = self.return_variable(var)

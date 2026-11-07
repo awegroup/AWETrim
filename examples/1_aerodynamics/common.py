@@ -1,10 +1,46 @@
+"""The kite of the step-1 scripts, built as the coupled solver builds it.
+
+Step 1 trims the kite on a FROZEN shape: no structural solve, but the same
+wing, bridle, VSM settings and model choices a step-2 run starts from, so a
+step-1 trim and a coupled solve differ only in the deformation. Everything
+physical comes from the kite's data folder:
+
+- ``structure.yml``: the wing (its FEM sections), the full bridle, the KCU
+  point (the moment reference) and, with ``system.yaml``'s KCU mass, the mass,
+  CG and inertia of the one body the trim balances;
+- ``aero_geometry.yaml``: the airfoil polars;
+- ``as_config.yaml``: how to model it -- the billowing and panel count of the
+  wing (``aerodynamics``), the KCU drag, the tether in the trim (``tether``)
+  and gravity (``coupling``);
+- ``system.yaml``: the system model (wing and KCU mass, tether).
+
+What a run IS -- flight state, wind, tape command -- is the script's
+:class:`~awetrim.aerostructural.case.Case`.
+
+One known difference from step 2: the VSM circulation loop. Step 1 trims with
+the least_squares trims and VSM's base loop WITHOUT artificial viscosity
+(:data:`STEP1_VSM_SETTINGS`), as it always has. as_config's loop (Anderson +
+AV) leaves those trims at their seed -- their finite-difference Jacobian is
+noise on the AV circulation solve -- and the trim that does converge with it
+(``trim_casadi``) is still under review (2026-11-02).
+
+Shapes (:func:`load_kite`): ``"built"`` is the structure's wing with
+as_config's billowing (contraction 0 = the CAD wing,
+``wireframe.driver.wing_edges``) and the full built bridle; ``"wireframe"`` /
+``"billow"`` is the deformed shape the step-2 run of the SAME case left in
+``results/<kite>/aerostructural/<fidelity>/<case.folder_name()>``. A deformed
+snapshot stores its wing resampled onto ``aero_geometry.yaml``'s stations, so
+the billowing arcs between them are approximated by straight panels.
+"""
+
 from __future__ import annotations
 
-import argparse
 import json
 import sys
+import tempfile
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -13,139 +49,319 @@ SRC_DIR = PROJECT_DIR / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-DEFAULT_VSM_SRC = PROJECT_DIR.parent / "Vortex-Step-Method" / "src"
-DEFAULT_CONFIG_FOLDER = PROJECT_DIR / "data" / "LEI-V3-KITE"
 DEFAULT_OUTPUT_ROOT = PROJECT_DIR / "results" / "aerodynamics"
+SHAPES = ("built", "wireframe", "billow")
+
+#: Moment residual a step-1 trim converges to [-]. A trim inside a coupled
+#: loop stops at the solvers' 1e-2: its geometry moves right after.
+MOMENT_TOLERANCE = 1e-3
+
+#: The VSM loop of the step-1 trims, over as_config's other VSM settings: the
+#: base loop without artificial viscosity (see the module docstring).
+STEP1_VSM_SETTINGS = {
+    "gamma_loop_type": "base",
+    "allowed_error": 1e-6,
+    "is_with_artificial_viscosity": False,
+}
 
 
-def csv_vector(value: str, *, length: int, name: str) -> np.ndarray:
-    parts = [float(part.strip()) for part in value.split(",") if part.strip()]
-    if len(parts) != length:
-        raise argparse.ArgumentTypeError(f"{name} must contain {length} values.")
-    return np.asarray(parts, dtype=float)
+@dataclass
+class Kite:
+    """Everything a step-1 trim needs, from one data folder and one case."""
+
+    config: dict
+    body: Any
+    solver: Any
+    system_model: Any
+    kcu_drag: Any
+    mass: float
+    center_of_gravity: np.ndarray
+    inertia_cg: np.ndarray
+    reference_point: np.ndarray
+    structure_path: Path
+    aero_geometry_path: Path
+    shape: str
+    shape_folder: Path | None
+
+    @property
+    def include_gravity(self) -> bool:
+        return bool(self.config["is_with_gravity"])
+
+    @property
+    def tether_in_trim(self) -> str | None:
+        """The tether model the trim carries (as_config ``tether``), or None."""
+        tether = self.config.get("tether") or {}
+        if not bool(tether.get("include_in_trim", False)):
+            return None
+        return str(tether.get("model", "rigid_lumped")).lower()
+
+    def properties(self) -> dict:
+        """JSON-friendly provenance of the body."""
+        return {
+            "shape": self.shape,
+            "shape_folder": None if self.shape_folder is None else str(self.shape_folder),
+            "structure": str(self.structure_path),
+            "aero_geometry": str(self.aero_geometry_path),
+            "n_panels": len(self.body.panels),
+            "mass": self.mass,
+            "center_of_gravity": self.center_of_gravity,
+            "inertia_cg": self.inertia_cg,
+            "reference_point": self.reference_point,
+            "tether_in_trim": self.tether_in_trim,
+            "kcu_drag": self.kcu_drag is not None,
+        }
 
 
-def add_vsm_path(path: str | None) -> None:
-    if path:
-        vsm_src = Path(path).expanduser().resolve()
-        if str(vsm_src) not in sys.path:
-            sys.path.insert(0, str(vsm_src))
+def deformed_shape_folder(
+    kite_name: str, case, shape: str, project_dir: Path = PROJECT_DIR
+) -> Path:
+    """Where the step-2 run of ``case`` on fidelity ``shape`` writes its result."""
+    from awetrim.aerostructural.results import aerostructural_results_root
+
+    return aerostructural_results_root(project_dir, kite_name) / shape / case.folder_name()
 
 
-def add_common_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "--vsm-src",
-        default=str(DEFAULT_VSM_SRC) if DEFAULT_VSM_SRC.exists() else None,
-        help="Optional path to VSM/src.",
+def kite_rigid_body(system_model, aggregate: Mapping[str, Any]) -> dict:
+    """Mass, CG and CG inertia tensor of the ONE body the trim balances.
+
+    The mass is the system model's wing + KCU (system.yaml), the CG and inertia
+    the structure aggregate's (structure + the system.yaml KCU). They describe
+    the same body only when the aggregate's mass is that mass, so a mismatch
+    raises: system.yaml and structure.yml out of sync. Before v1.0.1 the
+    stability script mixed three bodies (KCU counted twice, an arbitrary CG).
+    """
+    from awetrim.aerodynamics.vsm_quasi_steady import _system_model_mass_total
+
+    mass = float(_system_model_mass_total(system_model))
+    mass_aggregate = float(aggregate["mass"])
+    if not np.isclose(mass, mass_aggregate, rtol=1e-3):
+        raise ValueError(
+            f"Trim mass {mass:.4f} kg (system model wing + KCU) differs from the "
+            f"structure aggregate's {mass_aggregate:.4f} kg, whose CG and inertia "
+            "would then belong to another body (system.yaml and structure.yml "
+            "out of sync)."
+        )
+    return {
+        "mass": mass,
+        "center_of_gravity": np.asarray(aggregate["center_of_mass"], dtype=float),
+        "inertia_cg": np.asarray(aggregate["inertia_tensor"], dtype=float).reshape(3, 3),
+    }
+
+
+def _with_absolute_polars(aero_geometry_path: Path, polar_root: Path) -> Path:
+    """A temporary copy of ``aero_geometry_path`` whose polar CSV paths are
+    absolute: a deformed snapshot lives in a results folder without them."""
+    import yaml
+
+    with open(aero_geometry_path, "r", encoding="utf-8") as handle:
+        geometry = yaml.safe_load(handle)
+    for row in (geometry.get("wing_airfoils") or {}).get("data", []):
+        if len(row) >= 3 and isinstance(row[2], dict) and "csv_file_path" in row[2]:
+            path = Path(row[2]["csv_file_path"])
+            if not path.is_absolute():
+                row[2]["csv_file_path"] = str((polar_root / path).resolve())
+    with tempfile.NamedTemporaryFile(
+        mode="w", suffix=".yaml", delete=False, encoding="utf-8"
+    ) as handle:
+        yaml.dump(geometry, handle, sort_keys=False)
+    return Path(handle.name)
+
+
+def load_kite(
+    kite_name: str,
+    case,
+    *,
+    shape: str = "built",
+    deformed_from: Path | str | None = None,
+    overrides: Mapping[str, Any] | None = None,
+    system_file: str = "system.yaml",
+    project_dir: Path = PROJECT_DIR,
+) -> Kite:
+    """The kite ``data/<kite_name>`` describes, at ``case``, on ``shape``.
+
+    ``overrides``: as_config blocks to replace for this run (e.g.
+    ``{"coupling": {"is_with_gravity": True}}``), as for the step-2 drivers.
+    ``deformed_from``: a results case folder to take the deformed shape from,
+    instead of the one ``shape`` and ``case`` name.
+    """
+    import yaml
+
+    from awetrim.aerodynamics.kcu_drag import KcuDragModel
+    from awetrim.aerostructural.aerodynamic_vsm import initialize
+    from awetrim.aerodynamics.vsm_settings import VSM_SOLVER_DEFAULTS, make_vsm_solver
+    from awetrim.aerostructural.case import (
+        DEFAULT_STRUC_GEOMETRY_FILENAME,
+        air_density_at_case,
+        apply_structure,
+        configure_system_model_from_config,
+        find_struc_geometry,
+        runtime_config,
     )
-    parser.add_argument(
-        "--config-folder",
-        default=str(DEFAULT_CONFIG_FOLDER),
-        help="Config folder containing system.yaml, aero_geometry.yaml, and optional structure.yml (default: data/LEI-V3-KITE).",
+    from awetrim.aerostructural.coupled.awesio_structure import load_structure
+    from awetrim.aerostructural.utils import compute_kite_aggregate
+    from awetrim.aerostructural.wireframe.driver import billowing_contraction, wing_edges
+    from awetrim.system.factory import create_system_model_from_yaml
+
+    data = Path(project_dir) / "data" / kite_name
+    if deformed_from is not None:
+        shape, folder = "deformed", Path(deformed_from)
+    elif shape == "built":
+        folder = None
+    elif shape in SHAPES:
+        folder = deformed_shape_folder(kite_name, case, shape, project_dir)
+    else:
+        raise ValueError(f"shape must be one of {SHAPES}, got {shape!r}")
+    if folder is None and (case.power_tape_extension or case.steering_tape_extension):
+        raise ValueError(
+            "the built shape has the built tapes: a tape command needs the "
+            "deformed shape a step-2 run of the case solved (shape 'wireframe' "
+            "or 'billow')"
+        )
+    if folder is not None and not (folder / "aero_geometry.yaml").is_file():
+        script = {"billow": "run_simulation_BILLOW.py"}.get(shape, "run_simulation_PSM.py")
+        raise FileNotFoundError(
+            f"no deformed shape in {folder}: run examples/2_aerostructural/{script} "
+            "with this Case first"
+        )
+
+    config = runtime_config(case, data / "as_config.yaml", overrides)
+    if folder is None:
+        structure_path = data / DEFAULT_STRUC_GEOMETRY_FILENAME
+        aero_geometry_path = data / "aero_geometry.yaml"
+    else:
+        structure_path = find_struc_geometry(folder)
+        aero_geometry_path = folder / "aero_geometry.yaml"
+    structure = load_structure(structure_path)
+    config = apply_structure(config, structure)
+
+    per_section = int(config["aerodynamic"]["n_aero_panels_per_struc_section"])
+    if folder is None:
+        le, te = wing_edges(structure, billowing_contraction(config), per_section)
+        n_panels = len(le) - 1
+        body, _, _, polars = initialize(
+            aero_geometry_path, config, n_panels, bridle_path=structure
+        )
+        body.update_from_points(
+            le, te, aero_input_type="reuse_initial_polar_data", initial_polar_data=polars
+        )
+    else:
+        # the full model's FEM sections set the mesh, as in the run that
+        # produced the shape (a snapshot is a wireframe: no FEM sections)
+        n_sections = len(load_structure(data / DEFAULT_STRUC_GEOMETRY_FILENAME).resolved()[2])
+        resolved = _with_absolute_polars(aero_geometry_path, data)
+        try:
+            body, _, _, _ = initialize(
+                resolved, config, (n_sections - 1) * per_section, bridle_path=structure
+            )
+        finally:
+            resolved.unlink()
+
+    aero = config["aerodynamic"]
+    solver = make_vsm_solver(
+        **{
+            **{key: aero[key] for key in VSM_SOLVER_DEFAULTS if key in aero},
+            **STEP1_VSM_SETTINGS,
+            "reference_point": aero["reference_point"],
+            "mu": config["mu"],
+            "rho": air_density_at_case(config),
+        }
     )
-    parser.add_argument(
-        "--no-struc-geometry",
-        action="store_true",
-        help="Ignore any structural geometry file and run aero-only.",
+
+    with open(data / system_file, "r", encoding="utf-8") as handle:
+        system_config = yaml.safe_load(handle)
+    system_model = create_system_model_from_yaml(
+        data / system_file, tether_config=config.get("tether")
     )
-    parser.add_argument(
-        "--deformed-from",
-        default=None,
-        help=(
-            "Aerostructural results case directory (must contain "
-            "aero_geometry.yaml and structure.yml). When set, the deformed "
-            "geometries from this directory are used in place of the ones in "
-            "--config-folder. system.yaml (mass/tether) is still read from "
-            "--config-folder; the default CG is the deformed structure's."
+    configure_system_model_from_config(system_model, config)
+    rigid = kite_rigid_body(system_model, compute_kite_aggregate(structure, system_config))
+
+    return Kite(
+        config=config,
+        body=body,
+        solver=solver,
+        system_model=system_model,
+        kcu_drag=(
+            KcuDragModel.from_system_model(system_model)
+            if bool(config.get("is_with_kcu_drag", True))
+            else None
         ),
-    )
-    # 27 matches the coupled aerostructural solver's mesh for the LEI-V3 struc
-    # geometry ((10 ribs - 1) x 3 panels/section).
-    parser.add_argument("--n-panels", type=int, default=27)
-    parser.add_argument("--spanwise-panel-distribution", default="uniform")
-    parser.add_argument("--reference-point", default="0,0,0")
-    parser.add_argument(
-        "--center-of-gravity",
-        default=None,
-        help=(
-            "CG [x,y,z] in m. Default: the kite's own CG, the structure + KCU "
-            "aggregate from build_body (kite_rigid_body)."
-        ),
-    )
-    parser.add_argument(
-        "--mass-wing",
-        type=float,
-        default=None,
-        help=(
-            "Wing mass in kg (default: from system.yaml). kite_rigid_body "
-            "refuses a value the structure aggregate's mass does not match."
-        ),
-    )
-    parser.add_argument(
-        "--tether-diameter",
-        type=float,
-        default=0.0,
-        help=(
-            "If > 0, force a RigidLumpedTether of this diameter, overriding the "
-            "tether model from as_config.yaml/system.yaml. Default 0.0 keeps the "
-            "configured tether (e.g. WilliamsTether)."
-        ),
-    )
-    parser.add_argument("--wind-speed", type=float, default=8.0)
-    parser.add_argument("--elevation-deg", type=float, default=0.0)
-    parser.add_argument("--azimuth-deg", type=float, default=0.0)
-    parser.add_argument("--course-deg", type=float, default=90.0)
-    parser.add_argument("--radial-speed", type=float, default=0.0)
-    parser.add_argument("--distance-radial", type=float, default=200.0)
-    parser.add_argument("--x-guess", default="40,0,0,0,0")
-    parser.add_argument("--bounds-lower", default="-2,-15,-15,-15,-5")
-    parser.add_argument("--bounds-upper", default="80,15,15,15,5")
-    parser.add_argument(
-        "--inertia-xx",
-        type=float,
-        default=None,
-        help=(
-            "Ixx in kg·m² — overrides the (0,0) diagonal entry of the "
-            "system.yaml tensor; its products of inertia are kept"
-        ),
-    )
-    parser.add_argument(
-        "--inertia-yy",
-        type=float,
-        default=None,
-        help=(
-            "Iyy in kg·m² — overrides the (1,1) diagonal entry of the "
-            "system.yaml tensor; its products of inertia are kept"
-        ),
-    )
-    parser.add_argument(
-        "--inertia-zz",
-        type=float,
-        default=None,
-        help=(
-            "Izz in kg·m² — overrides the (2,2) diagonal entry of the "
-            "system.yaml tensor; its products of inertia are kept"
-        ),
-    )
-    parser.add_argument("--moment-tolerance", type=float, default=1e-3)
-    parser.add_argument("--include-gravity", action="store_true")
-    parser.add_argument("--max-nfev", type=int, default=None)
-    parser.add_argument(
-        "--output-dir",
-        default=None,
-        help="Optional output directory. Defaults to results/aerodynamics/<script>.",
-    )
-    parser.add_argument(
-        "--no-show",
-        action="store_true",
-        help="Save plots without opening interactive windows.",
+        mass=rigid["mass"],
+        center_of_gravity=rigid["center_of_gravity"],
+        inertia_cg=rigid["inertia_cg"],
+        reference_point=np.asarray(config["aerodynamic"]["reference_point"], dtype=float),
+        structure_path=Path(structure_path),
+        aero_geometry_path=Path(aero_geometry_path),
+        shape=shape,
+        shape_folder=folder,
     )
 
 
-def output_dir(args: argparse.Namespace, script_name: str) -> Path:
-    path = (
-        Path(args.output_dir) if args.output_dir else DEFAULT_OUTPUT_ROOT / script_name
+def trim_config(kite: Kite) -> dict:
+    """as_config with ``quasi_steady_trim.pre_loop`` applied: a step-1 trim
+    sets the WHOLE attitude, like the coupled solver's first trim, while the
+    plain bounds limit a coupled iteration's increment (+-4 deg on the LEI-V3,
+    which pins the yaw of a 30 deg elevation state)."""
+    from awetrim.aerostructural.aerodynamic_vsm import pre_loop_trim_config
+
+    return pre_loop_trim_config(kite.config)
+
+
+def initial_guess(kite: Kite) -> np.ndarray:
+    """The coupled solver's cold trim seed (``feasible_initial_guess``)."""
+    from awetrim.aerostructural.aerodynamic_vsm import (
+        DEFAULT_INITIAL_AOA_BAND_DEG,
+        feasible_initial_guess,
+        trim_bounds,
+        trim_settings,
     )
+
+    config = trim_config(kite)
+    lower, upper = trim_bounds(config)
+    return feasible_initial_guess(
+        kite.body,
+        kite.system_model,
+        (lower[0], upper[0]),
+        trim_settings(config).get("initial_aoa_band_deg", DEFAULT_INITIAL_AOA_BAND_DEG),
+    )
+
+
+def trim(kite: Kite, *, x_guess=None):
+    """Trim ``kite``: ``(result, solved_body)``.
+
+    The least_squares trims, tetherless or with the tether as_config's
+    ``tether`` block puts in the trim (``include_in_trim``, ``model``), on the
+    kite's step-1 VSM solver (:data:`STEP1_VSM_SETTINGS`) and KCU drag. Search
+    bounds and seed from as_config's ``quasi_steady_trim`` block with its
+    ``pre_loop`` bounds (:func:`trim_config`); gravity from
+    ``coupling.is_with_gravity``.
+    """
+    from awetrim.aerodynamics.vsm_quasi_steady import (
+        solve_vsm_qs_trim_with_williams_tether,
+        solve_vsm_quasi_steady_trim,
+    )
+    from awetrim.aerostructural.aerodynamic_vsm import trim_bounds
+
+    lower, upper = trim_bounds(trim_config(kite))
+    kwargs = dict(
+        body_aero=kite.body,
+        center_of_gravity=kite.center_of_gravity,
+        reference_point=kite.reference_point,
+        system_model=kite.system_model,
+        x_guess=initial_guess(kite) if x_guess is None else np.asarray(x_guess, dtype=float),
+        solver=kite.solver,
+        bounds_lower=lower,
+        bounds_upper=upper,
+        include_gravity=kite.include_gravity,
+        kcu_drag=kite.kcu_drag,
+        moment_tolerance=MOMENT_TOLERANCE,
+    )
+    if kite.tether_in_trim is not None:
+        return solve_vsm_qs_trim_with_williams_tether(**kwargs, tether_model=kite.tether_in_trim)
+    return solve_vsm_quasi_steady_trim(**kwargs, return_timing_breakdown=True)
+
+
+def output_dir(script_name: str, root: Path | str | None = None) -> Path:
+    path = Path(root) if root else DEFAULT_OUTPUT_ROOT / script_name
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -162,357 +378,6 @@ def save_figure(fig: Any, path: Path, *, dpi: int = 150) -> None:
     print(f"Wrote {path}")
 
 
-def parsed_common(args: argparse.Namespace) -> dict[str, Any]:
-    return {
-        "reference_point": csv_vector(
-            args.reference_point, length=3, name="reference-point"
-        ),
-        "center_of_gravity": (
-            None
-            if args.center_of_gravity is None
-            else csv_vector(args.center_of_gravity, length=3, name="center-of-gravity")
-        ),
-        "x_guess": csv_vector(args.x_guess, length=5, name="x-guess"),
-        "bounds_lower": csv_vector(args.bounds_lower, length=5, name="bounds-lower"),
-        "bounds_upper": csv_vector(args.bounds_upper, length=5, name="bounds-upper"),
-    }
-
-
-def resolve_center_of_gravity(
-    values: dict[str, Any], body_props: dict[str, Any]
-) -> np.ndarray:
-    """``--center-of-gravity`` if given, else the kite's CG from ``build_body``."""
-    if values["center_of_gravity"] is not None:
-        return values["center_of_gravity"]
-    return np.asarray(body_props["center_of_mass"], dtype=float)
-
-
-def kite_rigid_body(
-    values: dict[str, Any], body_props: dict[str, Any], system_model: Any
-) -> dict[str, Any]:
-    """Mass, CG and CG inertia tensor of the ONE body the trim balances.
-
-    The mass is the system model's wing + KCU (system.yaml), the CG and inertia
-    the structure aggregate's (``build_body``: structure + the system.yaml KCU).
-    They describe the same body only when the aggregate's mass is that mass, so
-    a mismatch raises: a ``--mass-wing`` override, ``--no-struc-geometry``'s
-    wing-only properties, or system.yaml and structure.yml out of sync. Before,
-    the stability script mixed three bodies (KCU counted twice, an arbitrary CG).
-    """
-    from awetrim.aerodynamics.vsm_quasi_steady import _system_model_mass_total
-
-    mass = float(_system_model_mass_total(system_model))
-    mass_aggregate = float(body_props["mass"])
-    if not np.isclose(mass, mass_aggregate, rtol=1e-3):
-        raise ValueError(
-            f"Trim mass {mass:.4f} kg (system model wing + KCU) differs from the "
-            f"structure aggregate's {mass_aggregate:.4f} kg, whose CG and inertia "
-            "would then belong to another body (--mass-wing, --no-struc-geometry, "
-            "or system.yaml and structure.yml out of sync)."
-        )
-    return {
-        "mass": mass,
-        "center_of_gravity": resolve_center_of_gravity(values, body_props),
-        "inertia_cg": np.asarray(body_props["inertia"], dtype=float).reshape(3, 3),
-    }
-
-
-def _resolve_csv_paths(config: dict, config_folder: Path) -> dict:
-    """Resolve relative CSV file paths in config to absolute paths.
-
-    Updates wing_airfoils data in-place to use absolute paths so they work
-    when the config is written to a temporary file elsewhere.
-    """
-    if "wing_airfoils" not in config or "data" not in config["wing_airfoils"]:
-        return config
-
-    config_folder = Path(config_folder).resolve()
-    for row in config["wing_airfoils"]["data"]:
-        if len(row) >= 3 and isinstance(row[2], dict) and "csv_file_path" in row[2]:
-            csv_path = row[2]["csv_file_path"]
-            # Only resolve if it's a relative path
-            if not Path(csv_path).is_absolute():
-                abs_csv_path = (config_folder / csv_path).resolve()
-                row[2]["csv_file_path"] = str(abs_csv_path)
-
-    return config
-
-
-def _merge_aero_and_structural_geometry(
-    aero_geometry_path: Path,
-    struc_geometry_path: Path,
-    csv_root: Path | None = None,
-) -> dict:
-    """Load profiles from aero_geometry.yaml (the body's VSM config).
-
-    Returns a config dict suitable for VSM's BodyAerodynamics.instantiate with:
-    - wing_airfoils from aero_geometry.yaml (profiles/polars)
-    - wing_sections from aero_geometry.yaml (wing definition stays aerodynamic)
-
-    The structure file is used separately: for the bridle lines in
-    `build_body` and for physical properties in `load_config_from_folder`.
-
-    ``csv_root`` is the directory used to resolve relative ``csv_file_path``
-    entries. Defaults to the aero_geometry.yaml parent; pass the original
-    config folder when ``aero_geometry_path`` lives in a separate (e.g.
-    deformed-results) directory so the polar CSVs are still found.
-    """
-    import yaml
-
-    # Load aero geometry (profiles)
-    with open(aero_geometry_path, "r") as f:
-        aero_config = yaml.safe_load(f)
-
-    # Structural geometry is intentionally not merged into wing_sections here.
-    # The VSM body receives the structure's bridle lines in `build_body`.
-    merged_config = dict(aero_config)
-
-    # Resolve CSV file paths to absolute paths
-    _resolve_csv_paths(merged_config, csv_root or aero_geometry_path.parent)
-
-    return merged_config
-
-
-def load_config_from_folder(
-    config_folder: Path | str,
-    *,
-    use_struc_geometry: bool = True,
-    deformed_from: Path | str | None = None,
-) -> dict[str, Any]:
-    """Load aerodynamic and physical properties from a config folder.
-
-    Expected files:
-    - system.yaml        (or system.yml) — contains physical properties (mass, inertia, CoG)
-    - aero_geometry.yaml — VSM aerodynamic geometry (profiles, wing sections)
-    - structure.yml (optional) — the awesIO structure (bridles, node masses);
-      in a deformed results dir its snapshot, also structure.yml
-
-    Property source selection:
-    - If a structural geometry EXISTS: aggregate (wing+bridle+KCU) mass/CG/inertia is
-      derived from the structural node distribution via
-      ``awetrim.aerostructural.utils.compute_kite_aggregate``.
-    - If NOT FOUND: read wing-only properties from
-      ``components.kites[0].wing.structure``.
-
-    If ``deformed_from`` is given, aero_geometry.yaml and the structural geometry are
-    read from that directory instead (e.g. an aerostructural results case dir).
-    system.yaml is still read from ``config_folder`` (the KCU mass, the system
-    model); the aggregate CG and inertia are those of the deformed structure.
-
-    Returns a dict with:
-    - 'body_config': dict ready for VSM BodyAerodynamics.instantiate
-    - 'mass': the aggregate's (struc exists) or system.yaml's wing-only mass
-    - 'inertia': the aggregate's CG tensor, or system.yaml's wing-only one
-    - 'center_of_mass': the aggregate's CG, or system.yaml's wing-only one
-    - 'aero_geometry_path': path to aero_geometry.yaml
-    - 'struc_geometry_path': path to the structural geometry (or None if not found)
-    """
-    import yaml
-
-    from awetrim.aerostructural.case import find_struc_geometry
-    from awetrim.aerostructural.utils import compute_kite_aggregate
-    from awetrim.utils.system_config import get_kite
-
-    config_folder = Path(config_folder).expanduser().resolve()
-    geom_folder = (
-        Path(deformed_from).expanduser().resolve()
-        if deformed_from is not None
-        else config_folder
-    )
-    if not geom_folder.exists():
-        raise FileNotFoundError(f"deformed_from directory not found: {geom_folder}")
-
-    # Load system.yaml (physical properties) — always from config_folder.
-    system_yml = config_folder / "system.yaml"
-    if not system_yml.exists():
-        system_yml = config_folder / "system.yml"
-    if not system_yml.exists():
-        raise FileNotFoundError(f"system.yaml not found in {config_folder}")
-
-    with open(system_yml, "r") as f:
-        system_config = yaml.safe_load(f)
-
-    # Load aero_geometry.yaml from the geometry folder.
-    aero_geometry_path = geom_folder / "aero_geometry.yaml"
-    if not aero_geometry_path.exists():
-        raise FileNotFoundError(f"aero_geometry.yaml not found in {geom_folder}")
-
-    with open(aero_geometry_path, "r") as f:
-        aero_config = yaml.safe_load(f)
-
-    # Optional structural geometry (also from the geometry folder): the kite's
-    # structure.yml, or a deformed snapshot when ``deformed_from`` is a results dir.
-    struc_geometry_path = find_struc_geometry(geom_folder) if use_struc_geometry else None
-
-    # Select property source based on whether struc_geometry exists.
-    kite_node = get_kite(system_config)
-
-    if struc_geometry_path is not None:
-        # Full kite (wing + bridle + KCU): the aggregate mass/CG/inertia is derived
-        # from the structural node distribution, not stored in system.yaml.
-        aggregate = compute_kite_aggregate(struc_geometry_path, system_config)
-        properties = {
-            "mass": float(aggregate["mass"]),
-            "inertia": aggregate["inertia_tensor"],
-            "center_of_mass": aggregate["center_of_mass"],
-        }
-    else:
-        # No bridles/KCU: wing-only structure properties.
-        wing_struct = kite_node.get("wing", {}).get("structure", {})
-        properties = {
-            "mass": float(wing_struct.get("mass", 0.0)),
-            "inertia": wing_struct.get(
-                "inertia_tensor", [[0, 0, 0], [0, 0, 0], [0, 0, 0]]
-            ),
-            "center_of_mass": wing_struct.get("center_of_mass", [0.0, 0.0, 0.0]),
-        }
-
-    # Build body config: merge aero + struc if available, else use aero alone.
-    # Polar CSV paths are resolved against ``config_folder`` so they still
-    # work when ``deformed_from`` points the geometry yamls at a results dir
-    # that doesn't ship the polar files.
-    if struc_geometry_path is not None:
-        body_config = _merge_aero_and_structural_geometry(
-            aero_geometry_path, struc_geometry_path, csv_root=config_folder
-        )
-    else:
-        body_config = aero_config
-        _resolve_csv_paths(body_config, config_folder)
-
-    return {
-        "body_config": body_config,
-        "mass": properties["mass"],
-        "inertia": properties["inertia"],
-        "center_of_mass": properties["center_of_mass"],
-        "aero_geometry_path": str(aero_geometry_path),
-        "struc_geometry_path": (
-            str(struc_geometry_path) if struc_geometry_path else None
-        ),
-    }
-
-
-def build_body(args: argparse.Namespace) -> tuple[Any, dict[str, Any]]:
-    """Load VSM body and physical properties from config folder.
-
-    Returns:
-        (body, properties) where:
-        - body: VSM BodyAerodynamics instance
-        - properties: dict with mass, inertia, center_of_mass, geometry paths
-    """
-    add_vsm_path(args.vsm_src)
-    from VSM.core.BodyAerodynamics import BodyAerodynamics
-
-    from awetrim.aerodynamics.vsm_settings import vsm_body_kwargs
-    import tempfile
-    import yaml
-
-    # Load config from folder
-    config = load_config_from_folder(
-        args.config_folder,
-        use_struc_geometry=not getattr(args, "no_struc_geometry", False),
-        deformed_from=getattr(args, "deformed_from", None),
-    )
-    body_config = config["body_config"]
-
-    # Write body config to temporary file for VSM to read
-    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as tmp:
-        yaml.dump(body_config, tmp)
-        tmp_path = tmp.name
-
-    try:
-        body = BodyAerodynamics.instantiate(
-            n_panels=args.n_panels,
-            file_path=tmp_path,
-            spanwise_panel_distribution=args.spanwise_panel_distribution,
-            **vsm_body_kwargs(),
-        )
-    finally:
-        # Clean up temporary file
-        Path(tmp_path).unlink()
-
-    # The bridle lines come from the structure, the flat steering/depower
-    # tapes with their drag-equivalent diameters: the structure stores them as
-    # an AREA-equivalent circle, right for mass/EA and meaningless for drag
-    # (awetrim.aerodynamics.line_drag).
-    if config["struc_geometry_path"]:
-        from awetrim.aerodynamics.line_drag import attach_bridle_lines
-
-        attach_bridle_lines(body, config["struc_geometry_path"])
-
-    # Return both body and properties for use in scripts
-    properties = {
-        "mass": config["mass"],
-        "inertia": config["inertia"],
-        "center_of_mass": config["center_of_mass"],
-        "aero_geometry_path": config["aero_geometry_path"],
-        "struc_geometry_path": config["struc_geometry_path"],
-    }
-
-    return body, properties
-
-
-def build_system_model(args: argparse.Namespace):
-    import yaml
-    from awetrim.system.factory import create_system_model_from_yaml
-    from awetrim.system.system_model import SystemModel
-    from awetrim.system.tether import RigidLumpedTether
-
-    config_folder = Path(args.config_folder)
-    system_yaml = next(
-        (
-            config_folder / name
-            for name in ("system.yaml", "system.yml")
-            if (config_folder / name).exists()
-        ),
-        None,
-    )
-
-    as_config_path = config_folder / "as_config.yaml"
-    tether_cfg = None
-    if as_config_path.exists():
-        with open(as_config_path, "r") as f:
-            as_cfg = yaml.safe_load(f) or {}
-        tether_cfg = as_cfg.get("tether")
-
-    if system_yaml is not None:
-        system = create_system_model_from_yaml(system_yaml, tether_config=tether_cfg)
-        if args.tether_diameter:
-            system.tether = RigidLumpedTether(diameter=args.tether_diameter)
-    else:
-        system = SystemModel(tether=RigidLumpedTether(diameter=args.tether_diameter))
-
-    # Explicit overrides take precedence over YAML values
-    if getattr(args, "mass_wing", None) is not None:
-        system.kite.mass_wing = args.mass_wing
-
-    system.angle_elevation = np.deg2rad(args.elevation_deg)
-    system.angle_azimuth = np.deg2rad(args.azimuth_deg)
-    system.angle_course = np.deg2rad(args.course_deg)
-    system.speed_radial = args.radial_speed
-    system.distance_radial = args.distance_radial
-    system.wind.speed_wind_ref = args.wind_speed
-    system.wind.direction_wind = 0.0
-    system.timeder_speed_tangential = 0.0
-    system.timeder_speed_radial = 0.0
-    system.timeder_angle_course = 0.0
-    return system
-
-
-def update_system_model(system: Any, case_values: dict[str, float]) -> None:
-    if "wind_speed" in case_values:
-        system.wind.speed_wind_ref = case_values["wind_speed"]
-    if "elevation_deg" in case_values:
-        system.angle_elevation = np.deg2rad(case_values["elevation_deg"])
-    if "azimuth_deg" in case_values:
-        system.angle_azimuth = np.deg2rad(case_values["azimuth_deg"])
-    if "course_deg" in case_values:
-        system.angle_course = np.deg2rad(case_values["course_deg"])
-    if "radial_speed" in case_values:
-        system.speed_radial = case_values["radial_speed"]
-    if "distance_radial" in case_values:
-        system.distance_radial = case_values["distance_radial"]
-
-
 def to_jsonable(value: Any) -> Any:
     if isinstance(value, np.ndarray):
         if np.iscomplexobj(value):
@@ -524,6 +389,8 @@ def to_jsonable(value: Any) -> Any:
         return value.item()
     if isinstance(value, complex):
         return {"real": float(value.real), "imag": float(value.imag)}
+    if isinstance(value, Path):
+        return str(value)
     if isinstance(value, dict):
         return {
             key: to_jsonable(val) for key, val in value.items() if key != "optimizer"
@@ -535,6 +402,17 @@ def to_jsonable(value: Any) -> Any:
     except TypeError:
         return str(value)
     return value
+
+
+def print_kite(kite: Kite) -> None:
+    """One line on what is being trimmed."""
+    print(
+        f"Kite: shape {kite.shape}"
+        + (f" ({kite.shape_folder})" if kite.shape_folder else "")
+        + f", {len(kite.body.panels)} panels, mass {kite.mass:.3f} kg, "
+        f"tether in trim: {kite.tether_in_trim}, KCU drag: {kite.kcu_drag is not None}, "
+        f"gravity: {kite.include_gravity}"
+    )
 
 
 def print_trim_summary(result: dict[str, Any]) -> None:

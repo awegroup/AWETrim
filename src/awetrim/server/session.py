@@ -53,7 +53,9 @@ from awetrim.system.factory import (
     create_system_model_from_yaml,
     resolve_rom_config_path,
 )
+from awetrim.timeseries import roll_assist
 from awetrim.timeseries.phase import Phase
+from awetrim.timeseries.seed_sizing import SEED_TURN_MARGINS, size_reelout_seed
 from awetrim.utils.config_paths import (
     LEI_V3_DOWNLOOP_SPLINE_CONFIG,
     LEI_V3_SYSTEM_CONFIG,
@@ -61,6 +63,13 @@ from awetrim.utils.config_paths import (
 from awetrim.utils.utils import load_cycle_config_from_yaml
 
 logger = logging.getLogger(__name__)
+
+#: IPOPT iterations of one cold attempt, unless the client states its own: a
+#: solve that will converge has by then, and the next attempt costs less.
+COLD_MAX_ITER = 300
+#: Winds [m/s, offset from the requested one] a cold first solve is started from
+#: when it does not converge at the requested one. Stepping down goes best.
+COLD_WIND_OFFSETS = (0.5, 1.0, -0.5)
 
 # Timeseries variables returned by /trajectory?resimulate=true
 RESIM_VARIABLES = [
@@ -221,6 +230,14 @@ class ReeloutSession:
         self._winch_params: Optional[dict] = None
         self._depower_mode: str = "optimize"
         self._rom_config: Optional[str] = None
+        self._seed_sized: Optional[bool] = None
+        self._configured_path: Optional[Dict[str, Any]] = None
+        self._sizable_path: Optional[Dict[str, Any]] = None
+        self._build_system_model: Optional[Any] = None
+        # What the client asked of the seed fit; the limits in force also hold
+        # the cycle file's own, which the fit must not read.
+        self._seed_min_turn_radius: Optional[float] = None
+        self._seed_pattern_limits: Optional[Dict[str, Any]] = None
         # Resolution of the degree-table replies: matches the client-sent
         # trajectory when there is one, else falls back to n_points.
         self._trajectory_points: Optional[int] = None
@@ -323,6 +340,15 @@ class ReeloutSession:
         rho_system = float(system_model.rho)
         self._apply_air_density(system_model, inflow, rho_system)
 
+        seed_sized = False
+        configured_path = copy.deepcopy(reelout_config["path_parameters"])
+        sizable = config.get("kite_sized_seed", True) and not trajectory and not guess
+        if sizable:
+            seed_sized = self._size_seed_to_kite(
+                system_model, reelout_config, config.get("min_turn_radius"),
+                config.get("pattern_limits"),
+            )
+
         start_state = {
             "t": 0,
             "s": 0,
@@ -356,9 +382,32 @@ class ReeloutSession:
             self._name = config.get("name") or "reelout-optimization"
             self._winch_params = dict(winch) if winch else None
             self._rom_config = rom_path.name if rom_path else None
+            self._seed_sized = seed_sized
+            self._configured_path = configured_path if seed_sized else None
+            self._sizable_path = configured_path if sizable else None
+            self._build_system_model = lambda: create_system_model_from_yaml(
+                yaml_path=system_path, **rom_kwargs
+            )
+            self._seed_min_turn_radius = config.get("min_turn_radius")
+            self._seed_pattern_limits = config.get("pattern_limits")
             if trajectory:
                 self._trajectory_points = len(trajectory["azimuth"])
             self.state = SessionState.READY
+
+    @staticmethod
+    def _size_seed_to_kite(
+        system_model: Any,
+        reelout_config: Dict[str, Any],
+        min_turn_radius: Optional[float],
+        pattern_limits: Optional[Dict[str, Any]],
+        margin: float = SEED_TURN_MARGINS[0],
+    ) -> bool:
+        """The seed eight refitted to the turns the kite holds at this wind
+        (``timeseries.seed_sizing``); returns whether it was replaced."""
+        return size_reelout_seed(
+            system_model, reelout_config, margin=margin,
+            min_turn_radius=min_turn_radius, pattern_limits=pattern_limits,
+        )
 
     @staticmethod
     def _resolve_wind_spec(inflow: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -946,6 +995,8 @@ class ReeloutSession:
                     pattern_config["path_parameters"], trajectory
                 )
                 self._trajectory_points = len(trajectory["azimuth"])
+                # The client's path from now on: no retry replaces it.
+                self._configured_path = self._sizable_path = None
 
             if depower is not None:
                 self._depower_mode = self._apply_depower(
@@ -957,6 +1008,10 @@ class ReeloutSession:
             self._apply_angle_of_attack_limits(
                 sim_parameters, angle_of_attack_limits, self.system_model
             )
+            if min_turn_radius is not None:
+                self._seed_min_turn_radius = min_turn_radius
+            if pattern_limits is not None:
+                self._seed_pattern_limits = pattern_limits
 
             if distance_radial is not None:
                 path_parameters = pattern_config["path_parameters"]
@@ -1054,7 +1109,190 @@ class ReeloutSession:
             max_iter=max_iter,
         )
 
+    def _march_seed(self) -> float:
+        """Seed the cold solve at the smallest roll-gain scale that trims it.
+
+        A kite with little roll authority (the simulation-only LEI-V3 ROM)
+        cannot forward-simulate the seed pattern at its own gain; the NLP then
+        starts from a truncated, padded seed and does not converge, although a
+        path it flies exists (``awetrim.timeseries.roll_assist``). Returns the
+        scale; the session's phase is replaced by the marched one, which seeds
+        the NLP. When no scale trims the seed the phase is left as it was and
+        the solve runs at scale 1, exactly as without the assist.
+        """
+        kite = self.system_model.kite
+        pattern_config = self.phase.pattern_config
+        start_state = copy.deepcopy(self.phase.start_state)
+
+        def make_phase():
+            phase = Phase(
+                system_model=self.system_model,
+                pattern_config=pattern_config,
+                start_state=copy.deepcopy(start_state),
+            )
+            phase._plot_failed_iterate = lambda *args, **kwargs: None
+            return phase
+
+        phase, _, scale, _ = roll_assist.march_with_roll_assist(
+            kite,
+            make_phase,
+            int(pattern_config["sim_parameters"]["n_points"]),
+            seed_warm_start=True,
+        )
+        if scale is None:
+            kite.gain_roll_scale = 1.0
+            return 1.0
+        self.phase = phase
+        return scale
+
     def _first_solve_staged(self, max_iter: Optional[int]) -> Any:
+        """Warm re-solve, or the cold first solve with the roll-gain assist.
+
+        Cold: the seed is marched at the smallest roll-gain scale that trims it
+        (``_march_seed``), solved there, and continued back to the kite's own
+        gain, each step warm-started from the previous optimum
+        (``roll_assist.continue_roll_gain``). The returned path is always the
+        optimum at scale 1, and the model is left at scale 1, so later warm
+        steps and every reply use the ROM's true roll gain.
+
+        A cold solve that does not converge is not the end. In order, each
+        with a capped ``COLD_MAX_ITER``: the seed refitted at the wider
+        ``SEED_TURN_MARGINS``; a cold solve at a neighbouring wind
+        (``COLD_WIND_OFFSETS``) stepped warm to the requested one; the
+        configured seed, so sizing never loses a solve it would have found.
+        """
+        if self.successful_steps > 0:
+            return self._run_opti(warm_start=True, max_iter=max_iter)
+        cap = COLD_MAX_ITER if max_iter is None else max_iter
+        result = self._cold_solve_with_roll_assist(cap)
+        for margin in SEED_TURN_MARGINS[1:]:
+            if result is not None or not self._resize_seed(margin):
+                continue
+            logger.warning("no cold convergence; seed turn margin %g", margin)
+            result = self._cold_solve_with_roll_assist(cap)
+        if result is None:
+            result = self._solve_from_neighbouring_wind(cap)
+        if result is None and self._configured_path is not None:
+            logger.warning(
+                "no convergence from the kite-sized seed; retrying from the "
+                "configured seed"
+            )
+            self._restore_configured_seed()
+            result = self._cold_solve_with_roll_assist(cap)
+        return result
+
+    def _solve_from_neighbouring_wind(self, cap: int) -> Any:
+        """A cold solve at a wind near the requested one, stepped warm to it.
+
+        Just below the rated plateau the cold solve can diverge where a warm
+        step from just above converges to the same optimum. The model is left
+        at the requested wind.
+        """
+        wind = self.system_model.wind
+        try:
+            for offset in COLD_WIND_OFFSETS:
+                inflow = self._inflow_at_offset(offset)
+                if inflow is None:
+                    continue
+                self.system_model.wind = self._build_wind(self._resolve_wind_spec(inflow))
+                for i, margin in enumerate(SEED_TURN_MARGINS):
+                    if not self._resize_seed(margin) and i > 0:
+                        continue
+                    if self._cold_solve_with_roll_assist(cap) is None:
+                        continue
+                    neighbour, self.system_model.wind = self.system_model.wind, wind
+                    logger.warning("cold start at %+g m/s, stepping to the wind asked", offset)
+                    result = self._run_opti(warm_start=True, max_iter=cap)
+                    if result is not None:
+                        return result
+                    self.system_model.wind = neighbour
+            return None
+        finally:
+            self.system_model.wind = wind
+
+    def _inflow_at_offset(self, offset: float) -> Optional[Dict[str, Any]]:
+        """The session's inflow with its wind ``offset`` [m/s] away, a table
+        of speeds scaled with it; None without a positive wind to offset."""
+        inflow = dict(self._inflow or {})
+        speed = inflow.get("wind_speed")
+        if not speed or float(speed) + offset <= 0.0:
+            return None
+        factor = (float(speed) + offset) / float(speed)
+        inflow["wind_speed"] = float(speed) + offset
+        if inflow.get("speeds"):
+            inflow["speeds"] = [factor * float(value) for value in inflow["speeds"]]
+        return inflow
+
+    def _resize_seed(self, margin: float) -> bool:
+        """The seed refitted from the configured one at ``margin`` and the
+        model's wind, on a fresh model and Phase; False when it did not need or
+        take a refit (the seed is then the configured one)."""
+        self._renew_system_model()
+        if self._sizable_path is None:
+            self._replace_phase()
+            return False
+        pattern_config = self.phase.pattern_config
+        path_parameters = copy.deepcopy(self._sizable_path)
+        path_parameters["r0"] = pattern_config["path_parameters"]["r0"]
+        pattern_config["path_parameters"] = path_parameters
+        sized = self._size_seed_to_kite(
+            self.system_model, pattern_config, self._seed_min_turn_radius,
+            self._seed_pattern_limits, margin=margin,
+        )
+        self._seed_sized = sized
+        self._replace_phase()
+        return sized
+
+    def _restore_configured_seed(self) -> None:
+        """Back to the cycle config's seed, at the session's tether length, on
+        a fresh Phase (the failed solve leaves its warm start on the old one)."""
+        self._renew_system_model()
+        pattern_config = self.phase.pattern_config
+        path_parameters = self._configured_path
+        path_parameters["r0"] = pattern_config["path_parameters"]["r0"]
+        pattern_config["path_parameters"] = path_parameters
+        self._configured_path = None
+        self._sizable_path = None
+        self._seed_sized = False
+        self._replace_phase()
+
+    def _renew_system_model(self) -> None:
+        """A newly built model with the same wind and air density. An NLP leaves
+        its variables in the model it was built on (``solve_quasi_steady`` then
+        fails on them), so a new attempt does not start from a used one."""
+        if self._build_system_model is None:
+            return
+        wind = self.system_model.wind
+        self.system_model = self._build_system_model()
+        self.system_model.wind = wind
+        self._apply_air_density(self.system_model, self._inflow, self._rho_system)
+
+    def _replace_phase(self) -> None:
+        phase = Phase(
+            system_model=self.system_model,
+            pattern_config=self.phase.pattern_config,
+            start_state=copy.deepcopy(self.phase.start_state),
+        )
+        phase._plot_failed_iterate = lambda *args, **kwargs: None
+        self.phase = phase
+
+    def _cold_solve_with_roll_assist(self, max_iter: Optional[int]) -> Any:
+        """March, solve and continue the roll gain back to 1 (see
+        ``_first_solve_staged``)."""
+        kite = self.system_model.kite
+        try:
+            assist = self._march_seed()
+            result = self._cold_solve_turn_radius_staged(max_iter)
+            if result is None or assist == 1.0:
+                return result
+            return roll_assist.continue_roll_gain(
+                kite, assist,
+                lambda: self._run_opti(warm_start=True, max_iter=max_iter),
+            )
+        finally:
+            kite.gain_roll_scale = 1.0
+
+    def _cold_solve_turn_radius_staged(self, max_iter: Optional[int]) -> Any:
         """Cold start with a minimum-turn-radius constraint: stage it.
 
         A cold constrained solve lands on the best branch less often than an
@@ -1071,8 +1309,8 @@ class ReeloutSession:
         pattern_config = self.phase.pattern_config
         sim_parameters = pattern_config.setdefault("sim_parameters", {})
         min_turn_radius = sim_parameters.get("min_turn_radius")
-        if not min_turn_radius or self.successful_steps > 0:
-            return self._run_opti(warm_start=self.successful_steps > 0, max_iter=max_iter)
+        if not min_turn_radius:
+            return self._run_opti(warm_start=False, max_iter=max_iter)
 
         config_0 = copy.deepcopy(pattern_config)
         start_state_0 = copy.deepcopy(self.phase.start_state)
@@ -1274,6 +1512,7 @@ class ReeloutSession:
             "min_turn_radius": self.min_turn_radius(),
             "pattern_limits": self.pattern_limits(),
             "angle_of_attack_limits": self.angle_of_attack_limits(),
+            "kite_sized_seed": self._seed_sized,
             "state": self.state.value,
             "n_points": self._n_points,
             "session_id": self.session_id,

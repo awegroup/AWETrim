@@ -11,11 +11,22 @@ its VSM objects through :func:`make_vsm_solver` / :func:`vsm_body_kwargs`
 instead, so all of them run one stated model and changing a value here
 changes it everywhere.
 
-The model: the 3/4-chord VSM with freestream force directions and the
+The model: the VSM with its circulation from the 3/4-chord control point
+and its force DIRECTIONS from the flow at the quarter chord
+(``is_aoa_corrected=True``, the LL-Gaunaa model of Gaunaa, Li & Pirrung,
+TORQUE 2026), the chord-regularised curved bound vortex and the
 attached-trailed vortex force, on the VSM commit pyproject.toml pins
-(develop 1201f6f, 2026-10-28). Results before that date were computed on VSM
-8825a12 without the attached-trailed force (polar and trim shifts of 1-4%).
-The CasADi trim's panel kernels implement exactly this model.
+(develop 1201f6f, 2026-10-28). On inviscid wings the quarter-chord directions
+reproduce the Trefftz-plane induced drag (straight wings exactly, an elliptic
+one within 2 %; the 3/4-chord directions overshoot it by 20-40 %): VSM
+62c53af, and the curved-wing verification of VSM PR #165 (on-blade over
+Trefftz induced drag 0.99-1.01 for arcs, swept wings and the V3). Default in
+AWETrim since 2026-11-03; results before that date ran the 3/4-chord
+directions (``is_aoa_corrected=False``: CD 11-16 % higher on the LEI-V3,
+CL < 0.3 % different), and before 2026-10-28 VSM 8825a12 without the
+attached-trailed force (polar and trim shifts of 1-4 %).
+The CasADi trim runs either law through VSM's own force-law kernels
+(``VSM.core.panel_kernels``, VSM PR #166), so it follows this setting too.
 
 An option the installed VSM does not have is dropped when the requested
 value is what that VSM does anyway (``_ABSENT_MEANS``), and refused
@@ -41,8 +52,8 @@ VSM_SOLVER_DEFAULTS: dict[str, Any] = {
     "is_with_viscous_drag_correction": False,
     "mu": 1.81e-5,
     "rho": 1.225,
-    # Force directions from the freestream (False) or the quarter-chord flow.
-    "is_aoa_corrected": False,
+    # Force directions from the quarter-chord flow (True) or the 3/4-chord flow (False).
+    "is_aoa_corrected": True,
     # Kutta-Joukowski force on the attached (chordwise) trailed vortex legs.
     "is_with_attached_trailed_vortex_force": True,
     "is_with_artificial_viscosity": False,

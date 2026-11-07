@@ -24,18 +24,15 @@ import numpy as np
 #   steering: positive KCU steering corresponds to negative u_s.
 #   depower: kcu=22 is powered, kcu=30 is depowered.
 #
-# Steering norms are PER FLIGHT (standardised u_s, calibrated 2026-08-12):
-# u_s is defined so that the nominal 1.4 m gain times u_s IS the
-# steering-tape half-difference. The 2019 KCU's kcu/100 command moves only
-# HALF the nominal tape (its 1.4 m corresponds to the TOTAL left-right
-# difference), so the 2019 logs divide by 200. Evidence: with this scaling
-# the aerostructural trim grids reproduce the flight turn-rate channel
-# across the turn states and the full right-lobe cloud (gk 0.314 identified
-# vs 0.285 model, 1/m); the raw kcu/100 reading overstated the physical
-# steering 2x. The 2025 rig is hypothesised to already be on the
-# standardised scale (unverified). There is deliberately NO ambient default:
-# every caller states which flight's convention it is converting.
-FLIGHT_STEERING_KCU_NORM_2019: float = 200.0
+# Steering norms are PER FLIGHT (standardised u_s): u_s is defined so that the
+# nominal 1.4 m gain times u_s IS the steering-tape half-difference. Both rigs
+# are on kcu/100: the steering is one continuous tape, so each side moves the
+# full travel, and the flown 2019 +-35 % is 0.49 m of half-difference. (Until
+# 2026-11 the 2019 logs divided by 200, reading 1.4 m as the total left-right
+# difference: it matched a model with more steering authority per metre of tape.)
+# There is deliberately NO ambient default: every caller states which flight's
+# convention it is converting.
+FLIGHT_STEERING_KCU_NORM_2019: float = 100.0
 FLIGHT_STEERING_KCU_NORM_2025: float = 100.0
 # Deprecated alias (pre-calibration name); kept for old callers, 2019 value.
 FLIGHT_STEERING_KCU_NORM: float = FLIGHT_STEERING_KCU_NORM_2019
@@ -44,10 +41,10 @@ FLIGHT_STEERING_KCU_NORM: float = FLIGHT_STEERING_KCU_NORM_2019
 # standardised u_s: add it to the logged u_s to get the physical steering.
 # Fitted on 2019 REEL-OUT (the strong, clean steering response; the reel-in
 # fit absorbs the gravity/tether baseline turn) as a steering-tape offset of
-# -16.45 mm = -0.01645 m / 1.4 m (states_2019 meta
-# steering_asymmetry_tape_offset_m; the flown-state campaigns apply the same
-# tape offset since 2026-09-13).
-FLIGHT_STEERING_ZERO_OFFSET_2019: float = -0.01645 / 1.4
+# -32.9 mm = -0.0329 m / 1.4 m (-16.45 mm before the 2019 norm moved to 100,
+# the same offset in KCU counts; the flown-state campaigns apply the same tape
+# offset since 2026-09-13).
+FLIGHT_STEERING_ZERO_OFFSET_2019: float = -0.0329 / 1.4
 
 # The 2019 KCU depower signal at the powered (reel-out) and depowered
 # (reel-in) states. Which power-tape length these are is NOT known from the
@@ -96,10 +93,9 @@ def flight_steering_to_us(
 ):
     """Map flight ``kcu_actual_steering`` to standardised steering ``u_s``.
 
-    ``norm`` is PER FLIGHT: 2019 logs divide by 200
-    (``FLIGHT_STEERING_KCU_NORM_2019``, see the calibration note above); pass
-    ``FLIGHT_STEERING_KCU_NORM_2025`` (=100) for the 2025 logs. The default is
-    the 2019 convention, matching this module's 2019-anchored depower maps.
+    ``norm`` is PER FLIGHT (``FLIGHT_STEERING_KCU_NORM_2019`` and ``_2025``,
+    both 100, see the calibration note above). The default is the 2019
+    convention, matching this module's 2019-anchored depower maps.
     """
     return -np.asarray(kcu_actual_steering, dtype=float) / float(norm)
 

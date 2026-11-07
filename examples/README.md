@@ -32,7 +32,7 @@ Quick start, steps 1, 2 and 4 on the shipped LEI-V3 ROM:
 ```bash
 python examples/1_aerodynamics/solve_single_state.py
 python examples/2_aerostructural/run_simulation_PSM.py
-python examples/4_trajectory_optimization/cycle/fit_periodic_cycle_config.py --kite LEI-V3-KITE --auto
+python examples/4_trajectory_optimization/cycle/fit_periodic_cycle_config.py --kite LEI-V3-KITE --size
 python examples/4_trajectory_optimization/cycle/run_full_cycle_opti.py --kite LEI-V3-KITE
 ```
 

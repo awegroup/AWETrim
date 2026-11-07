@@ -53,7 +53,18 @@ def create_tether_from_config(
 
     model = str(tether_cfg.get("model", "rigid_lumped")).lower()
     if model in ("rigid_lumped", "rigid", "lumped"):
-        return RigidLumpedTether(diameter=diameter, density=density)
+        # The straight tether's inertial load at the kite
+        # (Tether.force_inertia_tether_at_kite_for); ``inertia: false`` drops it.
+        return RigidLumpedTether(
+            diameter=diameter,
+            density=density,
+            inertia=bool(tether_cfg.get("inertia", True)),
+        )
+    if tether_cfg.get("inertia"):
+        raise ValueError(
+            "tether inertia is implemented for the lumped tether only, not "
+            f"'{tether_cfg.get('model')}'"
+        )
     if model == "williams":
         return WilliamsTether(
             diameter=diameter,
@@ -189,6 +200,21 @@ def load_rom_validity(
     return _load_yaml(aero_path).get("validity") or {}
 
 
+def load_rom_tether(
+    cfg: dict,
+    config_path: Union[str, Path, None] = None,
+    aero_yaml_path: Union[str, Path, None] = None,
+) -> dict:
+    """The ``tether`` block of the system's ROM file: the tether model a ROM
+    run flies with (empty, i.e. ``rigid_lumped``, when the ROM is inline or the
+    file states none). An aerostructural run states its own in as_config."""
+    base_path = Path(config_path) if config_path is not None else None
+    aero_path = _resolve_aero_config_path(cfg, base_path, aero_yaml_path)
+    if aero_path is None:
+        return {}
+    return _load_yaml(aero_path).get("tether") or {}
+
+
 def load_rom_depower_validity(
     cfg: dict,
     config_path: Union[str, Path, None] = None,
@@ -212,7 +238,7 @@ def intersect_steering_validity(hardware_limits: dict, abs_max: float | None) ->
     """Clip the optimizer's ``input_steering`` box to the ROM's
     ``validity.input_steering_abs_max``, the largest |u_s| the steering chains
     were identified on (LEI-V3: 0.20 m of tape, 0.143, inside the KCU's
-    0.175). Override through ``sim_parameters["opti_limits_override"]``.
+    0.35). Override through ``sim_parameters["opti_limits_override"]``.
     """
     if abs_max is None:
         return hardware_limits
@@ -383,6 +409,24 @@ def _extract_hardware_limits(
     acc_max = drum.get("max_winch_acceleration")
     if acc_max is not None:
         hw["winch_acceleration"] = (-float(acc_max), float(acc_max))
+    # Drivetrain friction (tether-referred Coulomb [N], viscous [N s/m]); only
+    # charged to the objective when sim_parameters["winch_friction"] is set.
+    # Emitted only when BOTH terms are given.
+    f_c = drum.get("friction_coulomb")
+    c_v = drum.get("friction_viscous")
+    if f_c is not None and c_v is not None:
+        hw["winch_friction"] = (float(f_c), float(c_v))
+    # Load-proportional drivetrain loss (fraction of the tension: pulleys, belt,
+    # gear mesh); only charged when sim_parameters["drivetrain_load_fraction"]
+    # is set.
+    k_load = drum.get("friction_load_fraction")
+    if k_load is not None:
+        hw["drivetrain_load_fraction"] = float(k_load)
+    # Drum + drive inertia seen at the tether, J (n / r_drum)^2 [kg]; only used
+    # when sim_parameters["winch_inertia_mass"] (or winch_drivetrain) is set.
+    m_w = drum.get("inertia_equivalent_mass")
+    if m_w is not None:
+        hw["winch_inertia_mass"] = float(m_w)
     return hw
 
 
@@ -400,7 +444,9 @@ def create_system_model_from_yaml(
     resolved via ``awetrim.utils.system_config.get_kite`` / ``get_tether``, which
     also accept the singular ``components.kite`` / ``components.tether``
     layout. ROM aerodynamics are loaded from ``aero_yaml_path``, the file the
-    system file names, or a sibling ``rom_config.yaml``.
+    system file names, or a sibling ``rom_config.yaml``. The tether model is
+    ``tether_config`` when given (an aerostructural run's as_config block),
+    else the ROM file's ``tether`` block (:func:`load_rom_tether`).
     """
     config_path = Path(yaml_path)
     cfg = _load_yaml(config_path)
@@ -447,6 +493,10 @@ def create_system_model_from_yaml(
         hardware_limits, validity.get("min_tether_force_n")
     )
 
+    if tether_config is None:
+        tether_config = load_rom_tether(
+            cfg, config_path=config_path, aero_yaml_path=aero_yaml_path
+        )
     tether = create_tether_from_config(
         tether_config, diameter=tether_diameter, density=tether_density
     )

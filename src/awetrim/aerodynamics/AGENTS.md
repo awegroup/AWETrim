@@ -51,22 +51,51 @@ stated: `VSM_SOLVER_DEFAULTS` (Solver kwargs) and `VSM_BODY_DEFAULTS`
 `make_vsm_solver(**overrides)` / `BodyAerodynamics.instantiate(...,
 **vsm_body_kwargs())`, never a bare `Solver()`, whose defaults follow the
 installed VSM (develop: `is_aoa_corrected=True`, automatic relaxation).
-The model (2026-10-28, VSM develop 1201f6f): 3/4-chord VSM, freestream force
-directions (`is_aoa_corrected=False`), the attached-trailed vortex force ON
-(`is_with_attached_trailed_vortex_force=True`), relaxation 0.01. Before that
-date AWETrim ran VSM 8825a12 without the attached-trailed force (built-shape
-polar: CL +2%, CD +4% at alpha 10 deg with it). An option the installed VSM
+The model (VSM v2.3.0, PRs #166/#167): 3/4-chord VSM circulation with the force
+directions from the quarter-chord flow (`is_aoa_corrected=True`, since
+2026-11-03; verified against the Trefftz-plane induced drag on inviscid
+wings in VSM 62c53af and PR #165 -- see
+`docs/aerostructural/quarter_chord_force_directions.md`), the attached-trailed
+vortex force ON (`is_with_attached_trailed_vortex_force=True`), relaxation
+0.01. Results from 2026-10-28 to 2026-11-03 ran the 3/4-chord directions
+(`is_aoa_corrected=False`: LEI-V3 CD 11-16 % higher, CL < 0.3 %); before
+2026-10-28 AWETrim ran VSM 8825a12 without the attached-trailed force
+(built-shape polar: CL +2%, CD +4% at alpha 10 deg with it). The CasADi trim
+runs both laws through VSM's own kernels (below); `CasadiTrimOptions.is_aoa_corrected`
+follows the shared default. An option the installed VSM
 lacks is dropped at its no-op value and refused otherwise. The aerostructural
 `aerodynamic:` block overrides any of the same keys.
 
-The CasADi trim mirrors that model: `panel_kernels.panel_forces` (drag along
-the section's own flow direction) plus `attached_trailed_geometry` /
-`attached_trailed_forces` / `boundary_shares` (one Kutta-Joukowski force per
-panel boundary, split half to either neighbour in `F_distribution`). The
-induction at the attached-trailed points is a numeric `(n+1, n)` matrix per
-axis, frozen per wake pass with the AIC (`CasadiTrim.compute_aic` returns six
-matrices), built ring by ring with VSM's `induced_velocity_at_points`.
-`CasadiTrimOptions.is_with_attached_trailed_vortex_force` switches it.
+The CasADi trim mirrors that model with VSM's own force-law kernels
+(`VSM.core.panel_kernels`, VSM PR #166): `panel_forces` with
+`alpha_dir = direction_angle(quarter_chord_velocity(va, gamma, *AIC_qc))` for
+`is_aoa_corrected=True` (None = the 3/4-chord law), and
+`attached_trailed_forces`, plus AWETrim's `attached_trailed_geometry` /
+`boundary_shares` (one Kutta-Joukowski force per panel boundary, split half to
+either neighbour in `F_distribution`). `CasadiTrim.compute_aic` returns nine
+numeric matrices frozen per wake pass, as CasADi DMs: the control-point AIC,
+the attached-trailed-point induction (`(n+1, n)` per axis, built ring by ring
+with VSM's `induced_velocity_at_points`) and the quarter-chord induction
+(`BodyAerodynamics.compute_quarter_chord_AIC_matrices`, zero for False).
+`CasadiTrimOptions.is_with_attached_trailed_vortex_force` switches the AT
+force. The frozen matrices and the geometry vector are handed to CasADi as
+DMs once per wake pass / shape. The residual, Jacobian and output functions
+are SX-expanded LAZILY, on the first reuse of a graph (`update_geometry` or a
+second `solve`; `_expand_once`): a reused 54-panel trim solves in 70-77 ms
+instead of 196-235 ms, but the expansion costs a build-time multiple (~8 s at
+135 panels), which a single-use graph never earns back. The panel polars are
+blended from the section polars with geometry-dependent weights, so a
+deformed shape has new polar values on the same alpha grid: with linear
+polars on one shared grid the graph takes the cl/cd/cm tables and the stall
+angles as numeric PARAMETERS (VSM PR #167, `_casadi_newton_function(
+table_inputs=True)`, `casadi_polar_table_inputs`,
+`casadi_stall_angle_inputs`), `update_geometry` passes the new ones, and
+`geometry_signature(body, polar_interpolation)` digests the alpha grid only,
+so the coupled loop builds ONE graph per case and re-uses it (expanded from
+the second iteration). Bspline polars or per-panel grids fall back to tables
+embedded as constants (logged), where a shape with other polars rebuilds.
+`test_one_graph_serves_a_deformed_shape` / `test_table_inputs_equal_the_embedded_polars`
+pin both properties.
 
 `trim_casadi.py` (2026-09-15) solves the quasi-steady trim as ONE CasADi
 root-finding problem: unknowns = the 5 trim states + the panel circulations
@@ -141,14 +170,17 @@ side): identical states to u_dp 0.30, then the two land on different
 attached families (the known two-family band) -- see the aerostructural
 AGENTS.md for the timing table.
 
-`panel_kernels.py` owns the SECTION force laws as `xp` kernels (numpy or
-casadi namespace, one formula): `relative_flow` (alpha, |v_rel x z|),
-`circulation_target`, `panel_forces` (VSM's lift/drag/moment construction),
-`total_force_and_moment`, `line_force` (VSM's bridle segment law; endpoints
-height-ordered by `order_line_endpoints`), `lift_drag_side_vsm`. They are
-VSM's `compute_results` / `compute_line_aerodynamic_force` formulas written
-once; `test_panel_kernels.py` pins them to VSM's numbers to 1e-11 in both
-namespaces. The intended end state is that VSM itself calls them. In the same
+`panel_kernels.py` holds the `xp` kernels (numpy or casadi namespace) of the
+CasADi trim's force assembly that VSM does not provide: the attached-trailed
+leg geometry and `boundary_shares`, `total_force_and_moment`, `line_force`
+(VSM's bridle segment law; endpoints height-ordered by
+`order_line_endpoints`), `lift_drag_side_vsm`, the 3-vector helpers. The
+section force law (`relative_flow`, `panel_forces`, `attached_trailed_forces`,
+the row helpers) moved upstream into `VSM.core.panel_kernels` (VSM PR #166),
+which VSM's own `compute_results` calls; the row helpers are re-exported from
+there. `test_panel_kernels.py` pins the whole assembly to VSM's
+`compute_results` to 1e-11 in both namespaces and for both
+`is_aoa_corrected` settings. In the same
 spirit `kcu_drag.force_drag_kcu` / `KcuDragModel.force` and
 `apparent_wind.apparent_wind_at` take `xp=casadi` (the numpy behaviour is
 untouched).
@@ -778,7 +810,7 @@ Public functions should use these names:
   Ignored when an explicit `solver` is passed.
   `default_vsm_solver` (public since 2026-10-28; `_default_vsm_solver` is an
   alias) is THE place AWETrim's VSM settings live (zero gamma seed, `base`
-  loop at 1e-6, AV off, `is_aoa_corrected=False`), stated rather than
+  loop at 1e-6, AV off, `is_aoa_corrected=True`), stated rather than
   inherited because VSM's defaults change between versions. Scripts that
   solve VSM outside a trim (e.g. `examples/1_aerodynamics/compute_polars.py`)
   build their solver with it so they share the trims' force law.
@@ -826,13 +858,15 @@ stability driver: trim → `compute_vsm_trim_stability_derivatives` (always
 course-frame `DEFAULT_AXES`, always `course_rate_state=True`) →
 `static_slopes_summary` verdict table + `J_full`/`J_course_rate` diagnostics
 and JSON. No modal/eigenmode analysis (the modal version is recoverable from
-git history). `--stability-frame body` no longer changes the linearisation
+git history). `STABILITY_FRAME = "body"` (Inputs block) does not change the linearisation
 axes — it additionally reports the attitude slopes about the centre-panel
 body axes at trim (`rigid_body_axes`: chord and normal of the wing's centre
 panel, aircraft FRD sense: x forward, y right, z down — rotated by the trim
 attitude) via the
 `attitude_axes=` argument of `static_slopes_summary`; the old
-`stability_config.yaml` (`states`/`coupled`/`frame`) is gone.
+`stability_config.yaml` (`states`/`coupled`/`frame`) is gone. The step-1
+scripts take no CLI since 2026-11-02: Inputs blocks, and the kite from
+`examples/1_aerodynamics/common.load_kite` (see that folder's README).
 
 ## Trim State Convention
 

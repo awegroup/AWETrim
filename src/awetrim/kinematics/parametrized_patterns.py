@@ -664,6 +664,47 @@ def _spherical_path_cross_speed(phi, beta, dphi, dbeta, ddphi, ddbeta, xp):
     return cross2, speed2, accel2
 
 
+def geodesic_curvature_numerator(beta, dphi, dbeta, ddphi, ddbeta, dsigma, xp):
+    """``kappa_g * sigma'^3``: signed geodesic curvature of the path on the
+    UNIT sphere times the cubed angular speed, in closed polynomial form.
+
+    With ``u = phi' cos(beta)``, ``v = beta'`` (unit-sphere velocity
+    components, ``sigma'^2 = u^2 + v^2``, ``dsigma`` = sigma') the course
+    angle ``chi = atan2(u, v)`` (0 = flying up) turns at
+    ``dchi/ds = (u' v - u v') / sigma'^2`` and the great-circle transport of
+    the spherical basis is ``tan(beta) sin(chi) sigma'^3 = sin(beta) phi'
+    sigma'^2``, hence
+
+        kappa_g * sigma'^3 = u' v - u v' - sin(beta) phi' sigma'^2.
+
+    The physical turn radius on a sphere of radius ``r`` is ``r / |kappa_g|``
+    and the transport-free heading rate is ``kappa_g v_tau / r``
+    (:func:`heading_rate_turn`). No division, so it stays finite through
+    near-cusps. Derivatives are in the path parameter; ``xp`` is numpy or
+    casadi (``Kinematics.curvature_numerator`` is this kernel).
+    """
+    u = dphi * xp.cos(beta)
+    v = dbeta
+    du_ds = ddphi * xp.cos(beta) - dphi * dbeta * xp.sin(beta)
+    dv_ds = ddbeta
+    return du_ds * v - u * dv_ds - xp.sin(beta) * dphi * dsigma**2
+
+
+def heading_rate_turn(timeder_angle_course, speed_tangential, distance_radial,
+                      angle_elevation, angle_course, xp=np):
+    """Transport-free heading rate ``chi_dot_turn = kappa_g v_tau / r`` [rad/s].
+
+    ``chi_dot_turn = chi_dot - (v_tau / r) tan(beta) sin(chi)``: the course
+    rate minus the turning of the spherical basis along the path (a kite on a
+    parallel turns its course without steering). The turn radius on the
+    tether sphere is ``v_tau / |chi_dot_turn|``, the same ``r / |kappa_g|``
+    as :func:`geodesic_curvature_numerator` gives for a path.
+    """
+    return timeder_angle_course - (
+        speed_tangential / distance_radial * xp.tan(angle_elevation) * xp.sin(angle_course)
+    )
+
+
 def fair_periodic_spline_to_curvature_limit(
     path_parameters,
     curvature_limit,

@@ -96,6 +96,12 @@ def client(monkeypatch, tmp_path):
         lambda path: (dict(config), None),
     )
     monkeypatch.setattr(session_mod, "Phase", StubPhase)
+    # No seed march: the stub phase does not simulate, and the roll-gain
+    # assist path has its own tests (test_session.py).
+    monkeypatch.setattr(
+        session_mod.roll_assist, "march_with_roll_assist",
+        lambda *args, **kwargs: (None, None, None, None),
+    )
 
     test_client = TestClient(create_app(session_factory=ReeloutSession))
     test_client.init_payload = {

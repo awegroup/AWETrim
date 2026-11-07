@@ -60,7 +60,7 @@ python examples/2_aerostructural/run_simulation_PSM.py
 python examples/2_aerostructural/run_simulation_BILLOW.py
 
 # Optimise a full pumping cycle with the reduced-order model (seed first, then optimise)
-python examples/4_trajectory_optimization/cycle/fit_periodic_cycle_config.py --kite LEI-V3-KITE --auto
+python examples/4_trajectory_optimization/cycle/fit_periodic_cycle_config.py --kite LEI-V3-KITE --size
 python examples/4_trajectory_optimization/cycle/run_full_cycle_opti.py --kite LEI-V3-KITE
 ```
 

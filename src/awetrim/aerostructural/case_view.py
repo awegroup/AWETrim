@@ -314,6 +314,21 @@ def load_case(case_dir: Path | str) -> dict[str, Any]:
     }
 
 
+def rigid_rotation(reference: np.ndarray, deformed: np.ndarray) -> np.ndarray:
+    """The best-fit rotation (Kabsch) taking ``reference`` onto ``deformed``.
+
+    In ``rotate_geometry``'s convention: the centred ``deformed`` is closest to
+    the centred ``reference @ R.T``.
+    """
+    a = np.asarray(reference, dtype=float)
+    b = np.asarray(deformed, dtype=float)
+    a0, b0 = a - a.mean(axis=0), b - b.mean(axis=0)
+    u, _, vt = np.linalg.svd(a0.T @ b0)
+    if np.linalg.det(u @ vt) < 0:
+        u[:, -1] *= -1
+    return (u @ vt).T
+
+
 def rigid_motion_removed(reference: np.ndarray, deformed: np.ndarray) -> np.ndarray:
     """Per-node displacement left after the best-fit rigid motion (Kabsch).
 
@@ -324,10 +339,22 @@ def rigid_motion_removed(reference: np.ndarray, deformed: np.ndarray) -> np.ndar
     a = np.asarray(reference, dtype=float)
     b = np.asarray(deformed, dtype=float)
     a0, b0 = a - a.mean(axis=0), b - b.mean(axis=0)
-    u, _, vt = np.linalg.svd(a0.T @ b0)
-    if np.linalg.det(u @ vt) < 0:
-        u[:, -1] *= -1
-    return np.linalg.norm(b0 - a0 @ (u @ vt), axis=1)
+    return np.linalg.norm(b0 - a0 @ rigid_rotation(a, b).T, axis=1)
+
+
+def attitude_deg(reference: np.ndarray, deformed: np.ndarray) -> tuple[float, float, float]:
+    """Roll, pitch, yaw [deg] of the best-fit rotation from ``reference`` to ``deformed``.
+
+    The angles ``rotate_geometry`` would apply (roll about x first, then pitch
+    about y, then yaw about z). The trim's own roll/pitch/yaw are not the
+    attitude: the coupled loop rotates the geometry by them on every
+    iteration, so each is an increment, and the converged one is ~0.
+    """
+    r = rigid_rotation(reference, deformed)
+    roll = np.degrees(np.arctan2(r[2, 1], r[2, 2]))
+    pitch = np.degrees(np.arcsin(np.clip(-r[2, 0], -1.0, 1.0)))
+    yaw = np.degrees(np.arctan2(r[1, 0], r[0, 0]))
+    return float(roll), float(pitch), float(yaw)
 
 
 def _float(value) -> float:
@@ -407,14 +434,14 @@ def trim_summary(case: Mapping[str, Any]) -> list[tuple[str, str, float | str, s
     ]
     if np.isfinite(course_rate) and abs(course_rate) > 1e-4 and np.isfinite(speed_tangential):
         rows.append(("Trim", "Turn radius", abs(speed_tangential / course_rate), "m"))
-    if opt_x.size >= 4:
-        rows += [
-            ("Trim", "Roll (trim rotation)", opt_x[1], "deg"),
-            ("Trim", "Pitch (trim rotation)", opt_x[2], "deg"),
-            ("Trim", "Yaw (trim rotation)", opt_x[3], "deg"),
-        ]
-    elif "roll_body_deg" in meta:
-        rows.append(("Trim", "Roll (trim rotation)", _float(meta["roll_body_deg"]), "deg"))
+    # Off the positions, both drivers alike: the trim's roll/pitch/yaw are
+    # per-iteration increments (see attitude_deg).
+    roll, pitch, yaw = attitude_deg(case["initial"], case["final"])
+    rows += [
+        ("Trim", "Roll (attitude vs built shape)", roll, "deg"),
+        ("Trim", "Pitch (attitude vs built shape)", pitch, "deg"),
+        ("Trim", "Yaw (attitude vs built shape)", yaw, "deg"),
+    ]
 
     # The VSM force: wing (and bridle lines when VSM carries them), NOT the
     # KCU drag, which the trim adds separately, nor the tether. Its L/D is

@@ -9,7 +9,7 @@ These run the production path, ``wireframe.driver.solve_deformation`` without
 a geometry path: the wireframe reduced from the kite's structure.yml with the
 bridle relaxed onto the built wing (``build_case_reduced_fem``), as the public
 ``examples/2_aerostructural/run_simulation_PSM.py`` does. The 2019 as-flown
-system, at the built tape and at 0.0 and 0.2 m steering, with gravity and
+system, at +0.2 m depower and at 0.0 and 0.2 m steering, with gravity and
 bridle drag on, must CONVERGE to a physically sane trim.
 
 By design they assert convergence flags + generous bounds + a monotonic turn
@@ -41,25 +41,36 @@ SYSTEM_CONFIG_PATH = KITE_DIR / "system_flown_2019.yaml"
 if not KITE_DIR.exists():
     pytest.skip(f"kite data dir missing: {KITE_DIR}", allow_module_level=True)
 
-#: Steering-tape half-differences [m]; the power tape stays at the built length.
+#: Steering-tape half-differences [m].
 STEERING_VALUES_M = [0.0, 0.2]
+#: The depower tape extension [m] every case flies. Until 2026-11-02 the test
+#: took it, and the whole flight state, from as_config.yaml without saying so
+#: (0.2 m there, although this file read "at the built tape").
+POWER_TAPE_EXTENSION_M = 0.2
 
 
 @pytest.fixture(scope="module")
 def solver_results(tmp_path_factory):
     """Run the coupled solver once per steering value; cache the meta dicts."""
+    from awetrim.aerostructural.case import Case
     from awetrim.aerostructural.wireframe import driver
 
     metas = {}
     max_iter = None
     for steering in STEERING_VALUES_M:
+        case = Case(
+            elevation_deg=0.0, azimuth_deg=0.0, course_deg=90.0, distance_radial=300.0,
+            speed_radial=1.5, timeder_speed_tangential=0.0, timeder_speed_radial=0.0,
+            wind={"model": "uniform", "speed_wind_ref": 8.0},
+            power_tape_extension=POWER_TAPE_EXTENSION_M,
+            steering_tape_extension=float(steering),
+        )
         result = driver.solve_deformation(
-            config_overrides={
-                "is_with_gravity": True,
-                "is_with_aero_bridle": True,
-                "steering_tape_final_extension": float(steering),
+            case,
+            {
+                "coupling": {"is_with_gravity": True},
                 # the public example's mesh: 2 panels per FEM section
-                "aerodynamic": {"n_aero_panels_per_struc_section": 2},
+                "aerodynamics": {"is_with_aero_bridle": True, "n_aero_panels_per_struc_section": 2},
             },
             project_dir=REPO_ROOT,
             results_dir=tmp_path_factory.mktemp(f"steering_{steering:.2f}"),

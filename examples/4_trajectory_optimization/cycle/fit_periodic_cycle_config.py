@@ -20,13 +20,10 @@ pumping cycle as ONE periodic ``spline_periodic`` phase:
     powered and reels in when depowered. This is the key that lets the whole
     cycle live in one phase (see ``Winch.tension_curve``).
 
-By default (``SHAPE_SOURCE = "artificial"``) the trajectory is fully synthetic
+The trajectory is fully synthetic
 — smooth, exactly periodic, tuned for trim feasibility — and NO flight data is
 read; the winch law, start radius and pattern size come from the kite's
 ``cycle_profile.yaml`` (``--kite``, see ``cycle_kites.py``).
-``SHAPE_SOURCE = "experimental"`` instead fits spline + winch law to one good
-EKF-reconstructed cycle of the profile's reference flight (kept for
-reference; the raw fit is usually too rough for the QS trim to follow).
 
 The result is written to
 ``data/<kite>/cycle_configs/full_cycle_periodic_from_exp.yaml`` and
@@ -45,23 +42,22 @@ anything outside the designed window. Purely geometric, no forward sims.
 Resolution is derived, not hand-set: ``M`` keeps >= 10 control points per
 figure-eight AND >= 15 across the reel-in window (measured convergence knees,
 see ``_resolve_artificial_M``), and whenever a forward sim runs (``--check``/
-``--auto``) ``n_points`` is recalibrated to NPOINTS_PER_SECOND
+``--size``) ``n_points`` is recalibrated to NPOINTS_PER_SECOND
 nodes per second of the MEASURED cycle duration -- the ``CYCLE_DURATION_S``
 prior can be over 2x off at other winds/shapes.
 
 Usage:
-    python .../fit_periodic_cycle_config.py [--auto] [--loops N]
+    python .../fit_periodic_cycle_config.py [--size] [--loops N]
                                             [--reelin smooth|cross]
                                             [--cross-at P]
                                             [--reentry opposite|same]
                                             [--check] [--plot]
                                             [--curvature-limit K]
 
-    --auto   auto-tune the shape knobs (one forward sim per iteration)
-             until every node of the seed trims inside the NLP bounds at the
-             kite profile's wind -- use this to generate a seed for ANY wind
-             speed / loop count hands-free. The seed need not close
-             radially: the optimizer's first stage closes it
+    --size   refit the path to the turns the kite holds at the target wind:
+             the first margin on the steering-limited turn radius whose
+             forward sim is complete and inside the steering limit at the
+             kite's own roll gain. Writes nothing if none is
     --loops  number of half figure-eights (lobes) VISIBLE during reel-out
              -- what you count on the sphere, honoured EXACTLY; the internal
              full-period n_loops and the parity-matching psi_entry are
@@ -116,8 +112,6 @@ _SRC_DIR = _repo_root / "src"
 for _path in (_SRC_DIR,):
     if str(_path) not in sys.path:
         sys.path.insert(0, str(_path))
-from awetrim.flight_data import cycles_from_phases, load_flight  # noqa: E402
-
 from cycle_kites import (  # noqa: E402
     DEFAULT_KITE,
     REQUIRED_SEED,
@@ -126,20 +120,27 @@ from cycle_kites import (  # noqa: E402
     resolve_kite,
 )
 
-from awetrim.identification.controls import (  # noqa: E402
-    flight_dataframe_depower_to_power_tape_length,
-)
 from awetrim.kinematics.parametrized_patterns import (  # noqa: E402
     DUBINS_TURN_RADIUS_M,
     LOBE_HANDOVER_PHASE,
     design_reelin_spline,
     fair_periodic_spline_to_curvature_limit,
-    fit_bspline_pattern_to_trajectory,
     full_cycle_angles,
     full_cycle_n_loops_for_half_figures,
     full_cycle_visible_half_figures,
     make_full_cycle_bspline_path_parameters,
+    periodic_bspline_basis_matrices,
 )
+from awetrim.kinematics.steering_limited_eight import (  # noqa: E402
+    BlendedTurnLimit,
+    CourseTurnLimit,
+    fit_spline_to_turn_limit,
+)
+from awetrim.system.turn_radius import (  # noqa: E402
+    steering_limit,
+    steering_limited_turn_radius,
+)
+from awetrim.system.winch import Winch  # noqa: E402
 from awetrim.utils.defaults import DEFAULT_OPTI_LIMITS  # noqa: E402
 from awetrim.utils.system_config import get_kite  # noqa: E402
 
@@ -149,16 +150,9 @@ from awetrim.utils.system_config import get_kite  # noqa: E402
 # duration, synthetic-shape knobs, reference flight) is a profile in
 # ``cycle_kites.py`` and is loaded by ``configure_kite`` (``--kite``).
 # ---------------------------------------------------------------------------
-# Reference flight of the selected kite (``cycle_kites`` "flight" entry): the
-# loader name plus its arguments, used by SHAPE_SOURCE == "experimental".
-FLIGHT = {}
-DEPOWER_MATCH = None  # (reel_out, reel_in) ROM tapes of the flight, cycle_kites
-CYCLE_ID = None
-
-# Periodic-spline control points and sim grid. M_PER_SECOND/M_MAX only apply
-# to the experimental fit (the artificial M comes from _resolve_artificial_M).
+# Sim grid (the spline's M comes from _resolve_artificial_M).
 # n_points is the optimizer grid over the whole cycle, at NPOINTS_PER_SECOND
-# of SIMULATED cycle time: any forward sim (--check/--auto) measures
+# of SIMULATED cycle time: any forward sim (--check/--size) measures
 # the real duration and recalibrates n_points (the CYCLE_DURATION_S prior can
 # be far off -- the n_loops=5 seed assumed 213 s but flies in ~97 s at
 # 13 m/s). Convergence sweep vs a 400-node reference (n=5, M=50): 3 nodes/s
@@ -167,22 +161,10 @@ CYCLE_ID = None
 # falling BETWEEN nodes -- the NLP only enforces bounds at nodes, so a too
 # coarse grid hides violations instead of removing them); 1 node/s breaks the
 # trim (AoA spikes). Capped for NLP tractability (nodes dominate NLP size).
-M_PER_SECOND = 0.2
-_M_PER_SECOND_DEFAULT = M_PER_SECOND  # per-kite override: cycle_kites "m_per_second"
 NPOINTS_PER_SECOND = 3.0
-M_MAX = 90
 N_POINTS_MAX = 2000
 
-# Shape source for the periodic path spline:
-#   "experimental" -- fit the spline to the flown (azimuth, elevation) of CYCLE_ID
-#   "artificial"   -- a clean synthetic full cycle (figure-eights + reel-in arc).
-# The data-fit winch law, r0 and the depower split are reused in both cases; only
-# the path SHAPE (C_phi/C_beta) and the depower profile differ. The experimental
-# fit can be too rough for the QS trim to follow; the artificial curve is smooth
-# and exactly periodic, a far more feasible initial guess.
-SHAPE_SOURCE = "artificial"
-
-# Synthetic full-cycle parameters (used when SHAPE_SOURCE == "artificial").
+# Synthetic full-cycle parameters.
 # The SIZE of the pattern (reelout_fraction, beta0, beta_amp0, az_amp0,
 # beta_reelin_peak) has no default here: it is a property of the kite and is
 # REQUIRED in the ``seed`` block of its cycle_profile.yaml (the values quoted
@@ -282,15 +264,13 @@ ARTIFICIAL = {
     "lobe_handover_phase": float(LOBE_HANDOVER_PHASE),
 }
 
-# Per-kite constants used when SHAPE_SOURCE == "artificial", so the
-# generator runs without any flight data (SHAPE_SOURCE = "experimental"
-# re-derives the winch law from the flight logs via
-# _fit_winch_with_depower_offset). Set by ``configure_kite`` from the kite's
+# Per-kite constants, so the generator runs without any flight data. Set by
+# ``configure_kite`` from the kite's
 # folder (``cycle_kites.resolve_kite``):
 #   R0                start radius (m)
 #   CYCLE_DURATION_S  cycle-duration PRIOR (s) for a 3-lobe cycle; only sets
 #                     n_points until a forward sim measures the actual
-#                     duration (--check/--auto recalibrate n_points
+#                     duration (--check/--size recalibrate n_points
 #                     from it -- at 13 m/s with 5 loops the V3 prior said
 #                     213 s but the cycle flies in ~97 s)
 #   WINCH_LAW         T = slope * (v_r - offset(u_p)); ``max_tether_force``
@@ -331,7 +311,7 @@ def configure_kite(name=None):
     """
     global KITE_NAME, KITE_DIR, SYSTEM_CONFIG_PATH, R0, CYCLE_DURATION_S, WINCH_LAW
     global DEPOWER_BAND, DEPOWER_RATE, OUTPUT_PATH, SEED_PLOT_PATH
-    global FLIGHT, CYCLE_ID, _ARTIFICIAL_BASE, DEPOWER_MATCH
+    global _ARTIFICIAL_BASE
     kite = resolve_kite(name)
     KITE_NAME = kite["name"]
     KITE_DIR = Path(kite["dir"])
@@ -340,9 +320,6 @@ def configure_kite(name=None):
     CYCLE_DURATION_S = float(kite["cycle_duration_s"])
     WINCH_LAW = dict(kite["winch_law"])
     DEPOWER_BAND = tuple(kite["depower_band"])
-    FLIGHT = dict(kite["flight"])
-    DEPOWER_MATCH = kite.get("depower_match")
-    CYCLE_ID = FLIGHT.get("cycle_id")
     OUTPUT_PATH = Path(kite["cycle_config_dir"]) / SEED_FILENAME
     SEED_PLOT_PATH = Path(kite["results_dir"]) / "seed_path.png"
     # KCU depower actuation speed: the hardware value from system.yaml when
@@ -352,9 +329,7 @@ def configure_kite(name=None):
     cs = get_kite(system_cfg).get("control_system", {}).get("structure", {})
     rate = (cs.get("depower") or {}).get("rate")
     DEPOWER_RATE = list(rate) if rate else list(DEFAULT_OPTI_LIMITS["depower_rate"])
-    global M_PER_SECOND, MIN_TURN_RADIUS
-    m_per_second = kite.get("m_per_second")
-    M_PER_SECOND = float(_M_PER_SECOND_DEFAULT if m_per_second is None else m_per_second)
+    global MIN_TURN_RADIUS
     MIN_TURN_RADIUS = kite.get("min_turn_radius")
     # Synthetic-shape knobs: the module's method knobs overlaid with the
     # kite's seed block, which carries the pattern size (required, see
@@ -473,12 +448,6 @@ configure_kite(DEFAULT_KITE)
 # Override with --curvature-limit; 0 disables both the fairing and the guard.
 CURVATURE_LIMIT_1PM = 0.08
 CURVATURE_SAMPLES = 1000
-
-# Magnitude bounds for the reel-in azimuth bow, used by the --auto trim lever
-# (``bow_up`` in ``_auto_action``). The seed bow sits inside it; only the
-# magnitude is bounded (the seed's sign/direction is kept).
-AZ_REELIN_AMP_MAG_BOUNDS = (0.15, 0.80)
-
 
 def _synthetic_depower(
     s_grid, reelout_fraction, ramp_fraction, depth=1.0, reelin_center=0.5
@@ -644,96 +613,16 @@ def _artificial_path_parameters(art, r0=None):
     )
 
 
-def _cycle_arrays(ekf_df, flight_df, cycle_id):
-    """Whole-cycle (all four phases, time order) arrays needed for the fit."""
-    mask = flight_df["cycle_by_phase"] == cycle_id
-    flight = flight_df[mask].reset_index(drop=True)
-    ekf = ekf_df[mask].reset_index(drop=True)
-    if flight.empty:
-        raise RuntimeError(f"Cycle {cycle_id}: no rows found")
-
-    pos = np.column_stack(
-        (
-            ekf["kite_position_x"].to_numpy(),
-            ekf["kite_position_y"].to_numpy(),
-            ekf["kite_position_z"].to_numpy(),
-        )
-    )
-    return {
-        "azimuth": flight["kite_azimuth"].to_numpy(dtype=float),
-        "elevation": flight["kite_elevation"].to_numpy(dtype=float),
-        "distance_radial": np.linalg.norm(pos, axis=1),
-        "tether_force": flight["ground_tether_force"].to_numpy(dtype=float),
-        "reelout_speed": flight["tether_reelout_speed"].to_numpy(dtype=float),
-        "time": flight["time"].to_numpy(dtype=float),
-        "l_dp": flight_dataframe_depower_to_power_tape_length(flight, DEPOWER_MATCH),
-        "wind": ekf.get(
-            "wind_speed_horizontal", flight.get("wind_speed_horizontal")
-        ).to_numpy(dtype=float),
-    }
-
-
-def _fit_winch_with_depower_offset(arr):
-    """Fit ``T = slope * (v_r - offset(l_dp))`` with ``offset`` linear in l_dp.
-
-    Returns slope, base offset (at ``l_dp_ref``), the depower-offset gain, the
-    reference depower, and the force clamps. The gain is the data-driven shift of
-    the winch's zero-force reeling speed with depower: it is what makes a single
-    force law span both reel-out and reel-in (see ``Winch.tension_curve``).
-    """
-    v_r = arr["reelout_speed"]
-    T = arr["tether_force"]
-    l_dp = arr["l_dp"]
-    finite = np.isfinite(v_r) & np.isfinite(T) & np.isfinite(l_dp) & (T > 500)
-
-    # Slope from the reel-out (production) rows only -- positive reeling at high
-    # force -- so the depowered reel-in does not flatten the regression.
-    ro = finite & (v_r > 0.2) & (T > np.nanquantile(T[finite], 0.5))
-    if ro.sum() < 2:
-        ro = finite & (v_r > 0.0)
-    slope = float(np.polyfit(v_r[ro], T[ro], 1)[0])
-    slope = max(slope, 1.0)  # guard against a degenerate/negative fit
-
-    # Implied per-row zero-force offset, then regress on depower:
-    #   offset_row = v_r - T/slope ;  offset(l_dp) = a + gain * l_dp
-    offset_row = v_r[finite] - T[finite] / slope
-    gain, a = np.polyfit(l_dp[finite], offset_row, 1)
-    gain = float(gain)
-    l_dp_ref = float(DEPOWER_BAND[0])
-    offset0 = float(a + gain * l_dp_ref)  # offset at the powered reference
-
-    max_tf = float(np.nanquantile(T[finite], 0.97))
-    min_tf = (
-        float(np.nanquantile(T[finite & (v_r < 0)], 0.2))
-        if (finite & (v_r < 0)).any()
-        else float(np.nanquantile(T[finite], 0.05))
-    )
-
-    return {
-        "slope_winch_ro": slope,
-        "offset_winch_ro": offset0,
-        "winch_offset_depower_gain": gain,
-        "winch_depower_ref": l_dp_ref,
-        "max_tether_force": max_tf,
-        "min_tether_force": max(min_tf, 100.0),
-    }
-
-
 def build_config(
-    arr=None,
     depower_depth=1.0,
-    artificial=None,
     duration_s=None,
     curvature_limit=CURVATURE_LIMIT_1PM,
 ):
     """Assemble the reelout config dict.
 
-    ``arr`` (the experimental cycle arrays) is only required when
-    ``SHAPE_SOURCE == "experimental"``; the artificial path is fully synthetic
-    and uses the data-derived constants ``WINCH_LAW`` / ``R0`` /
+    The path is fully synthetic and uses the constants ``WINCH_LAW`` / ``R0`` /
     ``CYCLE_DURATION_S``. ``depower_depth`` scales the synthetic reel-in
-    depower bump (``DEPOWER_DEPTH``). ``artificial``
-    optionally overrides the module-level ARTIFICIAL dict (used by ``--auto``).
+    depower bump (``DEPOWER_DEPTH``).
     ``duration_s`` overrides the cycle-duration estimate that sets
     ``n_points`` -- pass the MEASURED duration of a forward sim (see
     ``_measured_cycle_duration``) so the grid tracks the actual flight time
@@ -743,23 +632,16 @@ def build_config(
     ``fair_periodic_spline_to_curvature_limit``) -- the parametric knobs are
     never changed to satisfy it.
     """
-    art = artificial if artificial is not None else ARTIFICIAL
-    if SHAPE_SOURCE == "experimental":
-        if arr is None:
-            raise ValueError("experimental SHAPE_SOURCE needs the cycle arrays")
-        duration = float(arr["time"][-1] - arr["time"][0])
-        winch = _winch_law_with_hardware_rating(_fit_winch_with_depower_offset(arr))
-        r0 = float(arr["distance_radial"][0])
-    else:
-        # Physical loop time is set by the figure geometry and the kite's trim
-        # speed, so cycle duration grows ~linearly with loop count (the
-        # reel-out/reel-in split stays roughly constant -- it is fixed by the
-        # reel speed ratio). This is only a PRIOR: it knows nothing about the
-        # target wind or the tuned shape, so any flow that forward-simulates
-        # replaces it with the measured duration via ``duration_s``.
-        duration = float(CYCLE_DURATION_S) * float(art["n_loops"]) / 3.0
-        winch = _winch_law_with_hardware_rating(WINCH_LAW)
-        r0 = float(R0)
+    art = ARTIFICIAL
+    # Physical loop time is set by the figure geometry and the kite's trim
+    # speed, so cycle duration grows ~linearly with loop count (the
+    # reel-out/reel-in split stays roughly constant -- it is fixed by the
+    # reel speed ratio). This is only a PRIOR: it knows nothing about the
+    # target wind or the tuned shape, so any flow that forward-simulates
+    # replaces it with the measured duration via ``duration_s``.
+    duration = float(CYCLE_DURATION_S) * float(art["n_loops"]) / 3.0
+    winch = _winch_law_with_hardware_rating(WINCH_LAW)
+    r0 = float(R0)
     if duration_s is not None:
         duration = float(duration_s)
 
@@ -778,115 +660,69 @@ def build_config(
     )
     s_grid = np.linspace(0.0, 1.0, n_points + 1, endpoint=True)
 
-    if SHAPE_SOURCE == "artificial":
-        # Clean, exactly-periodic synthetic cycle: figure-eights + reel-in arc.
-        M = _resolve_artificial_M(art)
-        print(
-            f"Artificial shape, M={M}, n_loops={float(art['n_loops']):g}, "
-            f"n_points={n_points}, depower depth={depower_depth:.3f}"
-        )
-        path_parameters = _artificial_path_parameters(art, r0=r0)
-        if curvature_limit:
-            # The parametric reel-in is only a SKETCH: when its fitted spline
-            # violates the curvature limit, the reel-in is DESIGNED between
-            # the frozen exit/entry handover states -- the window control
-            # points solve a bending-energy NLP that hits beta_reelin_peak
-            # with curvature bounded as a hard constraint. Knobs and the
-            # figures are never changed. (bow_shape "dubins" designs its
-            # reel-in already: no sketch to repair, only the fairing below.)
-            des = {"changed": False}
-            if art.get("bow_shape") != "dubins":
-                path_parameters, des = design_reelin_spline(
-                    path_parameters,
-                    float(curvature_limit),
-                    reelin_center=art.get("reelin_center", 0.5),
-                    reelout_fraction=art["reelout_fraction"],
-                    peak_elevation=art.get("beta_reelin_peak"),
-                )
-            if des["changed"]:
-                print(
-                    f"[design] reel-in designed between the handover states: "
-                    f"curvature {des['max_before']:.4g} -> "
-                    f"{des['max_after']:.4g} 1/m (limit "
-                    f"{float(curvature_limit):g}), peak "
-                    f"{np.degrees(des['peak_achieved']):.1f} deg (target "
-                    f"{np.degrees(des['peak_target']):.1f}), "
-                    f"{len(des['freed'])}/{M} window points designed, path "
-                    f"moved <= {np.degrees(des['max_path_move']):.2f} deg"
-                )
-            # Safety net for anything the design could not (or was not
-            # allowed to) touch -- figures, window edges, a failed design.
-            path_parameters, fair = fair_periodic_spline_to_curvature_limit(
-                path_parameters, float(curvature_limit)
+    # Clean, exactly-periodic synthetic cycle: figure-eights + reel-in arc.
+    M = _resolve_artificial_M(art)
+    print(
+        f"Artificial shape, M={M}, n_loops={float(art['n_loops']):g}, "
+        f"n_points={n_points}, depower depth={depower_depth:.3f}"
+    )
+    path_parameters = _artificial_path_parameters(art, r0=r0)
+    if curvature_limit:
+        # The parametric reel-in is only a SKETCH: when its fitted spline
+        # violates the curvature limit, the reel-in is DESIGNED between
+        # the frozen exit/entry handover states -- the window control
+        # points solve a bending-energy NLP that hits beta_reelin_peak
+        # with curvature bounded as a hard constraint. Knobs and the
+        # figures are never changed. (bow_shape "dubins" designs its
+        # reel-in already: no sketch to repair, only the fairing below.)
+        des = {"changed": False}
+        if art.get("bow_shape") != "dubins":
+            path_parameters, des = design_reelin_spline(
+                path_parameters,
+                float(curvature_limit),
+                reelin_center=art.get("reelin_center", 0.5),
+                reelout_fraction=art["reelout_fraction"],
+                peak_elevation=art.get("beta_reelin_peak"),
             )
-            if fair["changed"]:
-                print(
-                    f"[fair] residual spline curvature {fair['max_before']:.4g}"
-                    f" -> {fair['max_after']:.4g} 1/m (sharpest at "
-                    f"s={fair['s_at_max_before']:.3f}); moved "
-                    f"{len(fair['touched'])}/{M} control points, path moved "
-                    f"<= {np.degrees(fair['max_path_move']):.2f} deg"
-                )
-            if not fair["converged"]:
-                print(
-                    "[fair] WARN: curvature limit not reachable -- the "
-                    "write-time guard will refuse this config; enlarge the "
-                    "figures (az_amp0/beta_amp0) or change --loops"
-                )
-        # Synthetic depower aligned with the figures-stop / reel-in split
-        # (same window AND ramp width as the shape).
-        u_dep_profile = _synthetic_depower(
-            s_grid,
-            art["reelout_fraction"],
-            art["ramp_fraction"],
-            depth=depower_depth,
-            reelin_center=art.get("reelin_center", 0.5),
-        )
-    elif SHAPE_SOURCE == "experimental":
-        M = int(np.clip(np.ceil(duration * M_PER_SECOND), 8, M_MAX))
-        print(f"Cycle {CYCLE_ID}: experimental fit, M={M}, n_points={n_points}")
-        # Periodic fit over one full cycle. s in [0, 1); the loop closes back on
-        # itself, so the periodic basis is the natural representation.
-        s_samples = np.linspace(0.0, 1.0, len(arr["azimuth"]), endpoint=False)
-        _, C_phi, C_beta = fit_bspline_pattern_to_trajectory(
-            spline_type="periodic",
-            M=M,
-            s_init=0.0,
-            s_final=1.0,
-            az_target=arr["azimuth"],
-            el_target=arr["elevation"],
-            s_samples=s_samples,
-            downloops=True,
-        )
-        path_parameters = {
-            "r0": r0,
-            "M": int(M),
-            "C_phi": C_phi.full().flatten().round(6).tolist(),
-            "C_beta": C_beta.full().flatten().round(6).tolist(),
-            "s_init": 0.0,
-            "s_final": 1.0,
-            "downloops": True,
-        }
-        if curvature_limit:
-            # The least-squares fit overshoots the flown top U-turn; fair the
-            # spline locally to the limit like the artificial branch does.
-            path_parameters, fair = fair_periodic_spline_to_curvature_limit(
-                path_parameters, float(curvature_limit)
+        if des["changed"]:
+            print(
+                f"[design] reel-in designed between the handover states: "
+                f"curvature {des['max_before']:.4g} -> "
+                f"{des['max_after']:.4g} 1/m (limit "
+                f"{float(curvature_limit):g}), peak "
+                f"{np.degrees(des['peak_achieved']):.1f} deg (target "
+                f"{np.degrees(des['peak_target']):.1f}), "
+                f"{len(des['freed'])}/{M} window points designed, path "
+                f"moved <= {np.degrees(des['max_path_move']):.2f} deg"
             )
-            if fair["changed"]:
-                print(
-                    f"[fair] fitted spline curvature {fair['max_before']:.4g}"
-                    f" -> {fair['max_after']:.4g} 1/m (sharpest at "
-                    f"s={fair['s_at_max_before']:.3f}); moved "
-                    f"{len(fair['touched'])}/{M} control points, path moved "
-                    f"<= {np.degrees(fair['max_path_move']):.2f} deg"
-                )
-        # Resample the measured depower onto the sim s-grid (n_points + 1) as the
-        # warm-start for the optimized per-node profile.
-        s_meas = np.linspace(0.0, 1.0, len(arr["l_dp"]), endpoint=False)
-        u_dep_profile = np.interp(s_grid, s_meas, np.asarray(arr["l_dp"], dtype=float))
-    else:
-        raise ValueError(f"Unknown SHAPE_SOURCE {SHAPE_SOURCE!r}")
+        # Safety net for anything the design could not (or was not
+        # allowed to) touch -- figures, window edges, a failed design.
+        path_parameters, fair = fair_periodic_spline_to_curvature_limit(
+            path_parameters, float(curvature_limit)
+        )
+        if fair["changed"]:
+            print(
+                f"[fair] residual spline curvature {fair['max_before']:.4g}"
+                f" -> {fair['max_after']:.4g} 1/m (sharpest at "
+                f"s={fair['s_at_max_before']:.3f}); moved "
+                f"{len(fair['touched'])}/{M} control points, path moved "
+                f"<= {np.degrees(fair['max_path_move']):.2f} deg"
+            )
+        if not fair["converged"]:
+            print(
+                "[fair] WARN: curvature limit not reachable -- the "
+                "write-time guard will refuse this config; enlarge the "
+                "figures (az_amp0/beta_amp0) or change --loops"
+            )
+    # Synthetic depower aligned with the figures-stop / reel-in split
+    # (same window AND ramp width as the shape).
+    u_dep_profile = _synthetic_depower(
+        s_grid,
+        art["reelout_fraction"],
+        art["ramp_fraction"],
+        depth=depower_depth,
+        reelin_center=art.get("reelin_center", 0.5),
+    )
 
     config = {
         "reelout": {
@@ -951,6 +787,9 @@ def build_config(
                 # the one-sided close_radial_cycle pin, which left the last
                 # node unconstrained and the seam uncounted).
                 "periodic_wrap": True,
+                # s in [0, 1] over a whole cycle: the march's solves keep their
+                # warm start at this small path rate (PhaseParameterized).
+                "slow_path_rate": True,
             },
         }
     }
@@ -973,13 +812,12 @@ def _reelin_window_mask(s, art):
     return np.abs(d) <= h
 
 
-def plot_seed_path(config, art=None, arr=None, save_path=None, show=False):
+def plot_seed_path(config, art=None, save_path=None, show=False):
     """Plot the generated seed trajectory (pure geometry, no forward sim).
 
     Left: wind-window view (azimuth vs elevation) of the fitted periodic
     B-spline the optimizer warm-starts from, with the analytic synthetic
-    target it was fitted to (artificial shape) or the flight samples
-    (experimental fit), flight-direction arrows, the ``s = 0`` seam, the
+    target it was fitted to, flight-direction arrows, the ``s = 0`` seam, the
     control polygon, and the reel-in window highlighted along the path with
     its entry / exit points (where the figure fade begins / ends -- with the
     "lobe" shape the visible peel-off and landing sit LOBE_HANDOVER_PHASE
@@ -1061,16 +899,6 @@ def plot_seed_path(config, art=None, arr=None, save_path=None, show=False):
             label="analytic target",
         )
         in_window = _reelin_window_mask(s, art)
-    if arr is not None:
-        ax_path.plot(
-            np.degrees(arr["azimuth"]),
-            np.degrees(arr["elevation"]),
-            ".",
-            ms=2,
-            alpha=0.35,
-            color="0.5",
-            label="flight",
-        )
 
     # Control polygon (light) and the fitted spline, reel-in part on top.
     ax_path.plot(
@@ -1283,6 +1111,144 @@ def _measured_cycle_duration(phase, n_points):
     return float(t[-1] - t[0])
 
 
+# --size: the path's turn radius is held at margin x the tightest turn the kite
+# holds on that course (system.turn_radius), and the first margin whose march is
+# complete and inside the steering limit at the kite's own roll gain is kept.
+SIZE_MARGINS = (1.4, 1.6, 1.8, 2.0)
+SIZE_HEIGHT_CLEARANCE_M = 2.0
+SIZE_FIT_SAMPLES = 900
+SIZE_FIT_MIN_RATIO = 0.99
+
+
+def _size_turn_limit(config, system_model):
+    """``limit(margin)`` of the seed: the steering-limited turn radius at its
+    reel-out and at its reel-in depower and mean elevation, blended along the
+    path by the depower profile. Also returns the seed's elevation samples."""
+    reelout = config["reelout"]
+    path = reelout["path_parameters"]
+    r0 = float(path["r0"])
+    profile = np.asarray(reelout["sim_parameters"]["input_depower_profile"], dtype=float)
+    s_profile = np.linspace(0.0, 1.0, profile.size)
+    powered, depowered = float(profile.min()), float(profile.max())
+
+    def weight(u):
+        return np.clip(
+            (np.interp(u, s_profile, profile) - powered) / (depowered - powered), 0.0, 1.0
+        )
+
+    u = np.linspace(0.0, 1.0, 1000, endpoint=False)
+    basis = periodic_bspline_basis_matrices(u, int(path["M"]))[0]
+    elevation = basis @ np.asarray(path["C_beta"], dtype=float)
+    winch = Winch(pattern_config=reelout["radial_parameters"])
+    tables = []
+    for depower, mask in (
+        (powered, weight(u) < 0.5),
+        (depowered, weight(u) >= 0.5),
+    ):
+        table = steering_limited_turn_radius(
+            system_model,
+            distance_radial=r0,
+            angle_elevation=float(elevation[mask].mean()),
+            input_depower=depower,
+            winch=winch,
+        )
+        print(f"[size] depower {depower:.2f}: {table.summary()}")
+        tables.append(table)
+
+    def limit(margin):
+        first, second = (CourseTurnLimit(t.radius, r0=r0, margin=margin) for t in tables)
+        return BlendedTurnLimit(first, second, weight)
+
+    return limit, elevation
+
+
+def _march_own_roll_gain(config, system_model):
+    """Forward simulation at the kite's own roll gain, without the assist:
+    ``(phase, max |u_s|, reason)``, reason None when complete and within limits."""
+    import run_full_cycle_opti as rfco
+
+    reelout = copy.deepcopy(config["reelout"])
+    reelout["sim_parameters"]["require_full_trajectory"] = False
+    n_points = int(reelout["sim_parameters"]["n_points"])
+    system_model.kite.gain_roll_scale = 1.0
+    try:
+        phase, _ = rfco.Phase(
+            system_model=system_model,
+            pattern_config=reelout,
+            start_state=rfco.build_start_state(reelout),
+        ).run_simulation(phase_sim=True, seed_warm_start=False)
+    except RuntimeError as exc:
+        return None, None, f"march failed ({exc})"
+    steering = np.abs(np.asarray(phase.return_variable("input_steering"), dtype=float))
+    if steering.size < n_points:
+        return phase, float(steering.max()), f"march stopped at node {steering.size}/{n_points}"
+    if steering.max() > steering_limit(system_model):
+        return phase, float(steering.max()), (
+            f"max |u_s| {steering.max():.3f} over the limit "
+            f"{steering_limit(system_model):.3f}"
+        )
+    return phase, float(steering.max()), None
+
+
+def _size_seed(config, curvature_limit, margins=SIZE_MARGINS):
+    """The seed path refitted to the turns the kite holds at this wind, for the
+    first of ``margins`` that marches. ``(config, phase, system_model)``,
+    config None when none does."""
+    import run_full_cycle_opti as rfco
+
+    from awetrim.system.factory import create_system_model_from_yaml
+
+    system_model = create_system_model_from_yaml(yaml_path=SYSTEM_CONFIG_PATH)
+    system_model.wind = rfco.build_wind_model(**rfco.WIND_CONFIG)
+    print(f"[size] wind: {rfco.describe_wind(rfco.WIND_CONFIG)}")
+    limit, elevation = _size_turn_limit(config, system_model)
+    reelout = config["reelout"]
+    r0 = float(reelout["path_parameters"]["r0"])
+    override = reelout["sim_parameters"].get("opti_limits_override") or {}
+    height_min = override.get("height", DEFAULT_OPTI_LIMITS["height"])[0]
+    for margin in margins:
+        fitted, report = fit_spline_to_turn_limit(
+            reelout["path_parameters"],
+            limit(margin),
+            M=None,
+            mirror=False,
+            el_min=float(np.arcsin((float(height_min) + SIZE_HEIGHT_CLEARANCE_M) / r0)),
+            el_max=float(elevation.max()) + 0.05,
+            n_samples=SIZE_FIT_SAMPLES,
+        )
+        print(
+            f"[size] margin {margin:g}: {report['status']}, ratio {report['ratio']:.2f}, "
+            f"turns >= {report['turn_radius_min_m']:.1f} m, moved "
+            f"{np.degrees(report['max_move']):.1f} deg"
+        )
+        if report["ratio"] < SIZE_FIT_MIN_RATIO:
+            continue
+        trial = copy.deepcopy(config)
+        trial["reelout"]["path_parameters"] = fitted
+        phase, steering, reason = _march_own_roll_gain(trial, system_model)
+        if reason is None:
+            n_old = int(trial["reelout"]["sim_parameters"]["n_points"])
+            measured = _measured_cycle_duration(phase, n_old)
+            n_new = int(np.clip(np.ceil(measured * NPOINTS_PER_SECOND), 50, N_POINTS_MAX))
+            if abs(n_new - n_old) > 0.1 * n_old:
+                print(
+                    f"[size] measured cycle duration {measured:.1f} s -> "
+                    f"n_points {n_old} -> {n_new}"
+                )
+                trial = build_config(
+                    depower_depth=DEPOWER_DEPTH,
+                    duration_s=measured,
+                    curvature_limit=curvature_limit,
+                )
+                trial["reelout"]["path_parameters"] = fitted
+                phase, steering, reason = _march_own_roll_gain(trial, system_model)
+        if reason is None:
+            print(f"[size] margin {margin:g} marches: max |u_s| {steering:.3f}")
+            return trial, phase, system_model
+        print(f"[size] margin {margin:g}: {reason}")
+    return None, None, system_model
+
+
 def _dist_to_reelin_center(s_v, center):
     """Circular |s_v - center| on the unit period (the window wraps the seam)."""
     return abs((float(s_v) - float(center) + 0.5) % 1.0 - 0.5)
@@ -1305,15 +1271,22 @@ def _violation_ranges(s, mask):
     return ranges
 
 
-def _feasibility_metrics(phase, system_model, config, artificial=None):
+# Steering gets a small slack over the hardware bound in the feasibility report:
+# the flown KCU saturates at the bound and exact tracking of ANY production figure
+# needs ~4*pi/T_loop of turn rate, so a few-percent overshoot at a handful of nodes
+# is the physical floor -- the NLP clips it.
+STEER_SLACK = 0.05
+
+
+def _feasibility_metrics(phase, system_model, config):
     """Numeric feasibility summary of a simulated cycle.
 
-    Shared by the printed report and the ``--auto`` tuner: trim truncation,
+    For the printed report: trim truncation,
     radial closure gap, and steering / AoA excursions vs the bounds the NLP
     will impose, with the worst-violation location in ``s`` for the
     knob<->symptom rules.
     """
-    art = artificial if artificial is not None else ARTIFICIAL
+    art = ARTIFICIAL
     sim = config["reelout"]["sim_parameters"]
     # The bounds the NLP will impose, in its precedence: the config's
     # opti_limits_override on top of the hardware limits on top of the
@@ -1382,10 +1355,10 @@ def _feasibility_report(phase, system_model, config, artificial=None):
     the NLP bounds (steering, AoA) stay inside their limits along the whole
     cycle. The radial closure gap is reported but not required (the
     optimizer closes the cycle). Violations are localized in
-    ``s`` and mapped to the generator knob that relieves them (which is what
-    ``--auto`` iterates automatically). Returns True for a clean warm start.
+    ``s`` and mapped to the generator knob that relieves them. Returns True
+    for a clean warm start.
     """
-    m = _feasibility_metrics(phase, system_model, config, artificial=artificial)
+    m = _feasibility_metrics(phase, system_model, config)
 
     ri_c = 0.5 * (m["ri_lo"] + m["ri_hi"])
     ri_h = 0.5 * (m["ri_hi"] - m["ri_lo"])
@@ -1419,7 +1392,7 @@ def _feasibility_report(phase, system_model, config, artificial=None):
             f"(r0 = {m['r0']:.1f} m); the optimizer's first stage closes it"
         )
 
-    if m["steer_n_viol"] and m["steer_excess"] <= AUTO_STEER_SLACK:
+    if m["steer_n_viol"] and m["steer_excess"] <= STEER_SLACK:
         # Within the warm-start slack: the flown KCU saturates at exactly this
         # bound (commanding well past it), so exact tracking of any production
         # figure needs a little more than the actuator gives -- the NLP clips
@@ -1428,7 +1401,7 @@ def _feasibility_report(phase, system_model, config, artificial=None):
             f"[WARN] steering grazes [{m['steer_lb']}, {m['steer_ub']}] at "
             f"{m['steer_n_viol']} node(s) "
             f"(min {m['steer_min']:.2f}, max {m['steer_max']:.2f}) -- within "
-            f"the +-{AUTO_STEER_SLACK:.2f} warm-start slack, NLP clips these"
+            f"the +-{STEER_SLACK:.2f} warm-start slack, NLP clips these"
         )
     elif m["steer_n_viol"]:
         ok = False
@@ -1469,376 +1442,15 @@ def _feasibility_report(phase, system_model, config, artificial=None):
         + (
             "FEASIBLE initial trajectory (clean NLP warm start)"
             if ok
-            else "NOT feasible as a warm start -- run --auto or tune the knobs"
+            else "NOT feasible as a warm start -- run --size or tune the knobs"
         )
     )
     return ok
 
 
-# --auto tuning rules. One knob moves per iteration; the mapping encodes what
-# the manual sweeps established (see the ARTIFICIAL comments). Steering gets a
-# small slack over the hardware bound: the flown KCU saturates at the bound and
-# exact tracking of ANY production figure needs ~4*pi/T_loop of turn rate, so
-# a few-percent overshoot at a handful of nodes is the physical floor -- the
-# NLP clips it; demanding strict compliance would make the tuner chase forever.
-AUTO_STEER_SLACK = 0.05
-AUTO_MAX_ITER = 12
-
-
-def _symptom_signature(m):
-    """(kind, location) of the dominant symptom, for stall detection."""
-    if m["truncated_at"] is not None:
-        return ("trunc", round(m["trunc_s"], 1))
-    if m.get("aoa_available") and m.get("aoa_n_viol"):
-        return ("aoa", round(m["aoa_worst_s"] or 0.0, 1))
-    if m["steer_excess"] > AUTO_STEER_SLACK:
-        return ("steer", round(m["steer_worst_s"], 1))
-    return None
-
-
-def _feasibility_score(m):
-    """Scalar badness of a simulated seed (0 = trims inside the bounds); lower wins.
-
-    The radial closure gap is NOT scored: the free_speed optimizer closes the
-    cycle in its first stage, so an open seed is a valid warm start.
-    """
-    score = 0.0
-    if m["truncated_at"] is not None:
-        score += 100.0 + 100.0 * (1.0 - m["truncated_at"] / m["n_points"])
-    if m.get("aoa_available") and m.get("aoa_n_viol"):
-        score += 50.0 * max(m["aoa_max"] - m["aoa_ub"], m["aoa_lb"] - m["aoa_min"])
-    score += 10.0 * max(m["steer_excess"] - AUTO_STEER_SLACK, 0.0)
-    return score
-
-
-def _auto_action(m, art, escalate=0):
-    """One knob adjustment from the feasibility metrics.
-
-    Returns ``(description, new_art)`` with exactly one knob changed,
-    ``None`` when the seed trims everywhere inside the NLP bounds, or raises
-    ``RuntimeError`` when no knob can fix the remaining symptom. ``escalate``
-    counts how often the SAME symptom survived a knob move: it advances
-    through the region's lever chain instead of hammering a lever that has
-    proven ineffective (e.g. the reel-in EXIT handover does not care about
-    the peak elevation at all -- see the n_loops=4 tuning trace).
-    """
-    art = dict(art)
-    h = 0.5 * (m["ri_hi"] - m["ri_lo"])
-    ri_c = 0.5 * (m["ri_hi"] + m["ri_lo"])
-
-    def region(s_v):
-        # Circular distance: the reel-in window may wrap the periodic seam.
-        d = _dist_to_reelin_center(s_v, ri_c)
-        if d <= h:
-            return "top" if d <= 0.5 * h else "edge"
-        return "figures"
-
-    # Individual levers: (description, art), or None when at their cap.
-    def bow_up(why):
-        # Wider bow = wider arc through the low-speed top. Widen the MAGNITUDE
-        # up to the cap (the seed's bow direction/sign is preserved, so a
-        # NEGATIVE seed bow widens -- more negative -- instead of shrinking
-        # toward zero, and the exit side survives).
-        _, hi = AZ_REELIN_AMP_MAG_BOUNDS
-        sign = -1.0 if np.signbit(float(art["az_reelin_amp"])) else 1.0
-        mag = abs(art["az_reelin_amp"])
-        if mag >= hi - 0.01:
-            return None
-        old = art["az_reelin_amp"]
-        art["az_reelin_amp"] = round(sign * min(mag + 0.06, hi), 3)
-        return (
-            f"{why} -> az_reelin_amp {old:.2f} -> {art['az_reelin_amp']:.2f}",
-            art,
-        )
-
-    def peak_down(why):
-        # Lower peak = more apparent wind at the top.
-        if art["beta_reelin_peak"] <= 0.62:
-            return None
-        old = art["beta_reelin_peak"]
-        art["beta_reelin_peak"] = round(old - 0.1, 3)
-        return (
-            f"{why} -> beta_reelin_peak {old:.2f} -> {art['beta_reelin_peak']:.2f}",
-            art,
-        )
-
-    def ramp_up(why):
-        # Gentler window edges = smoother reel-out/reel-in handover.
-        if art["ramp_fraction"] >= 0.47:
-            return None
-        old = art["ramp_fraction"]
-        art["ramp_fraction"] = round(min(old + 0.03, 0.48), 3)
-        return (
-            f"{why} -> ramp_fraction {old:.2f} -> {art['ramp_fraction']:.2f}",
-            art,
-        )
-
-    def figures_up(why):
-        # Bigger figures = longer arc per loop = lower turn rate at the kite's
-        # natural speed. Scale both amps at the ~2.5 ratio.
-        if art["az_amp0"] >= 0.44:
-            return None
-        old_a, old_b = art["az_amp0"], art["beta_amp0"]
-        art["az_amp0"] = round(min(old_a * 1.12, 0.45), 3)
-        art["beta_amp0"] = round(art["az_amp0"] / 2.5, 3)
-        return (
-            f"{why} -> figures a{old_a:.2f}/b{old_b:.2f} -> "
-            f"a{art['az_amp0']:.2f}/b{art['beta_amp0']:.2f}",
-            art,
-        )
-
-    # Lever chains per symptom region. "edge" is the reel-out/reel-in
-    # handover, where the figures re-emerge while still elevated/depowered --
-    # its levers are the handover smoothness and the figure turn rate, NOT
-    # the top geometry.
-    chains = {
-        "top": (bow_up, peak_down),
-        "edge": (ramp_up, figures_up, peak_down),
-        "figures": (figures_up,),
-    }
-
-    def run_chain(reg, why):
-        for lever in chains[reg][escalate:]:
-            action = lever(why)
-            if action is not None:
-                return action
-        raise RuntimeError(
-            f"{why}: no remaining knob helps in the '{reg}' region"
-            + ("" if reg == "top" else " -- try fewer loops (--loops)")
-        )
-
-    # 1) A node that fails to trim is the hardest symptom -- fix it first.
-    if m["truncated_at"] is not None:
-        return run_chain(
-            region(m["trunc_s"]), f"trim truncated at s={m['trunc_s']:.2f}"
-        )
-
-    # 2) AoA violations (in practice always the slow reel-in top).
-    if m.get("aoa_available") and m.get("aoa_n_viol"):
-        why = f"AoA {m['aoa_max']:.2f} rad > {m['aoa_ub']:.2f} at s={m['aoa_worst_s']:.2f}"
-        action = peak_down(why)
-        if action is None:
-            raise RuntimeError(f"{why}, but beta_reelin_peak is at its floor")
-        return action
-
-    # 3) Steering beyond the slack.
-    if m["steer_excess"] > AUTO_STEER_SLACK:
-        s_w = m["steer_worst_s"]
-        why = (
-            f"steering [{m['steer_min']:+.2f}, {m['steer_max']:+.2f}] at "
-            f"{m['steer_n_viol']} node(s), worst at s={s_w:.2f}"
-        )
-        return run_chain(region(s_w), why)
-
-    return None
-
-
-def _auto_tune(arr=None, max_iter=AUTO_MAX_ITER, curvature_limit=None):
-    """Automatically tune the synthetic shape until the seed is feasible.
-
-    The simulate -> feasibility-metrics -> one-knob-adjustment loop that was
-    previously done by hand, so ANY wind speed (from run_full_cycle_opti's
-    WIND_CONFIG) and ANY --loops value gets a seed that trims inside the NLP
-    bounds without editing ARTIFICIAL (radial closure is left to the
-    optimizer). Each iteration is one forward sim
-    (~1 min). A symptom that survives a knob move escalates to the next lever
-    in its chain (stall detection), and the BEST simulated iterate -- not the
-    last -- is returned and written; the knobs are printed for pinning.
-
-    ``curvature_limit`` (1/m) is enforced on the spline inside every
-    ``build_config`` (local fairing) and additionally biases the best-iterate
-    selection: an iterate whose faired spline still violates the limit is
-    penalized -- otherwise --auto could hand the write-time guard a config it
-    must refuse.
-    """
-    art = dict(ARTIFICIAL)
-    depth = float(np.clip(DEPOWER_DEPTH, 0.25, 1.0))
-    best = None  # (score, config, phase, system_model, art)
-    prev_sig = None
-    prev_score = float("inf")
-    escalate = 0
-    duration_s = None  # measured sim duration; recalibrates n_points as we go
-    for it in range(1, max_iter + 1):
-        built_duration = duration_s  # the duration this iterate's grid is built on
-        config = build_config(
-            arr,
-            depower_depth=depth,
-            artificial=art,
-            duration_s=duration_s,
-            curvature_limit=curvature_limit,
-        )
-        try:
-            phase, system_model = _simulate_cycle(config)
-        except RuntimeError as exc:
-            # Not even node 0 trims: no metrics to steer the next knob move
-            # from, so stop and keep the best iterate simulated so far.
-            if best is None:
-                raise
-            print(f"[auto] it {it}: forward simulation failed ({exc}); keeping the best iterate")
-            break
-        measured = _measured_cycle_duration(
-            phase, config["reelout"]["sim_parameters"]["n_points"]
-        )
-        if measured is not None:
-            if duration_s is None or abs(measured - duration_s) > 0.05 * measured:
-                print(
-                    f"[auto] measured cycle duration {measured:.1f} s -> "
-                    "n_points recalibrated from the next iterate on"
-                )
-            duration_s = measured
-        metrics = _feasibility_metrics(phase, system_model, config, artificial=art)
-
-        score = _feasibility_score(metrics)
-        if curvature_limit:
-            kappa = path_curvature_metrics(config["reelout"]["path_parameters"])[
-                "max_physical"
-            ]
-            score += 25.0 * max(kappa / float(curvature_limit) - 1.0, 0.0)
-        # Ties go to the later iterate: its grid is built on a measured duration.
-        if best is None or score <= best[0]:
-            best = (score, config, phase, system_model, dict(art))
-
-        # Escalate to the next lever only when the SAME symptom is not even
-        # improving: a lever that shrinks the violation (e.g. peak_down on the
-        # top steering) should keep stepping, not be abandoned after one try.
-        sig = _symptom_signature(metrics)
-        stalled = (
-            sig is not None
-            and sig == prev_sig
-            and score >= 0.9 * prev_score
-        )
-        escalate = escalate + 1 if stalled else 0
-        prev_sig, prev_score = sig, score
-
-        try:
-            action = _auto_action(metrics, art, escalate=escalate)
-        except RuntimeError as exc:
-            print(f"[auto] stuck: {exc}; keeping the best iterate")
-            break
-        if action is None:
-            stale_grid = built_duration is None or (
-                measured is not None
-                and abs(measured - built_duration) > 0.1 * measured
-            )
-            if stale_grid and it < max_iter:
-                # Feasible, but on the grid of the duration PRIOR: rebuild on
-                # the measured duration (same knobs) and re-check it, so the
-                # written seed has the n_points the optimizer should solve.
-                print(f"[auto] it {it}: feasible -> rebuilding on the measured duration")
-                continue
-            print(f"[auto] converged after {it} iteration(s)")
-            break
-        if it == max_iter:
-            print(
-                f"[auto] iteration budget ({max_iter}) exhausted; keeping best iterate"
-            )
-            break
-        desc, art = action
-        print(f"[auto] it {it}: {desc}")
-
-    _, config, phase, system_model, best_art = best
-    print("[auto] knobs of the written config (pin to reproduce without --auto):")
-    for key in (
-        "n_loops",
-        "reelout_fraction",
-        "beta0",
-        "beta_amp0",
-        "az_amp0",
-        "beta_reelin_peak",
-        "az_reelin_amp",
-        "az_reelin_through",
-        "ramp_fraction",
-        "reelin_center",
-        "psi0",
-        "psi_entry",
-        "psi_exit",
-        "bow_shape",
-        "lobe_handover_phase",
-    ):
-        print(f"    {key}: {best_art.get(key)}")
-    if duration_s is not None:
-        print(
-            f"    (measured cycle duration {duration_s:.1f} s; set "
-            f"CYCLE_DURATION_S = {duration_s * 3.0 / best_art['n_loops']:.0f} "
-            "to reproduce n_points without a sim)"
-        )
-    return config, phase, system_model, best_art
-
-
-def _load_protologger_cycle(h5_path, cycle_id):
-    """One cycle of a ProtoLogger EKF result file (``flight_data`` +
-    ``ekf_output`` groups).
-
-    Same array layout as ``_cycle_arrays``; the ROM depower input is the
-    normalised ``up`` column itself (the kite's rom_config.yaml band must be
-    stated in that unit), not the V3 power-tape map.
-    """
-    import h5py
-
-    with h5py.File(h5_path, "r") as f:
-        fd, ek = f["flight_data"], f["ekf_output"]
-        mask = np.asarray(fd["cycle"][:]) == float(cycle_id)
-        if not mask.any():
-            raise RuntimeError(f"Cycle {cycle_id} not found in {h5_path}")
-
-        def get(g, k):
-            return np.asarray(g[k][:], dtype=float)[mask]
-
-        pos = np.column_stack([get(ek, f"kite_position_{a}") for a in "xyz"])
-        arr = {
-            "azimuth": np.unwrap(get(fd, "kite_azimuth")),
-            "elevation": get(fd, "kite_elevation"),
-            "distance_radial": np.linalg.norm(pos, axis=1),
-            "tether_force": get(fd, "ground_tether_force"),
-            "reelout_speed": get(fd, "tether_reelout_speed"),
-            "time": get(fd, "time"),
-            "l_dp": get(fd, "up"),
-            "wind": get(ek, "wind_speed_horizontal"),
-            "phase": get(fd, "flight_phase_index"),
-        }
-    # The ProtoLogger cycle counter starts at the reel-in (phases 3, 4, 1, 2);
-    # roll so s = 0 is in steady reel-out -- the first phase-1 sample below
-    # 45 deg elevation, i.e. after the descent from the reel-in top -- the
-    # start state the seed simulation and the NLP assume (reeling out,
-    # powered, at r0). Starting AT the top (74 deg, slow, powered) is the
-    # hardest trim of the cycle and fails at node 0.
-    steady = (arr["phase"] == 1.0) & (arr["elevation"] < np.radians(45.0))
-    first_ro = int(np.argmax(steady))
-    if steady[first_ro] and first_ro > 0:
-        for key in list(arr):
-            arr[key] = np.roll(arr[key], -first_ro)
-        t = arr["time"]
-        dt = float(np.median(np.diff(t[: max(2, first_ro)])))
-        arr["time"] = np.arange(t.size) * dt + float(t[0])
-    return arr
-
-
-def _load_experimental_cycle():
-    """EKF flight load + cycle isolation (SHAPE_SOURCE == 'experimental' only)."""
-    loader = FLIGHT.get("loader")
-    if not loader:
-        raise ValueError(
-            f"{KITE_NAME}: --shape experimental needs a flight block in cycle_profile.yaml"
-        )
-    if loader == "protologger_h5":
-        return _load_protologger_cycle(FLIGHT["h5"], CYCLE_ID)
-    if loader != "ekf_results":
-        raise ValueError(f"Unknown flight loader {loader!r} for kite {KITE_NAME}")
-    flight = load_flight(FLIGHT["h5"])
-    ekf_df, flight_df = flight.ekf, flight.measured
-    if "flight_phase_index" not in flight_df:
-        raise RuntimeError("flight_phase_index column is required to derive cycles")
-    flight_df["cycle_by_phase"] = cycles_from_phases(flight_df["flight_phase_index"])
-    available = [int(c) for c in np.unique(flight_df["cycle_by_phase"]) if c >= 0]
-    if CYCLE_ID not in available:
-        raise RuntimeError(f"Cycle {CYCLE_ID} not found. Available cycles: {available}")
-    return _cycle_arrays(ekf_df, flight_df, CYCLE_ID)
-
-
 def main(
     run_plots: bool = False,
     check: bool = False,
-    auto: bool = False,
     loops: int = None,
     reentry: str = None,
     reelin_shape: str = None,
@@ -1846,14 +1458,12 @@ def main(
     curvature_limit: float = CURVATURE_LIMIT_1PM,
     reelin_center: float = None,
     kite: str = None,
-    shape: str = None,
     wind_speed: float = None,
     wind_height: float = None,
     output: str = None,
+    size: bool = False,
 ) -> int:
-    global SHAPE_SOURCE, OUTPUT_PATH, SEED_PLOT_PATH
-    if shape:
-        SHAPE_SOURCE = shape
+    global OUTPUT_PATH, SEED_PLOT_PATH
     configure_kite(kite or KITE_DIR)
     # The forward sims evaluate the seed at run_full_cycle_opti's wind
     # (_simulate_cycle), so the override goes there.
@@ -1891,7 +1501,6 @@ def main(
         # during reel-out. Derive the internal continuous full-period count
         # (and the parity-matching psi_entry -- the count is always honoured
         # EXACTLY; the peel-off crossing mirrors by pi as its parity needs);
-        # --auto adapts the remaining knobs to the loop count.
         ARTIFICIAL["n_loops"], ARTIFICIAL["psi_entry"] = (
             full_cycle_n_loops_for_half_figures(
                 int(loops),
@@ -1967,46 +1576,44 @@ def main(
     # build_config call (fair_periodic_spline_to_curvature_limit): control
     # points around a violation move minimally, the parametric knobs are
     # never changed for curvature.
-    arr = _load_experimental_cycle() if SHAPE_SOURCE == "experimental" else None
-
     phase = system_model = None
-    art_used = None
-    if auto:
-        config, phase, system_model, art_used = _auto_tune(
-            arr, curvature_limit=curvature_limit
-        )
-    else:
-        config = build_config(
-            arr, depower_depth=DEPOWER_DEPTH, curvature_limit=curvature_limit
-        )
-        if check:
-            # Bootstrap sim: calibrate n_points to the MEASURED cycle duration
-            # before the config is validated and written (one rebuild + re-sim
-            # when the CYCLE_DURATION_S prior was materially off).
-            phase, system_model = _simulate_cycle(config)
-            n_old = int(config["reelout"]["sim_parameters"]["n_points"])
-            measured = _measured_cycle_duration(phase, n_old)
-            if measured is not None:
-                n_new = int(
-                    np.clip(np.ceil(measured * NPOINTS_PER_SECOND), 50, N_POINTS_MAX)
+    config = build_config(depower_depth=DEPOWER_DEPTH, curvature_limit=curvature_limit)
+    if size:
+        config, phase, system_model = _size_seed(config, curvature_limit)
+        if config is None:
+            print(
+                f"\nNo margin of {SIZE_MARGINS} marches at this wind -- NOT "
+                "written. Continue from a neighbouring wind instead "
+                "(run_full_cycle_opti.py --continue-from)."
+            )
+            return 1
+    elif check:
+        # Bootstrap sim: calibrate n_points to the MEASURED cycle duration
+        # before the config is validated and written (one rebuild + re-sim
+        # when the CYCLE_DURATION_S prior was materially off).
+        phase, system_model = _simulate_cycle(config)
+        n_old = int(config["reelout"]["sim_parameters"]["n_points"])
+        measured = _measured_cycle_duration(phase, n_old)
+        if measured is not None:
+            n_new = int(
+                np.clip(np.ceil(measured * NPOINTS_PER_SECOND), 50, N_POINTS_MAX)
+            )
+            if abs(n_new - n_old) > 0.1 * n_old:
+                print(
+                    f"[calib] measured cycle duration {measured:.1f} s -> "
+                    f"n_points {n_old} -> {n_new}; rebuilding and re-simulating"
                 )
-                if abs(n_new - n_old) > 0.1 * n_old:
-                    print(
-                        f"[calib] measured cycle duration {measured:.1f} s -> "
-                        f"n_points {n_old} -> {n_new}; rebuilding and re-simulating"
-                    )
-                    config = build_config(
-                        arr,
-                        depower_depth=DEPOWER_DEPTH,
-                        duration_s=measured,
-                        curvature_limit=curvature_limit,
-                    )
-                    phase, system_model = _simulate_cycle(config)
-                else:
-                    print(
-                        f"[calib] measured cycle duration {measured:.1f} s; "
-                        f"n_points {n_old} already consistent"
-                    )
+                config = build_config(
+                    depower_depth=DEPOWER_DEPTH,
+                    duration_s=measured,
+                    curvature_limit=curvature_limit,
+                )
+                phase, system_model = _simulate_cycle(config)
+            else:
+                print(
+                    f"[calib] measured cycle duration {measured:.1f} s; "
+                    f"n_points {n_old} already consistent"
+                )
 
     try:
         enforce_curvature_limit(config["reelout"]["path_parameters"], curvature_limit)
@@ -2031,20 +1638,17 @@ def main(
     print(f"Wrote {OUTPUT_PATH}")
 
     # Seed-path figure (geometry only): always saved, shown with --plot.
-    art_plot = None
-    if SHAPE_SOURCE == "artificial":
-        art_plot = art_used if art_used is not None else ARTIFICIAL
-    plot_seed_path(config, art=art_plot, arr=arr, save_path=SEED_PLOT_PATH, show=False)
+    plot_seed_path(config, art=ARTIFICIAL, save_path=SEED_PLOT_PATH, show=False)
 
-    # Feasibility: simulate (or reuse the --auto sim) and check the
+    # Feasibility: simulate (or reuse the --size sim) and check the
     # trajectory against the bounds the NLP will impose on it as a warm start.
     if run_plots or (check and phase is None):
         phase, system_model = _simulate_cycle(config, run_plots=run_plots)
     if phase is not None:
-        _feasibility_report(phase, system_model, config, artificial=art_used)
+        _feasibility_report(phase, system_model, config)
 
     if run_plots:
-        plot_seed_path(config, art=art_plot, arr=arr, save_path=None, show=True)
+        plot_seed_path(config, art=ARTIFICIAL, save_path=None, show=True)
 
     return 0
 
@@ -2064,21 +1668,13 @@ if __name__ == "__main__":
         "also recalibrates n_points to the measured cycle duration",
     )
     parser.add_argument(
-        "--auto",
-        action="store_true",
-        help="Auto-tune the synthetic shape until every node trims inside "
-        "the NLP bounds at the kite profile's wind (one forward sim per "
-        "iteration; radial closure is left to the optimizer)",
-    )
-    parser.add_argument(
         "--loops",
         type=int,
         default=None,
         help="Number of half figure-eights (lobes) flown during reel-out "
         "-- the count you see on the sphere, honoured exactly; the "
         "internal full-period n_loops and the parity-matching psi_entry "
-        "are derived from it (combine with --auto to adapt the other "
-        "knobs)",
+        "are derived from it",
     )
     parser.add_argument(
         "--reentry",
@@ -2144,16 +1740,6 @@ if __name__ == "__main__":
         f"see cycle_kites.py); default {DEFAULT_KITE}",
     )
     parser.add_argument(
-        "--shape",
-        choices=("artificial", "experimental"),
-        default=None,
-        help="Path-shape source (default: the module's SHAPE_SOURCE, "
-        f"{SHAPE_SOURCE!r}): 'artificial' = the synthetic figure-eights + "
-        "reel-in lobe, 'experimental' = periodic spline fitted to the "
-        "reference flight cycle of the kite profile (its measured depower "
-        "profile is the warm start; --auto does not apply)",
-    )
-    parser.add_argument(
         "--wind-speed",
         type=float,
         default=None,
@@ -2173,14 +1759,20 @@ if __name__ == "__main__":
         f"cycle_configs/{SEED_FILENAME} (pass it to run_full_cycle_opti.py "
         "--config); the seed-path figure goes next to it",
     )
+    parser.add_argument(
+        "--size",
+        action="store_true",
+        help="Refit the seed path to the turns the kite holds at this wind: "
+        f"the first of the margins {SIZE_MARGINS} on the steering-limited turn "
+        "radius whose forward simulation is complete and inside the steering "
+        "limit at the kite's own roll gain. Writes nothing if none is",
+    )
     args = parser.parse_args()
     raise SystemExit(
         main(
             kite=args.kite,
-            shape=args.shape,
             run_plots=args.plot,
             check=args.check,
-            auto=args.auto,
             loops=args.loops,
             reentry=args.reentry,
             reelin_shape=args.reelin_shape,
@@ -2190,5 +1782,6 @@ if __name__ == "__main__":
             wind_speed=args.wind_speed,
             wind_height=args.wind_height,
             output=args.output,
+            size=args.size,
         )
     )

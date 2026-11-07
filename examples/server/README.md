@@ -204,6 +204,31 @@ with it (fallback: cold with it) — so expect the first `/step` to take about
 twice as long; later steps solve once. Cold solves remain path-sensitive:
 prefer stepping sequentially (see below).
 
+The first solve has a second stage of its own when the kite's ROM turns too
+little per unit steering to fly the starting pattern (the LEI-V3's default,
+simulation-only ROM at the built-in down-loop): the starting path is then
+simulated and solved with the roll gain scaled up (1.25–2x, the smallest that
+works) and re-solved warm with the scale stepped back to 1. The reply is
+always the optimum at the ROM's own roll gain; on the LEI-V3 reference the
+first `/step` takes ~25 s instead of ~5 s, later steps are unaffected.
+
+With `kite_sized_seed` (default on, ignored when you send a `trajectory` or
+`initial_guess`) that detour is rarely needed: `/init` measures the tightest
+turn the kite holds on each course at this wind and fits the configured eight
+to 1.2 x that, when it is tighter somewhere. On the LEI-V3 default ROM this
+takes ~10 s at `/init` and the first `/step` then converges in one solve at the
+ROM's own roll gain (~15 s) from 4 to 10 m/s. The init reply's `kite_sized_seed`
+says whether the seed was refitted.
+
+A first `/step` that does not converge is retried before it fails, each solve
+capped at 300 iterations unless you send `max_iter`: the seed refitted at 1.4 x
+the turn; then a cold solve at 0.5 and 1 m/s above and 0.5 m/s below your wind,
+stepped warm to your wind; then the configured seed. A wind that needs them
+takes minutes instead of seconds (about 10 minutes before a final failure). On
+the LEI-V3 default ROM this covers 3.5 to 12 m/s with `depower` mode `profile`.
+With `optimize` (one value for the whole path) it covers 3.5 to 11 m/s, and the
+power falls above 10 m/s, where one value cannot shed the extra force.
+
 ### Pattern limits — keeping the optimizer out of shapes you do not want
 
 By default the optimizer may put the figure anywhere in |azimuth| ≤ 45.8°,

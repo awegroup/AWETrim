@@ -14,7 +14,7 @@ Open one of the two scripts, edit the **Inputs** block at the top, and run it.
 
 | Script | Structural model | Time |
 |--------|------------------|------|
-| [`run_simulation_PSM.py`](run_simulation_PSM.py) | **Wireframe**: one rib per strut, the bridle with its pulleys, tubes as stiff axial springs, canopy as tension-only springs | under a minute |
+| [`run_simulation_PSM.py`](run_simulation_PSM.py) | **Wireframe**: one rib per strut, the bridle with its pulleys, tubes as stiff axial springs, canopy as tension-only springs | about 2 min |
 | [`run_simulation_BILLOW.py`](run_simulation_BILLOW.py) | **Full**: inflatable tube beams (leading edge, struts), a wrinkling membrane canopy and the complete bridle | about 1 min |
 
 Both read the same geometry file, `structure.yml` (an awesIO structure
@@ -50,10 +50,11 @@ Each run writes its own case folder, named after its inputs, under
 - `sim_output.h5`: node positions, forces and the solver history
 - `case.json`: what to draw (wing, tubes, bridle lines with names and tensions) and the flight state
 - `config.yaml`, plus the deformed `aero_geometry.yaml` / `structure.yml` (awesIO), which other
-  scripts can reuse (e.g. `examples/1_aerodynamics/solve_single_state.py --deformed-from <case>`)
+  scripts can reuse (e.g. `examples/1_aerodynamics/solve_single_state.py` with `SHAPE = "wireframe"` and the same `Case`)
 
-Solver settings (tolerances, panel counts, the material model) come from the
-kite's `as_config.yaml`.
+The inputs block builds the run's `Case` (flight state, wind, tape command).
+How the problem is modelled and solved comes from the kite's `as_config.yaml`
+(one block per subsystem); the scripts override a few aerodynamic settings.
 
 ## 2. Look at the result
 

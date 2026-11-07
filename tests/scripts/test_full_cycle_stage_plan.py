@@ -61,7 +61,7 @@ def test_failed_step_retries_from_the_midpoint_then_gives_up(rfco):
     assert rfco._retry_continuation(plan, i)
     assert plan[i]["roll_scale"] == pytest.approx(1.375)
     assert plan[i + 1]["roll_scale"] == pytest.approx(1.25)
-    for _ in range(rfco.ROLL_ASSIST_MAX_HALVINGS - 1):
+    for _ in range(rfco.roll_assist.ROLL_ASSIST_MAX_HALVINGS - 1):
         assert rfco._retry_continuation(plan, i)
     assert not rfco._retry_continuation(plan, i)
 

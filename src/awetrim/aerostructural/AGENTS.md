@@ -83,23 +83,72 @@ src/awetrim/aerostructural/
                                    length, sin(theta)/theta = c/L_f (Cayon 2022
                                    Sec. 5.3: inextensible membrane, constant
                                    pressure -> constant tension -> circle); tip
-                                   bays ride rigidly with the outer strut.
+                                   bays keep their LE and the tube end (tip
+                                   chord), their TE takes the outer strut's
+                                   shift fading to zero at the tip (until
+                                   2026-11 they rode rigidly with the strut,
+                                   moving the tube up to 0.24 m). The LE never
+                                   moves (checked).
                                    refine_billowed_wing (sections on the arc),
                                    panel_bays. p from photogrammetry (LEI-V3:
                                    0.05, Haanen 2026 Table 9.2). Billow full
                                    resolves billowing itself: never add it there.
                                    docs/aerostructural/lei_v3_wing_corrections.md
+  wing_tip.py                      The curled LEI tip as a lifting-line bay.
+                                   panel_sweep_deg(le, te): quarter-chord line
+                                   off the normal to the mean chord;
+                                   MAX_PANEL_SWEEP_DEG = 55 (LEI-V3 FEM tip bay
+                                   64-66: VSM finds 3 circulations per panel,
+                                   2/12 trims converged). correct_tip_bays(le,
+                                   te): slides each tip section's LE point along
+                                   the constant tube length (outer LE -> corner
+                                   -> tip TE) in the tube's plane until the bay
+                                   is <= the limit (LEI-V3: tip chord 0.35 ->
+                                   0.76-0.81 m, area 0.167 -> 0.164 m2); warns
+                                   about any bay still beyond it. Aero mesh
+                                   only; fem_wing applies it.
   forces.py                        distribute_total_force_by_particle_mass
   convergence.py                   check_convergence, resolve_residual_tolerances,
                                    set_absolute_residual_gate, force_settle_state,
                                    resultant_tether_force, relative_residual_norm,
                                    element_elongations, max_element_elongation
   results.py                       save_sim_output, append_sweep_csv_row, build_sweep_csv_row
-  case.py                          Case setup shared by drivers and scripts:
-                                   DEFAULT_KITE_NAME, CONFIG_DEFAULTS,
-                                   resolve_kite_paths, build_system_model,
+  case.py                          Case setup shared by drivers and scripts.
+                                   Case (frozen dataclass, since 2026-11-02):
+                                   what a run IS -- flight state, wind spec
+                                   (create_wind_model_from_config form),
+                                   atmosphere (rho, air_density_law,
+                                   height_gnd, mu, gravity), tape command --
+                                   with NO defaults on the flight state, wind
+                                   or command; to_config / from_config (a
+                                   stored result's, a wind-spec-less one read
+                                   as uniform; a wind_speed_wind_ref that
+                                   disagrees with the spec raises) / apply /
+                                   folder_name. CASE_KEYS. as_config.yaml has
+                                   one block per subsystem: aerodynamics,
+                                   structure (wireframe, billow, solver),
+                                   tether, coupling (trim, loop,
+                                   load_transfer); to_runtime maps them onto
+                                   the names the solvers read
+                                   (_RUNTIME_NAMES: aerodynamics.bridle ->
+                                   aerodynamic_bridle, structure.wireframe ->
+                                   structural_pss, coupling.loop ->
+                                   aero_structural_solver, ...) and refuses
+                                   a case key or the KCU point;
+                                   load_as_config / flatten_as_config;
+                                   apply_overrides (same blocks + output);
+                                   apply_structure (the KCU point as the
+                                   moment reference and the fixed nodes, from
+                                   the Structure; both drivers call it);
+                                   runtime_config(case, as_config, overrides,
+                                   defaults=) is THE config a coupled run
+                                   reads; OUTPUT_DEFAULTS (plot / snapshot
+                                   flags, the script's); merge_config.
+                                   DEFAULT_KITE_NAME, CONFIG_DEFAULTS (model
+                                   keys only), resolve_kite_paths,
+                                   build_system_model,
                                    air_density_at_case (THE density of a
-                                   case: as_config rho, or with
+                                   case: the Case's rho, or with
                                    air_density_law: exponential + height_gnd
                                    the sea-level rho taken to the kite height
                                    r sin(beta); VSM, bridle drag and the
@@ -117,7 +166,11 @@ src/awetrim/aerostructural/
                                    one table over both drivers' meta layouts,
                                    lift/drag from trim_results'
                                    total_aero_force_vec, CL/CD only with their
-                                   area)
+                                   area; roll/pitch/yaw are the ATTITUDE vs
+                                   the built shape, attitude_deg off the
+                                   positions (rigid_rotation, Kabsch), not the
+                                   trim's opt_x, which is the last
+                                   per-iteration increment)
   tracking.py                      setup_tracking_arrays, update_tracking_arrays
   utils.py                         rotate_geometry, calculate_cg, calculate_inertia, load_yaml,
                                    resolve_kcu_mass (system.yaml, then config
@@ -140,6 +193,12 @@ src/awetrim/aerostructural/
                                    so the mass followed the row's node order:
                                    LEI-V3 nodes 36 / 37 had 77 / 25 g)
   aerodynamic_vsm.py               VSM body initialisation and run_vsm_package wrapper (shared).
+                                   frozen_alpha_polar_and_down_circulation: the polar marched up
+                                   and back (the rows of the march down) and the
+                                   circulation on the down branch.
+                                   frozen_alpha_polar_and_down_circulation: the polar marched up
+                                   and back (the rows of the march down) and the
+                                   circulation on the down branch.
                                    run_frozen_alpha_polar_about_trim: the alpha
                                    polar of a TRIMMED body on its frozen shape
                                    (freestream turned in the FRD centre-panel
@@ -218,10 +277,16 @@ src/awetrim/aerostructural/
                                    drivers, the actuation and the Aitken
                                    relaxation needed no change when the
                                    particle system was removed. kin_damp_sim
-                                   deliberately raises. Also holds the pure
-                                   stiffness-bound helpers
-                                   (modulus_stiffness_ceiling,
-                                   adapt_stiffnesses), moved across unchanged.
+                                   deliberately raises. The structure flies
+                                   its file's stiffnesses: the elongation-
+                                   bound stiffening (adapt_stiffnesses,
+                                   modulus_stiffness_ceiling), the modulus
+                                   ramp and pin_bridle_modulus existed for the
+                                   PSM file's 10x too soft lines and were
+                                   removed 2026-11-02 (0.13 % max elongation
+                                   on the datasheet moduli, 0 updates); the
+                                   elongations stay a diagnostic
+                                   (max_*_element_elongation in the meta).
     structural_geometry_io.py      The wireframe's internal PSM-format dict
                                    (Structure.wireframe_dict()) -> StructuralGeometry
                                    arrays. Reads no file.
@@ -253,15 +318,24 @@ src/awetrim/aerostructural/
                                    the wing members at the new distances (bridle
                                    unchanged); the refined arc points are
                                    anchored in the skin one by one (static arc,
-                                   carried rigidly). WireframeCase.panel_bays
+                                   carried rigidly). fem_wing(structure,
+                                   positions, le, te, p) -> (le, te,
+                                   strut_sections, BillowedWing | None) is
+                                   that wing, its tip bays corrected
+                                   (wing_tip.correct_tip_bays, both le and
+                                   the BillowedWing's); wing_edges(structure, p, n)
+                                   its refined edges on the BUILT positions
+                                   (p = 0: linear between the FEM sections,
+                                   NOT billow_wing(0), which draws arcs up to
+                                   23 mm off), the step-1 scripts' wing.
+                                   WireframeCase.panel_bays
                                    carries the bay of every panel for the
                                    strut-lever transfer; prepare_structure
                                    builds the corner map from it
                                    solve_deformation = build_case (config,
                                    files, VSM body, tether) + prepare_structure
                                    (one live wireframe; PreparedWireframe reads
-                                   the LIVE tape lengths, pin_bridle_modulus
-                                   sets the fixed-stiffness model, restore(h5)
+                                   the LIVE tape lengths, restore(h5)
                                    puts back a saved solve's positions (meta
                                    structure_positions: the structure's own;
                                    tracking positions[-1] carries the final
@@ -274,10 +348,7 @@ src/awetrim/aerostructural/
                                    the structure stands; final_state= receives
                                    the trimmed body, trim result and system
                                    model). Refactor of 2026-10-27 is
-                                   bit-identical. Chains must not use the
-                                   elongation bound (it only raises k, so a
-                                   reused structure ratchets): pin the modulus
-                                   and set structural_pss.update_stiffness false
+                                   bit-identical.
     reduce_fem.py                  reduce_fem_geometry: the full model as a
                                    Structure (awesIO structure.yml) -> the
                                    wireframe's PSM-format dict. Strut diameter
@@ -919,7 +990,12 @@ rest lengths through `_rest_length` / `_set_rest_length`, the one getter/setter
 pair for all three backends. Tracking gains `steering_half_difference` and
 `trim_state` (the trim's `[kite_speed, roll, pitch, yaw, course_rate]` per
 iteration; the attitude entries are INCREMENTS the geometry is rotated by, so
-read the kite's attitude off the positions, not the last row). Script:
+read the kite's attitude off the positions, not the last row:
+`case_view.attitude_deg`, which the trim table uses since 2026-10-30; before,
+the table printed the last row as "Roll/Pitch/Yaw (trim rotation)", ~0 at
+convergence). The wireframe solver (`coupled_solver_qsm`) records
+`trim_state` too since 2026-10-30 (row 0 = the pre-loop trim); earlier
+wireframe files hold NaN there. Script:
 `run_steering_BILLOW.py` (available on request).
 
 A gravity-only load case is NOT a valid smoke test: the KCU is pinned below the
@@ -1023,9 +1099,15 @@ so its difference is the camber offset and not a transfer error. On a planar
 wing, where the two coincide, the moment is exact
 (`tests/aerostructural/test_aero2struc.py`).
 
-## Config Keys (aerostructural_configs/config.yaml)
+## Config Keys (as_config.yaml)
 
-All defaults are defined in `awetrim.aerostructural.case.CONFIG_DEFAULTS`. Key sections:
+`as_config.yaml` has one block per subsystem -- `aerodynamics`, `structure`
+(`wireframe`, `billow`), `tether`, `coupling` (`trim`, `loop`,
+`load_transfer`) -- each with its model choices first and its solver settings
+after; `case.to_runtime` maps them onto the runtime names below. The
+operating point is a `case.Case`, the KCU point the structure's, never a
+config key. Key sections (runtime names; in the file `aerodynamic` is the
+`aerodynamics` block):
 
 ```yaml
 aerodynamic:
@@ -1166,13 +1248,6 @@ through the walk stopped a reel-in point at iteration 5 as a fully powered
 25.7 kN kite. Callers that apply their own acceptance on top of the solver
 (e.g. a "plateau" promotion) must honour `stop_reason` and never accept a
 `trim_speed_bound` run.
-
-**Elongation-rule settle gate needs history (2026-09-13):** the 1 % rule
-acts only from iteration `stiffness_settle_iters` on. The actuation
-"finalized" flags start `True` before the walk's first update, so without
-that term a handed-over shape whose iteration-0 residual is under the
-trigger stiffened on the donor/rest-length mismatch (9 wing elements at a
-spurious 9.5 % on chained cycle seconds).
 
 **Direct steering preset (2026-09-10).** Opt-in config key
 `steering_tape_preset_extension`: sets the asymmetric steering tape rest
@@ -1355,13 +1430,18 @@ Both coupled drivers rotate the structure by every trim's roll/pitch/yaw
 `*_bounds_deg` limit a per-iteration INCREMENT, while on the pre-loop trim
 (undeformed geometry) they limit the whole attitude. Keys in the optional
 `pre_loop` sub-block override the block's own for that one call
-(`aerodynamic_vsm.pre_loop_trim_config`). The LEI-V3 `as_config.yaml` sets
-roll/pitch/yaw to +-15 deg there and keeps +-4 deg in the loop. Why: at 40 deg
+(`aerodynamic_vsm.pre_loop_trim_config`). The LEI-V3 `as_config.yaml` used to
+set roll/pitch/yaw to +-15 deg there and +-4 deg in the loop; since 2026-11 it has
+one +-30 deg box and no `pre_loop` block, because a root outside the box leaves
+Newton without a solution. Why the first trim needed more: at 40 deg
 elevation the first trim needs ~10 deg of yaw; pinned at 4 it closed the yaw
 moment with a ~2 rad/s course rate, the tips stalled, the first structural
 step swung the kite ~22 deg about the KCU and VSM returned NaN. Same date:
 `_warn_if_trim_on_bounds` takes `rel_tol=1e-3` of the span, since TRF stops
 strictly inside the box (yaw 3.9987 on [-4, 4]) and 1e-6 never fired.
+`aerodynamic_vsm.trim_bounds(config)` / `trim_settings(config)` read the box
+and the block (2026-11-02), for `run_vsm_package` and the step-1 scripts,
+which trim with `pre_loop_trim_config` (their trim sets the whole attitude).
 
 ### Cold trim seed (quasi_steady_trim.initial_aoa_band_deg, 2026-10-27)
 
@@ -1381,9 +1461,44 @@ structure ~22 m and VSM then reported a "folded" lifting line. No trim or
 circulation solver survives that start (least_squares, CasADi, CasADi-Newton
 all failed alike); seeded, the state converges in 8 iterations.
 
+### Continuation (wireframe, 2026-11-03)
+
+``PreparedWireframe`` carries a continuation, so a caller of ``solve_step`` passes
+no seed: ``trim_seed`` is the last converged ``opt_x`` and circulation (the config
+keys ``quasi_steady_initial_guess`` / ``initial_gamma_distribution``, which a
+stated value overrides), ``restore`` reads it back from the file (``meta``'s
+``opt_x`` and ``gamma_distribution``), and it is dropped when the flight state
+changes (``case.system_model_state_key``). ``system_model`` is reused meanwhile,
+which keeps the CasADi trim's graph: one per chain, the bounds being numeric.
+Another flight state gets a new ``system_model``, since the graph holds the wind
+and position as numbers and is matched by the object's identity.
+
+Before this every state of a chain trimmed cold on a warm shape.
+``w5.0_depower_2.60`` of the LEI-V3 wireframe, ``least_squares``: 174 -> 117
+coupled iterations, tether force 0-2.3 % higher, stalled fraction a steady 0.030
+instead of 0.030-0.059. The results before it, the shipped ROM's sweep included,
+ran cold.
+
+A cold CasADi trim starts its true-polar stage from the attached predictor's
+solution when that converged (``_solve_trim_casadi``): the cold circulation guess
+can be an asymmetric, unconverged one Newton does not recover from. A stated seed
+stands, with the predictor as one retry if Newton fails on it. A trim that still
+fails raises ``CasadiTrimFailed`` (``run_vsm_package``): no ``least_squares`` rescue
+(capped at ``max_nfev`` it returned its seed, so only the structure moved) and not
+the direct-solve fallback, whose result the strut-lever load transfer cannot use.
+Newton stopping just short of the root (``CASADI_INEXACT_RESIDUAL``, off the bounds,
+finite forces: cycling on a polar corner) is taken as a step, flagged
+``trim_inexact``; the loop only ends on such a trim below ``CASADI_FINAL_RESIDUAL``
+(``trim_may_end_loop``), and the run's metadata carries the flag. The ``max_nfev``
+truncation rule applies to ``least_squares`` only. Cold at
+every state now gives the warm result to round-off on the LEI-V3 depower and
+steering chains.
+
 ### Trim solver (quasi_steady_trim.solver, 2026-09-15)
 
-``least_squares`` (default, every stored result) is the NumPy trim: scipy
+The LEI-V3 ``as_config.yaml`` sets ``casadi`` since 2026-11-03; a config without
+the key gets ``least_squares``. ``least_squares`` (every result before that
+date) is the NumPy trim: scipy
 over the five trim states, one inner VSM solve per residual evaluation,
 capped by ``max_nfev``. ``casadi`` is ``aerodynamics/trim_casadi.CasadiTrim``:
 trim states and circulations as ONE Newton problem with the exact Jacobian,
@@ -1440,7 +1555,7 @@ Output goes to `results/aerostructural/<kite_name>/<case_folder>/sim_output.h5` 
 
 - Read `coupled/awesio_structure.py` before changing how a structure file is read (`Structure`, `from_awesio`, `wireframe_to_awesio` / `wireframe_from_awesio`), and `structural_geometry_io.main()` before changing the wireframe's internal PSM dict; there the node index ordering (odd = LE, even = TE) and pulley dict format `[cj, ck, l0_cj_ck, l0_ci_cj, ci]` are load-bearing.
 - Any change to `WireframeQsmCoupler` must keep `QsmCouplingRequest` / `QsmCouplingResult` stable; the protocol tests check these fields.
-- Shared case helpers live in `awetrim.aerostructural.case` — add new shared defaults to `CONFIG_DEFAULTS` there, not as literals in individual scripts. Driver logic belongs in `wireframe/driver.py` / `billow/driver.py`; the run scripts only set inputs.
+- Shared case helpers live in `awetrim.aerostructural.case`. The operating point is a `Case` the script builds (no defaults); a new as_config key goes in its subsystem block (a new sub-block needs a `case._RUNTIME_NAMES` entry), a model default in `CONFIG_DEFAULTS`, never as a literal in an individual script. Driver logic belongs in `wireframe/driver.py` / `billow/driver.py`; the run scripts only set inputs.
 
 
 ## Trim settings reach the Billow trim (2026-10-07)

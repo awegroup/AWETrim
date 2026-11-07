@@ -19,7 +19,9 @@ Each step warm-starts from the previous one on the SAME structure (the
 drivers' solve_step, awetrim.aerostructural.billow.driver and
 awetrim.aerostructural.wireframe.driver), so a chain costs about one tape
 walk. On every converged state (an anchor) a frozen-shape angle-of-attack
-polar is solved (aerodynamic_vsm.run_frozen_alpha_polar_about_trim): the
+first moved to the realistic stall branch (settle_on_down_branch, on by default),
+and a frozen-shape angle-of-attack polar is solved, marched past the stall and
+back down (aerodynamic_vsm.run_frozen_alpha_polar_about_trim): the
 trims alone tie alpha to the depower almost one to one, the polars separate
 them. Everything is read from data/<kite>/identification.yaml (`sweep:`).
 
@@ -33,8 +35,12 @@ Parallel: runs on disjoint --chains may share the output folder (the sweep
 files are written under a lock). Resumable: a finished chain is skipped. An unfinished wireframe chain goes
 on after its last complete anchor, from the structure that anchor's
 sim_output.h5 saved; an unfinished Billow chain is solved again from its
-start (its beam frames are not saved). A state that does not converge ends
-its chain. About a minute per anchor.
+start (its beam frames are not saved). A state that does not converge ends its
+chain, and so does a trim that fails (recorded in the step's trim_failed.txt and
+listed at the end of the run); the sweep goes on with the
+next chain. A finished chain is skipped on a rerun: delete its chain_done to
+try it again, or to extend it after raising a steering `max`. About a minute per
+anchor.
 
 Optional `start_from_converged` (wireframe): before the chains, the built
 tape is solved at every wind, walking the wind up and down on one structure
@@ -44,7 +50,8 @@ instead of the unloaded build, whose first iterations can settle on a
 one-tip-stalled, turning state with zero steering.
 
 --repolar (wireframe) solves the polars of the saved anchors again over the
-current polar_d_alpha_deg, e.g. after widening it to reach the stall: each
+current polar_d_alpha_deg, e.g. after widening it to reach the stall, and those that
+fail the polar check: each
 anchor is restored and re-solved where it stands for its trimmed body, and its
 trim and polar rows are replaced together.
 
@@ -65,6 +72,7 @@ import copy
 import os
 import time
 from contextlib import contextmanager
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -72,18 +80,19 @@ import numpy as np
 import pandas as pd
 
 from awetrim.aerostructural import aerodynamic_vsm
-from awetrim.aerostructural.billow.driver import merge_config
 from awetrim.aerostructural.case import (
     DEFAULT_STRUC_GEOMETRY_FILENAME,
+    Case,
     air_density_at_case,
     resolve_kite_paths,
+    runtime_config,
 )
 from awetrim.aerostructural.results import save_sim_output
-from awetrim.aerostructural.utils import load_yaml
 from awetrim.identification import aerostructural_dataset as ds
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 DONE_MARKER = "chain_done"
+TRIM_FAILED_FILE = "trim_failed.txt"
 BASE_DIR = "base"
 LOCK_FILE = ".sweep_files.lock"
 LOCK_STALE_S = 120.0  # a lock this old was left by a killed run
@@ -99,12 +108,13 @@ def sweep_files_lock(out: Path):
         try:
             fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             break
-        except FileExistsError:
+        except (FileExistsError, PermissionError):  # Windows: the same while the holder deletes it
             try:
                 if time.time() - lock.stat().st_mtime > LOCK_STALE_S:
                     lock.unlink()
                     continue
-            except FileNotFoundError:
+            except (FileNotFoundError, PermissionError):
+                time.sleep(0.1)
                 continue
             time.sleep(0.1)
     try:
@@ -127,6 +137,9 @@ class Chain:
     name: str
     wind_speed: float
     steps: list[Step]
+    # Stalled span fraction past which the chain ends; None: only a state that
+    # does not converge ends it.
+    max_stalled_fraction: float | None = None
 
 
 def _walk(start: float, target: float, step: float) -> list[float]:
@@ -144,12 +157,36 @@ def build_chains(spec: dict, built_tape_length: float) -> list[Chain]:
         for i, target in enumerate(depower["targets"]):
             lengths = _walk(built_tape_length, target, depower["step"])
             steps = ([Step(None, 0.0)] if i == 0 else []) + [Step(l, 0.0) for l in lengths]
-            chains.append(Chain(f"w{wind:.1f}_depower_{target:.2f}", wind, steps))
+            chains.append(Chain(f"w{wind:.1f}_depower_{target:.2f}", wind, steps,
+                                spec["max_stalled_fraction"]))
         for length in steering.get("power_tape_lengths", []):
             halves = _walk(0.0, steering["max"], steering["step"])
             steps = [Step(length, h) for h in halves]
-            chains.append(Chain(f"w{wind:.1f}_steering_{length:.2f}", wind, steps))
+            chains.append(Chain(f"w{wind:.1f}_steering_{length:.2f}", wind, steps,
+                                steering.get("max_stalled_fraction", spec["max_stalled_fraction"])))
     return chains
+
+
+def sweep_case(spec: dict) -> Case:
+    """The sweep's flight state (``sweep.case``) at the first wind speed and
+    the built tape lengths; each solve changes the wind and the tapes (:func:`_at`)."""
+    state = dict(spec["case"])
+    wind = {**state.pop("wind"), "speed_wind_ref": float(min(spec["wind_speeds"]))}
+    return Case(**state, wind=wind, power_tape_extension=0.0, steering_tape_extension=0.0)
+
+
+def _at(config: dict, *, wind_speed=None, power_tape=None, steering=None) -> dict:
+    """``config`` at another wind speed [m/s] and tape command [m]: the case
+    keys change together, through the Case."""
+    case = Case.from_config(config)
+    changes = {}
+    if wind_speed is not None:
+        changes["wind"] = {**case.wind, "speed_wind_ref": float(wind_speed)}
+    if power_tape is not None:
+        changes["power_tape_extension"] = float(power_tape)
+    if steering is not None:
+        changes["steering_tape_extension"] = float(steering)
+    return dataclasses.replace(case, **changes).apply(config)
 
 
 def open_case(fidelity: str, spec: dict, kite: str):
@@ -160,14 +197,14 @@ def open_case(fidelity: str, spec: dict, kite: str):
         from awetrim.aerostructural.billow import driver
 
         case = driver.build_case(
-            spec.get("config_overrides"), kite_name=kite, project_dir=PROJECT_DIR,
+            sweep_case(spec), spec.get("overrides"), kite_name=kite, project_dir=PROJECT_DIR,
             system_config_path=system_path,
         )
     else:
         from awetrim.aerostructural.wireframe import driver
 
         config_path, _, _ = resolve_kite_paths(PROJECT_DIR, kite)
-        config = merge_config(load_yaml(config_path), spec.get("config_overrides"))
+        config = runtime_config(sweep_case(spec), config_path, spec.get("overrides"))
         # the wireframe reduced from the full structure (one structural file
         # for both fidelities), its aero mesh the full geometry's (billowed
         # when aerodynamic.billowing.contraction > 0)
@@ -181,11 +218,8 @@ def open_case(fidelity: str, spec: dict, kite: str):
 
 
 def prepare(driver, case, spec: dict, config: dict):
-    """A fresh structure; the wireframe with its bridle modulus pinned."""
-    prepared = driver.prepare_structure(case, config)
-    if spec.get("bridle_modulus_factor"):
-        prepared.pin_bridle_modulus(float(spec["bridle_modulus_factor"]))
-    return prepared
+    """A fresh structure, at the stiffnesses of its file."""
+    return driver.prepare_structure(case, config)
 
 
 def base_state_path(out: Path, wind_speed: float) -> Path:
@@ -215,23 +249,31 @@ def solve_base_states(driver, case, spec: dict, out: Path) -> None:
         print(f"base states: done, skipped ({done})", flush=True)
         return
     winds = sorted(float(w) for w in spec["wind_speeds"])
-    config = copy.deepcopy(case.config)
-    config["power_tape_final_extension"] = 0.0
+    config = _at(copy.deepcopy(case.config), wind_speed=winds[0], power_tape=0.0, steering=0.0)
     config["power_tape_extension_step"] = float(spec["depower"]["step"])
-    config["steering_tape_final_extension"] = 0.0
     config["steering_tape_extension_step"] = float(spec["steering"]["step"])
-    config["wind_speed_wind_ref"] = winds[0]
     prepared = prepare(driver, case, spec, config)
     latest = {}
+    last_saved = None
     for n_pass in range(max_passes):
         order = winds if n_pass % 2 == 0 else winds[::-1]
         for wind in order[1:] if n_pass else order:  # a turn re-solves no wind twice
             started = time.perf_counter()
-            config["wind_speed_wind_ref"] = wind
-            tracking, meta = driver.solve_step(case, prepared, config, final_state={})
+            config = _at(config, wind_speed=wind)
+            try:
+                tracking, meta = driver.solve_step(case, prepared, config, final_state={})
+            except aerodynamic_vsm.CasadiTrimFailed as failure:
+                latest[wind] = (False, float("nan"))
+                print(f"  base pass {n_pass + 1}, wind {wind:.1f} m/s: TRIM FAILED, {str(failure)[:200]}", flush=True)
+                # The failure leaves the structure mid-solve: back to the last saved shape.
+                prepared = prepare(driver, case, spec, config)
+                if last_saved is not None:
+                    prepared.restore(last_saved)
+                continue
             path = base_state_path(out, wind)
             path.parent.mkdir(parents=True, exist_ok=True)
             save_sim_output(tracking, meta, path.parent)
+            last_saved = path
             course_rate = float(np.ravel(meta["opt_x"])[4])
             latest[wind] = (bool(meta["converged"]), course_rate)
             print(f"  base pass {n_pass + 1}, wind {wind:.1f} m/s: course rate {course_rate:+.2e} rad/s, "
@@ -262,7 +304,9 @@ def anchor_rows(chain: Chain, index: int, prepared, config: dict, meta: dict,
         np.isfinite(np.asarray(trim["total_aero_force_vec"], dtype=float))
     ):
         return None
-    polar = aerodynamic_vsm.run_frozen_alpha_polar_about_trim(body, prepared.vsm_solver, d_alpha)
+    polar = aerodynamic_vsm.run_frozen_alpha_polar_about_trim(
+        body, prepared.vsm_solver, d_alpha, gamma_trim=trim.get("gamma_distribution")
+    )
     f_trim = np.asarray(trim["total_aero_force_vec"], dtype=float)
     f_zero = next(s["force_world"] for s in polar if s["d_alpha_deg"] == 0.0)
     anchor = f"{chain.name}/{index:02d}"
@@ -286,7 +330,7 @@ def repolar_chain(driver, case, chain: Chain, spec: dict, out: Path) -> int:
     from its sim_output.h5 and re-solved where it stands (no actuation, a few
     iterations from a converged shape) for its trimmed aero body, and its trim
     and polar rows are replaced together. Anchors whose polar already spans
-    the range are skipped (resumable). Returns the anchors redone."""
+    the range and pass the polar check are skipped (resumable). Returns the anchors redone."""
     d_alpha = polar_increments(spec)
     trims, polars = _read_rows(out / ds.TRIMS_FILE), _read_rows(out / ds.POLARS_FILE)
     if trims is None:
@@ -296,19 +340,22 @@ def repolar_chain(driver, case, chain: Chain, spec: dict, out: Path) -> int:
     for index in steps:
         anchor = f"{chain.name}/{index:02d}"
         have = polars.d_alpha_deg[polars.anchor == anchor] if polars is not None else pd.Series(dtype=float)
-        if len(have) and have.min() <= d_alpha.min() + 1e-9 and have.max() >= d_alpha.max() - 1e-9:
+        checked = (trims.polar_check[trims.anchor == anchor] <= ds.POLAR_CHECK_TOLERANCE).all()
+        if checked and len(have) and have.min() <= d_alpha.min() + 1e-9 and have.max() >= d_alpha.max() - 1e-9:
             continue
         started = time.perf_counter()
-        config = copy.deepcopy(case.config)
-        config["wind_speed_wind_ref"] = float(chain.wind_speed)
-        config["power_tape_final_extension"] = 0.0
+        config = _at(copy.deepcopy(case.config), wind_speed=chain.wind_speed,
+                     power_tape=0.0, steering=0.0)
         config["power_tape_extension_step"] = float(spec["depower"]["step"])
-        config["steering_tape_final_extension"] = 0.0
         config["steering_tape_extension_step"] = float(spec["steering"]["step"])
         prepared = prepare(driver, case, spec, config)
         prepared.restore(out / chain.name / f"step_{index:02d}" / "sim_output.h5")
         final_state = {}
-        _, meta = driver.solve_step(case, prepared, config, final_state=final_state)
+        try:
+            _, meta = driver.solve_step(case, prepared, config, final_state=final_state)
+        except aerodynamic_vsm.CasadiTrimFailed as failure:
+            print(f"  {anchor}: TRIM FAILED, rows kept as they were: {str(failure)[:200]}", flush=True)
+            continue
         rows = anchor_rows(chain, index, prepared, config, meta, final_state, d_alpha)
         if rows is None:
             print(f"  {anchor}: re-solve NOT CONVERGED, rows kept as they were", flush=True)
@@ -327,14 +374,54 @@ def repolar_chain(driver, case, chain: Chain, spec: dict, out: Path) -> int:
     return n_done
 
 
+def settle_on_down_branch(driver, case, spec: dict, prepared, tracking, meta, final_state,
+                          config: dict, d_alpha, saved: Path, anchor: str):
+    """The state on the realistic stall branch: the frozen shape is marched past
+    the stall and back down in angle of attack, and the coupled problem solved
+    again from that circulation. A chain reaches its states walking the tapes, so
+    near stall it stays on the attached branch, past the stall of the same wing
+    marched down (LEI-V3, 5 m/s, no steering: 1.35 m had 12 % too much tension,
+    1.15 m twice the tension and 4.5 deg too little angle of attack). From a state
+    that has only one branch this re-solve changes nothing.
+
+    Returns ``(prepared, tracking, meta, final_state, config)``, the first solve's
+    when the re-solve fails, from the state saved at ``saved``. Needs the driver's
+    continuation (wireframe); other fidelities keep the first solve.
+    """
+    if not hasattr(driver, "_trim_seed_of"):
+        return prepared, tracking, meta, final_state, config
+    trim = final_state["results_aero"]
+    gamma_down = aerodynamic_vsm.down_branch_circulation(
+        final_state["body_aero"], prepared.vsm_solver, d_alpha, gamma_trim=trim.get("gamma_distribution")
+    )
+    prepared.trim_seed = driver._trim_seed_of(trim.get("opt_x"), gamma_down)
+    settled = _at(config, power_tape=0.0, steering=0.0)
+    settled["power_tape_extension_step"] = float(spec["depower"]["step"])
+    settled["steering_tape_extension_step"] = float(spec["steering"]["step"])
+    final = {}
+    try:
+        new_tracking, new_meta = driver.solve_step(case, prepared, settled, final_state=final)
+        converged = bool(new_meta["converged"])
+    except aerodynamic_vsm.CasadiTrimFailed:
+        converged = False
+    if not converged:
+        print(f"  {anchor}: re-solve on the down branch failed, first solve kept", flush=True)
+        prepared = prepare(driver, case, spec, settled)
+        prepared.restore(saved)
+        return prepared, tracking, meta, final_state, config
+    shift = final["results_aero"]["tether_force"] / trim["tether_force"] - 1.0
+    print(f"  {anchor}: down branch moved the tether force {100.0 * shift:+.2f} %, alpha "
+          f"{trim['aoa_deg']:.2f} -> {final['results_aero']['aoa_deg']:.2f} deg", flush=True)
+    return prepared, new_tracking, new_meta, final, settled
+
+
 def solve_chain(driver, case, chain: Chain, spec: dict, out: Path, start: int = 0) -> int:
     """Solve one chain from step ``start``, appending its anchors to the
     sweep files. A chain resumed past its first step starts from the
     structure saved with step ``start - 1``; a fresh one from its wind's
     base state when the sweep has them (``start_from_converged``), else
     from the build. Returns the chain's number of anchors."""
-    config = copy.deepcopy(case.config)
-    config["wind_speed_wind_ref"] = float(chain.wind_speed)
+    config = _at(copy.deepcopy(case.config), wind_speed=chain.wind_speed)
     prepared = prepare(driver, case, spec, config)
     if start:
         prepared.restore(out / chain.name / f"step_{start - 1:02d}" / "sim_output.h5")
@@ -344,25 +431,43 @@ def solve_chain(driver, case, chain: Chain, spec: dict, out: Path, start: int = 
     n_written = start
     for index, step in enumerate(chain.steps[start:], start=start):
         started = time.perf_counter()
+        step_dir = out / chain.name / f"step_{index:02d}"
+        step_dir.mkdir(parents=True, exist_ok=True)
+        (step_dir / TRIM_FAILED_FILE).unlink(missing_ok=True)
+        anchor = f"{chain.name}/{index:02d}"
         # The depower walk comes first and the steering after it, both from
         # the structure's current state (coupled_solver.main's order).
         tape_reach = (
             0.0 if step.power_tape_length is None
             else step.power_tape_length - prepared.power_tape_length
         )
-        config["power_tape_final_extension"] = float(tape_reach)
-        config["power_tape_extension_step"] = float(spec["depower"]["step"])
-        config["steering_tape_final_extension"] = float(
-            step.steering_half_difference - prepared.steering_half_difference
+        config = _at(
+            config,
+            power_tape=tape_reach,
+            steering=step.steering_half_difference - prepared.steering_half_difference,
         )
+        config["power_tape_extension_step"] = float(spec["depower"]["step"])
         config["steering_tape_extension_step"] = float(spec["steering"]["step"])
         final_state = {}
-        tracking, meta = driver.solve_step(case, prepared, config, final_state=final_state)
-        step_dir = out / chain.name / f"step_{index:02d}"
-        step_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            tracking, meta = driver.solve_step(case, prepared, config, final_state=final_state)
+        except aerodynamic_vsm.CasadiTrimFailed as failure:
+            # A continuation has no state to go on from, as with an unconverged one.
+            (step_dir / TRIM_FAILED_FILE).write_text(f"{failure}\n", encoding="utf-8")
+            print(
+                f"  {anchor}: TRIM FAILED, chain stopped "
+                f"| {(time.perf_counter() - started) / 60:.1f} min",
+                flush=True,
+            )
+            break
         save_sim_output(tracking, meta, step_dir)
+        if spec.get("settle_on_down_branch", True) and meta["converged"]:
+            prepared, tracking, meta, final_state, config = settle_on_down_branch(
+                driver, case, spec, prepared, tracking, meta, final_state, config,
+                d_alpha, step_dir / "sim_output.h5", anchor,
+            )
+            save_sim_output(tracking, meta, step_dir)
 
-        anchor = f"{chain.name}/{index:02d}"
         rows = anchor_rows(chain, index, prepared, config, meta, final_state, d_alpha)
         # An unconverged state ends the chain before its polar: the fit drops
         # it anyway, and a diverged (NaN) shape has no polar to take.
@@ -389,7 +494,7 @@ def solve_chain(driver, case, chain: Chain, spec: dict, out: Path, start: int = 
             f" | {(time.perf_counter() - started) / 60:.1f} min",
             flush=True,
         )
-        if stalled > spec["max_stalled_fraction"]:
+        if chain.max_stalled_fraction is not None and stalled > chain.max_stalled_fraction:
             print(f"  {chain.name}: stopped (stalled)", flush=True)
             break
     (out / chain.name).mkdir(parents=True, exist_ok=True)
@@ -501,6 +606,13 @@ def main() -> None:
         resumed = f", resumed at step {start}" if start else ""
         print(f"{chain.name}: {len(chain.steps)} states{resumed}", flush=True)
         solve_chain(driver, case, chain, spec, out, start=start)
+    failed = [
+        path.parent.relative_to(out).as_posix()
+        for chain in chains
+        for path in sorted((out / chain.name).glob(f"step_*/{TRIM_FAILED_FILE}"))
+    ]
+    if failed:
+        print(f"{len(failed)} chain(s) stopped by a failed trim: {', '.join(failed)}", flush=True)
 
 
 if __name__ == "__main__":

@@ -20,10 +20,10 @@ def test_every_default_reaches_the_solver():
             assert getattr(solver, key) == value, key
 
 
-def test_three_quarter_chord_freestream_directions_with_attached_trailed_force():
+def test_quarter_chord_force_directions_with_attached_trailed_force():
     solver = default_vsm_solver(reference_point=[0.0, 0.0, 0.0])
     assert solver.aerodynamic_model_type == "VSM"
-    assert solver.is_aoa_corrected is False
+    assert solver.is_aoa_corrected is True
     assert solver.relaxation_factor == VSM_SOLVER_DEFAULTS["relaxation_factor"]
     assert solver.is_with_attached_trailed_vortex_force is True
 

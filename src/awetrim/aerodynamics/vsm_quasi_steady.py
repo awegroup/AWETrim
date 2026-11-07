@@ -30,7 +30,7 @@ from scipy.optimize import least_squares
 
 from awetrim.environment.profile_laws import LOG_BASED_MODELS
 from awetrim.aerodynamics.apparent_wind import apparent_wind_at
-from awetrim.aerodynamics.vsm_settings import make_vsm_solver
+from awetrim.aerodynamics.vsm_settings import VSM_SOLVER_DEFAULTS, make_vsm_solver
 from awetrim.aerodynamics.kcu_drag import (
     AXIS_MODEL_NONE,
     AXIS_MODEL_RADIAL,
@@ -87,7 +87,7 @@ def default_vsm_solver(
     is_with_artificial_viscosity: bool = False,
     artificial_viscosity_factor: float = 0.035,
     anderson_max_iterations: int | None = None,
-    is_aoa_corrected: bool = False,
+    is_aoa_corrected: bool = VSM_SOLVER_DEFAULTS["is_aoa_corrected"],
 ) -> VsmSolver:
     """The VSM ``Solver`` every AWETrim quasi-steady trim uses.
 
@@ -104,8 +104,9 @@ def default_vsm_solver(
         is_with_artificial_viscosity: Li/Gaunaa spanwise artificial viscosity.
         artificial_viscosity_factor: its factor.
         anderson_max_iterations: cap of the Anderson attempt (None = AWETrim's).
-        is_aoa_corrected: force directions from the quarter-chord flow (True)
-            instead of the freestream (False, AWETrim's model).
+        is_aoa_corrected: force directions from the quarter-chord flow (True,
+            AWETrim's model) instead of the flow at the 3/4-chord control
+            point (False).
     """
     try:
         from VSM.core.Solver import Solver  # noqa: F401  (availability check)
@@ -205,6 +206,10 @@ def _as_numeric_3vector(system_model: AWETrimSystemModel, value: Any) -> np.ndar
 
     symbols = ca.symvar(value)
     if not symbols:
+        # a constant MX graph (e.g. a load whose inputs are all numeric) cannot
+        # be cast to DM directly: evaluate it
+        if isinstance(value, ca.MX):
+            value = ca.evalf(value)
         return _as_3vector(ca.DM(value).full())
     inputs = [
         _numeric_value_for_symbol(system_model, symbol.name()) for symbol in symbols
@@ -528,7 +533,7 @@ def solve_vsm_quasi_steady_trim(
     is_with_artificial_viscosity: bool = False,
     artificial_viscosity_factor: float = 0.035,
     anderson_max_iterations: int | None = None,
-    is_aoa_corrected: bool = False,
+    is_aoa_corrected: bool = VSM_SOLVER_DEFAULTS["is_aoa_corrected"],
     kcu_drag: "KcuDragModel | None" = None,
     gamma_seed: np.ndarray | None = None,
 ) -> tuple[dict[str, Any], VsmBodyAerodynamics]:
@@ -1460,7 +1465,7 @@ def solve_vsm_qs_trim_with_williams_tether(
     is_with_artificial_viscosity: bool = False,
     artificial_viscosity_factor: float = 0.035,
     anderson_max_iterations: int | None = None,
-    is_aoa_corrected: bool = False,
+    is_aoa_corrected: bool = VSM_SOLVER_DEFAULTS["is_aoa_corrected"],
     tether_model: str = "williams",
     prescribed_roll_deg: float | None = None,
     gamma_seed: np.ndarray | None = None,
@@ -1756,8 +1761,12 @@ def solve_vsm_qs_trim_with_williams_tether(
     elif tether_model == "rigid_lumped":
         from awetrim.system.tether import RigidLumpedTether
 
+        # The tether's inertia follows the given tether (on by default for
+        # the lumped one), as in the ROM path.
         rl_tether = RigidLumpedTether(
-            diameter=tether.diameter_tether, density=tether.density_tether
+            diameter=tether.diameter_tether,
+            density=tether.density_tether,
+            inertia=bool(getattr(tether, "inertia", True)),
         )
 
     # Kite position in the wind frame: spherical (azimuth, elevation, distance)
@@ -2019,7 +2028,7 @@ def solve_vsm_qs_trim_with_williams_tether(
         cfx = float(np.dot(net_force, axes.course) / denom_f)
         cfy = float(np.dot(net_force, axes.normal) / denom_f)
 
-        # Rigid-lumped off-radial tether force (drag + half-weight) at the
+        # Rigid-lumped off-radial tether force (drag + half-weight + inertia) at the
         # seeded state, transformed into the trim (VSM) frame like the inertial
         # and gravity terms. The radial tension is added separately as the free
         # unknown in the residual.
@@ -2040,8 +2049,17 @@ def solve_vsm_qs_trim_with_williams_tether(
                 if include_gravity
                 else np.zeros(3, dtype=float)
             )
+            # The tether's inertial load (Tether.force_inertia_tether_at_kite_for):
+            # quasi-steady trim, so no accelerations, its centrifugal, Coriolis
+            # and turn terms only, the same as the ROM path's.
+            inertia_expr = rl_tether.force_inertia_tether_at_kite_for(system_model)
+            for name in ("timeder_speed_tangential", "timeder_speed_radial"):
+                sym = getattr(system_model, name, None)
+                if isinstance(sym, ca.MX) and sym.is_symbolic():
+                    inertia_expr = ca.substitute(inertia_expr, sym, 0)
+            inertia_c = _as_numeric_3vector(system_model, inertia_expr)
             f_tether_offrad_vsm = _as_3vector(
-                transformation_c_from_vsm @ (drag_c + grav_c)
+                transformation_c_from_vsm @ (drag_c + grav_c + inertia_c)
             )
 
         return {
@@ -2519,7 +2537,7 @@ def corotating_state_transform(
     the same course axes CARRIED BY THE BODY about the tether attachment:
     axes that coincide with the course axes at trim and co-rotate with the
     perturbed attitude. (This is a component-basis choice, distinct from the
-    material-body-axes ``--stability-frame body`` option.) At a fixed trim
+    material-body-axes ``STABILITY_FRAME = "body"`` option.) At a fixed trim
     the two descriptions differ by the constant linear map built here,
 
         dv_corot     = dv_frozen     + [v_kite_trim]_x dTheta
@@ -3463,7 +3481,7 @@ def compute_vsm_trim_stability_derivatives(
         geometry — correct when the stability axes are the (space-fixed)
         course axes and the kite is tilted from them by the trim attitude.
         Set ``False`` when the stability axes are the body-fixed material
-        axes (``--stability-frame body``): the baseline tensors are already
+        axes (``STABILITY_FRAME = "body"``): the baseline tensors are already
         resolved in them and only the attitude perturbation rotates them.
     include_added_mass
         If ``True``, the strip-theory apparent-mass matrix of the canopy

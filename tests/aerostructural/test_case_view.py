@@ -78,6 +78,33 @@ def test_rigid_motion_removed_is_zero_for_a_rotation():
     assert case_view.rigid_motion_removed(nodes, moved).max() < 1e-10
 
 
+def test_attitude_deg_recovers_rotate_geometry_angles():
+    from awetrim.aerostructural.utils import rotate_geometry
+
+    rng = np.random.default_rng(1)
+    nodes = rng.normal(size=(20, 3))
+    angles = (-1.2, -5.3, 0.6)
+    moved = rotate_geometry(nodes, angle_deg=list(angles)) + np.array([0.3, 0.0, -0.2])
+    assert case_view.attitude_deg(nodes, moved) == pytest.approx(angles, abs=1e-9)
+
+
+def test_trim_summary_attitude_is_read_off_the_positions():
+    """Not the trim's roll/pitch/yaw: those are per-iteration increments."""
+    from awetrim.aerostructural.utils import rotate_geometry
+
+    rng = np.random.default_rng(2)
+    nodes = rng.normal(size=(10, 3))
+    case = {"initial": nodes, "final": rotate_geometry(nodes, angle_deg=[2.0, -5.0, 1.0]),
+            "tracking": {}, "config": {"rho": 1.225},
+            "view": {"line_kind": [], "line_tension": [], "masses": [1.0]},
+            "meta": {"trim_results": {}, "opt_x": [19.0, 0.01, -0.004, 0.0, 0.0]}}
+    rows = {label: value for _, label, value, _ in case_view.trim_summary(case)}
+    assert rows["Roll (attitude vs built shape)"] == pytest.approx(2.0)
+    assert rows["Pitch (attitude vs built shape)"] == pytest.approx(-5.0)
+    assert rows["Yaw (attitude vs built shape)"] == pytest.approx(1.0)
+    assert not any("trim rotation" in label for label in rows)
+
+
 def test_trim_summary_reads_both_meta_layouts():
     nodes = np.zeros((3, 3))
     nodes[1, 0] = 1.0

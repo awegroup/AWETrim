@@ -24,8 +24,7 @@ wind:
 # REQUIRED. Winch force law that marches the seed's forward simulation:
 #   T = slope_winch_ro * (v_r - offset(u_p)),
 #   offset(u_p) = offset_winch_ro + winch_offset_depower_gain * (u_p - winch_depower_ref)
-# Regressed from the 2019-10-08 flight (fit_periodic_cycle_config
-# --shape experimental re-derives it). In the default free_speed winch mode
+# Regressed from cycle 62 of the 2019-10-08 flight. In the default free_speed winch mode
 # the optimizer does not keep it: v_r becomes a control and only the tension
 # band [min_tether_force, max_tether_force] remains.
 winch_law:
@@ -36,8 +35,8 @@ winch_law:
   min_tether_force: 865.4            # N
   max_tether_force: 8400.0           # N; fallback only, the drum rating in system.yaml wins
 
-# REQUIRED. The synthetic seed (fit_periodic_cycle_config.py, --auto tunes it
-# further until it trims and closes). Angles in rad.
+# REQUIRED. The synthetic seed (fit_periodic_cycle_config.py, --size fits it to
+# the turns the kite holds at the wind). Angles in rad.
 seed:
   r0: 236.7               # m, radial distance at the start of the reel-out
   cycle_duration_s: 128.0 # s, duration PRIOR of a 3-lobe cycle (a forward
@@ -52,20 +51,12 @@ seed:
   # Any other ARTIFICIAL knob of fit_periodic_cycle_config.py may be set here
   # (az_reelin_amp, az_reelin_through, ramp_fraction, n_loops, ...).
 
-# Optional. Reference flight for --shape experimental (and the winch-law
-# regression). Loaders: ekf_results (awetrim EKF output, path_to_main defaults
-# to this folder) or protologger_h5 (h5: path relative to this folder).
+# Optional. The flight whose matched tapes (identification.yaml flight_match) are
+# the seed's powered / depowered levels; absent, the ROM's identified band is.
 flight:
-  loader: ekf_results
   year: "2019"
-  month: "10"
-  day: "08"
-  kite_model: LEI-V3 Kite
-  cycle_id: 62
 
 # Optional:
-#   m_per_second: 0.2      spline control points per second of flown cycle
-#                          (experimental fit only)
 #   min_turn_radius: 30.0  m, dense turn-radius floor in the NLP (off if absent)
 
 # Optional. The single slanted "up-loop" figure-eight cycle of

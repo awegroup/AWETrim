@@ -51,6 +51,25 @@ def test_struts_rotate_rigidly_about_their_leading_edge(lei_v3_wing):
         np.testing.assert_allclose(wing.leading_edge[k], le[k])
 
 
+def test_the_leading_edge_and_the_tube_end_do_not_move(lei_v3_wing):
+    le, te, struts = lei_v3_wing
+    wing = billow_wing(le, te, struts, 0.05)
+    np.testing.assert_array_equal(wing.leading_edge, le)
+    for tip in (struts[0], struts[-1]):
+        np.testing.assert_array_equal(wing.trailing_edge[tip], te[tip])
+
+
+def test_tip_bay_trailing_edge_fades_from_the_outer_strut_to_the_tip(lei_v3_wing):
+    le, te, struts = lei_v3_wing
+    wing = billow_wing(le, te, struts, 0.05)
+    moved = np.linalg.norm(wing.trailing_edge - te, axis=1)
+    bay = moved[struts[0]:struts[1] + 1]  # tip ... outer strut
+    assert bay[0] == 0.0 and bay[-1] > 0.0
+    assert np.all(np.diff(bay) > 0.0)
+    for k in range(struts[0], struts[1]):
+        np.testing.assert_array_equal(wing.move_with_section(k, le[k]), le[k])
+
+
 def test_zero_contraction_keeps_the_struts(lei_v3_wing):
     le, te, struts = lei_v3_wing
     wing = billow_wing(le, te, struts, 0.0)

@@ -612,6 +612,14 @@ class InitRequest(BaseModel):
         "margin below the ROM's stall angle; omitted = the default box "
         "0-14 deg.",
     )
+    kite_sized_seed: bool = Field(
+        default=True,
+        description="Fit the cycle config's starting eight to the turns the "
+        "kite can hold at its steering limit at this wind (x1.2 margin, x1.4 "
+        "when the first solve does not converge) when it is tighter than that "
+        "somewhere; ignored when trajectory or initial_guess is given. The "
+        "init reply says whether it was applied.",
+    )
 
 
 class StepRequest(BaseModel):
@@ -741,6 +749,12 @@ class InitReply(BaseModel):
         default=None,
         description="Angle-of-attack limits in force [deg] (null = the "
         "default box)",
+    )
+    kite_sized_seed: Optional[bool] = Field(
+        default=None,
+        description="Whether the starting eight was refitted to the kite's "
+        "steering-limited turns (false: it already held them, or the fit "
+        "failed and the configured seed is used)",
     )
     state: str
     n_points: Optional[int] = None
