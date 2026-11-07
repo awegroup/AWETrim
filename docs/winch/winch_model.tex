@@ -104,6 +104,45 @@ row. With a free reel speed (\code{free\_speed}) the motor force
 $F_m = T - F_f - m\dot v_r$ is held below \code{max\_tether\_force} whenever the
 drivetrain is not ideal (friction adds to it on reel-in).
 
+\paragraph{Resolution.} Table~\ref{tab:resolution} marches one LEI-V3 figure
+eight at \SI{9}{m.s^{-1}} (tether inertia and winch friction on) at 25 to 400
+nodes, against the finest \code{bdf2} run of the same model. The quasi-steady
+march is accurate from 25 nodes in either scheme; \code{bdf2} halves its small
+power error. The dynamic march converges at about first order with
+\code{euler} and overstates the power at coarse steps (the scheme's error, not
+physics), but at close to second order with \code{bdf2}, which at 100 nodes is
+as accurate in tension as \code{euler} at 400. Converged, the dynamic model's
+mean power is \SI{0.15}{\percent} below the quasi-steady one; its tension
+peaks are \SI{\sim 0.3}{kN} higher (drum and kite inertia), at every
+resolution. A node costs \SI{\sim 10}{ms} quasi-steady and \SI{\sim 14}{ms}
+dynamic; \code{bdf2} adds 5--10\,\%.
+
+\begin{table}[H]
+\centering\small
+\caption{Mean shaft power error and largest tension difference against the
+400-node \code{bdf2} run of the same model, and the observed order of the
+tension difference between successive halvings.}
+\label{tab:resolution}
+\begin{tabular}{llrrrr}
+\toprule
+Model & Scheme & Nodes & $\Delta P$ (\%) & $\max|\Delta T|$ (N) & Order \\
+\midrule
+quasi-steady & \code{euler} & 25  & $-0.41$ & 2.6  & \\
+             &              & 100 & $-0.12$ & 0.29 & 1.3 \\
+             &              & 400 & $-0.02$ & 0.005 & \\
+             & \code{bdf2}  & 25  & $-0.16$ & 2.6  & \\
+             &              & 100 & $-0.05$ & 0.28 & 1.3 \\
+\midrule
+dynamic      & \code{euler} & 25  & $+2.92$ & 333  & \\
+             &              & 100 & $+0.73$ & 148  & 0.7 \\
+             &              & 400 & $+0.20$ & 43   & 0.9 \\
+             & \code{bdf2}  & 25  & $-0.34$ & 323  & \\
+             &              & 100 & $-0.09$ & 44   & 1.6 \\
+             &              & 200 & $-0.02$ & 13   & 1.7 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
 \section{Tether inertia}
 
 The lumped tether (straight, inextensible, uniform, mass $m_t = \mu r$, pinned
