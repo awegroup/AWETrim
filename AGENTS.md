@@ -138,8 +138,8 @@ src/awetrim/
                          node's values are node-solver parameters
                          (_n_previous_state / _drivetrain_p: euler 3 dynamic,
                          2 with only drum inertia; bdf2 8); node 0 has none.
-                         The integrator path (run_simulation,
-                         phase_sim=False) is quasi-steady only. The NLP takes
+                         The march is the only simulation (the legacy
+                         integrator path, phase_sim=False, was removed). The NLP takes
                          the same scheme (opti_phase: node functions take
                          s_ddot, dv_r/dt after distance_radial, fed by
                          _rate / _dyn_args; continuity, energy, time and slew

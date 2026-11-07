@@ -1102,7 +1102,8 @@ class Phase:
         Args:
             run_plots: When True, produce overview plots
             axes: Optional axes for plotting
-            phase_sim: Whether to run in phase mode
+            phase_sim: must be True (the forward march; the legacy integrator
+                path was removed)
             s_dot: Optional override for initial tangential speed (default: 4)
             speed_radial: Optional override for initial radial speed (default: -1)
             start_state: Optional explicit initial state. If provided, it is used
@@ -1192,7 +1193,8 @@ class Phase:
         Args:
             label_prefix: Prefix for labeling outputs
             pattern_config: Configuration for this phase
-            phase_sym: Whether to run in symbolic mode
+            phase_sym: must be True: the forward march (the legacy integrator
+                path, False, was removed)
             s_dot: Optional override for initial tangential speed
             speed_radial: Optional override for initial radial speed
             start_state: Optional explicit initial state (used directly if set)
@@ -1200,6 +1202,11 @@ class Phase:
         Returns:
             PhaseParameterized object with simulation results
         """
+        if not phase_sym:
+            raise ValueError(
+                "phase_sim=False ran the legacy integrator path, which was "
+                "removed: the march (phase_sim=True) is the simulation"
+            )
         sim_type = "quasi-steady" if self.quasi_steady else "dynamic"
         print(f"Running simulation for {sim_type} with label: {label_prefix}")
 
@@ -1219,8 +1226,5 @@ class Phase:
             quasi_steady=self.quasi_steady,
             pattern_config=pattern_config,
         )
-        if phase_sym:
-            phase.run_simulation_phase(start_state=start_state)
-        else:
-            phase.run_simulation(start_state=start_state)
+        phase.run_simulation_phase(start_state=start_state)
         return phase

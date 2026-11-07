@@ -1259,13 +1259,3 @@ def test_drivetrain_is_resolved_when_the_phase_is_built():
     phase, _ = _wrap_phase(_N_WRAP, {"winch_drivetrain": True})
     dt_ = phase.winch_model.drivetrain
     assert (dt_.inertia_mass, dt_.friction_coulomb) == (300.7, 122.0)
-
-
-@pytest.mark.slow
-def test_integrator_path_refuses_a_dynamic_phase():
-    """run_simulation (the integrator path) is quasi-steady only; a dynamic
-    phase is marched by run_simulation_phase."""
-    phase, start = _wrap_phase(_N_WRAP, {})
-    phase.quasi_steady = False
-    with pytest.raises(NotImplementedError, match="run_simulation_phase"):
-        phase.run_simulation(start)

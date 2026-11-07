@@ -528,7 +528,6 @@ class Kite(Wing):
         # (held-out R2 of the roll 0.93 -> 0.95); absent/0 = the paper's model.
         self.gain_roll_sideslip = float(self.aero_params.get("gain_roll_sideslip", 0.0) or 0.0)
 
-        self._acceleration_total = None  # Cache for total acceleration
 
     def air_density_at_height(self, height):
         """Air density [kg/m3] at ``height`` above ground."""
@@ -653,29 +652,6 @@ class Kite(Wing):
         self._override_coriolis = value
 
     @property
-    def acceleration_external(self):
-        acc = self.force_external / (self.mass_wing + self.mass_kcu)
-        vtau = self.speed_tangential
-        acc[1] = -acc[1] / (vtau + 1e-6)
-        # acc[1] = ca.if_else(
-        #     vtau > 1e-3,
-        #     -acc[1] / vtau,
-        #     -ca.sign(acc[1] + 1e-6) * 1,
-        # )
-        return acc
-
-    @property
-    def acceleration_inertial(self):
-        return ca.vertcat(
-            -self.speed_tangential * self.speed_radial / self.distance_radial,
-            self.speed_tangential
-            * ca.sin(self.angle_course)
-            * ca.tan(self.angle_elevation)
-            / self.distance_radial,
-            self.speed_tangential**2 / self.distance_radial,
-        )
-
-    @property
     def acceleration_rotation_course(self):
         if self._override_centripetal == True:
             return ca.vertcat(
@@ -698,14 +674,6 @@ class Kite(Wing):
     @property
     def acceleration(self):
         return self.acceleration_local + self.acceleration_rotation_course
-
-    @property
-    def acceleration_total(self):
-        if self._acceleration_total is None:
-            self._acceleration_total = (
-                self.acceleration_inertial + self.acceleration_external
-            )
-        return self._acceleration_total
 
     @property
     def angle_yaw(self):

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Removed: the legacy integrator paths
+
+- `SystemModel.integrator` / `establish_ode_function` / `establish_algebraic` /
+  `algebraic_function`, `PhaseParameterized.run_simulation` / `integrator` (the CasADi
+  integrator path, `Phase.run_simulation(phase_sim=False)`) and
+  `Kite.acceleration_external` / `acceleration_inertial` / `acceleration_total`. They
+  were unused and broken on `develop` (`acceleration_total` lived on `Kite`, which has no
+  `force_external`; the integrator path gave a 4-element parameter vector as its 2-state
+  initial value). The forward march (`run_simulation_phase`, `phase_sim=True`) is the
+  simulation, quasi-steady and dynamic; `phase_sim=False` now raises.
+
 ### Tether: inertia of the lumped tether (on by default)
 
 - **The lumped tether carries its inertia** (`inertia: false` in a ROM's or
