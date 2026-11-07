@@ -1059,7 +1059,7 @@ if __name__ == "__main__":
         "--dynamic",
         action="store_true",
         help="Kite (and tether) accelerations in the forward march and the NLP "
-        "(implicit Euler over the node steps) instead of quasi-steady",
+        "(implicit, sim_parameters.time_scheme: bdf2 by default) instead of quasi-steady",
     )
     parser.add_argument(
         "--no-tether-inertia",
