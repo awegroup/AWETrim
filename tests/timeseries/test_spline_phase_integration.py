@@ -107,6 +107,43 @@ def test_lissajous_and_helix_differ():
     assert not np.allclose(liss["C_beta"], heli["C_beta"])
 
 
+
+@pytest.mark.slow
+@pytest.mark.parametrize("quasi_steady", [True, False])
+def test_bdf2_march_steps_and_length_are_trapezoidal(quasi_steady):
+    """time_scheme bdf2 marches the whole path, quasi-steady and dynamic, with
+    each step h = 2 ds / (s_dot_prev + s_dot) and each tether-length change
+    h (v_r_prev + v_r) / 2, solved in the node."""
+    from awetrim.timeseries.phase_parametrized import PhaseParameterized
+
+    n_points = 40
+    config = _reelout_config(
+        "lissajous", n_points=n_points, r0=_FLOWN_R0, curve_kwargs=_FLOWN_CURVE_KWARGS
+    )
+    config["sim_parameters"]["time_scheme"] = "bdf2"
+    start_state = {
+        "t": 0.0, "s": _S_INIT, "s_dot": 0.3, "input_steering": 0.0,
+        "tension_tether_ground": 8.4e3, "speed_radial": 0.0,
+        "distance_radial": config["path_parameters"]["r0"],
+    }
+    phase = PhaseParameterized(_v3_system_model(), quasi_steady=quasi_steady, pattern_config=config)
+    phase.run_simulation_phase(start_state=start_state, allow_failure=False)
+    assert len(phase.states) == n_points
+    t, s, s_dot, v, r = (
+        np.asarray(phase.return_variable(k), dtype=float)
+        for k in ("t", "s", "s_dot", "speed_radial", "distance_radial")
+    )
+    assert np.all(np.isfinite(np.c_[t, s_dot, v, r]))
+    h = np.diff(t)
+    np.testing.assert_allclose(h, 2 * np.diff(s) / (s_dot[:-1] + s_dot[1:]), rtol=1e-9)
+    np.testing.assert_allclose(np.diff(r), h * (v[:-1] + v[1:]) / 2, rtol=1e-9, atol=1e-9)
+    # Quantities that depend on the accelerations (alpha through the bridle
+    # resultant) are derived from the recorded states after the march: the
+    # scheme's symbols are named like the State fields.
+    alpha = np.asarray(phase.return_variable("angle_of_attack"), dtype=float)
+    assert alpha.size == n_points and np.all(np.isfinite(alpha))
+
+
 # --- slow: run the parametrised QS phase along each spline ------------------
 
 
@@ -786,6 +823,56 @@ def test_depower_anchor_is_an_objective_term_only():
         phase_both.opti_phase(start_state=start, opti_params={})
 
 
+@pytest.mark.slow
+def test_winch_friction_changes_the_objective_and_bounds_the_motor():
+    """``winch_friction`` swaps the energy integrand T v for T v - P_loss(v)
+    (winch.drivetrain_loss_power) and, free_speed, adds one motor-force row per
+    node (T - F_f within the drive limit: friction adds to the motor force on
+    reel-in). No decisions are added, and at the shared initial guess (v_r =
+    0.5 m/s at every node) the energy drops by exactly P_loss(0.5) * total time.
+    Off = NLP unchanged."""
+    from awetrim.system.winch import drivetrain_loss_power
+
+    overrides = {**_WRAP_FORMULATIONS["free_speed+depower"][0], "periodic_wrap": True}
+    phase_off, start = _wrap_phase(_N_WRAP, dict(overrides))
+    opti_off, _, obj_off = phase_off.opti_phase(start_state=start, opti_params={})
+    e_off = float(opti_off.debug.value(obj_off["energy"], opti_off.initial()))
+    for flag, law in (
+        (True, (122.0, 30.6)),  # LEI-V3 system.yaml drums[0]
+        ((122.0, 30.6), (122.0, 30.6)),
+        ({"coulomb": 122.0, "viscous": 30.6}, (122.0, 30.6)),
+    ):
+        phase_on, start = _wrap_phase(_N_WRAP, {**overrides, "winch_friction": flag})
+        opti_on, _, obj_on = phase_on.opti_phase(start_state=start, opti_params={})
+        assert opti_on.g.numel() == opti_off.g.numel() + _N_WRAP
+        assert opti_on.x.numel() == opti_off.x.numel()
+        e_on = float(opti_on.debug.value(obj_on["energy"], opti_on.initial()))
+        t_on = float(opti_on.debug.value(obj_on["total_time"], opti_on.initial()))
+        expected = float(drivetrain_loss_power(0.5, *law)) * t_on
+        assert e_off - e_on == pytest.approx(expected, rel=1e-9)
+
+
+@pytest.mark.slow
+def test_drivetrain_load_fraction_changes_the_objective_and_bounds_the_motor():
+    """``drivetrain_load_fraction`` adds k T |v| to the loss in the energy
+    integrand (True -> system.yaml drums[0].friction_load_fraction) and,
+    free_speed, a motor-force row per node; no decisions are added and, at the
+    initial guess (v_r > 0, T > 0), the energy only drops."""
+    overrides = {**_WRAP_FORMULATIONS["free_speed+depower"][0], "periodic_wrap": True}
+    phase_off, start = _wrap_phase(_N_WRAP, dict(overrides))
+    opti_off, _, obj_off = phase_off.opti_phase(start_state=start, opti_params={})
+    e_off = float(opti_off.debug.value(obj_off["energy"], opti_off.initial()))
+    for flag in (True, 0.05):
+        phase_on, start = _wrap_phase(
+            _N_WRAP, {**overrides, "drivetrain_load_fraction": flag}
+        )
+        opti_on, _, obj_on = phase_on.opti_phase(start_state=start, opti_params={})
+        assert opti_on.g.numel() == opti_off.g.numel() + _N_WRAP
+        assert opti_on.x.numel() == opti_off.x.numel()
+        e_on = float(opti_on.debug.value(obj_on["energy"], opti_on.initial()))
+        assert e_on < e_off
+
+
 # --- slow: mirror symmetry (half-period mirror rows) -------------------------
 
 
@@ -1038,3 +1125,137 @@ def test_max_climb_angle_adds_rows_per_sample():
         _build(False, max_climb_angle=np.radians(1.0))
     with pytest.raises(ValueError, match="max_climb_angle"):
         _build(True, max_climb_angle=-0.1)
+
+
+@pytest.mark.slow
+def test_winch_drivetrain_resolves_from_the_system_file():
+    """``winch_drivetrain`` takes the LEI-V3 system file's inertia and friction
+    (V3Kite's GS1 drivetrain); an explicit key wins over it; default ideal."""
+    phase, _ = _wrap_phase(_N_WRAP, {})
+    assert phase._resolve_drivetrain().is_ideal
+    phase, _ = _wrap_phase(_N_WRAP, {"winch_drivetrain": True})
+    dt_ = phase._resolve_drivetrain()
+    assert (dt_.inertia_mass, dt_.friction_coulomb, dt_.friction_viscous) == (300.7, 122.0, 30.6)
+    assert dt_.load_fraction == 0.0
+    phase, _ = _wrap_phase(_N_WRAP, {"winch_drivetrain": True, "winch_inertia_mass": 0})
+    dt_ = phase._resolve_drivetrain()
+    assert dt_.inertia_mass == 0.0 and dt_.friction_coulomb == 122.0
+
+
+@pytest.mark.slow
+def test_winch_inertia_extends_the_march_parameters_only():
+    """The node solver of the forward march takes the drum's previous state
+    (v_r, 1 / dt) as two more parameters with inertia, none with friction only."""
+    for sim, extra in (({}, 0), ({"winch_friction": True}, 0), ({"winch_drivetrain": True}, 2)):
+        phase, _ = _wrap_phase(_N_WRAP, dict(sim))
+        solver = phase.residual_solver(phase.km_param)
+        n_p = solver.size_in("p")[0]
+        if not sim:
+            n_base = n_p
+        assert n_p == n_base + extra, sim
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("formulation", sorted(_WRAP_FORMULATIONS))
+def test_winch_inertia_rows_in_the_nlp(formulation):
+    """force_law: the drum inertia lives inside the existing law row (no row
+    added). free_speed: one motor-force row per node with a previous one
+    (every node on a periodic wrap). Over a closed cycle the inertia part of
+    the shaft energy telescopes to zero."""
+    sim_overrides = {**_WRAP_FORMULATIONS[formulation][0], "periodic_wrap": True}
+    phase_off, start = _wrap_phase(_N_WRAP, dict(sim_overrides))
+    opti_off, _, obj_off = phase_off.opti_phase(start_state=start, opti_params={})
+    phase_on, start = _wrap_phase(_N_WRAP, {**sim_overrides, "winch_inertia_mass": 300.7})
+    opti_on, _, obj_on = phase_on.opti_phase(start_state=start, opti_params={})
+    extra = _N_WRAP if formulation.startswith("free_speed") else 0
+    assert opti_on.g.numel() == opti_off.g.numel() + extra
+    assert opti_on.x.numel() == opti_off.x.numel()
+    if extra:
+        assert obj_on["constraint_report"]["winch_motor_force"]["expr"].numel() == _N_WRAP
+    e_off = float(opti_off.debug.value(obj_off["energy"], opti_off.initial()))
+    e_on = float(opti_on.debug.value(obj_on["energy"], opti_on.initial()))
+    assert e_on == pytest.approx(e_off, rel=1e-9)
+
+
+@pytest.mark.slow
+def test_dynamic_node_alpha_function_exists():
+    """The dynamic march's node angle of attack is a function of the node's
+    unknowns and parameters only (the implicit s_ddot substituted), so the
+    march can reject post-stall roots in dynamic runs too."""
+    from awetrim.kinematics.parametrized_patterns import create_pattern_from_dict
+
+    phase, _ = _wrap_phase(_N_WRAP, {})
+    phase.quasi_steady = False
+    pattern = create_pattern_from_dict(
+        phase.pattern_config["pattern_type"], phase.pattern_config["path_parameters"]
+    )
+    phase.residual_solver(phase.substitute_parametrized_kinematics(pattern))
+    assert phase._node_alpha_function is not None
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("scheme, back", [("euler", 1), ("bdf2", 2)])
+def test_dynamic_nlp_couples_each_node_to_its_predecessors(scheme, back):
+    """quasi_steady=False builds the NLP with the march's time scheme: no rows
+    or decisions are added, and each node's trim residual depends on the
+    previous nodes' s_dot and v_r (euler: one back, bdf2: two; on a periodic
+    wrap node 0's predecessors are N-1, N-2). Quasi-steady, on its own node
+    only."""
+    import casadi as ca
+
+    overrides = {
+        **_WRAP_FORMULATIONS["free_speed+depower"][0], "periodic_wrap": True,
+        "time_scheme": scheme,
+    }
+    built = {}
+    for qs in (True, False):
+        phase, start = _wrap_phase(_N_WRAP, dict(overrides))
+        phase.quasi_steady = qs
+        opti, opti_vars, obj = phase.opti_phase(start_state=start, opti_params={})
+        trim = obj["constraint_report"]["trim_residual (scaled)"]["expr"]
+        built[qs] = (opti, opti_vars, trim)
+    (opti_qs, _, _), (opti_dyn, vars_dyn, trim_dyn) = built[True], built[False]
+    assert opti_dyn.g.numel() == opti_qs.g.numel()
+    assert opti_dyn.x.numel() == opti_qs.x.numel()
+    _, vars_qs, trim_qs = built[True]
+    for name in ("s_dot", "speed_radial"):
+        coupled = {0} | {_N_WRAP - k for k in range(1, back + 1)}
+        for trim, opti_vars, expected in ((trim_qs, vars_qs, {0}), (trim_dyn, vars_dyn, coupled)):
+            # node 0's three trim rows against every node's variable
+            jac = ca.jacobian(trim[0:3], opti_vars[name])
+            columns = {int(c) for c in np.nonzero(np.asarray(ca.DM(ca.Sparsity(jac.sparsity()), 1)).any(axis=0))[0]}
+            assert columns == expected, (name, columns)
+
+
+@pytest.mark.slow
+def test_time_scheme_previous_node_parameters():
+    """The node solver's previous-node parameters per scheme and mode: euler
+    takes none quasi-steady (no drum inertia) and three dynamic; bdf2 takes
+    eight in both (step and tether length are solved in the node). An unknown
+    scheme is refused."""
+    from awetrim.kinematics.parametrized_patterns import create_pattern_from_dict
+
+    counts = {}
+    for scheme in ("euler", "bdf2"):
+        for qs in (True, False):
+            phase, _ = _wrap_phase(_N_WRAP, {"time_scheme": scheme})
+            phase.quasi_steady = qs
+            pattern = create_pattern_from_dict(
+                phase.pattern_config["pattern_type"], phase.pattern_config["path_parameters"]
+            )
+            solver = phase.residual_solver(phase.substitute_parametrized_kinematics(pattern))
+            counts[(scheme, qs)] = solver.size_in("p")[0]
+    base = counts[("euler", True)]
+    assert counts[("euler", False)] == base + 3
+    assert counts[("bdf2", True)] == base + 8
+    assert counts[("bdf2", False)] == base + 8
+    phase, _ = _wrap_phase(_N_WRAP, {"time_scheme": "rk4"})
+    with pytest.raises(ValueError, match="time_scheme"):
+        phase._time_scheme()
+
+def test_drivetrain_is_resolved_when_the_phase_is_built():
+    """Every path that builds a winch row (march, integrator, NLP) sees the
+    sim_parameters' drivetrain from the start, not only after residual_solver."""
+    phase, _ = _wrap_phase(_N_WRAP, {"winch_drivetrain": True})
+    dt_ = phase.winch_model.drivetrain
+    assert (dt_.inertia_mass, dt_.friction_coulomb) == (300.7, 122.0)

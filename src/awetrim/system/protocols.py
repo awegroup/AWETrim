@@ -112,6 +112,10 @@ class TetherModel(Protocol):
         self, model: "SystemModelProtocol"
     ) -> Symbolic: ...
 
+    def force_inertia_tether_at_kite_for(
+        self, model: "SystemModelProtocol"
+    ) -> Symbolic: ...
+
 
 class WindModel(Protocol):
     """Interface required by SystemModel for wind component equations."""

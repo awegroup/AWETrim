@@ -206,6 +206,10 @@ def _as_numeric_3vector(system_model: AWETrimSystemModel, value: Any) -> np.ndar
 
     symbols = ca.symvar(value)
     if not symbols:
+        # a constant MX graph (e.g. a load whose inputs are all numeric) cannot
+        # be cast to DM directly: evaluate it
+        if isinstance(value, ca.MX):
+            value = ca.evalf(value)
         return _as_3vector(ca.DM(value).full())
     inputs = [
         _numeric_value_for_symbol(system_model, symbol.name()) for symbol in symbols
@@ -1757,8 +1761,12 @@ def solve_vsm_qs_trim_with_williams_tether(
     elif tether_model == "rigid_lumped":
         from awetrim.system.tether import RigidLumpedTether
 
+        # The tether's inertia follows the given tether (on by default for
+        # the lumped one), as in the ROM path.
         rl_tether = RigidLumpedTether(
-            diameter=tether.diameter_tether, density=tether.density_tether
+            diameter=tether.diameter_tether,
+            density=tether.density_tether,
+            inertia=bool(getattr(tether, "inertia", True)),
         )
 
     # Kite position in the wind frame: spherical (azimuth, elevation, distance)
@@ -2020,7 +2028,7 @@ def solve_vsm_qs_trim_with_williams_tether(
         cfx = float(np.dot(net_force, axes.course) / denom_f)
         cfy = float(np.dot(net_force, axes.normal) / denom_f)
 
-        # Rigid-lumped off-radial tether force (drag + half-weight) at the
+        # Rigid-lumped off-radial tether force (drag + half-weight + inertia) at the
         # seeded state, transformed into the trim (VSM) frame like the inertial
         # and gravity terms. The radial tension is added separately as the free
         # unknown in the residual.
@@ -2041,8 +2049,17 @@ def solve_vsm_qs_trim_with_williams_tether(
                 if include_gravity
                 else np.zeros(3, dtype=float)
             )
+            # The tether's inertial load (Tether.force_inertia_tether_at_kite_for):
+            # quasi-steady trim, so no accelerations, its centrifugal, Coriolis
+            # and turn terms only, the same as the ROM path's.
+            inertia_expr = rl_tether.force_inertia_tether_at_kite_for(system_model)
+            for name in ("timeder_speed_tangential", "timeder_speed_radial"):
+                sym = getattr(system_model, name, None)
+                if isinstance(sym, ca.MX) and sym.is_symbolic():
+                    inertia_expr = ca.substitute(inertia_expr, sym, 0)
+            inertia_c = _as_numeric_3vector(system_model, inertia_expr)
             f_tether_offrad_vsm = _as_3vector(
-                transformation_c_from_vsm @ (drag_c + grav_c)
+                transformation_c_from_vsm @ (drag_c + grav_c + inertia_c)
             )
 
         return {
