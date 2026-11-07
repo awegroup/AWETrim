@@ -24,6 +24,18 @@
   error from 148 to 44 N at 100 nodes, for 5-10 % more time; the euler "gain" of the
   dynamic model over the quasi-steady one (+3 % at 25 nodes) was numerical, the
   converged difference is -0.15 %.
+- **Steering-box continuation.** A first attempt beyond the box is kept when it
+  continues the previous node's steering (within 0.1): a path that tightens slowly
+  is not thrown onto another branch by the every-attempt check.
+- **The free-speed motor-force limit holds with friction alone** (on reel-in friction
+  adds to the motor force); before, the row came only with drum inertia.
+- **One drum-acceleration input:** `Drivetrain.motor_force(tension, v_r,
+  acceleration=...)` and `Winch.radial_equation(..., speed_radial_rate=...)`; the
+  `speed_radial_prev` / `inv_time_step` pair is gone. `Drivetrain.loss_power` calls
+  `drivetrain_loss_power`.
+- The rigid warm start serves dynamic phases too (same node layout); the unused
+  `_quasi_steady_start_state` is removed. `run_full_cycle_opti.py`'s radial-closure
+  check uses the run's time scheme.
 - **The reel acceleration is its own kinematics symbol** (`timeder_speed_radial`,
   `ParametrizedKinematics.dot_vr`), set by the time scheme in the march and the NLP
   instead of overriding the shared kite model, so quantities that depend on it are

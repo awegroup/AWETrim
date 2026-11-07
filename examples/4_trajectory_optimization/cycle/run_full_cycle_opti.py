@@ -52,6 +52,7 @@ from awetrim.kinematics.parametrized_patterns import (
     reelin_control_point_mask,
 )
 from awetrim.system.factory import create_system_model_from_yaml
+from awetrim.utils.time_scheme import left_step, trapezoid_increment, trapezoid_step
 from awetrim.timeseries import roll_assist
 from awetrim.timeseries.phase import Phase
 
@@ -529,19 +530,27 @@ def _downsample_n_points(reelout_config, n_points):
     print(f"Downsampled cycle to n_points={int(n_points)}")
 
 
-def _closure_residual(result, periodic=False):
+def _closure_residual(result, periodic=False, time_scheme="euler"):
     """Radial closure (m) from the optimizer's own trajectory, or None.
 
-    ``periodic`` (periodic_wrap): the seam interval's continuity residual
-    |r[N-1] + v_r[N-1] dt_seam - r[0]|; otherwise |r[-1] - r[0]|.
+    ``periodic`` (periodic_wrap): the seam interval's continuity residual in
+    the NLP's own time scheme (euler: r[N-1] + v_r[N-1] dt; bdf2: the
+    trapezoidal step and increment, awetrim.utils.time_scheme) minus r[0];
+    otherwise |r[-1] - r[0]|.
     """
     traj = getattr(result, "optimized_trajectory", {}) or {}
     r = traj.get("distance_radial")
     if r is None or len(r) < 2:
         return None
     if periodic and {"s", "s_dot", "speed_radial"} <= set(traj):
-        dt = (1.0 - float(traj["s"][-1])) / max(float(traj["s_dot"][-1]), 1e-9)
-        return float(abs(r[-1] + float(traj["speed_radial"][-1]) * dt - r[0]))
+        ds = 1.0 - float(traj["s"][-1])
+        sd, v = traj["s_dot"], traj["speed_radial"]
+        if time_scheme == "bdf2":
+            dt = trapezoid_step(ds, float(sd[-1]), float(sd[0]))
+            dr = trapezoid_increment(dt, float(v[-1]), float(v[0]))
+        else:
+            dr = float(v[-1]) * left_step(ds, max(float(sd[-1]), 1e-9))
+        return float(abs(r[-1] + dr - r[0]))
     return float(abs(r[-1] - r[0]))
 
 
@@ -862,7 +871,11 @@ def main(
                     aborted = True
                     break
                 result = stage_result
-                res = _closure_residual(result, bool(sim.get("periodic_wrap", False)))
+                res = _closure_residual(
+                    result,
+                    bool(sim.get("periodic_wrap", False)),
+                    sim.get("time_scheme", "euler" if QUASI_STEADY else "bdf2"),
+                )
                 print(
                     f"Stage {i + 1}{rep_tag} done. radial closure = "
                     f"{'n/a' if res is None else f'{res:.2f} m'}"

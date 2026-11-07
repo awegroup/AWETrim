@@ -19,7 +19,6 @@ from dataclasses import dataclass
 import casadi as ca
 import numpy as np
 from awetrim.utils.defaults import DEFAULT_WINCH_CONFIG
-from awetrim.utils.time_scheme import backward_rate
 
 # Floor on v_sat - speed_radial in the inverse soft v_sat clamp [m/s], see
 # Winch._undo_v_sat_clamp.
@@ -153,34 +152,30 @@ class Drivetrain:
         )
 
     def loss_power(self, speed_radial, tension=0.0, xp=np):
-        """Friction power [W], ``v F_f(v)``, >= 0."""
-        return speed_radial * self.friction_force(speed_radial, tension, xp=xp)
+        """Friction power [W], ``v F_f(v)``, >= 0 (:func:`drivetrain_loss_power`)."""
+        if not self.has_friction:
+            return 0.0
+        return drivetrain_loss_power(
+            speed_radial,
+            self.friction_coulomb,
+            self.friction_viscous,
+            speed_smoothing=self.speed_smoothing,
+            xp=xp,
+            tension=tension,
+            load_fraction=self.load_fraction,
+        )
 
-    def motor_force(
-        self,
-        tension,
-        speed_radial,
-        speed_radial_prev=None,
-        inv_time_step=0.0,
-        xp=np,
-        acceleration=None,
-    ):
-        """F_motor = T - F_f(v) - m (v - v_prev) / dt [N], tether-referred.
+    def motor_force(self, tension, speed_radial, acceleration=None, xp=np):
+        """F_motor = T - F_f(v) - m dv_r/dt [N], tether-referred.
 
-        The drum acceleration is the backward difference over the step that
-        ENDS at this state (implicit Euler: the drum's time constant, m over
-        the law's slope, is far below a node step, so an explicit step would
-        be unstable). ``inv_time_step`` = 1 / dt; 0 (or no
-        ``speed_radial_prev``) = steady drum, no inertia term.
+        ``acceleration`` is the drum's dv_r/dt from the caller's time scheme
+        (awetrim.utils.time_scheme: implicit, since the drum's time constant,
+        m over the law's slope, is far below a node step); None = steady drum,
+        no inertia term.
         """
         force = tension - self.friction_force(speed_radial, tension, xp=xp)
         if self.inertia_mass and acceleration is not None:
-            # a higher-order scheme's dv_r/dt, given directly
-            return force - self.inertia_mass * acceleration
-        if self.inertia_mass and speed_radial_prev is not None:
-            force = force - self.inertia_mass * backward_rate(
-                speed_radial, speed_radial_prev, 1.0
-            ) * inv_time_step
+            force = force - self.inertia_mass * acceleration
         return force
 
 
@@ -455,8 +450,6 @@ class Winch:
         speed_radial=None,
         tension_tether_ground=None,
         input_depower=None,
-        speed_radial_prev=None,
-        inv_time_step=0.0,
         speed_radial_rate=None,
     ):
         """Algebraic equation for radial dynamics when using force control.
@@ -467,9 +460,9 @@ class Winch:
             input_depower: optional depower input forwarded to
                 :meth:`tension_curve` so the force law's offset can depend on the
                 depower setting (see that method).
-            speed_radial_prev, inv_time_step: reel speed at the previous
-                state and 1 / the step to this one, for the drum inertia of
-                :attr:`drivetrain` (implicit Euler); omitted = steady drum.
+            speed_radial_rate: the drum's dv_r/dt from the caller's time
+                scheme, for the inertia of :attr:`drivetrain`; omitted =
+                steady drum.
         Returns:
             radial_equation: Algebraic equation for radial dynamics, in newtons
 
@@ -500,10 +493,8 @@ class Winch:
                 tension_tether_ground = self.drivetrain.motor_force(
                     tension_tether_ground,
                     speed_radial,
-                    speed_radial_prev=speed_radial_prev,
-                    inv_time_step=inv_time_step,
-                    xp=ca,
                     acceleration=speed_radial_rate,
+                    xp=ca,
                 )
             # Use the unified tension_curve property
             tension_curve_val = self.tension_curve(
