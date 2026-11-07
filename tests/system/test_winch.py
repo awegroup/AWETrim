@@ -667,3 +667,104 @@ class TestRadialEquationErrors:
         winch = Winch(pattern_config={"reeling_strategy": "magic"})
         with pytest.raises(ValueError, match="Unknown reeling_strategy"):
             winch.radial_equation(speed_radial=3.0, tension_tether_ground=4000.0)
+
+
+# ============================================================================
+# drivetrain_loss_power (tether-referred friction, numpy / casadi kernel)
+# ============================================================================
+
+
+class TestDrivetrainLossPower:
+    def test_numpy_and_casadi_agree_and_loss_is_even_in_v(self):
+        from awetrim.system.winch import drivetrain_loss_power
+
+        v = np.array([-8.0, -1.0, -0.01, 0.0, 0.01, 1.0, 3.5])
+        p_np = drivetrain_loss_power(v, 122.0, 30.7)
+        vs = ca.MX.sym("v")
+        f = ca.Function("p", [vs], [drivetrain_loss_power(vs, 122.0, 30.7, xp=ca)])
+        p_ca = np.array([float(f(x)) for x in v])
+        np.testing.assert_allclose(p_ca, p_np, rtol=1e-12)
+        assert p_np[3] == 0.0 and np.all(p_np >= 0.0)
+        # a loss in both directions: P(-v) == P(v)
+        np.testing.assert_allclose(drivetrain_loss_power(-v, 122.0, 30.7), p_np)
+
+    def test_far_from_zero_it_is_coulomb_plus_viscous(self):
+        from awetrim.system.winch import drivetrain_loss_power
+
+        # tanh(3 / 0.05) = 1 to machine precision
+        assert drivetrain_loss_power(3.0, 122.0, 30.7) == pytest.approx(122.0 * 3 + 30.7 * 9)
+
+    def test_load_fraction_adds_k_T_to_the_coulomb_force(self):
+        from awetrim.system.winch import drivetrain_loss_power
+
+        # (F_c + k T) |v| + c_v v^2, in both reel directions; default k = 0
+        p = drivetrain_loss_power(-3.0, 122.0, 30.7, tension=2000.0, load_fraction=0.05)
+        assert p == pytest.approx((122.0 + 100.0) * 3 + 30.7 * 9)
+        assert drivetrain_loss_power(3.0, 122.0, 30.7, tension=2000.0) == pytest.approx(
+            drivetrain_loss_power(3.0, 122.0, 30.7)
+        )
+
+    def test_casadi_expression_is_smooth_at_zero(self):
+        from awetrim.system.winch import drivetrain_loss_power
+
+        vs = ca.MX.sym("v")
+        dp = ca.Function("dp", [vs], [ca.gradient(drivetrain_loss_power(vs, 122.0, 30.7, xp=ca), vs)])
+        # derivative continuous through v = 0 (no |v| kink): ~2 F_c v / eps -> 0;
+        # an |v| term would jump by 2 F_c = 488 W/(m/s)
+        assert abs(float(dp(1e-9)) - float(dp(-1e-9))) < 1e-3
+
+
+# ============================================================================
+# DRIVETRAIN (drum inertia + friction; the law sets the motor force)
+# ============================================================================
+
+
+class TestDrivetrain:
+    def _residual(self, winch, **kw):
+        T, v, a = (ca.MX.sym(n) for n in ("T", "v", "a"))
+        res = winch.radial_equation(
+            speed_radial=v, tension_tether_ground=T, speed_radial_rate=a, **kw
+        )
+        return ca.Function("r", [T, v, a], [res])
+
+    def test_ideal_drivetrain_leaves_the_law_unchanged(self):
+        from awetrim.system.winch import Drivetrain
+
+        plain = Winch(pattern_config=_linear_config())
+        ideal = Winch(pattern_config=_linear_config(), drivetrain=Drivetrain())
+        assert ideal.drivetrain.is_ideal
+        f_plain, f_ideal = self._residual(plain), self._residual(ideal)
+        for args in ((3000.0, 2.0, 4.0), (800.0, -1.5, -2.0)):
+            assert float(f_ideal(*args)) == pytest.approx(float(f_plain(*args)))
+
+    def test_law_applies_to_the_motor_force(self):
+        """T - F_f(v) - m dv_r/dt is what the law sees (dv_r/dt from the
+        caller's time scheme)."""
+        from awetrim.system.winch import Drivetrain, drivetrain_friction_force
+
+        dt_ = Drivetrain(inertia_mass=300.7, friction_coulomb=122.0, friction_viscous=30.6)
+        plain = Winch(pattern_config=_linear_config())
+        with_dt = Winch(pattern_config=_linear_config(), drivetrain=dt_)
+        f_plain, f_dt = self._residual(plain), self._residual(with_dt)
+        for T, v, a in ((4000.0, 2.5, 2.0), (1200.0, -3.0, -2.0)):
+            f_m = T - drivetrain_friction_force(v, 122.0, 30.6) - 300.7 * a
+            assert float(f_dt(T, v, a)) == pytest.approx(float(f_plain(f_m, v, a)), rel=1e-12)
+
+    def test_no_acceleration_means_a_steady_drum(self):
+        from awetrim.system.winch import Drivetrain
+
+        dt_ = Drivetrain(inertia_mass=300.7)
+        assert dt_.motor_force(5000.0, 3.0) == 5000.0
+        assert dt_.motor_force(5000.0, 3.0, acceleration=2.0) == pytest.approx(5000.0 - 601.4)
+        assert dt_.motor_force(5000.0, 3.0, acceleration=-1.5) == pytest.approx(5000.0 + 451.05)
+
+    def test_loss_power_is_speed_times_friction_force(self):
+        from awetrim.system.winch import Drivetrain, drivetrain_loss_power
+
+        dt_ = Drivetrain(friction_coulomb=122.0, friction_viscous=30.6, load_fraction=0.05)
+        for v in (-4.0, -0.01, 0.0, 0.3, 3.5):
+            assert dt_.loss_power(v, 2000.0) == pytest.approx(
+                drivetrain_loss_power(v, 122.0, 30.6, tension=2000.0, load_fraction=0.05)
+            )
+            assert dt_.loss_power(v, 2000.0) >= 0.0
+        assert Drivetrain().loss_power(3.0, 2000.0) == 0.0

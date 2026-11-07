@@ -30,6 +30,9 @@ def build_expression_registry(model):
         "force_drag_kcu": lambda: model.kite.force_drag_kcu_for(model),
         "force_tether_at_kite": lambda: model.tether.force_tether_at_kite_for(model),
         "drag_tether_at_kite": lambda: model.tether.drag_tether_at_kite_for(model),
+        "force_inertia_tether_at_kite": lambda: (
+            model.tether.force_inertia_tether_at_kite_for(model)
+        ),
         "force_gravity_tether_at_kite": lambda: (
             model.tether.force_gravity_tether_at_kite_for(model)
         ),

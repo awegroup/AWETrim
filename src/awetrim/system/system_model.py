@@ -87,8 +87,6 @@ class SystemModel(KiteKinematics):
         self._qs_solver = None
         self._qs_vars = None
         self._qs_inputs = None
-        self.ode = None
-        self.algebraic = None
         if self.is_tether_rigid:
             self.default_unknown_vars = list(
                 self.tether.default_kite_state_unknowns()
@@ -186,6 +184,7 @@ class SystemModel(KiteKinematics):
             + self.expression("force_gravity")[2]
             + self.expression("drag_tether_at_kite")[2]
             + self.expression("force_gravity_tether_at_kite")[2]
+            + self.expression("force_inertia_tether_at_kite")[2]
         )
 
     @property
@@ -317,20 +316,6 @@ class SystemModel(KiteKinematics):
         # print(self.force_external)
         # print(lhs)
         return -lhs + self.force_external
-
-    def establish_ode_function(self):
-        dot_r = self.speed_radial
-        dot_beta = self.timeder_angle_elevation
-        dot_theta = self.timeder_angle_azimuth
-        dot_vt = self.acceleration_total[0]
-        dot_chi = self.acceleration_total[1]
-        dot_vr = self.acceleration_total[2]
-        dot_lt = self.timeder_length_tether
-        ode = ca.vertcat(dot_r, dot_beta, dot_theta, dot_vt, dot_chi, dot_vr, dot_lt)
-        self._ode = ode
-
-    def algebraic_function(self):
-        return self.force_residual
 
     def establish_residual(self):
         self.residual = self.force_residual
@@ -692,71 +677,6 @@ class SystemModel(KiteKinematics):
             self.input_depower,
             self.timeder_length_tether,
         )
-
-    def integrator(self, time_step, quasi_steady=True, inputs=None):
-        if quasi_steady:
-            self.timeder_speed_radial = 0
-            self.timeder_speed_tangential = 0
-        if self.ode is None:
-            self.establish_ode_function()
-        if self.algebraic is None:
-            self.establish_algebraic()
-
-        if quasi_steady:
-
-            p = ca.vertcat(
-                self.timeder_angle_course, self.input_depower, self.speed_radial
-            )
-
-            x = ca.vertcat(
-                self.distance_radial,
-                self.angle_elevation,
-                self.angle_azimuth,
-                self.angle_course,
-            )
-            ode = ca.vertcat(
-                self._ode[0],
-                self._ode[1],
-                self._ode[2],
-                self._ode[4],
-            )
-            if self.is_tether_rigid:
-                z = ca.vertcat(
-                    self.speed_tangential,
-                    self.input_steering,
-                    self.tension_tether_ground,
-                )
-            else:
-                z = ca.vertcat(
-                    self.speed_tangential,
-                    self.input_steering,
-                    self.length_tether,
-                )
-            alg = self.algebraic
-
-            dae = {"x": x, "p": p, "z": z, "ode": ode, "alg": alg}
-            # Create the integrator
-            opts = {
-                "abstol": 1e-6,
-                "reltol": 1e-6,
-                "max_num_steps": 20000,
-                "max_step_size": 0.01,  # Or even 1e-3 if very stiff
-            }
-
-            # intg = ca.integrator("intg", "idas", dae, opts)
-            intg = ca.integrator("intg", "idas", dae, 0, time_step, opts)
-            return intg
-
-        else:
-            p = self.input_vector
-            ode = {"x": self.state_vector, "p": p, "ode": self._ode}
-            return ca.integrator("intg", "cvodes", ode, 0, time_step)
-
-    def establish_algebraic(self):
-        """
-        Establish the algebraic equations for the kite system.
-        """
-        self.algebraic = self.algebraic_function()
 
     def extract_function(self, attribute_name):
         """Extract a CasADi function dynamically based on the attribute name."""

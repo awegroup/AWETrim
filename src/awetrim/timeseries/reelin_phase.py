@@ -694,10 +694,12 @@ class ReelinSimple:
             quasi_steady=True,
             pattern_config=pattern_config,
         )
-        if phase_sym:
-            phase.run_simulation_phase(start_state=start_state)
-        else:
-            phase.run_simulation(start_state=start_state)
+        if not phase_sym:
+            raise ValueError(
+                "phase_sym=False ran the legacy integrator path, which was "
+                "removed: the march (phase_sym=True) is the simulation"
+            )
+        phase.run_simulation_phase(start_state=start_state)
         return phase
 
     @staticmethod
