@@ -84,19 +84,52 @@ inertia changes the mean power only through the force limits.
 \paragraph{Forward simulation.} The march solves, at each node, the kite's
 force balance and Eq.~\eqref{eq:law} for $(T, u_s, \dot s, v_r)$. The drum's
 time constant, $m$ over the slope of the law (\SI{\sim 0.06}{s} for the LEI-V3),
-is far shorter than a node step (\SI{\sim 0.3}{s}), so $\dot v_r$ is the
-backward difference to the previous node (implicit Euler),
-$\dot v_r \approx (v_{r,i} - v_{r,i-1})/\Delta t_{i-1}$. The previous reel speed
-and $1/\Delta t$ enter the node solver as two parameters; the first node starts
-with a steady drum.
+is far shorter than a node step (\SI{\sim 0.3}{s}), so $\dot v_r$ is an
+implicit difference over the step that ends at the node, solved with it; the
+first node starts with a steady drum. Two schemes (\code{time\_scheme}):
+\code{euler}, the backward difference
+$\dot v_r \approx (v_{r,i} - v_{r,i-1})/\Delta t$ with the step
+$\Delta t = \Delta s/\dot s_{i-1}$ (first order), and \code{bdf2}, the
+variable-step BDF2 difference over the last two steps with the trapezoidal step
+$h = 2\Delta s/(\dot s_{i-1} + \dot s_i)$ and tether length
+$r_i = r_{i-1} + h\,(v_{r,i-1} + v_{r,i})/2$ (second order; like backward Euler
+it damps the stiff drum mode). The default is \code{euler} quasi-steady and
+\code{bdf2} when the kite is dynamic too.
 
-\paragraph{Optimisation.} The cycle NLP uses the same model. Its objective is
-the mean shaft power, with the inertia part written as the exact change of
-$\tfrac12 m v_r^2$ over each interval, so it telescopes. With the force law
-(\code{winch\_mode: force\_law}) Eq.~\eqref{eq:law} replaces the law row, with
-the same backward difference as the march. With a free reel speed
-(\code{free\_speed}) the motor force
-$F_m = T - F_f - m\dot v_r$ is held below \code{max\_tether\_force}.
+\paragraph{Optimisation.} The cycle NLP uses the same model and scheme. Its
+objective is the mean shaft power, with the inertia part written as the exact
+change of $\tfrac12 m v_r^2$ over each interval, so it telescopes. With the
+force law (\code{winch\_mode: force\_law}) Eq.~\eqref{eq:law} replaces the law
+row. With a free reel speed (\code{free\_speed}) the motor force
+$F_m = T - F_f - m\dot v_r$ is held below \code{max\_tether\_force} whenever the
+drivetrain is not ideal (friction adds to it on reel-in).
+
+\section{Tether inertia}
+
+The lumped tether (straight, inextensible, uniform, mass $m_t = \mu r$, pinned
+at the anchor) also carries the inertia of its own mass. Its material moves
+along it at $v_r$ and turns with $\boldsymbol\Omega = \mathbf e_r\times\dot{\mathbf e}_r$,
+$|\boldsymbol\Omega| = v_\tau/r$ (spin about the tether moves no material). A
+point at distance $\rho$ accelerates as
+\begin{equation}
+  \mathbf a(\rho) = (\dot v_r - \rho\, v_\tau^2/r^2)\,\mathbf e_z
+  + \bigl[2 v_r v_\tau/r + \rho\,\tfrac{\mathrm d}{\mathrm dt}(v_\tau/r)\bigr]\mathbf e_x
+  + \rho\,(v_\tau/r)\,\omega_z\,\mathbf e_y ,
+\end{equation}
+in the course frame (tangential $x$, normal $y$, radial $z$), $\omega_z$ the
+frame's turn rate about the tether. Integrating along the tether, with moments
+about the anchor for the cross components (tether reeled at the anchor carries
+no angular momentum), the load it takes from the kite is
+\begin{equation}
+  \mathbf F_{t} = -\Bigl[\tfrac{m_t}{3}\bigl(\dot v_\tau + \tfrac{2 v_\tau v_r}{r}\bigr),\;
+  \tfrac{m_t}{3}\, v_\tau\,\omega_z,\;
+  m_t\bigl(\dot v_r - \tfrac{v_\tau^2}{2r}\bigr)\Bigr]^{\mathsf T} .
+\end{equation}
+Across itself the tether acts as $m_t/3$ at the kite (with twice the kite's
+Coriolis-type term, from reeling), along itself as $m_t$ (with half its
+centrifugal term). Quasi-steady only the centrifugal, Coriolis and turn terms
+remain. It is on by default (\code{inertia: false} in the tether block drops
+it), in the ROM path and in the aerostructural trim alike.
 
 \section{Parameters and use}
 

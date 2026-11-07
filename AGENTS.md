@@ -486,6 +486,10 @@ Every governing equation should trace back to one of:
   — the shooting of `system/williams_tether.py` (`WilliamsTether`); its load placement
   (at each segment's centre, half to each end node, second order) is Nguyen & Oland
   (2026) *Aerospace* 13, 943, App. A, https://doi.org/10.3390/aerospace13100943
+- **Winch drivetrain (inertia, Coulomb + viscous friction):** Fechner (2016) PhD thesis,
+  TU Delft, Table 4.1 (the GS1 values, as V3Kite.jl / KiteUtils carry them); the motor-
+  force law and the tether's inertia at the kite (straight lumped tether) are derived in
+  `docs/winch/winch_model.pdf`
 
 ---
 

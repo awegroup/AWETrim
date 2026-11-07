@@ -3334,7 +3334,10 @@ class PhaseParameterized(TimeSeries):
         # Swap to rigid tether using same diameter/density as the Williams one.
         diameter = original_kite_model.tether.diameter_tether
         density = original_kite_model.tether.density_tether
-        rigid_kite_model.tether = RigidLumpedTether(diameter=diameter, density=density)
+        # Without inertia, like the Williams tether it seeds (which has none).
+        rigid_kite_model.tether = RigidLumpedTether(
+            diameter=diameter, density=density, inertia=False
+        )
         rigid_kite_model.reset_solver()
 
         # Temporarily swap; residual_solver and substitute_parametrized_kinematics

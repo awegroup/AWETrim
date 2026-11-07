@@ -28,7 +28,8 @@ class Tether(ABC):
         self.area_tether = np.pi * (self.diameter_tether / 2) ** 2
         self.drag_coefficient_tether = 1.1
         self.density_tether = density
-        # Tether inertia at the kite (lumped tethers; opt-in, see
+        # Tether inertia at the kite (see force_inertia_tether_at_kite_for):
+        # on by default for the lumped tethers, off for the massless links;
         # force_inertia_tether_at_kite_for).
         self.inertia = bool(inertia)
 
