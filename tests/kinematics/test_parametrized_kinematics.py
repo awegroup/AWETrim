@@ -7,6 +7,7 @@ Consolidated from the three former files:
 """
 
 import casadi as ca
+import pytest
 
 from awetrim.kinematics.Kinematics import ParametrizedKinematics
 
@@ -137,9 +138,6 @@ def test_all_kinematics_equations():
             - dphi_ds**2 * dbeta_ds * ca.sin(beta_expr) * ca.cos(beta_expr)
         )
     )
-    # A phase without its own reel-acceleration symbol keeps the path part;
-    # v_r is a state, not a function of s (test_dot_vr_is_the_phase_symbol).
-    dot_vr_manual = s_ddot * dr_ds
     dot_vtau_manual = sqrt_A_manual * (
         s_dot**2 * dr_ds + s_ddot * r
     ) + s_dot * r * dot_A_manual / (2 * sqrt_A_manual)
@@ -156,7 +154,6 @@ def test_all_kinematics_equations():
         "dbeta_ds2": (pk.dbeta_ds2, dbeta_ds2_manual),
         "sqrt_A":    (pk.sqrt_A,    sqrt_A_manual),
         "dot_A":     (pk.dot_A,     dot_A_manual),
-        "dot_vr":    (pk.dot_vr,    dot_vr_manual),
         "dot_vtau":  (pk.dot_vtau,  dot_vtau_manual),
         "chi":       (pk.chi,       chi_manual),
         "dot_chi":   (pk.dot_chi,   dot_chi_manual),
@@ -276,3 +273,11 @@ def test_dot_vr_is_the_phase_symbol():
     phase.timeder_speed_radial = ca.MX.sym("timeder_speed_radial")
     pk = ParametrizedKinematics(DummyPattern(), phase)
     assert pk.dot_vr is phase.timeder_speed_radial
+
+
+def test_dot_vr_without_the_phase_symbol_raises():
+    """The reel acceleration does not follow from the path; a phase without
+    its own symbol cannot ask the kinematics for it."""
+    pk, _ = _make_pk()
+    with pytest.raises(AttributeError, match="timeder_speed_radial"):
+        pk.dot_vr

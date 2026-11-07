@@ -31,7 +31,9 @@
   adds to the motor force); before, the row came only with drum inertia.
 - **One drum-acceleration input:** `Drivetrain.motor_force(tension, v_r,
   acceleration=...)` and `Winch.radial_equation(..., speed_radial_rate=...)`; the
-  `speed_radial_prev` / `inv_time_step` pair is gone. `Drivetrain.loss_power` calls
+  `speed_radial_prev` / `inv_time_step` pair is gone. `ParametrizedKinematics.dot_vr` raises for a phase
+  without the `timeder_speed_radial` symbol (the reel acceleration does not follow
+  from the path). `Drivetrain.loss_power` calls
   `drivetrain_loss_power`.
 - The rigid warm start serves dynamic phases too (same node layout); the unused
   `_quasi_steady_start_state` is removed. `run_full_cycle_opti.py`'s radial-closure
@@ -49,7 +51,8 @@
   unchanged. The tension bound then holds with the kite's and the drum's inertia in.
 - **The march tells a fold from a solver failure.** When every attempt at a node
   fails, a least-squares solve from the guess either finds a root IPOPT missed (taken
-  if the branch rules accept it) or stalls where the Jacobian goes singular: a fold,
+  only if it passes the same steering-box and stall rules as a first attempt; a root
+  on another branch stops the march, `stop_reason` kind `other_branch`) or stalls where the Jacobian goes singular: a fold,
   reported with the balance that runs out ("the kite cannot follow the path here")
   and kept in `phase.stop_reason`.
 - **Dynamic runs reject post-stall roots again.** The node's angle of attack still

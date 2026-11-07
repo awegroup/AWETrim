@@ -1051,10 +1051,10 @@ class PhaseParameterized(TimeSeries):
 
             # Every attempt failed and no fallback root was kept: a
             # least-squares solve from the guess tells a root IPOPT missed
-            # (taken, as the attempts' fallbacks are, the box and stall
-            # status logged) from a fold, where the node equations have no
-            # root: the kite cannot follow the path here (e.g. its turn needs
-            # more side force than it can make at the speed it carries).
+            # (taken if it passes the branch rules, else the march stops on
+            # it) from a fold, where the node equations have no root: the
+            # kite cannot follow the path here (e.g. its turn needs more side
+            # force than it can make at the speed it carries).
             kind = "solver"
             detail = ""
             try:
@@ -1066,19 +1066,37 @@ class PhaseParameterized(TimeSeries):
                 detail = f"least-squares check failed: {exc}"
             if z_ls is not None:
                 norm = float(np.linalg.norm(g_ls))
-                if norm <= accept_residual_norm:
-                    # A root: take it as the IPOPT attempts take their
-                    # fallbacks, beyond the steering box or past the stall
-                    # included (said in the log), since no better one was found.
-                    notes = []
-                    if steering_box is not None and abs(float(z_ls[steering_index])) > steering_box:
-                        notes.append(f"beyond the steering box (|u_s| {abs(float(z_ls[steering_index])):.3f})")
-                    if alpha_function is not None and not float(alpha_function(z_ls, p_solver)) < float(alpha_stall):
-                        notes.append("post-stall")
+                # A root passes the branch rules a first attempt passes:
+                # pre-stall, and within the steering box unless it continues
+                # the previous node's steering. One on another branch is not
+                # taken: the march stops and says so.
+                u_ls = float(z_ls[steering_index])
+                rejected = []
+                if (
+                    steering_box is not None
+                    and steering_in_box_previous[0]
+                    and abs(u_ls) > steering_box
+                    and not (
+                        steering_previous[0] is not None
+                        and abs(u_ls - steering_previous[0]) <= STEERING_CONTINUATION_MAX
+                    )
+                ):
+                    rejected.append(f"beyond the steering box (u_s {u_ls:.3f})")
+                if alpha_function is not None and not (
+                    float(alpha_function(z_ls, p_solver)) < float(alpha_stall)
+                ):
+                    rejected.append("post-stall")
+                if norm <= accept_residual_norm and rejected:
+                    kind = "other_branch"
+                    detail = (
+                        "a root exists only on another branch ("
+                        + ", ".join(rejected)
+                        + "); not switching to it"
+                    )
+                elif norm <= accept_residual_norm:
                     logger.info(
                         "Phase node %d: root found by least squares after the "
-                        "IPOPT attempts failed%s", node_index,
-                        (": " + ", ".join(notes)) if notes else "",
+                        "IPOPT attempts failed", node_index,
                     )
                     rate_previous[0] = float(z_ls[rate_index])
                     steering_previous[0] = float(z_ls[steering_index])
@@ -1088,7 +1106,9 @@ class PhaseParameterized(TimeSeries):
                     )
                     return {"x": ca.DM(z_ls), "g": ca.DM(g_ls)}
                 names = _node_equation_names(g_ls.size, use_williams)
-                if sv[-1] <= FOLD_SINGULAR_RATIO * sv[0]:
+                if kind == "other_branch":
+                    pass
+                elif sv[-1] <= FOLD_SINGULAR_RATIO * sv[0]:
                     kind = "fold"
                     equation = names[int(np.argmax(np.abs(left)))]
                     detail = (
@@ -1242,8 +1262,15 @@ class PhaseParameterized(TimeSeries):
                         sol["x"], p_solver
                     )
                 else:
-                    tension_ground = self.winch_model.tension_curve(
+                    # Not reached in practice (residual_solver always builds
+                    # the Williams tension function). The law gives the MOTOR
+                    # force: add the drivetrain's friction (its inertia term
+                    # needs the node's acceleration, recorded below).
+                    law = float(self.winch_model.tension_curve(
                         speed_radial, input_depower=float(x[2])
+                    ))
+                    tension_ground = law + float(
+                        self.winch_model.drivetrain.friction_force(speed_radial, law)
                     )
                 curr_state = State(
                     t=t,
@@ -1278,6 +1305,7 @@ class PhaseParameterized(TimeSeries):
                 v1, sd1, v2, sd2, h_prev, ds_step, active, order2 = drum_state
                 sd, v = curr_state.s_dot, curr_state.speed_radial
                 h = trapezoid_step(ds_step, sd1, sd) if active else 0.0
+                h_node = h  # the step just taken, the next node's previous step
                 r_node = float(x[1]) + (trapezoid_increment(h, v1, v) if active else 0.0)
                 t_node = t_node + h
                 if active:
@@ -1308,7 +1336,7 @@ class PhaseParameterized(TimeSeries):
                     float(speed_radial), float(v_s),
                     float(drum_state[0]) if i else 0.0,
                     float(drum_state[1]) if i else 1.0,
-                    float(trapezoid_step(drum_state[5], drum_state[1], float(v_s))) if i else 0.0,
+                    float(h_node) if i else 0.0,
                     ds, 1.0, 1.0 if i else 0.0,
                 )
                 x = ca.vertcat(s_grid[i + 1], r_node, u_dep_profile[i + 1], wind_profile[i + 1])
@@ -1669,7 +1697,8 @@ class PhaseParameterized(TimeSeries):
         # force_law: the law row is Winch.radial_equation on the motor force,
         # the drum acceleration the backward difference from the previous node
         # (as the forward march). free_speed: the motor force is held below
-        # max_tether_force (only with inertia: without it the T band implies it).
+        # max_tether_force whenever the drivetrain is not ideal (friction adds to
+        # the motor force on reel-in, the drum's inertia while braking).
         drivetrain = self._resolve_drivetrain(limits)
         if drivetrain.inertia_mass:
             print(
@@ -2754,7 +2783,11 @@ class PhaseParameterized(TimeSeries):
             # The node's scheme differences, built once and shared by every
             # row of the node (MX does not merge repeated subgraphs).
             dyn_i = _dyn_args(i)
-            drum_rate_i = _rate(i, "speed_radial") if drivetrain.inertia_mass else None
+            drum_rate_i = (
+                (dyn_i[1] if dynamic else _rate(i, "speed_radial"))
+                if drivetrain.inertia_mass
+                else None
+            )
             T_i = opti_vars["tension_tether_ground"][i]
             if free_speed:
                 # v_r is a direct (rate-limited) control; the winch imposes no
