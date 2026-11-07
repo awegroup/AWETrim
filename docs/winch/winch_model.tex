@@ -114,7 +114,14 @@ physics), but at close to second order with \code{bdf2}, which at 100 nodes is
 as accurate in tension as \code{euler} at 400. Converged, the dynamic model's
 mean power is \SI{0.15}{\percent} below the quasi-steady one; its tension
 peaks are \SI{\sim 0.3}{kN} higher (drum and kite inertia), at every
-resolution. A node costs \SI{\sim 10}{ms} quasi-steady and \SI{\sim 14}{ms}
+resolution. A whole pumping cycle (same wind and model) converges more slowly,
+the dynamics acting at the reel-out and reel-in transitions, where the depower
+profile and the force law have corners: the dynamic shaft power is
+$+3.2$, $+1.7$, $+1.1$ and $+0.9\,\%$ above the quasi-steady one at 114, 228,
+456 and 912 nodes, and its tension peak settles at \SI{8.93}{kN} from 456 nodes
+(quasi-steady \SI{8.62}{kN} at every resolution). A dynamic cycle therefore
+needs a step of about \SI{0.2}{s}, two to four times finer than the eight.
+A node costs \SI{\sim 10}{ms} quasi-steady and \SI{\sim 14}{ms}
 dynamic; \code{bdf2} adds 5--10\,\%.
 
 \begin{table}[H]
