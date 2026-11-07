@@ -33,9 +33,10 @@ src/awetrim/
                          drivetrain_loss_power = v F_f), all tether-referred.
                          The force law sets the MOTOR force: Winch.
                          radial_equation applies it to T - F_f - m dv/dt
-                         (speed_radial_prev / inv_time_step: implicit Euler
-                         over the step that ends at the state; ideal
-                         Drivetrain = law unchanged)
+                         (speed_radial_rate: the drum's dv_r/dt from the
+                         caller's time scheme, utils/time_scheme; Drivetrain.
+                         motor_force(acceleration=...); ideal Drivetrain = law
+                         unchanged)
   aerodynamics/      ✅  VSM quasi-steady trim + KCU bluff-body drag
                          (kcu_drag.py, single-sourced, on by default in the
                           aerostructural path via is_with_kcu_drag)
@@ -144,7 +145,11 @@ src/awetrim/
                          _rate / _dyn_args; continuity, energy, time and slew
                          rates over _step; run_full_cycle_opti.py --dynamic).
                          The march checks every attempt against the steering
-                         box. A node where every attempt fails is diagnosed by
+                         box, except a first attempt that continues the
+                         previous node's steering (STEERING_CONTINUATION_MAX):
+                         a tightening path, not a branch jump. A free_speed
+                         NLP bounds the motor force (T - F_f - m a) whenever
+                         the drivetrain is not ideal. A node where every attempt fails is diagnosed by
                          least squares (_least_squares_node, its Jacobian
                          built once per solver): a root IPOPT missed is taken,
                          a fold (singular Jacobian, FOLD_SINGULAR_RATIO) is

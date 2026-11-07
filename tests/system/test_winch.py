@@ -721,12 +721,11 @@ class TestDrivetrainLossPower:
 
 class TestDrivetrain:
     def _residual(self, winch, **kw):
-        T, v, vp, inv = (ca.MX.sym(n) for n in ("T", "v", "vp", "inv"))
+        T, v, a = (ca.MX.sym(n) for n in ("T", "v", "a"))
         res = winch.radial_equation(
-            speed_radial=v, tension_tether_ground=T, speed_radial_prev=vp,
-            inv_time_step=inv, **kw
+            speed_radial=v, tension_tether_ground=T, speed_radial_rate=a, **kw
         )
-        return ca.Function("r", [T, v, vp, inv], [res])
+        return ca.Function("r", [T, v, a], [res])
 
     def test_ideal_drivetrain_leaves_the_law_unchanged(self):
         from awetrim.system.winch import Drivetrain
@@ -735,30 +734,29 @@ class TestDrivetrain:
         ideal = Winch(pattern_config=_linear_config(), drivetrain=Drivetrain())
         assert ideal.drivetrain.is_ideal
         f_plain, f_ideal = self._residual(plain), self._residual(ideal)
-        for args in ((3000.0, 2.0, 1.0, 5.0), (800.0, -1.5, -2.0, 3.0)):
+        for args in ((3000.0, 2.0, 4.0), (800.0, -1.5, -2.0)):
             assert float(f_ideal(*args)) == pytest.approx(float(f_plain(*args)))
 
     def test_law_applies_to_the_motor_force(self):
-        """T - F_f(v) - m (v - v_prev) / dt is what the law sees."""
+        """T - F_f(v) - m dv_r/dt is what the law sees (dv_r/dt from the
+        caller's time scheme)."""
         from awetrim.system.winch import Drivetrain, drivetrain_friction_force
 
         dt_ = Drivetrain(inertia_mass=300.7, friction_coulomb=122.0, friction_viscous=30.6)
         plain = Winch(pattern_config=_linear_config())
         with_dt = Winch(pattern_config=_linear_config(), drivetrain=dt_)
         f_plain, f_dt = self._residual(plain), self._residual(with_dt)
-        for T, v, vp, inv in ((4000.0, 2.5, 2.0, 4.0), (1200.0, -3.0, -2.0, 2.0)):
-            f_m = T - drivetrain_friction_force(v, 122.0, 30.6) - 300.7 * (v - vp) * inv
-            assert float(f_dt(T, v, vp, inv)) == pytest.approx(
-                float(f_plain(f_m, v, vp, inv)), rel=1e-12
-            )
+        for T, v, a in ((4000.0, 2.5, 2.0), (1200.0, -3.0, -2.0)):
+            f_m = T - drivetrain_friction_force(v, 122.0, 30.6) - 300.7 * a
+            assert float(f_dt(T, v, a)) == pytest.approx(float(f_plain(f_m, v, a)), rel=1e-12)
 
-    def test_no_previous_state_means_a_steady_drum(self):
+    def test_no_acceleration_means_a_steady_drum(self):
         from awetrim.system.winch import Drivetrain
 
         dt_ = Drivetrain(inertia_mass=300.7)
         assert dt_.motor_force(5000.0, 3.0) == 5000.0
-        assert dt_.motor_force(5000.0, 3.0, 2.0, 0.0) == 5000.0
-        assert dt_.motor_force(5000.0, 3.0, 2.0, 2.0) == pytest.approx(5000.0 - 601.4)
+        assert dt_.motor_force(5000.0, 3.0, acceleration=2.0) == pytest.approx(5000.0 - 601.4)
+        assert dt_.motor_force(5000.0, 3.0, acceleration=-1.5) == pytest.approx(5000.0 + 451.05)
 
     def test_loss_power_is_speed_times_friction_force(self):
         from awetrim.system.winch import Drivetrain, drivetrain_loss_power
@@ -769,12 +767,4 @@ class TestDrivetrain:
                 drivetrain_loss_power(v, 122.0, 30.6, tension=2000.0, load_fraction=0.05)
             )
             assert dt_.loss_power(v, 2000.0) >= 0.0
-
-    def test_motor_force_takes_a_given_acceleration(self):
-        """A higher-order scheme passes dv_r/dt directly: m a replaces the
-        backward difference."""
-        from awetrim.system.winch import Drivetrain
-
-        dt_ = Drivetrain(inertia_mass=300.7)
-        assert dt_.motor_force(5000.0, 3.0, acceleration=-1.5) == pytest.approx(5000.0 + 451.05)
-        assert dt_.motor_force(5000.0, 3.0, 1.0, 10.0, acceleration=0.0) == pytest.approx(5000.0)
+        assert Drivetrain().loss_power(3.0, 2000.0) == 0.0

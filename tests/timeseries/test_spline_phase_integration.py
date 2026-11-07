@@ -824,11 +824,13 @@ def test_depower_anchor_is_an_objective_term_only():
 
 
 @pytest.mark.slow
-def test_winch_friction_changes_only_the_objective():
+def test_winch_friction_changes_the_objective_and_bounds_the_motor():
     """``winch_friction`` swaps the energy integrand T v for T v - P_loss(v)
-    (winch.drivetrain_loss_power): no rows or decisions are added, and at the
-    shared initial guess (v_r = 0.5 m/s at every node) the energy drops by
-    exactly P_loss(0.5) * total time. Off = NLP unchanged."""
+    (winch.drivetrain_loss_power) and, free_speed, adds one motor-force row per
+    node (T - F_f within the drive limit: friction adds to the motor force on
+    reel-in). No decisions are added, and at the shared initial guess (v_r =
+    0.5 m/s at every node) the energy drops by exactly P_loss(0.5) * total time.
+    Off = NLP unchanged."""
     from awetrim.system.winch import drivetrain_loss_power
 
     overrides = {**_WRAP_FORMULATIONS["free_speed+depower"][0], "periodic_wrap": True}
@@ -842,7 +844,7 @@ def test_winch_friction_changes_only_the_objective():
     ):
         phase_on, start = _wrap_phase(_N_WRAP, {**overrides, "winch_friction": flag})
         opti_on, _, obj_on = phase_on.opti_phase(start_state=start, opti_params={})
-        assert opti_on.g.numel() == opti_off.g.numel()
+        assert opti_on.g.numel() == opti_off.g.numel() + _N_WRAP
         assert opti_on.x.numel() == opti_off.x.numel()
         e_on = float(opti_on.debug.value(obj_on["energy"], opti_on.initial()))
         t_on = float(opti_on.debug.value(obj_on["total_time"], opti_on.initial()))
@@ -851,11 +853,11 @@ def test_winch_friction_changes_only_the_objective():
 
 
 @pytest.mark.slow
-def test_drivetrain_load_fraction_changes_only_the_objective():
+def test_drivetrain_load_fraction_changes_the_objective_and_bounds_the_motor():
     """``drivetrain_load_fraction`` adds k T |v| to the loss in the energy
-    integrand (True -> system.yaml drums[0].friction_load_fraction): no rows or
-    decisions are added and, at the initial guess (v_r > 0, T > 0), the energy
-    only drops."""
+    integrand (True -> system.yaml drums[0].friction_load_fraction) and,
+    free_speed, a motor-force row per node; no decisions are added and, at the
+    initial guess (v_r > 0, T > 0), the energy only drops."""
     overrides = {**_WRAP_FORMULATIONS["free_speed+depower"][0], "periodic_wrap": True}
     phase_off, start = _wrap_phase(_N_WRAP, dict(overrides))
     opti_off, _, obj_off = phase_off.opti_phase(start_state=start, opti_params={})
@@ -865,7 +867,7 @@ def test_drivetrain_load_fraction_changes_only_the_objective():
             _N_WRAP, {**overrides, "drivetrain_load_fraction": flag}
         )
         opti_on, _, obj_on = phase_on.opti_phase(start_state=start, opti_params={})
-        assert opti_on.g.numel() == opti_off.g.numel()
+        assert opti_on.g.numel() == opti_off.g.numel() + _N_WRAP
         assert opti_on.x.numel() == opti_off.x.numel()
         e_on = float(opti_on.debug.value(obj_on["energy"], opti_on.initial()))
         assert e_on < e_off
@@ -1169,7 +1171,7 @@ def test_winch_inertia_rows_in_the_nlp(formulation):
     assert opti_on.g.numel() == opti_off.g.numel() + extra
     assert opti_on.x.numel() == opti_off.x.numel()
     if extra:
-        assert obj_on["constraint_report"]["winch_motor_force (inertia)"]["expr"].numel() == _N_WRAP
+        assert obj_on["constraint_report"]["winch_motor_force"]["expr"].numel() == _N_WRAP
     e_off = float(opti_off.debug.value(obj_off["energy"], opti_off.initial()))
     e_on = float(opti_on.debug.value(obj_on["energy"], opti_on.initial()))
     assert e_on == pytest.approx(e_off, rel=1e-9)
