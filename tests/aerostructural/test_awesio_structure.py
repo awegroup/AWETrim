@@ -33,6 +33,20 @@ def test_the_connectivity_preimage_is_the_schemas_example():
     assert awesio_structure.connectivity_preimage(three_in_a_row) == "3;1,2;2,3;2;1,2;1;1,2,3;"
 
 
+def test_a_kcu_in_the_structure_is_refused():
+    """system.yaml is the KCU mass's single source: a KCU written into the
+    structure would be added twice, so every reader refuses it."""
+    document = yaml.safe_load((KITE_DIR / "structure.yml").read_text(encoding="utf-8"))
+    kcu = awesio_structure.kcu_point(document)
+    headers = document["points"]["headers"]
+    row = next(r for r in document["points"]["data"] if r[0] == kcu)
+    row[headers.index("extra_mass")] = KCU_MASS
+    with pytest.raises(ValueError, match="belongs in system.yaml"):
+        awesio_structure.Structure(document)
+    with pytest.raises(ValueError, match="belongs in system.yaml"):
+        awesio_structure.from_awesio(document, kcu_mass=KCU_MASS)
+
+
 # --- the Structure view the drivers use --------------------------------------
 
 

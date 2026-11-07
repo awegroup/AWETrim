@@ -3,9 +3,10 @@
 To trim on a deformed shape from an aerostructural run, pass
 ``--deformed-from <case_dir>`` (where ``case_dir`` contains the deformed
 ``aero_geometry.yaml`` and ``structure.yml``). The deformed geometries
-are used by VSM and for plotting, but mass, inertia tensor and centre of
-gravity are still read from ``system.yaml`` in ``--config-folder`` -- this
-script does NOT recompute inertia or CoG from the deformed shape.
+are used by VSM and for plotting; mass and inertia tensor are still read from
+``system.yaml`` in ``--config-folder``. The centre of gravity defaults to the
+kite's own (the structure aggregate, deformed when ``--deformed-from`` is
+given); ``--center-of-gravity`` overrides it.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from common import (
     output_dir,
     parsed_common,
     print_trim_summary,
+    kite_rigid_body,
     save_figure,
     write_json,
 )
@@ -47,6 +49,7 @@ def main() -> None:
 
     body, body_props = build_body(args)
     system_model = build_system_model(args)
+    center_of_gravity = kite_rigid_body(values, body_props, system_model)["center_of_gravity"]
 
     use_williams = isinstance(getattr(system_model, "tether", None), WilliamsTether)
 
@@ -56,7 +59,7 @@ def main() -> None:
         )
         result, _ = solve_vsm_qs_trim_with_williams_tether(
             body_aero=body,
-            center_of_gravity=values["center_of_gravity"],
+            center_of_gravity=center_of_gravity,
             reference_point=values["reference_point"],
             system_model=system_model,
             x_guess=values["x_guess"],
@@ -69,7 +72,7 @@ def main() -> None:
     else:
         result, _ = solve_vsm_quasi_steady_trim(
             body_aero=body,
-            center_of_gravity=values["center_of_gravity"],
+            center_of_gravity=center_of_gravity,
             reference_point=values["reference_point"],
             system_model=system_model,
             x_guess=values["x_guess"],

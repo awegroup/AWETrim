@@ -288,6 +288,28 @@ def test_kite_aggregate_weighs_the_structure_and_the_kcu(lei_v3_system):
     assert np.asarray(aggregate["inertia_tensor"]).shape == (3, 3)
 
 
+_KITES_WITH_STRUCTURE = sorted(
+    d.name for d in KITE_DIR.parent.iterdir()
+    if (d / "system.yaml").exists() and (d / "structure.yml").exists()
+)
+
+
+@pytest.mark.parametrize("kite", _KITES_WITH_STRUCTURE)
+def test_kite_aggregate_is_the_system_model_mass(kite):
+    """The structure aggregate (whose CG and inertia the trims use) weighs what
+    the system model does, wing + bridle + KCU, the KCU counted once: a trim
+    with the aggregate's CG/inertia and the model's mass is then one body."""
+    from awetrim.system.factory import create_system_model_from_yaml
+
+    kite_dir = KITE_DIR.parent / kite
+    system_config = yaml.safe_load((kite_dir / "system.yaml").read_text(encoding="utf-8"))
+    aggregate = compute_kite_aggregate(kite_dir / "structure.yml", system_config)
+    model = create_system_model_from_yaml(kite_dir / "system.yaml")
+    assert aggregate["mass"] == pytest.approx(
+        float(model.kite.mass_wing) + float(model.kite.mass_kcu), rel=1e-3
+    )
+
+
 def test_printing_rest_lengths_reports_every_line(capsys):
     from awetrim.aerostructural.coupled.awesio_structure import load_structure
 
