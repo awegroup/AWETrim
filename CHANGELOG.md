@@ -15,6 +15,11 @@
   terms remain; the dynamic march adds the accelerations. On by default, so
   quasi-steady results shift by about 0.1-0.2 % (LEI-V3 at 9 m/s); not available on the
   Williams tether.
+- **The aerostructural (VSM) quasi-steady trim carries it too** with the lumped tether
+  (`tether_model="rigid_lumped"`), following the tether's `inertia` switch, so both
+  models load the kite with the same tether. Identification sweeps re-run from now
+  on include it (the trimmed angle of attack moves by ~0.005 deg on the LEI-V3
+  single-state case); the stored sweep and ROM are unchanged until then.
 - The dynamic-vs-quasi-steady study (`compare_dynamic_quasi_steady_winch.py`, available
   on request) now runs with and without it, with and without winch friction.
 

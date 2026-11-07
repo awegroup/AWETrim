@@ -25,7 +25,8 @@ src/awetrim/
                          tethers, on by default, the tether block's
                          `inertia: false` drops it, create_tether_from_config): (m_t/3) across,
                          m_t along, with 2x the kite's Coriolis and 1/2 its
-                         centrifugal term; in force_tether_at_kite
+                         centrifugal term; in force_tether_at_kite, and in
+                         the VSM quasi-steady trim's rigid_lumped tether load
                          + winch.Drivetrain: drum inertia (tether-referred
                          mass J (n/r)^2) + friction (F_c + k T) tanh(v/eps)
                          + c_v v (drivetrain_friction_force; loss power
