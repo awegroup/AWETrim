@@ -97,6 +97,10 @@ class SystemModel(KiteKinematics):
                 "input_steering",
                 "length_tether",
             ]
+        if self.has_turn_rate_law:
+            # the lift's total roll about v_a is an unknown, closed by the
+            # lateral force balance (the turn law is the fourth residual row)
+            self.default_unknown_vars.append("angle_roll")
         self.derived_function_names = [
             "angle_of_attack",
             "tension_tether_ground",
@@ -312,10 +316,25 @@ class SystemModel(KiteKinematics):
         """
         # LHS and RHS
         lhs = (self.kite.mass_wing + self.kite.mass_kcu) * self.acceleration
-        # Residual
-        # print(self.force_external)
-        # print(lhs)
-        return -lhs + self.force_external
+        residual = -lhs + self.force_external
+        if self.has_turn_rate_law:
+            # [chi, n, r, turn law]: the lateral row closes the roll unknown
+            # (angle_roll), the turn law ties the steering to the turn rate.
+            residual = ca.vertcat(residual, self.kite.turn_rate_residual_for(self))
+        return residual
+
+    @property
+    def has_turn_rate_law(self):
+        """True when the ROM's steering law is ``turn_rate`` (Kite.__init__):
+        then ``angle_roll`` is an unknown and the residual has four rows."""
+        return getattr(self.kite, "steering_law", "roll_gain") == "turn_rate"
+
+    @property
+    def angle_roll(self):
+        """The lift's total roll about v_a [rad], the turn-rate law's unknown."""
+        if not self.has_turn_rate_law:
+            raise AttributeError("angle_roll is an unknown only with steering_law turn_rate")
+        return self.kite.angle_roll_variable
 
     def establish_residual(self):
         self.residual = self.force_residual
@@ -416,7 +435,8 @@ class SystemModel(KiteKinematics):
         # not used to select roots -- every flown reel-in state reads S > 0.
         # Only when the tangential speed is an unknown of a square system.
         self._qs_stability_function = None
-        if "speed_tangential" in unknown_vars and len(x) == int(g.numel()):
+        if ("speed_tangential" in unknown_vars and len(x) == int(g.numel())
+                and not self.has_turn_rate_law):
             frozen = (
                 (unknown_vars.index("input_steering"),)
                 if "input_steering" in unknown_vars else ()
@@ -498,7 +518,10 @@ class SystemModel(KiteKinematics):
             lbg = [0] * ng
             ubg = [0] * ng
 
-        x0 = [safe_value(state_dict.get(var, 1.0)) for var in unknown_vars]
+        # the roll's neutral guess is 0, not the generic 1 (rad)
+        x0 = [safe_value(state_dict.get(var, 0.0 if var == "angle_roll" else 1.0))
+              if not (var == "angle_roll" and state_dict.get(var) is None) else 0.0
+              for var in unknown_vars]
         # Tether-contributed initial guesses (Williams: tension_kite,
         # tether_length, azimuth_last, elevation_last). For tethers with no
         # extra decisions this is a no-op.

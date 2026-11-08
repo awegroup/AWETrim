@@ -49,6 +49,15 @@ until each wind's state is converged with |course rate| below a tolerance
 instead of the unloaded build, whose first iterations can settle on a
 one-tip-stalled, turning state with zero steering.
 
+Turn-law states (wireframe, `turn_law:` in the sweep block): the ROM's
+turn-rate law (steering_law turn_rate) needs b(u_p), c5 and c6, which the
+centre-of-window chains cannot separate from its gain
+(awetrim.identification.turn_law). A few saved anchors are re-solved
+tetherless: at the centre at mass scale 0 and 1, and with gravity at
+other elevations and courses. Written to sweep/turn_law/trims.csv;
+solved after the chains by a full run (no --chains), or alone with
+--turn-law [ANCHOR ...]. Resumable.
+
 --repolar (wireframe) solves the polars of the saved anchors again over the
 current polar_d_alpha_deg, e.g. after widening it to reach the stall, and those that
 fail the polar check: each
@@ -63,6 +72,8 @@ Usage (project root):
     python examples/3_rom_identification/run_identification_sweep.py --list
     python examples/3_rom_identification/run_identification_sweep.py --base-only
     python examples/3_rom_identification/run_identification_sweep.py --repolar
+    python examples/3_rom_identification/run_identification_sweep.py --turn-law
+    python examples/3_rom_identification/run_identification_sweep.py --turn-law w5.0_steering_1.95/07
 """
 
 from __future__ import annotations
@@ -89,6 +100,7 @@ from awetrim.aerostructural.case import (
 )
 from awetrim.aerostructural.results import save_sim_output
 from awetrim.identification import aerostructural_dataset as ds
+from awetrim.identification import turn_law
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
 DONE_MARKER = "chain_done"
@@ -189,8 +201,10 @@ def _at(config: dict, *, wind_speed=None, power_tape=None, steering=None) -> dic
     return dataclasses.replace(case, **changes).apply(config)
 
 
-def open_case(fidelity: str, spec: dict, kite: str):
-    """``(driver, case)``: the fidelity's driver module and its built case."""
+def open_case(fidelity: str, spec: dict, kite: str, work_dir: Path | None = None):
+    """``(driver, case)``: the fidelity's driver module and its built case
+    (the wireframe's reduced geometry in ``work_dir``, default the
+    fidelity's ``geometry`` folder)."""
     kite_dir = PROJECT_DIR / "data" / kite
     system_path = kite_dir / spec.get("system_file", "system.yaml")
     if fidelity == "billow":
@@ -210,7 +224,7 @@ def open_case(fidelity: str, spec: dict, kite: str):
         # when aerodynamic.billowing.contraction > 0)
         case = driver.build_case_reduced_fem(
             config=config, kite_name=kite, project_dir=PROJECT_DIR,
-            work_dir=PROJECT_DIR / "results" / kite / "identification" / fidelity / "geometry",
+            work_dir=work_dir or PROJECT_DIR / "results" / kite / "identification" / fidelity / "geometry",
             system_config_path=system_path,
             fem_geometry_filename=spec.get("fem_geometry", DEFAULT_STRUC_GEOMETRY_FILENAME),
         )
@@ -502,6 +516,122 @@ def solve_chain(driver, case, chain: Chain, spec: dict, out: Path, start: int = 
     return n_written
 
 
+# ───────────────────────────────────────────── states off the sweep's centre
+def open_window_case(spec: dict, kite: str, work_dir: Path, *, gravity: bool):
+    """The wireframe case of the window states: tetherless (tether, gravity and
+    shear are the ROM's point-mass physics, the aerodynamics are what is
+    measured), gravity as asked."""
+    spec = copy.deepcopy(spec)
+    overrides = spec.setdefault("overrides", {})
+    overrides["tether"] = {**(overrides.get("tether") or {}), "include_in_trim": False}
+    overrides.setdefault("coupling", {})["is_with_gravity"] = bool(gravity)
+    return open_case("wireframe", spec, kite, work_dir=work_dir)
+
+
+def window_wind(wind_centre: float, elevation_deg: float, azimuth_deg: float) -> float:
+    """The wind off-centre: scaled by 1 / (cos beta cos phi) so that its
+    component along the tether is the centre's."""
+    return wind_centre / (np.cos(np.radians(elevation_deg)) * np.cos(np.radians(azimuth_deg)))
+
+
+def anchor_wind(sweep_out: Path, anchor: str) -> float:
+    """The wind speed [m/s] a sweep anchor was solved at."""
+    trims = _read_rows(sweep_out / ds.TRIMS_FILE)
+    rows = None if trims is None else trims[trims.anchor == anchor]
+    if rows is None or rows.empty:
+        raise SystemExit(f"anchor {anchor} is not in {sweep_out / ds.TRIMS_FILE}")
+    return float(rows.wind_speed.iloc[0])
+
+
+def solve_window_state(driver, case, spec: dict, sweep_out: Path, base: str, state, *,
+                       mass_scale: float, gravity: bool, wind_centre: float) -> dict | None:
+    """Re-solve sweep anchor ``base`` (``<chain>/<step>``, restored from its
+    sim_output.h5) at ``state`` = (elevation, azimuth, course) [deg] with the
+    kite's mass scaled by ``mass_scale``. The trim row (with ``base``,
+    ``state``, ``mass_scale``, ``gravity`` and the angles), or None when the
+    trim fails."""
+    elevation, azimuth, course = (float(v) for v in state)
+    label = turn_law.state_label(elevation, azimuth, course)
+    anchor = turn_law.state_anchor(base, label, mass_scale, gravity)
+    chain, step = base.split("/")
+    wind = window_wind(wind_centre, elevation, azimuth)
+    config = _at(copy.deepcopy(case.config), wind_speed=wind, power_tape=0.0, steering=0.0)
+    config = dataclasses.replace(
+        Case.from_config(config), elevation_deg=elevation, azimuth_deg=azimuth, course_deg=course
+    ).apply(config)
+    config["power_tape_extension_step"] = float(spec["depower"]["step"])
+    config["steering_tape_extension_step"] = float(spec["steering"]["step"])
+    prepared = prepare(driver, case, spec, config)
+    prepared.restore(sweep_out / chain / f"step_{int(step):02d}" / "sim_output.h5")
+    prepared.m_arr = np.asarray(prepared.m_arr, dtype=float) * max(mass_scale, turn_law.MASS_FLOOR)
+    final_state: dict = {}
+    started = time.perf_counter()
+    try:
+        _, meta = driver.solve_step(case, prepared, config, final_state=final_state)
+    except aerodynamic_vsm.CasadiTrimFailed as failure:
+        print(f"{anchor}: TRIM FAILED {str(failure)[:160]}", flush=True)
+        return None
+    trim, body = final_state["results_aero"], final_state["body_aero"]
+    m_arr = np.asarray(prepared.m_arr, dtype=float)
+    row = ds.trim_row(
+        anchor=anchor, chain=chain, step=int(step), wind_speed=wind,
+        power_tape_length=prepared.power_tape_length,
+        steering_half_difference=prepared.steering_half_difference,
+        rho=air_density_at_case(config), mass_kcu=float(m_arr[0]), mass_total=float(m_arr.sum()),
+        trim=trim, meta=meta, body_z=aerodynamic_vsm.body_centre_panel_axes(body)[2],
+        polar_check=0.0,
+    )
+    row.update(base=base, state=label, mass_scale=float(mass_scale), gravity=bool(gravity),
+               elevation_deg=elevation, azimuth_deg=azimuth, course_deg=course)
+    print(f"{anchor}: converged {meta['converged']} ({meta['n_iter']} it), "
+          f"alpha {trim['aoa_deg']:.3f} deg, F_t {trim['tether_force']:.0f} N, "
+          f"omega_r {-row['omega_z']:+.4f} rad/s | {(time.perf_counter() - started) / 60:.1f} min",
+          flush=True)
+    return row
+
+
+def turn_law_jobs(settings: dict) -> list[tuple[str, tuple, float, bool]]:
+    """``(base, state, mass_scale, gravity)`` of identification.yaml's
+    ``sweep.turn_law``: every ``inertia_anchors`` and ``gravity_anchors``
+    anchor at the centre at mass scales 0 and 1 (gravity off; a and b), and
+    every ``gravity_anchors`` anchor at each ``gravity_states`` (gravity on,
+    full mass; c5, c6)."""
+    gravity_anchors = list(settings.get("gravity_anchors") or [])
+    bases = list(dict.fromkeys(list(settings.get("inertia_anchors") or []) + gravity_anchors))
+    jobs = [(base, turn_law.CENTRE, scale, False) for base in bases for scale in (1.0, 0.0)]
+    jobs += [(base, tuple(float(v) for v in state), 1.0, True)
+             for base in gravity_anchors for state in settings.get("gravity_states") or []]
+    return jobs
+
+
+def solve_turn_law_states(spec: dict, kite: str, out: Path, bases: list[str] | None = None) -> None:
+    """The states the turn-rate law's b(u_p), c5, c6 are measured on
+    (awetrim.identification.turn_law), into ``out/turn_law/trims.csv``:
+    resumable (a state already written is skipped), and runs on disjoint
+    ``bases`` may share the folder."""
+    settings = spec.get("turn_law")
+    if not settings:
+        raise SystemExit("--turn-law: identification.yaml sets no sweep.turn_law")
+    folder = out / turn_law.TURN_LAW_DIR
+    path = folder / ds.TRIMS_FILE
+    jobs = [j for j in turn_law_jobs(settings) if not bases or j[0] in bases]
+    for gravity in (False, True):
+        with sweep_files_lock(folder):
+            done = set(_read_rows(path).anchor) if path.exists() else set()
+        todo = [j for j in jobs if j[3] == gravity and turn_law.state_anchor(
+            j[0], turn_law.state_label(*j[1]), j[2], gravity) not in done]
+        print(f"turn-law states, gravity {'on' if gravity else 'off'}: {len(todo)} to solve", flush=True)
+        if not todo:
+            continue
+        driver, case = open_window_case(spec, kite, folder / "geometry", gravity=gravity)
+        for base, state, scale, _ in todo:
+            row = solve_window_state(driver, case, spec, out, base, state, mass_scale=scale,
+                                     gravity=gravity, wind_centre=anchor_wind(out, base))
+            if row is not None:
+                with sweep_files_lock(folder):
+                    ds.append_rows(path, [row])
+
+
 def _read_rows(path: Path) -> pd.DataFrame | None:
     if not path.exists():
         return None
@@ -556,6 +686,10 @@ def main() -> None:
     parser.add_argument("--repolar", action="store_true",
                         help="solve the polars of the saved anchors again over the current "
                         "polar_d_alpha_deg (wireframe; with --chains, those chains only)")
+    parser.add_argument("--turn-law", nargs="*", default=None, metavar="ANCHOR",
+                        help="solve only the turn-law states of sweep.turn_law (wireframe; "
+                        "with anchors, those anchors' only, so runs can go in parallel). "
+                        "A full run (no --chains) solves them after the chains")
     args = parser.parse_args()
 
     fidelity, spec = ds.identification_settings(
@@ -579,6 +713,12 @@ def main() -> None:
 
     print(f"{args.kite} ({fidelity}): built power-tape length {built:.3f} m, {len(chains)} chains "
           f"-> {out}", flush=True)
+    if args.turn_law is not None or (spec.get("turn_law") and not args.chains):
+        if fidelity != "wireframe":
+            raise SystemExit("the turn-law states need the wireframe (Billow cannot restore a state)")
+    if args.turn_law is not None:
+        solve_turn_law_states(spec, args.kite, out, args.turn_law or None)
+        return
     if args.repolar:
         if fidelity != "wireframe":
             raise SystemExit("--repolar needs the wireframe (Billow cannot restore a state)")
@@ -613,6 +753,8 @@ def main() -> None:
     ]
     if failed:
         print(f"{len(failed)} chain(s) stopped by a failed trim: {', '.join(failed)}", flush=True)
+    if spec.get("turn_law") and not args.chains:
+        solve_turn_law_states(spec, args.kite, out)
 
 
 if __name__ == "__main__":

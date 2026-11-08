@@ -29,6 +29,10 @@ What is identified, against the ROM's own definitions (awetrim.system.kite)
                   gain_roll_steering_depower, k = k(u_p) a polynomial in the
                   tape, and gain_roll_steering_squared, k + s(u_p) u_s^2 (degrees
                   of both by leave-one-chain-out CV).
+    turn-rate law with --steering-law turn_rate (Cayon & Schmehl, in preparation,
+                  Eq. 33): b(u_p), c5, c6 measured on the sweep's turn-law
+                  states (sweep/turn_law/, awetrim.identification.turn_law),
+                  then a(u_p, u_s) on the steering chains as for the roll gain.
 
 Conventions: u_p = power-tape length l_dp [m]; u_s = steering-tape
 half-difference / fit.steering_tape_per_unit_us; alpha in rad; coefficients on
@@ -62,6 +66,7 @@ import yaml
 
 from awetrim.identification import aero_polynomial as ap
 from awetrim.identification import aerostructural_dataset as ds
+from awetrim.identification import turn_law as tl
 from awetrim.system.kite import stall_blend
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]
@@ -123,7 +128,88 @@ def fit_roll_gain(trims, max_degree: int = 2, max_degree_squared: int = 1) -> di
     rows = trims[trims.u_s != 0.0]
     if rows.empty:
         raise SystemExit("no steered anchors in the sweep: cannot fit the roll gain")
-    u_s, u_p, phi = (rows[c].to_numpy(float) for c in ("u_s", "u_p", "phi_a_w"))
+    fit = _fit_steering_polynomial(rows, rows.phi_a_w.to_numpy(float), max_degree,
+                                   max_degree_squared)
+    out = {"gain_roll_steering": fit["coef"][0],
+           "rms_deg": float(np.rad2deg(fit["resid"].std())),
+           "cv_rms_deg": {k: float(np.rad2deg(v)) for k, v in fit["cv"].items()},
+           "degree": fit["degree"], "n": int(len(rows))}
+    if fit["depower"]:
+        out["gain_roll_steering_depower"] = fit["depower"]
+    if fit["squared"] is not None:
+        out["gain_roll_steering_squared"] = fit["squared"]
+    return out
+
+
+def measure_turn_law(sweep: Path, fit_spec: dict) -> dict:
+    """b(u_p), c5, c6 of the turn-rate law from the sweep's turn-law states
+    (run_identification_sweep.py --turn-law; awetrim.identification.turn_law),
+    b(u_p) of degree ``fit.turn_law.inertia_degree`` (default 1)."""
+    states = tl.load_turn_law_states(sweep)
+    if states is None or states.empty:
+        raise SystemExit(
+            f"--steering-law turn_rate needs the sweep's turn-law states ({sweep / tl.TURN_LAW_DIR}); "
+            "solve them with run_identification_sweep.py --turn-law")
+    table = tl.turn_law_table(states, steering_tape_per_unit_us=fit_spec["steering_tape_per_unit_us"])
+    return tl.measure(table, int((fit_spec.get("turn_law") or {}).get("inertia_degree", 1)))
+
+
+def fit_turn_law(trims, terms: dict, max_degree: int = 2,
+                 max_degree_squared: int = 1) -> dict:
+    """The turn-rate law of Cayon & Schmehl (in preparation), Eq. 33 (ROM
+    steering_law turn_rate), w (v_a + b m v_tau) = a(u_p, u_s) v_a^2 u_s at the
+    centre of the window without gravity, on the steered trims.
+
+    ``terms`` is :func:`measure_turn_law`'s: ``inertia_coefficient`` b(u_p)
+    [b0, b1, ...] [1/kg], ``gravity_course_coefficient`` /
+    ``gravity_radial_coefficient`` c5, c6 [1/kg] and ``density_reference``
+    [kg/m3], the density they hold at. They are measured on the sweep's
+    turn-law states, not fitted here: at the centre v_tau / v_a is fixed per
+    tape, so the chains cannot separate b from a, and their gravity-off
+    states carry no c5, c6.
+
+    w is the turn rate about the tether: the trims' course rate, which at the
+    centre of the window carries no transport of the course frame.
+    a(u_p, u_s) = (a0 + a1 u_p + ...) + (s0 + s1 u_p ...) u_s^2 [rad/m per
+    u_s], degrees by leave-one-chain-out CV as for the roll gain."""
+    rows = trims[trims.u_s != 0.0]
+    if rows.empty:
+        raise SystemExit("no steered anchors in the sweep: cannot fit the turn law")
+    w, v_a, v_tau, mass, u_p, rho = (rows[c].to_numpy(float) for c in (
+        "chi_dot", "v_a", "v_tau", "mass", "u_p", "rho"))
+    b_coefs = np.atleast_1d(np.asarray(terms["inertia_coefficient"], dtype=float))
+    rho_ref = float(terms.get("density_reference") or np.median(rho))
+    b = np.polynomial.polynomial.polyval(u_p, b_coefs) * rho_ref / rho
+    denominator = v_a + b * mass * v_tau
+    fit = _fit_steering_polynomial(rows, w * denominator / v_a**2, max_degree,
+                                   max_degree_squared)
+    resid_w = fit["resid"] * v_a**2 / denominator
+    out = {"gain_turn_steering": fit["coef"][0],
+           "turn_inertia_coefficient": float(b_coefs[0]),
+           **({"turn_inertia_coefficient_depower": [float(c) for c in b_coefs[1:]]}
+              if b_coefs.size > 1 else {}),
+           "turn_gravity_course_coefficient": float(terms.get("gravity_course_coefficient", 0.0)),
+           "turn_gravity_radial_coefficient": float(terms.get("gravity_radial_coefficient", 0.0)),
+           "turn_density_reference": rho_ref,
+           # the measurement behind b, c5, c6 (report only, not ROM parameters)
+           "measured": {k: terms[k].to_dict(orient="records")
+                        for k in ("inertia", "gravity") if k in terms},
+           "rms_rad_s": float(resid_w.std()),
+           "rms_relative": float(np.sqrt(np.mean((resid_w / w) ** 2))),
+           "inertia_share_mean": float(np.mean(b * mass * v_tau / denominator)),
+           "degree": fit["degree"], "n": int(len(rows))}
+    if fit["depower"]:
+        out["gain_turn_steering_depower"] = fit["depower"]
+    if fit["squared"] is not None:
+        out["gain_turn_steering_squared"] = fit["squared"]
+    return out
+
+
+def _fit_steering_polynomial(rows, target, max_degree, max_degree_squared) -> dict:
+    """target = (k(u_p) + s(u_p) u_s^2) u_s through the origin, the degrees of
+    k and s (none for s = -1) by leave-one-chain-out CV RMSE."""
+    u_s, u_p = (rows[c].to_numpy(float) for c in ("u_s", "u_p"))
+    phi = np.asarray(target, dtype=float)
     chains = rows.chain.to_numpy()
     # at most one fewer coefficient than distinct tapes
     max_degree = min(max_degree, len(np.unique(u_p.round(3))) - 1)
@@ -145,17 +231,15 @@ def fit_roll_gain(trims, max_degree: int = 2, max_degree_squared: int = 1) -> di
         cv[degrees] = float(np.sqrt(np.concatenate(sq).mean()))
     degrees = min(cv, key=cv.get)
     coef, *_ = np.linalg.lstsq(design(degrees), phi, rcond=None)
-    resid = phi - design(degrees) @ coef
     deg = degrees[0]
-    out = {"gain_roll_steering": float(coef[0]),
-           "rms_deg": float(np.rad2deg(resid.std())),
-           "cv_rms_deg": {f"k{d} s{s}": float(np.rad2deg(v)) for (d, s), v in cv.items()},
-           "degree": list(degrees), "n": int(len(rows))}
-    if deg:
-        out["gain_roll_steering_depower"] = [float(c) for c in coef[1:deg + 1]]
-    if degrees[1] >= 0:
-        out["gain_roll_steering_squared"] = [float(c) for c in coef[deg + 1:]]
-    return out
+    return {
+        "coef": [float(c) for c in coef],
+        "resid": phi - design(degrees) @ coef,
+        "cv": {f"k{d} s{s}": v for (d, s), v in cv.items()},
+        "degree": list(degrees),
+        "depower": [float(c) for c in coef[1:deg + 1]],
+        "squared": [float(c) for c in coef[deg + 1:]] if degrees[1] >= 0 else None,
+    }
 
 
 def regressors(polar, stall) -> dict[str, np.ndarray]:
@@ -234,7 +318,8 @@ def check_extrapolation(fits, polar, stall, band) -> None:
 
 
 # ───────────────────────────────────────────────────────────────── output
-def rom_document(fits, theta, roll, polar, fit_spec, stall, kite, n_trims, fidelity) -> dict:
+def rom_document(fits, theta, roll, polar, fit_spec, stall, kite, n_trims, fidelity,
+                 turn=None) -> dict:
     aero = ap.build_rom_aerodynamics(
         fits.values(),
         extra_params={
@@ -246,10 +331,15 @@ def rom_document(fits, theta, roll, polar, fit_spec, stall, kite, n_trims, fidel
             **({"gain_roll_steering_squared": roll["gain_roll_steering_squared"]}
                if "gain_roll_steering_squared" in roll else {}),
             **{k: float(v) for k, v in stall.items()},
+            # the turn law (steering_law turn_rate); the roll gain above stays,
+            # so setting steering_law: roll_gain flies the same ROM the old way
+            **({k: v for k, v in turn.items() if k.startswith(("gain_turn", "turn_")) and k != "turn_law"}
+               if turn else {}),
         },
     )
     aero = {"model": aero["model"], "reference_area": float(fit_spec["reference_area"]),
             "kcu_drag_in_coefficients": False,
+            **({"steering_law": "turn_rate"} if turn else {}),
             "params": aero["params"], "coefficients": aero["coefficients"]}
     alpha_deg = np.rad2deg(polar.alpha)
     return {
@@ -282,6 +372,8 @@ def rom_document(fits, theta, roll, polar, fit_spec, stall, kite, n_trims, fidel
                 "CD_cv_rmse": float(fits["CD"].cv_rmse),
                 "theta_b_rms_deg": theta["rms_deg"],
                 "roll_rms_deg": roll["rms_deg"],
+                **({"turn_rate_rms_rad_s": turn["rms_rad_s"],
+                    "turn_rate_rms_relative": turn["rms_relative"]} if turn else {}),
             },
         },
         "controls": fit_spec["controls"],
@@ -302,6 +394,48 @@ def rom_document(fits, theta, roll, polar, fit_spec, stall, kite, n_trims, fidel
     }
 
 
+def steering_only(args, fit_spec, trims_raw, polars_raw, out_dir) -> None:
+    """Fit the steering law alone and write it into ``args.steering_only``'s
+    ROM: the coefficients, bridle law and stall of that ROM stay as they are,
+    so two such files differ in the steering law only."""
+    _, trims = ds.coefficient_tables(
+        trims_raw, polars_raw.iloc[:0], reference_area=fit_spec["reference_area"],
+        steering_tape_per_unit_us=fit_spec["steering_tape_per_unit_us"])
+    stalled = trims.anchor.map(trims_raw.set_index("anchor").stalled_fraction)
+    trims = trims[stalled <= fit_spec["max_stalled_fraction"]].copy()
+    doc = yaml.safe_load(args.steering_only.read_text(encoding="utf-8"))
+    aero = doc["aerodynamics"]
+    if args.steering_law == "roll_gain":
+        roll = fit_roll_gain(trims)
+        aero["params"].update({k: v for k, v in roll.items() if k.startswith("gain_roll")})
+        aero.pop("steering_law", None)
+        summary = {"roll_gain": roll}
+    else:
+        raw = trims_raw.set_index("anchor")
+        trims["mass"], trims["rho"] = trims.anchor.map(raw.mass_total), trims.anchor.map(raw.rho)
+        turn = fit_turn_law(trims, measure_turn_law(args.sweep, fit_spec))
+        aero["params"].update(
+            {k: v for k, v in turn.items() if k.startswith(("gain_turn", "turn_")) and k != "turn_law"})
+        aero["steering_law"] = "turn_rate"
+        doc.setdefault("metadata", {}).setdefault("fit_quality", {}).update(
+            turn_rate_rms_rad_s=turn["rms_rad_s"], turn_rate_rms_relative=turn["rms_relative"])
+        summary = {"turn_law": turn}
+    doc.setdefault("metadata", {})["steering_law_source"] = (
+        f"{args.steering_law} re-identified on {date.today().isoformat()} from "
+        f"{len(trims)} trims of {args.sweep or 'the default sweep'}; the rest is "
+        f"{args.steering_only.name}'s")
+    print(json.dumps(summary, indent=2))
+    if not args.no_write:
+        out = args.out or out_dir / f"{args.steering_only.stem}_{args.steering_law}.yaml"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(
+            f"# {args.steering_only.name} with its steering law re-identified "
+            f"({args.steering_law}).\n# GENERATED by "
+            "examples/3_rom_identification/identify_rom_aerostructural.py --steering-only.\n"
+            + yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+        print(f"\nWrote {out}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--kite", default="LEI-V3-KITE", help="folder under data/")
@@ -313,6 +447,13 @@ def main() -> None:
                         help="results folder (default results/<kite>/identification/<fidelity>)")
     parser.add_argument("--out", type=Path, default=None,
                         help="ROM file to write (default in the output folder)")
+    parser.add_argument("--steering-law", choices=("roll_gain", "turn_rate"), default="roll_gain",
+                        help="the ROM's steering law; turn_rate also needs the sweep's "
+                        "turn-law states (run_identification_sweep.py --turn-law)")
+    parser.add_argument("--steering-only", type=Path, default=None, metavar="BASE_ROM",
+                        help="re-identify only the steering law (--steering-law) on the "
+                        "sweep's trims and write BASE_ROM with it; everything else of "
+                        "BASE_ROM is kept")
     parser.add_argument("--no-write", action="store_true",
                         help="fit and report, do not write the ROM file")
     args = parser.parse_args()
@@ -323,11 +464,14 @@ def main() -> None:
     band = tuple(fit_spec["depower_band"])
     results = args.results or PROJECT_DIR / "results" / args.kite / "identification" / fidelity
     out_dir = results / "rom_aerostructural"
-    sweep = args.sweep or results / "sweep"
+    sweep = args.sweep = args.sweep or results / "sweep"
 
     trims_raw, polars_raw = ds.load_sweep(sweep)
     ok = trims_raw.converged & trims_raw.success_physical
     trims_raw = trims_raw[ok]
+    if args.steering_only is not None:
+        steering_only(args, fit_spec, trims_raw, polars_raw, out_dir)
+        return
     polar, trims = ds.coefficient_tables(
         trims_raw, polars_raw[polars_raw.anchor.isin(
             trims_raw.anchor[trims_raw.polar_check <= ds.POLAR_CHECK_TOLERANCE])],
@@ -351,6 +495,12 @@ def main() -> None:
     theta = fit_theta_b(trims, band)
     # The roll law is the attached wing's too.
     roll = fit_roll_gain(trims[trims.anchor.isin(attached_anchors)])
+    turn = None
+    if args.steering_law == "turn_rate":
+        raw = trims_raw.set_index("anchor")
+        trims["mass"], trims["rho"] = trims.anchor.map(raw.mass_total), trims.anchor.map(raw.rho)
+        turn = fit_turn_law(trims[trims.anchor.isin(attached_anchors)],
+                            measure_turn_law(sweep, fit_spec))
     stall = locate_stall(polar, trims, fit_spec["stall_onset_tapes"])
     polar = polar[polar.alpha <= stall["angle_of_attack_stall"] + np.deg2rad(FIT_PAST_STALL_DEG)]
     fits = fit_coefficients(polar, stall)
@@ -367,16 +517,29 @@ def main() -> None:
                       enumerate(roll.get("gain_roll_steering_depower", []), start=1)),
               roll["degree"], roll["rms_deg"], roll["n"],
               {d: round(v, 3) for d, v in roll["cv_rms_deg"].items()}))
+    if turn:
+        print("turn law: b(u_p) {} + {}, c5 {:.5f}, c6 {:.5f} 1/kg at rho {:.4f}".format(
+            turn["turn_inertia_coefficient"], turn.get("turn_inertia_coefficient_depower", []),
+            turn["turn_gravity_course_coefficient"], turn["turn_gravity_radial_coefficient"],
+            turn["turn_density_reference"]))
+        print("turn law: a = {:.4f} {} rad/m per u_s, squared {}, b = {:.5f} 1/kg  (degree {}, "
+              "rms {:.4f} rad/s = {:.1%}, inertia share {:.2f}, n {})".format(
+                  turn["gain_turn_steering"],
+                  "".join(f"{c:+.4f} u_p^{p}" for p, c in
+                          enumerate(turn.get("gain_turn_steering_depower", []), start=1)),
+                  turn.get("gain_turn_steering_squared"), turn["turn_inertia_coefficient"],
+                  turn["degree"], turn["rms_rad_s"], turn["rms_relative"],
+                  turn["inertia_share_mean"], turn["n"]))
     for target, fit in fits.items():
         print(f"{target}: CV RMSE {fit.cv_rmse:.5f}, in-sample R2 {fit.metrics['r2']:.5f}")
         print(f"    {fit.intercept:+.5f}" + "".join(
             f"\n    {coef:+.5f} {ap.term_label(pm)}" for pm, coef in fit.terms))
 
     doc = rom_document(fits, theta, roll, polar, fit_spec, stall, args.kite, len(trims),
-                       fidelity)
+                       fidelity, turn)
     (out_dir / "identification_report.json").write_text(
         json.dumps({
-            "theta_b": theta, "roll": roll,
+            "theta_b": theta, "roll": roll, **({"turn_law": turn} if turn else {}),
             "stall_deg": {k: float(np.rad2deg(v)) for k, v in stall.items()},
             "selection": {
                 t: {"criterion": f"grouped {CV_FOLDS}-fold CV RMSE, stop below "

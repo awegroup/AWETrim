@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### ROM: the turn-rate law as a steering law
+
+- **`aerodynamics.steering_law: turn_rate`** puts the turn-rate law of Cayon & Schmehl,
+  *Quasi-steady equilibrium and turn-rate law of kites* (in preparation), Eq. (33) with
+  App. A, in the ROM: the steering sets the turn rate through the yaw-moment balance,
+  `w (v_a + b m v_tau) + b F_g,n + c5 F_g,chi + c6 F_g,r = a v_a^2 u_s`, and the lift's
+  roll is an unknown (`angle_roll`) closed by the lateral force balance. The default
+  stays `roll_gain`; its NLPs are unchanged.
+- **Why:** in the coupled model the steered kite without mass rolls by exactly zero
+  and turns at the same rate per unit `v_a` everywhere in the wind window; the roll the
+  roll gain is fitted on is the centripetal tilt, so a roll-gain ROM turns as
+  1 / (m v_tau) and carries the whole weight into the turn. The turn law predicts
+  off-centre coupled states within 1 % (roll gain: up to 13 %), half-mass within 0.5 %,
+  gravity-on states within 0.2-0.6 % (-4 % at course 270 deg), and on the 2019 flight
+  (cycles 60-67) correlates 0.961 against 0.906, with a gravity coefficient of 0.72
+  against 0.93 (flight 0.49) and reel-out tension / speed errors of +6 / +9 % against
+  +11 / +12 %. Its gain is ~20 % high at the flight's turn peaks.
+- **The sweep measures the law's b(u_p), c5, c6 itself** (`sweep.turn_law` in
+  `identification.yaml`, `run_identification_sweep.py --turn-law`, after the chains on a
+  full run, into `sweep/turn_law/`; `awetrim.identification.turn_law`), so they always
+  belong to the shapes a is fitted on; `identify_rom_aerostructural.py --steering-law
+  turn_rate` reads them (`fit.turn_law.inertia_degree`), `--steering-only BASE_ROM`;
+  `check_window_position.py` (window position, mass scale, `--gravity`) checks the laws;
+  `downloop_pattern.py --server-seed / --seed-config /
+  --rom-file / --results-dir`; the flight validator carries the roll unknown.
+
 ### Removed: the legacy integrator paths
 
 - `SystemModel.integrator` / `establish_ode_function` / `establish_algebraic` /

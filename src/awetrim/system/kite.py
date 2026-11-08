@@ -81,6 +81,10 @@ def roll_gain(k0, k_depower, k_squared, u_p, u_s):
     return gain
 
 
+#: ROM steering laws (aerodynamics.steering_law), see Kite.__init__.
+STEERING_LAWS = ("roll_gain", "turn_rate")
+
+
 def _uses_variable(coefficients, name):
     """True if any ``coeffs`` term (``var`` or ``vars`` form) uses ``name``."""
     return any(
@@ -376,9 +380,15 @@ class Wing:
         CL, CD = self.aerodynamic_force_coefficients_for(model)[:2]
 
         va_tau = ca.sqrt(vec_va[0] ** 2 + vec_va[1] ** 2 + 1e-10)
-        roll_total = self.angle_roll_aerodynamic_for(model) + self.roll_bridle_for(
-            model
-        )
+        rho = self.air_density_for(model)
+        D = 0.5 * rho * va_sq * self.area_wing * CD
+        L = 0.5 * rho * va_sq * self.area_wing * CL
+        if getattr(self, "steering_law", "roll_gain") == "turn_rate":
+            roll_total = self.angle_roll_variable
+        else:
+            roll_total = self.angle_roll_aerodynamic_for(model) + self.roll_bridle_for(
+                model
+            )
         lift_direction = ca.vertcat(
             va * vec_va[1] * ca.sin(roll_total)
             - vec_va[2] * vec_va[0] * ca.cos(roll_total),
@@ -387,13 +397,61 @@ class Wing:
             va_tau**2 * ca.cos(roll_total),
         ) / (va * va_tau + 1e-10)
         drag_direction = vec_va / (va + 1e-10)
-        # Aerodynamic forces
-        rho = self.air_density_for(model)
-        D = 0.5 * rho * va_sq * self.area_wing * CD
-        L = 0.5 * rho * va_sq * self.area_wing * CL
-
         aero_forces = D * drag_direction + L * lift_direction
         return aero_forces
+
+    def gain_turn_steering_for(self, model):
+        """a(u_p, u_s) [rad/m per u_s] of the turn law, :func:`roll_gain`'s form."""
+        return roll_gain(self.gain_turn_steering, self.gain_turn_steering_depower,
+                         self.gain_turn_steering_squared,
+                         model.input_depower, model.input_steering)
+
+    @staticmethod
+    def turn_rate_for(model):
+        """The kite's turn rate about the tether [rad/s]: the course rate
+        without the course frame's transport, -a_n / v_tau (exact: the
+        frame's radial rotation is (v_tau / r) tan(beta) sin(chi) - chi_dot)."""
+        return -model.acceleration[1] / (model.speed_tangential + 1e-6)
+
+    def turn_density_scale_for(self, model):
+        """turn_density_reference / rho: k2 carries rho, k3..k6 do not."""
+        if self.turn_density_reference is None:
+            return 1.0
+        return float(self.turn_density_reference) / self.air_density_for(model)
+
+    def turn_inertia_coefficient_for(self, model):
+        """b(u_p) = k3/k2 = k4/k2 [1/kg] at the model's air density."""
+        b = self.turn_inertia_coefficient
+        for power, coef in enumerate(self.turn_inertia_coefficient_depower, start=1):
+            b = b + coef * model.input_depower**power
+        return b * self.turn_density_scale_for(model)
+
+    def turn_rate_residual_for(self, model):
+        """Turn-rate law residual [N] (Eq. 33 of Cayon & Schmehl, in preparation,
+        divided by k2), scaled by the kite mass so it sits next to the force
+        rows:
+
+            m (w (v_a + b m v_tau) + b F_g,n + c5 F_g,chi + c6 F_g,r - a v_a^2 u_s)
+
+        w the turn rate (:meth:`turn_rate_for`); m v_tau w = -m a_n is the
+        lateral inertial load. b multiplies it and the weight's lateral
+        component alike, both acting at the centre of gravity (k3 = k4). The
+        tether's drag acts at the bridle point and stays out of the law (it
+        is in the force balance)."""
+        vec_va = model.velocity_apparent_wind
+        va = ca.sqrt(ca.mtimes(vec_va.T, vec_va) + 1e-10)
+        mass = model.kite.mass_wing + model.kite.mass_kcu
+        gravity = model.expression("force_gravity")
+        density = self.turn_density_scale_for(model)
+        law = (
+            self.turn_rate_for(model) * va
+            + self.turn_inertia_coefficient_for(model)
+            * (-mass * model.acceleration[1] + gravity[1])
+            + density * self.turn_gravity_course_coefficient * gravity[0]
+            + density * self.turn_gravity_radial_coefficient * gravity[2]
+            - self.gain_turn_steering_for(model) * va**2 * model.input_steering
+        )
+        return mass * law
 
     @property
     def force_gravity_wing(self):
@@ -528,6 +586,71 @@ class Kite(Wing):
         # (held-out R2 of the roll 0.93 -> 0.95); absent/0 = the paper's model.
         self.gain_roll_sideslip = float(self.aero_params.get("gain_roll_sideslip", 0.0) or 0.0)
 
+        # Steering law (ROM ``aerodynamics.steering_law``):
+        #   roll_gain  (default) Cayon, van Deursen, Schmehl (2026) Eq. 43: the
+        #              steering SETS the wing's roll, phi_a,w = k(u_p, u_s) u_s,
+        #              and the turn rate follows from the lateral force balance.
+        #   turn_rate  the turn-rate law of Cayon & Schmehl, "Quasi-steady
+        #              equilibrium and turn-rate law of kites" (in
+        #              preparation), Eq. 33 with the
+        #              coefficients of App. A (A3): the steering sets the TURN
+        #              RATE about the tether through the yaw-moment balance,
+        #                w (k2 v_a + k4 m v_tau)
+        #                  = -k1 v_a^2 u_s + m g (k3 sin chi cos beta
+        #                    + k5 cos chi cos beta + k6 sin beta),  k3 = k4,
+        #              divided here by k2 and written with the ROM's weight
+        #              vector F_g = -m g [cos chi cos beta, sin chi cos beta,
+        #              sin beta] (Eq. 27):
+        #                w (v_a + b m v_tau) + b F_g,n + c5 F_g,chi + c6 F_g,r
+        #                  = a v_a^2 u_s
+        #              (:meth:`turn_rate_residual_for`). The lift's roll is an
+        #              unknown (angle_roll) closed by the lateral force balance.
+        #              a = -k1/k2 (u_p, u_s) [rad/m per u_s]: gain_turn_steering
+        #              + k1 u_p + ... + (s0 + s1 u_p ...) u_s^2 (roll_gain's form).
+        #              b = k3/k2 = k4/k2 [1/kg]: turn_inertia_coefficient
+        #              (+ turn_inertia_coefficient_depower [b1, b2, ...] in u_p).
+        #              c5 = k5/k2, c6 = k6/k2 [1/kg]: turn_gravity_course_
+        #              coefficient, turn_gravity_radial_coefficient (both from the
+        #              lateral CG offset x_n; App. A: about 0.03 and < 1e-3 of k3
+        #              on the V3). k2 carries rho and k3..k6 do not, so b, c5 and
+        #              c6 are stated at turn_density_reference [kg/m3] and scale
+        #              with turn_density_reference / rho; a is density-free.
+        self.steering_law = str(aero_input.get("steering_law", "roll_gain"))
+        if self.steering_law not in STEERING_LAWS:
+            raise ValueError(
+                f"aerodynamics.steering_law must be one of {STEERING_LAWS}, "
+                f"got {self.steering_law!r}"
+            )
+        if self.steering_law == "turn_rate":
+            missing = {"gain_turn_steering", "turn_inertia_coefficient"} - set(self.aero_params)
+            if missing:
+                raise ValueError(f"steering_law turn_rate needs params {sorted(missing)}")
+            # The total roll of the lift about v_a (aerodynamic + bridle): an
+            # UNKNOWN of the model there, which the lateral force balance
+            # determines (SystemModel.default_unknown_vars gains "angle_roll",
+            # the force residual gains the turn-law row).
+            self.angle_roll_variable = ca.MX.sym("angle_roll")
+        self.gain_turn_steering = float(self.aero_params.get("gain_turn_steering", 0.0) or 0.0)
+        self.gain_turn_steering_depower = [
+            float(c) for c in (self.aero_params.get("gain_turn_steering_depower") or [])
+        ]
+        self.gain_turn_steering_squared = [
+            float(c) for c in (self.aero_params.get("gain_turn_steering_squared") or [])
+        ]
+        self.turn_inertia_coefficient = float(
+            self.aero_params.get("turn_inertia_coefficient", 0.0) or 0.0
+        )
+        self.turn_inertia_coefficient_depower = [
+            float(c) for c in (self.aero_params.get("turn_inertia_coefficient_depower") or [])
+        ]
+        self.turn_gravity_course_coefficient = float(
+            self.aero_params.get("turn_gravity_course_coefficient", 0.0) or 0.0
+        )
+        self.turn_gravity_radial_coefficient = float(
+            self.aero_params.get("turn_gravity_radial_coefficient", 0.0) or 0.0
+        )
+        # None = the coefficients are used as stated (no density scaling)
+        self.turn_density_reference = self.aero_params.get("turn_density_reference")
 
     def air_density_at_height(self, height):
         """Air density [kg/m3] at ``height`` above ground."""
@@ -582,6 +705,9 @@ class Kite(Wing):
         return gain
 
     def angle_roll_aerodynamic_for(self, model):
+        if self.steering_law == "turn_rate":
+            # the total roll is an unknown there; the wing's is it less the bridle's
+            return self.angle_roll_variable - self.roll_bridle_for(model)
         roll = model.input_steering * self.gain_roll_steering_for(model)
         if self.gain_roll_sideslip:
             roll = roll + self.gain_roll_sideslip * self.angle_sideslip_for(model)

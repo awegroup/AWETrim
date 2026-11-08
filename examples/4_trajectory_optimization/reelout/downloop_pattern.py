@@ -1,4 +1,5 @@
 import argparse
+import copy
 import json
 from pathlib import Path
 
@@ -87,6 +88,7 @@ INITIAL_GUESS = {
 # Load configurations from YAML
 REELOUT_CONFIG, REELIN_CONFIG = load_cycle_config_from_yaml(CYCLE_CONFIG_PATH)
 INITIAL_GUESS_R0 = 300.0  # [m] the radius that figure is sized for
+SERVER_SEED_R0 = 200.0  # [m] --server-seed: examples/server/client_example.py's length
 
 if REGENERATE_INITIAL_GUESS:
     REELOUT_CONFIG["path_parameters"] = make_bspline_path_parameters_from_named_curve(
@@ -140,7 +142,8 @@ def build_wind_model(speed_wind_at_100=8, z0=0.01, model_type="uniform", **profi
 
 
 def main(run_plots=False, rom=None, system="optimisation", results_dir=None,
-         up_band=None, stall_margin_deg=None):
+         up_band=None, stall_margin_deg=None, rom_file=None, server_seed=False,
+         seed_config=None):
     """``rom``/``system``: keys of ROM_CONFIGS / SYSTEM_CONFIGS (None = the
     system file's own ROM); results go to ``results_dir`` (default
     RESULTS_DIR, or RESULTS_DIR/<system>_<rom> when either is given)."""
@@ -149,27 +152,49 @@ def main(run_plots=False, rom=None, system="optimisation", results_dir=None,
             RESULTS_DIR / f"{system}_{rom or 'default'}"
             if rom is not None or system != "optimisation" else RESULTS_DIR
         )
+    reelout_config, start_state = REELOUT_CONFIG, dict(START_STATE)
+    if server_seed:
+        # The reel-out server's default seed: its InitialGuess eight (smaller and
+        # higher than INITIAL_GUESS) at the client example's 200 m tether.
+        from awetrim.server.schemas import InitialGuess
+
+        guess = InitialGuess().model_dump()
+        reelout_config = copy.deepcopy(REELOUT_CONFIG)
+        reelout_config["path_parameters"] = make_bspline_path_parameters_from_named_curve(
+            spline_type="periodic", r0=SERVER_SEED_R0, **guess)
+        reelout_config["sim_parameters"]["start_angle"] = guess["s_init"]
+        reelout_config["sim_parameters"]["end_angle"] = guess["s_final"]
+        start_state["distance_radial"] = SERVER_SEED_R0
+    if seed_config is not None:
+        # A previous run's optimised config (e.g. another ROM's optimum) as the
+        # seed, flown as it is: no seed sizing below.
+        import yaml
+
+        reelout_config = yaml.safe_load(Path(seed_config).read_text(encoding="utf-8"))["reelout"]
+        start_state["distance_radial"] = reelout_config["path_parameters"]["r0"]
     if up_band is not None:
         # Keep the optimised depower inside the band the ROM was identified on
         # (a polynomial ROM extrapolates freely in u_p otherwise).
-        REELOUT_CONFIG["sim_parameters"].setdefault("opti_limits_override", {})[
+        reelout_config["sim_parameters"].setdefault("opti_limits_override", {})[
             "input_depower"] = [float(up_band[0]), float(up_band[1])]
     if stall_margin_deg is not None:
         # Keep alpha this far below the ROM's stall angle at every node.
-        REELOUT_CONFIG["sim_parameters"]["stall_margin_deg"] = float(stall_margin_deg)
+        reelout_config["sim_parameters"]["stall_margin_deg"] = float(stall_margin_deg)
     system_model = create_system_model_from_yaml(
         yaml_path=SYSTEM_CONFIGS[system],
-        aero_yaml_path=ROM_CONFIGS[rom] if rom is not None else None,
+        aero_yaml_path=(rom_file if rom_file is not None
+                        else ROM_CONFIGS[rom] if rom is not None else None),
     )
 
     wind_model = build_wind_model(**WIND_CONFIG)
     system_model.wind = wind_model
     # The kite must hold the eight's turns at this wind.
-    size_reelout_seed(system_model, REELOUT_CONFIG)
+    if seed_config is None:
+        size_reelout_seed(system_model, reelout_config)
     reelout = Phase(
         system_model=system_model,
-        pattern_config=REELOUT_CONFIG,
-        start_state=START_STATE,
+        pattern_config=reelout_config,
+        start_state=start_state,
     )
     optimization_params = [
         "C_phi",
@@ -218,6 +243,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="LEI-V3 downloop reel-out optimisation")
     parser.add_argument("--rom", choices=sorted(ROM_CONFIGS), default=None)
     parser.add_argument("--system", choices=sorted(SYSTEM_CONFIGS), default="optimisation")
+    parser.add_argument("--rom-file", type=Path, default=None,
+                        help="any ROM file (wins over --rom)")
+    parser.add_argument("--results-dir", type=Path, default=None)
+    parser.add_argument("--seed-config", type=Path, default=None,
+                        help="seed with a previous run's optimised config (its reelout "
+                        "block), flown as it is")
+    parser.add_argument("--server-seed", action="store_true",
+                        help="seed with the reel-out server's default InitialGuess eight "
+                        "at SERVER_SEED_R0 instead of INITIAL_GUESS")
     parser.add_argument("--no-show", action="store_true")
     parser.add_argument("--up-band", nargs=2, type=float, default=None,
                         metavar=("LO", "HI"),
@@ -230,6 +264,9 @@ if __name__ == "__main__":
     if args.no_show:
         plt.switch_backend("Agg")
     main(run_plots=not args.no_show, rom=args.rom, system=args.system,
-         up_band=args.up_band, stall_margin_deg=args.stall_margin)
+         up_band=args.up_band, stall_margin_deg=args.stall_margin,
+         rom_file=args.rom_file, results_dir=args.results_dir,
+         server_seed=args.server_seed,
+         seed_config=args.seed_config)
     if not args.no_show:
         plt.show()

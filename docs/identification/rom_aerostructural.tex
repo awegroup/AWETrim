@@ -194,7 +194,72 @@ identification never does).
 \end{equation}
 with $\theta_0$, $\theta_1$, $k_{\phi,s}$ the ROM parameters
 \code{angle\_pitch\_tether\_0}, \code{slope\_angle\_pitch\_tether\_depower},
-\code{gain\_roll\_steering}.
+\code{gain\_roll\_steering}. This is the ROM's default steering law,
+\code{aerodynamics.steering\_law: roll\_gain}: the steering sets the wing's roll and
+the turn rate follows from the lateral force balance. The alternative,
+\code{steering\_law: turn\_rate}, is Sect.~\ref{sec:turn-law}.
+
+\subsection{The turn-rate law}
+\label{sec:turn-law}
+With \code{steering\_law: turn\_rate} the steering sets the \emph{turn rate} instead,
+through the yaw-moment balance about the tether, and the roll is whatever tilt of the
+lift the lateral force balance needs. The law is Eq.~(33) of
+Cayon and Schmehl~\cite{cayon2026turn}, obtained by solving the lateral force,
+roll-moment and yaw-moment balances (their Eqs.~30--32) for the attitude and the
+relative turn rate $\dot\chi_\mathrm{turn}$:
+\begin{equation}
+  \dot\chi_\mathrm{turn}
+  = -\frac{k_1 v_a^2 u_s - mg\,(k_3\sin\chi\cos\beta + k_5\cos\chi\cos\beta + k_6\sin\beta)}
+          {k_4\, m\, v_\tau + k_2\, v_a},
+  \qquad k_3=k_4,
+  \label{eq:turn-law}
+\end{equation}
+with the coefficients of their App.~A, Eq.~(A3): $k_1$ the steering moment, $k_2$ the
+aerodynamic yaw damping, $k_3=k_4$ the arm of the lateral load at the centre of
+gravity (weight and inertia act there alike), and $k_5$, $k_6$ the terms of the
+lateral centre-of-gravity offset $x_n$. $\dot\chi_\mathrm{turn}=-a_n/v_\tau$ is the
+course rate without the transport of the course frame, $m$ the kite mass and
+$v_\tau$ the tangential (ground) speed. Divided by $k_2$ and written with the
+weight vector $\mathbf F_g=-mg\,[\cos\chi\cos\beta,\ \sin\chi\cos\beta,\ \sin\beta]$
+in the course frame (their Eq.~27), the ROM's residual is
+\begin{equation}
+  \dot\chi_\mathrm{turn}\,(v_a + b\,m\,v_\tau) + b\,F_{g,n} + c_5\,F_{g,\chi} + c_6\,F_{g,r}
+  = a\,v_a^2\,u_s ,
+  \label{eq:turn-law-rom}
+\end{equation}
+\begin{center}\small
+\begin{tabular}{llll}
+\toprule
+ROM parameter & & unit & depends on\\
+\midrule
+\code{gain\_turn\_steering} (+ \code{\_depower}, \code{\_squared}) & $a=-k_1/k_2$
+  & rad\,m$^{-1}$ per $u_s$ & $u_p$, $u_s^2$; not on $\rho$\\
+\code{turn\_inertia\_coefficient} (+ \code{\_depower}) & $b=k_3/k_2=k_4/k_2$
+  & kg$^{-1}$ & $u_p$; $1/\rho$\\
+\code{turn\_gravity\_course\_coefficient} & $c_5=k_5/k_2$ & kg$^{-1}$ & $x_n$; $1/\rho$\\
+\code{turn\_gravity\_radial\_coefficient} & $c_6=k_6/k_2$ & kg$^{-1}$ & $x_n$; $1/\rho$\\
+\code{turn\_density\_reference} & $\rho_\mathrm{ref}$ & kg\,m$^{-3}$ & \\
+\bottomrule
+\end{tabular}
+\end{center}
+$k_2=\tfrac14\rho S b^2(\dots)$ carries the density and $k_3$ to $k_6$ do not, so $b$,
+$c_5$ and $c_6$ are stated at $\rho_\mathrm{ref}$ and scale with $\rho_\mathrm{ref}/\rho$.
+The total roll of the lift about $v_a$ is then an unknown of the quasi-steady solve
+(\code{angle\_roll}), closed by the lateral force balance; the turn law is a fourth
+residual row. The node NLP of the trajectory optimiser carries the roll as a per-node
+decision in the same way.
+
+\paragraph{Why.} In the roll-gain law the roll is the input, and the turn rate follows
+as $\dot\chi\approx L\sin\phi/(m v_\tau)$: it goes with the inverse of the kite's mass
+and of its \emph{ground} speed. In the coupled model it does not. Solved without mass,
+the steered kite rolls by exactly zero, so the roll $\phi_{a,w}$ that the roll gain is
+identified on is entirely the tilt that supplies the centripetal force, and its turn rate
+per unit $v_a$ is the same at every position in the wind window (within
+\SI{0.6}{\percent}): the steering sets the turn through the yaw moment, as
+Eq.~\eqref{eq:turn-law} states. At the centre of the window, where the identification
+sweep runs, $v_\tau/v_a$ is fixed per tape, so the two laws cannot be told apart there;
+they differ wherever the ground speed departs from the airspeed, that is off-centre and
+under gravity, which is everywhere in flight.
 
 \subsection{KCU drag, a separate force}
 $C_D$ is the \emph{wing's} drag, bridle lines included. The kite control unit
@@ -566,6 +631,36 @@ $\phi_{a,w}$ per $u_s$ (Sect.~\ref{sec:geometry}) is fitted as a polynomial in t
 depower plus an even term in the steering,
 $k_{\phi,s}(u_p,u_s)=k_0+k_1u_p+k_2u_p^2+(s_0+s_1u_p)\,u_s^2$, with both degrees chosen by leave-one-chain-out
 cross-validation, on the steered trims with a stalled span fraction up to \num{0.2}.
+
+\subsection{Turn-rate law}
+\label{sec:turn-law-fit}
+For \code{steering\_law: turn\_rate}, Eq.~\eqref{eq:turn-law-rom} has two sets of
+unknowns that the centre-of-window sweep does not separate: with the mass fixed and
+$v_\tau/v_a$ fixed per tape, it identifies only $a/(1+b\,m\,v_\tau/v_a)$, as the paper
+notes for the flight data (``nearly collinear regressors''). The coefficients are
+therefore identified in two steps, both on the sweep's own states.
+\begin{enumerate}
+  \item The sweep solves a few extra states from its anchors, tetherless
+        (\code{turn\_law:} in the sweep block,
+        \code{run\_identification\_sweep.py --turn-law}, written to
+        \path{sweep/turn_law/}). On one steered anchor per tape, the centre of the
+        window at mass scale 1 and 0, gravity off: without mass the law reduces to
+        $\dot\chi_\mathrm{turn}=a\,v_a u_s$, which gives $a$; the full-mass state then
+        gives $b$, and $b(u_p)$ is a polynomial over the tapes
+        (\code{fit.turn\_law.inertia\_degree}, linear for the LEI-V3). On one anchor,
+        gravity-on states at courses 0 to \SI{270}{\degree} and elevations 10 to
+        \SI{60}{\degree}: what the $k_3$ term leaves, by least squares, gives $c_5$ and
+        $c_6$. $\rho_\mathrm{ref}$ is the states' density
+        (\path{awetrim.identification.turn_law}).
+  \item $a(u_p,u_s)$ on all steered trims of the sweep with those terms, with the roll
+        gain's form and its cross-validated degrees:
+        \code{identify\_rom\_aerostructural.py --steering-law turn\_rate}
+        (\code{--steering-only BASE\_ROM} refits the steering law alone and keeps the
+        rest of a ROM).
+\end{enumerate}
+The measurement is part of the sweep so that $b$ always belongs to the shapes $a$ is
+fitted on. \path{check_window_position.py} re-solves anchors at other positions in the
+window, masses and gravity, and checks the identified laws there.
 
 \subsection{Stall location}
 $\alpha_s$ is measured, not fitted: it is the median stall onset
@@ -983,6 +1078,9 @@ From the repository root:
 \end{enumerate}
 
 \begin{thebibliography}{9}
+\bibitem{cayon2026turn}
+O.~Cayon and R.~Schmehl, ``Quasi-steady equilibrium and turn-rate law of kites: an
+aero-structural evaluation on a soft wing,'' in preparation, 2026.
 \bibitem{cayon2026rom}
 O.~Cayon, V.~van~Deursen and R.~Schmehl,
 \emph{Translational dynamics of bridled kites: a reduced-order model in the
