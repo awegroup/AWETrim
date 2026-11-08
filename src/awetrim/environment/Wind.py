@@ -26,6 +26,7 @@ from awetrim.environment.profile_laws import (
     friction_velocity,
     speed_from_friction_velocity,
     speed_profile,
+    veer_law,
 )
 
 
@@ -49,6 +50,15 @@ class Wind:
     log-based models (the identification/validation scripts feed the
     friction velocity as an NLP parameter or unknown), ``speed_wind_ref``
     otherwise.
+
+    **Direction and veer.** ``direction_wind`` [rad] is the direction the
+    wind blows towards at ``height_direction_ref`` (default: ``height_ref``).
+    With a non-zero ``veer_rate`` [rad/m] the direction turns with height
+    (``profile_laws.veer_law``; positive = veering, clockwise with height).
+    ``direction_wind`` stays the frame reference of every caller that rotates
+    into a wind frame (Williams tether, VSM trim, plots); the turn relative to
+    it is ``direction_offset_at_height``. ``veer_rate = 0`` (default) builds
+    exactly the expressions of a constant direction.
     """
 
     def __init__(
@@ -63,6 +73,8 @@ class Wind:
         jet_amplitude=0.0,
         jet_height=None,
         jet_width=None,
+        veer_rate=0.0,
+        height_direction_ref=None,
     ):
         if wind_model not in ALL_MODELS:
             raise ValueError(
@@ -78,6 +90,8 @@ class Wind:
         self.jet_amplitude = jet_amplitude
         self.jet_height = jet_height
         self.jet_width = jet_width
+        self.veer_rate = veer_rate
+        self._height_direction_ref = height_direction_ref
         if direction_wind is None:
             self._direction_wind = ca.MX.sym("direction_wind")
         else:
@@ -166,6 +180,43 @@ class Wind:
         self._direction_wind = value
 
     @property
+    def height_direction_ref(self):
+        """Height [m] at which the direction equals ``direction_wind``."""
+        if self._height_direction_ref is None:
+            return self.height_ref
+        return self._height_direction_ref
+
+    @height_direction_ref.setter
+    def height_direction_ref(self, value):
+        self._height_direction_ref = value
+
+    @property
+    def has_veer(self):
+        """False when the direction is the same at every height."""
+        rate = self.veer_rate
+        return isinstance(rate, (ca.MX, ca.SX)) or float(rate) != 0.0
+
+    def direction_wind_at_height(self, height):
+        """Direction [rad] the wind blows towards at ``height``."""
+        if not self.has_veer:
+            return self.direction_wind
+        return veer_law(
+            height,
+            self.direction_wind,
+            self.veer_rate,
+            self.height_direction_ref,
+            xp=ca,
+        )
+
+    def direction_offset_at_height(self, height):
+        """Turn [rad] of the wind at ``height`` relative to ``direction_wind``
+        (0 without veer) -- the wind direction in a frame aligned with
+        ``direction_wind``."""
+        if not self.has_veer:
+            return 0.0
+        return self.direction_wind_at_height(height) - self.direction_wind
+
+    @property
     def height_ref(self):
         return self._height_ref
 
@@ -194,10 +245,27 @@ class Wind:
         return speed_profile(self.wind_model, height, xp=ca, **self._profile_kwargs())
 
     def velocity_wind_W(self, height):
+        direction = self.direction_wind_at_height(height)
         return ca.vertcat(
-            self.speed_wind(height) * ca.cos(self.direction_wind),
-            self.speed_wind(height) * ca.sin(self.direction_wind),
+            self.speed_wind(height) * ca.cos(direction),
+            self.speed_wind(height) * ca.sin(direction),
             0,
+        )
+
+    def direction_numeric(self, heights):
+        """Evaluate the direction [rad] with NumPy on an array of heights."""
+        z = np.asarray(heights, dtype=float)
+        if not self.has_veer:
+            return np.full_like(z, float(self.direction_wind))
+        return np.asarray(
+            veer_law(
+                z,
+                float(self.direction_wind),
+                float(self.veer_rate),
+                float(self.height_direction_ref),
+                xp=np,
+            ),
+            dtype=float,
         )
 
     def velocity_wind(self, model):

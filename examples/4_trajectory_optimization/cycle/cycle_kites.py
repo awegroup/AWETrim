@@ -207,6 +207,18 @@ def resolve_kite(kite: str | Path | None = None) -> dict:
     }
 
 
+def load_wind_config(path) -> dict:
+    """A wind block from its own YAML file (same keys as the profile's
+    ``wind:``, or a file holding a top-level ``wind:``), validated like it.
+    Lets one kite's cycle be solved in several winds without editing
+    ``cycle_profile.yaml``."""
+    path = Path(path)
+    data = _load_yaml(path)
+    wind = dict(data.get("wind", data))
+    _require(wind, ("model_type",), path, "wind")
+    return wind
+
+
 def override_wind(wind: dict, speed=None, height=None) -> dict:
     """The profile's wind with its amplitude replaced: ``speed`` (m/s) at
     ``height`` (m, default the profile's ``height_ref``). The law and its
@@ -234,4 +246,8 @@ def wind_tag(wind: dict) -> str:
     tag = f"wind_{wind['speed_wind_ref']:g}at{wind['height_ref']:g}m_{wind['model_type']}"
     if "z0" in wind:
         tag += f"_z0_{wind['z0']:g}"
+    if wind["model_type"] == "jet":
+        tag += f"_jet{wind['jet_amplitude']:g}at{wind['jet_height']:g}m"
+    if float(wind.get("veer_rate", 0.0)) != 0.0:
+        tag += f"_veer{math.degrees(float(wind['veer_rate'])):g}dpm"
     return tag

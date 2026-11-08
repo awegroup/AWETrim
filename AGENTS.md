@@ -175,7 +175,19 @@ src/awetrim/
                          scale_height?} is set, then lift/drag, KCU drag and the
                          lumped tether drag use it at z = r sin(beta)
                          (SystemModel.air_density) and the Williams tether
-                         per node (air_density_at_height)
+                         per node (air_density_at_height).
+                         Veer: Wind(veer_rate [rad/m], height_direction_ref
+                         [m], default height_ref) turns the direction with
+                         height, profile_laws.veer_law (linear; positive =
+                         veering, clockwise with height). velocity_wind_W uses
+                         direction_wind_at_height, so the kite and the lumped
+                         tether see it; the Williams tether turns each
+                         segment's wind by direction_offset_at_height.
+                         direction_wind stays every frame's reference (the
+                         direction at height_direction_ref); veer_rate 0 =
+                         expressions unchanged. Cycle scripts:
+                         --wind-config FILE (cycle_kites.load_wind_config)
+                         replaces the profile's wind block
   server/            ✅  REST API for reelout trajectory optimization
                          (FastAPI, optional [server] extra; endpoints
                          /init /status /step /trajectory /reset; one

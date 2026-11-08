@@ -181,3 +181,76 @@ class TestBodyFrameWindVector:
         )
         vec = np.array(uniform_wind.velocity_wind(model)).ravel()
         assert np.linalg.norm(vec) == pytest.approx(8.0)
+
+
+# ============================================================================
+# VEER (direction turning with height)
+# ============================================================================
+
+
+class TestVeer:
+    def test_no_veer_keeps_constant_direction_expression(self, log_wind):
+        """veer_rate = 0 returns direction_wind itself: the NLP is unchanged."""
+        assert not log_wind.has_veer
+        assert log_wind.direction_wind_at_height(123.0) is log_wind.direction_wind
+        assert log_wind.direction_offset_at_height(123.0) == 0.0
+
+    def test_veering_turns_clockwise_with_height(self):
+        rate = math.radians(0.1)  # deg/m -> rad/m
+        wind = Wind(
+            wind_model="logarithmic",
+            z0=0.1,
+            direction_wind=0.0,
+            speed_wind_ref=10.0,
+            veer_rate=rate,
+            height_direction_ref=100.0,
+        )
+        assert wind.has_veer
+        assert float(wind.direction_wind_at_height(100.0)) == pytest.approx(0.0)
+        # 100 m above the reference: 10 deg clockwise (negative in AWETrim's
+        # counter-clockwise convention).
+        assert float(wind.direction_wind_at_height(200.0)) == pytest.approx(
+            -math.radians(10.0)
+        )
+        vec = wind.velocity_wind_W(200.0)
+        speed = float(wind.speed_wind(200.0))
+        assert float(vec[0]) == pytest.approx(speed * math.cos(math.radians(10.0)))
+        assert float(vec[1]) == pytest.approx(-speed * math.sin(math.radians(10.0)))
+        assert float(vec[2]) == pytest.approx(0.0)
+        # The speed does not depend on the direction.
+        assert float(ca.norm_2(vec)) == pytest.approx(speed)
+
+    def test_direction_reference_defaults_to_height_ref(self):
+        wind = Wind(
+            wind_model="uniform", direction_wind=0.3, speed_wind_ref=8.0, veer_rate=0.01
+        )
+        wind.height_ref = 50.0
+        assert wind.height_direction_ref == 50.0
+        assert float(wind.direction_wind_at_height(50.0)) == pytest.approx(0.3)
+        assert float(wind.direction_offset_at_height(60.0)) == pytest.approx(-0.1)
+
+    def test_symbolic_height_gives_casadi_expression(self):
+        wind = Wind(
+            wind_model="logarithmic",
+            z0=0.1,
+            direction_wind=0.0,
+            speed_wind_ref=10.0,
+            veer_rate=0.001,
+        )
+        z = ca.MX.sym("z")
+        vec = wind.velocity_wind_W(z)
+        assert isinstance(vec, ca.MX)
+        assert vec.shape == (3, 1)
+        assert ca.depends_on(vec[1], z)
+
+    def test_direction_numeric_matches_casadi(self):
+        wind = Wind(
+            wind_model="uniform",
+            direction_wind=0.2,
+            speed_wind_ref=8.0,
+            veer_rate=0.002,
+            height_direction_ref=80.0,
+        )
+        z = np.array([40.0, 80.0, 200.0])
+        expected = [float(wind.direction_wind_at_height(h)) for h in z]
+        assert wind.direction_numeric(z) == pytest.approx(expected)

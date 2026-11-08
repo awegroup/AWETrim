@@ -116,6 +116,7 @@ from cycle_kites import (  # noqa: E402
     DEFAULT_KITE,
     REQUIRED_SEED,
     SEED_FILENAME,
+    load_wind_config,
     override_wind,
     resolve_kite,
 )
@@ -1462,6 +1463,7 @@ def main(
     wind_height: float = None,
     output: str = None,
     size: bool = False,
+    wind_config: str = None,
 ) -> int:
     global OUTPUT_PATH, SEED_PLOT_PATH
     configure_kite(kite or KITE_DIR)
@@ -1469,6 +1471,8 @@ def main(
     # (_simulate_cycle), so the override goes there.
     import run_full_cycle_opti as _rfco
 
+    if wind_config:
+        _rfco.WIND_CONFIG = load_wind_config(wind_config)
     _rfco.WIND_CONFIG = override_wind(_rfco.WIND_CONFIG, wind_speed, wind_height)
     if output:
         OUTPUT_PATH = Path(output)
@@ -1767,6 +1771,13 @@ if __name__ == "__main__":
         "radius whose forward simulation is complete and inside the steering "
         "limit at the kite's own roll gain. Writes nothing if none is",
     )
+    parser.add_argument(
+        "--wind-config",
+        dest="wind_config",
+        default=None,
+        help="YAML wind block replacing the profile's wind: (e.g. a jet or a "
+        "veering wind); pass the same file to run_full_cycle_opti.py",
+    )
     args = parser.parse_args()
     raise SystemExit(
         main(
@@ -1782,6 +1793,7 @@ if __name__ == "__main__":
             wind_speed=args.wind_speed,
             wind_height=args.wind_height,
             output=args.output,
+            wind_config=args.wind_config,
             size=args.size,
         )
     )

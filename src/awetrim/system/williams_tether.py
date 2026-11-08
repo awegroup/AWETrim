@@ -246,7 +246,14 @@ class WilliamsTether(Tether):
             u_wind = wind.speed_wind_at_height(ca.fmax(centre[2], z0 * 1.001))
         else:
             u_wind = 0.0
-        apparent = u_wind * ca.vertcat(1, 0, 0) - velocity
+        if wind is not None and getattr(wind, "has_veer", False):
+            # The frame is aligned with wind.direction_wind; a veering wind
+            # turns away from +x by the offset at the segment's height.
+            turn = wind.direction_offset_at_height(centre[2])
+            direction = ca.vertcat(ca.cos(turn), ca.sin(turn), 0)
+        else:
+            direction = ca.vertcat(1, 0, 0)
+        apparent = u_wind * direction - velocity
         rho_c = rho if rho_at_height is None else rho_at_height(centre[2])
         drag, lift, theta = self._segment_aero_force(apparent, axis, rho_c, l_unstrained)
         weight = ca.vertcat(0, 0, -m_s * g)

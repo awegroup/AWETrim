@@ -202,3 +202,13 @@ def test_air_density_matches_atmospheric_models_calc_rho():
     z = ca.MX.sym("z")
     rho = air_density(z, 1.225, xp=ca)
     assert ca.depends_on(rho, z)
+
+
+def test_veer_law_numpy_and_casadi_agree():
+    from awetrim.environment.profile_laws import veer_law
+
+    z = np.array([50.0, 100.0, 250.0])
+    out_np = veer_law(z, 0.1, 0.002, 100.0, xp=np)
+    assert out_np == pytest.approx(0.1 - 0.002 * (z - 100.0))
+    out_ca = [float(veer_law(h, 0.1, 0.002, 100.0, xp=ca)) for h in z]
+    assert out_ca == pytest.approx(out_np)
