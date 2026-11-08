@@ -34,7 +34,7 @@ from awetrim.utils.config_paths import LEI_V3_SYSTEM_CONFIG
 
 
 @lru_cache(maxsize=8)
-def _kite_and_validity(system_path: str, rom_path: Optional[str]) -> Tuple[Any, dict]:
+def load_rom_kite(system_path: str, rom_path: Optional[str]) -> Tuple[Any, dict]:
     """The Kite of a system/ROM pair and the ROM file's ``validity`` block."""
     kwargs = {"aero_yaml_path": rom_path} if rom_path else {}
     kite = create_system_model_from_yaml(yaml_path=system_path, **kwargs).kite
@@ -61,7 +61,7 @@ def evaluate_aero_forces(request: Dict[str, Any]) -> Dict[str, Any]:
     if rom_request and not (rom_path and rom_path.exists()):
         raise FileNotFoundError(f"config file not found: {rom_path}")
 
-    kite, validity = _kite_and_validity(
+    kite, validity = load_rom_kite(
         str(system_path), str(rom_path) if rom_request else None
     )
     alpha_deg = request.get("angle_of_attack")

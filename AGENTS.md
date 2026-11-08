@@ -22,7 +22,11 @@ src/awetrim/
                           Williams discretised distributed-mass)
                          + rom_forces.py: ROM lift/drag at one (u_p, v_a),
                          at a given alpha or the gravity-free trim
-                         (served by /aero_forces);
+                         (served by /aero_forces); match_input_depower is
+                         its inverse (the ROM tape that pulls a given
+                         resultant or lift), used by
+                         examples/server/identify_depower_offset.py to map
+                         another model's power tape onto the ROM's;
                          Wing.aerodynamic_force_coefficients_at is the one
                          place the ROM coefficient terms are evaluated
                          + Tether.force_inertia_tether_at_kite_for: the

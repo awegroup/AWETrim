@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Server: ROM forces at one state and the power-tape match to another model
+
+- `POST /aero_forces` (stateless) returns the ROM's lift and drag at one power tape
+  and apparent wind, at a given angle of attack or the ROM's gravity-free trim
+  (`awetrim.system.rom_forces.rom_aero_forces`).
+- `rom_forces.match_input_depower` is its inverse: the ROM tape that pulls a given
+  resultant (default) or lift inside the ROM's depower band.
+  `examples/server/identify_depower_offset.py` uses it to fit the tape map
+  `client tape = ROM tape + offset` from another model's forces (e.g.
+  RobustKiteControllers' `validate_lift_drag.jl`) and reports the L/D left at matched
+  force. V3Kite against the 2026-11-05 LEI-V3 ROM: -0.372 m (std 0.010 m, 4 points),
+  gain 0.977, L/D 6 % higher.
+- `rom_config_aerostructural2.yaml`, deleted on develop, is not restored by the
+  branch.
+
 ### Removed: the legacy integrator paths
 
 - `SystemModel.integrator` / `establish_ode_function` / `establish_algebraic` /

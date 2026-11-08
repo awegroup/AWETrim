@@ -500,9 +500,30 @@ The reply has `lift`/`drag` [N] (the wing's, bridle lines included; lift
 perpendicular to v_a, drag along it), `lift_kcu`/`drag_kcu` (the KCU, added
 when the ROM keeps it out of C_D), `lift_total`/`drag_total`, the coefficients,
 `angle_of_attack`, `angle_pitch_bridle` and `angle_pitch_tether` [deg], the ROM
-file in use, its validity bands and `within_validity`. The default
-flight-corrected LEI-V3 ROM is valid from 1.628 m of tape only;
-`"rom_config_path": "rom_config_aerostructural.yaml"` reaches down to 1.33 m.
+file in use, its validity bands and `within_validity`. The default LEI-V3 ROM
+(`rom_config_aerostructural.yaml`) is identified from 1.5 to 2.6 m of tape.
+
+### Matching another model's power tape
+
+Two models of the same kite seldom pull the same at the same tape length, so a
+client that flies the optimized paths in its own model flies a different force
+than planned unless it maps the ROM's tape onto its own.
+[`identify_depower_offset.py`](identify_depower_offset.py) finds that map: give it
+the client model's lift and drag at a few tapes (the `lift_drag_validation.json`
+of RobustKiteControllers' `validate_lift_drag.jl`, or a CSV with
+`input_depower, speed_apparent_wind, lift, drag`, drag including bridle lines and
+KCU) and it finds, per point, the ROM tape with the same resultant force
+(`--target lift` for lift alone), then fits `client tape = ROM tape + offset`
+and, as a check, a gain:
+
+```
+python examples/server/identify_depower_offset.py output/lift_drag_validation.json
+```
+
+It also prints the L/D the two models have at matched force, which one tape map
+cannot equalise. The library call is
+`awetrim.system.rom_forces.match_input_depower`. Redo it whenever the ROM or the
+client model changes.
 
 ## Ready-made clients
 

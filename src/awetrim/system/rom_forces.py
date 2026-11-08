@@ -32,7 +32,7 @@ the stall is taken, as in the quasi-steady solver.
 from __future__ import annotations
 
 import math
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 import casadi as ca
 import numpy as np
@@ -175,3 +175,55 @@ def rom_aero_forces(
         "rho": rho,
         "kcu_drag_in_coefficients": bool(kite.kcu_drag_in_coefficients),
     }
+
+
+#: Forces a depower match can equalise: the resultant of the wing (bridle lines
+#: included) and KCU forces, which the tether carries, or the lift alone.
+MATCH_TARGETS = ("resultant", "lift")
+
+
+def matched_force(result: Dict[str, Any], target: str = "resultant") -> float:
+    """The force [N] of a :func:`rom_aero_forces` result a match compares."""
+    if target == "resultant":
+        return math.hypot(result["lift_total"], result["drag_total"])
+    if target == "lift":
+        return result["lift_total"]
+    raise ValueError(f"target must be one of {MATCH_TARGETS}, not {target!r}")
+
+
+def match_input_depower(
+    kite,
+    force: float,
+    speed_apparent_wind: float,
+    band: Tuple[float, float],
+    target: str = "resultant",
+    input_steering: float = 0.0,
+    rho: Optional[float] = None,
+) -> float:
+    """The power tape u_p at which the ROM's force equals ``force`` [N].
+
+    The inverse of :func:`rom_aero_forces` at its gravity-free trim and
+    ``speed_apparent_wind`` v_a [m/s]: another kite model's force at one of its
+    own tapes gives the ROM tape that pulls the same, so the tape map between the
+    two models (an offset, or offset plus gain) is identified from a few such
+    points. ``target`` picks the force (:data:`MATCH_TARGETS`); "resultant" is
+    what sets the tether tension. The root is sought inside ``band``, the ROM's
+    identified depower range; a force the ROM does not reach there raises.
+    """
+    lo, hi = (float(b) for b in band)
+
+    def residual(u_p):
+        result = rom_aero_forces(
+            kite, u_p, speed_apparent_wind, input_steering=input_steering, rho=rho
+        )
+        return matched_force(result, target) - float(force)
+
+    r_lo, r_hi = residual(lo), residual(hi)
+    if r_lo * r_hi > 0.0:
+        f_lo, f_hi = r_lo + force, r_hi + force
+        raise ValueError(
+            f"{target} {force:.0f} N is outside the ROM's {min(f_lo, f_hi):.0f}-"
+            f"{max(f_lo, f_hi):.0f} N over u_p {lo:g}-{hi:g} m at v_a "
+            f"{speed_apparent_wind:g} m/s"
+        )
+    return float(brentq(residual, lo, hi, xtol=1e-6))

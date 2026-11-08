@@ -5,7 +5,7 @@ import math
 import pytest
 
 from awetrim.system.kite import Kite
-from awetrim.system.rom_forces import rom_aero_forces
+from awetrim.system.rom_forces import match_input_depower, matched_force, rom_aero_forces
 
 RHO = 1.225
 AREA = 5.0
@@ -80,3 +80,28 @@ def test_rho_override_scales_the_forces():
 def test_non_positive_apparent_wind_is_rejected():
     with pytest.raises(ValueError):
         rom_aero_forces(_kite(), 1.5, 0.0)
+
+
+def test_match_input_depower_inverts_the_trim():
+    kite, v_a, band = _kite(), 12.0, (1.0, 2.0)
+    for target in ("resultant", "lift"):
+        force = matched_force(rom_aero_forces(kite, 1.3, v_a), target)
+        u_p = match_input_depower(kite, force, v_a, band, target=target)
+        assert u_p == pytest.approx(1.3, abs=1e-5)
+
+
+def test_matched_force_targets():
+    result = rom_aero_forces(_kite(kcu=True), 1.5, 12.0, angle_of_attack=0.08)
+    assert matched_force(result, "lift") == result["lift_total"]
+    assert matched_force(result) == pytest.approx(
+        math.hypot(result["lift_total"], result["drag_total"])
+    )
+    with pytest.raises(ValueError):
+        matched_force(result, "drag")
+
+
+def test_match_outside_the_band_is_refused():
+    kite, v_a, band = _kite(), 12.0, (1.0, 2.0)
+    too_strong = 10.0 * matched_force(rom_aero_forces(kite, 1.0, v_a))
+    with pytest.raises(ValueError, match="outside the ROM"):
+        match_input_depower(kite, too_strong, v_a, band)
