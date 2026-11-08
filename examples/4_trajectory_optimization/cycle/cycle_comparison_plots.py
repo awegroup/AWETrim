@@ -130,6 +130,7 @@ def series_from_optimizer_result(result, path_parameters, periodic=False):
         try:
             pattern = _pattern(path_parameters)
             r, s = out["distance_radial"], out["s"]
+            n = len(s)  # the closed series carries the seam node too
             out["angle_azimuth"] = np.array(
                 [float(pattern.azimuth(r[j], s[j])) for j in range(n)]
             )

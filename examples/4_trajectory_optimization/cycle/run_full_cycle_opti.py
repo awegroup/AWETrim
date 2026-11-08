@@ -37,13 +37,20 @@ Usage:
 
 import argparse
 import copy
+import math
 from pathlib import Path
 
 import numpy as np
 import yaml
 from scipy.signal import find_peaks
 
-from cycle_kites import DEFAULT_KITE, SEED_FILENAME, override_wind, resolve_kite
+from cycle_kites import (
+    DEFAULT_KITE,
+    SEED_FILENAME,
+    load_wind_config,
+    override_wind,
+    resolve_kite,
+)
 from cycle_kites import wind_tag as _wind_tag
 
 from awetrim.environment.wind_factory import create_wind_model
@@ -333,6 +340,15 @@ def describe_wind(wind_config=None):
     )
     if "z0" in cfg:
         text += f", z0={cfg['z0']:g}"
+    if cfg["model_type"] == "jet":
+        text += (
+            f", jet +{cfg['jet_amplitude']:g} m/s @ {cfg['jet_height']:g} m "
+            f"(width {cfg['jet_width']:g} m)"
+        )
+    if float(cfg.get("veer_rate", 0.0)) != 0.0:
+        text += f", veer {math.degrees(float(cfg['veer_rate'])):g} deg/m"
+        if "height_direction_ref" in cfg:
+            text += f" about {cfg['height_direction_ref']:g} m"
     return text
 
 
@@ -648,13 +664,16 @@ def main(
     wind_speed: float = None,
     wind_height: float = None,
     warm_start_csv=None,
+    wind_config: str = None,
 ) -> int:
     """``config_path`` overrides the kite's seed YAML (a variant such as the
     same seed with ``winch_mode: force_law``); ``run_tag`` is appended to the
     output filenames so variants do not overwrite each other. ``wind_speed``
     (m/s at ``wind_height``, default the profile's reference height) replaces
     the profile wind's amplitude, keeping its law (``cycle_kites.override_wind``);
-    the seed must have been generated at the same wind.
+    the seed must have been generated at the same wind. ``wind_config`` (a
+    YAML wind block, ``cycle_kites.load_wind_config``) replaces the profile's
+    wind before that override.
 
     ``warm_start_csv`` is a previous run's optimized trajectory
     (``full_cycle_optimized_<tag>.csv``, on the same node grid as the config):
@@ -664,6 +683,8 @@ def main(
     cannot be trimmed."""
     global WIND_CONFIG
     configure_kite(kite or KITE_DIR)
+    if wind_config:
+        WIND_CONFIG = load_wind_config(wind_config)
     WIND_CONFIG = override_wind(WIND_CONFIG, wind_speed, wind_height)
     print(f"Kite: {KITE_NAME} ({KITE_CONFIG_PATH}); wind: {describe_wind()}")
     if stage_repeats:
@@ -989,6 +1010,13 @@ if __name__ == "__main__":
         default=None,
         help="Height (m) of --wind-speed (default the profile's height_ref)",
     )
+    parser.add_argument(
+        "--wind-config",
+        dest="wind_config",
+        default=None,
+        help="YAML wind block replacing the profile's wind: (e.g. a jet or a "
+        "veering wind); the seed must be generated at the same wind",
+    )
     args = parser.parse_args()
     exit_code = main(
         run_plots=args.plot,
@@ -1002,6 +1030,7 @@ if __name__ == "__main__":
         wind_speed=args.wind_speed,
         wind_height=args.wind_height,
         warm_start_csv=args.warm_start,
+        wind_config=args.wind_config,
     )
     if args.plot:
         import matplotlib.pyplot as plt

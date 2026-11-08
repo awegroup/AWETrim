@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+### Wind: direction turning with height (veer)
+
+- **`Wind(veer_rate=..., height_direction_ref=...)`** turns the wind direction
+  linearly with height (`profile_laws.veer_law`; positive = veering, clockwise with
+  height as in the Northern-Hemisphere Ekman layer). `direction_wind` is the direction
+  at `height_direction_ref` (default `height_ref`) and stays the reference of every
+  wind frame. The kite and the lumped tether see the veer through `velocity_wind_W`;
+  the Williams tether turns each segment's wind. `veer_rate = 0`, the default, builds
+  the same expressions as before. Both factories and the YAML `wind:` section accept
+  the two keys.
+- **`--wind-config FILE`** on `fit_periodic_cycle_config.py` and
+  `run_full_cycle_opti.py` replaces the kite profile's wind block, so one kite's cycle
+  can be solved in several winds. The output tag names a jet (`_jet<A>at<h>m`) and a
+  veer (`_veer<deg/m>dpm`).
+- Fix: `cycle_comparison_plots.series_from_optimizer_result` gave a closed
+  (`periodic_wrap`) cycle's azimuth and elevation one sample fewer than its other
+  series (the seam node was appended before the angles were evaluated).
+
 ### Tether: second-order load placement in `WilliamsTether`
 
 - **Each segment's load now acts at its centre and goes half to each end node**

@@ -68,3 +68,20 @@ def test_invalid_inputs_raise():
         create_wind_model("tabulated", heights=[10.0], speeds=[5.0])
     with pytest.raises(ValueError):
         create_wind_model("gaussian", U_ref=8.0)
+
+
+def test_veer_is_forwarded_by_both_factories():
+    from awetrim.system.factory import create_wind_model_from_config
+
+    wind = create_wind_model(
+        "explog", U_ref=6.0, z_ref=6.0, z0=2e-4, veer_rate=0.002, height_direction_ref=100.0
+    )
+    assert wind.has_veer
+    assert wind.height_direction_ref == 100.0
+    assert not create_wind_model("logarithmic", U_ref=8.0).has_veer
+
+    cfg = create_wind_model_from_config(
+        {"model": "uniform", "speed_wind_ref": 8.0, "veer_rate": 0.002}
+    )
+    assert cfg.has_veer
+    assert cfg.height_direction_ref == cfg.height_ref

@@ -34,6 +34,9 @@ explog       2*logarithmic - power_law        (AtmosphericModels.jl, K = 1)
 jet          logarithmic + A * exp(-(z - z_c)^2 / (2 sigma^2))
 ===========  ==============================================================
 
+The direction may turn with height (veer), ``veer_law``:
+``direction(z) = direction_ref - veer_rate * (z - z_ref_dir)``.
+
 The log law is equivalently parametrised by the friction velocity
 ``u* = kappa * u_ref / ln(z_ref/z0)`` (so ``u(z) = u*/kappa * ln(z/z0)``);
 :func:`friction_velocity` and :func:`speed_from_friction_velocity` convert
@@ -114,6 +117,22 @@ def jet_law(
     return log_law(z, u_ref, z_ref, z0, xp=xp) + jet_amplitude * xp.exp(
         -((z - jet_height) ** 2) / (2.0 * jet_width**2)
     )
+
+
+def veer_law(
+    z: Any, direction_ref: Any, veer_rate: Any, z_ref: Any, xp: Any = np
+) -> Any:
+    """Wind direction [rad] at ``z`` turning linearly with height.
+
+    ``direction_ref - veer_rate * (z - z_ref)``, in AWETrim's convention
+    (direction the wind blows TOWARDS, counter-clockwise from +x seen from
+    above). A positive ``veer_rate`` [rad/m] is a VEERING wind -- clockwise
+    with height, the compass "from" angle increasing, as in the
+    Northern-Hemisphere Ekman layer; a negative one backs. Linear (no kink) so
+    it can enter the NLP; meant for the band the kite flies in, not the whole
+    boundary layer. ``xp`` is unused and kept for the kernels' uniform call.
+    """
+    return direction_ref - veer_rate * (z - z_ref)
 
 
 def friction_velocity(
