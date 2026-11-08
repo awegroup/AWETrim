@@ -431,6 +431,28 @@ components:
         ceiling. Every field is optional; an omitted side keeps the default. On
         /step the struct replaces the session's limits as a whole (send ``{}`` to
         return to the defaults).
+    DepowerLimits:
+      properties:
+        min:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Min
+          description: l_dp >= this [m]
+        max:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Max
+          description: l_dp <= this [m]
+      additionalProperties: false
+      type: object
+      title: DepowerLimits
+      description: |-
+        Optional bounds on the depower input l_dp [m] the optimizer may plan.
+
+        Like :class:`SteeringLimits` they only narrow the box (the ROM's validity
+        band), e.g. to the depowers the client's controller is calibrated for.
     DepowerReply:
       properties:
         mode:
@@ -663,6 +685,16 @@ components:
           - $ref: '#/components/schemas/AngleOfAttackLimits'
           - type: 'null'
           description: Angle-of-attack limits in force [deg] (null = the default box)
+        steering_limits:
+          anyOf:
+          - $ref: '#/components/schemas/SteeringLimits'
+          - type: 'null'
+          description: Steering limits in force (null = none)
+        depower_limits:
+          anyOf:
+          - $ref: '#/components/schemas/DepowerLimits'
+          - type: 'null'
+          description: Depower limits in force [m] (null = none)
         kite_sized_seed:
           anyOf:
           - type: boolean
@@ -819,7 +851,20 @@ components:
           - $ref: '#/components/schemas/AngleOfAttackLimits'
           - type: 'null'
           description: Optional bounds on the angle of attack [deg], or a margin below the
-            ROM's stall angle; omitted = the default box 0-14 deg.
+            ROM's stall angle; omitted = the ROM's identified range (validity.angle_of_attack_deg),
+            else the box 0-14 deg.
+        steering_limits:
+          anyOf:
+          - $ref: '#/components/schemas/SteeringLimits'
+          - type: 'null'
+          description: Optional limits of the client's steering actuator (|u_s| and its rate);
+            they only narrow the optimizer's box.
+        depower_limits:
+          anyOf:
+          - $ref: '#/components/schemas/DepowerLimits'
+          - type: 'null'
+          description: Optional bounds on the planned depower l_dp [m]; they only narrow the
+            ROM's validity band.
         kite_sized_seed:
           type: boolean
           title: Kite Sized Seed
@@ -1107,6 +1152,35 @@ components:
       required:
       - state
       title: StatusResponse
+    SteeringLimits:
+      properties:
+        max:
+          anyOf:
+          - type: number
+            maximum: 1.0
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Max
+          description: '|u_s| stays <= this at every node'
+        rate:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: 'null'
+          title: Rate
+          description: '|d u_s / dt| stays <= this [1/s] at every node'
+      additionalProperties: false
+      type: object
+      title: SteeringLimits
+      description: |-
+        Optional limits of the client's steering actuator.
+
+        In the ROM's steering unit u_s (LEI-V3: steering-tape half-difference /
+        1.4 m). They can only NARROW the optimizer's box (the system file's KCU
+        range clipped to the ROM's validity), so a client whose KCU steers less,
+        or slower, than the ROM was identified with gets paths it can fly. On
+        /step the struct replaces the session's limits as a whole (``{}`` returns
+        to the defaults).
     StepAccepted:
       properties:
         state:
@@ -1156,6 +1230,16 @@ components:
           - type: 'null'
           description: Angle-of-attack limits the path was optimized under [deg] (null = the
             default box)
+        steering_limits:
+          anyOf:
+          - $ref: '#/components/schemas/SteeringLimits'
+          - type: 'null'
+          description: Steering limits the path was optimized under (null = none)
+        depower_limits:
+          anyOf:
+          - $ref: '#/components/schemas/DepowerLimits'
+          - type: 'null'
+          description: Depower limits the path was optimized under [m] (null = none)
         state:
           type: string
           title: State
@@ -1230,6 +1314,16 @@ components:
           - type: 'null'
           description: Updated angle-of-attack limits for this and later steps; omit to keep
             the current ones, send {} to return to the defaults
+        steering_limits:
+          anyOf:
+          - $ref: '#/components/schemas/SteeringLimits'
+          - type: 'null'
+          description: Updated steering limits; omit to keep, {} to clear
+        depower_limits:
+          anyOf:
+          - $ref: '#/components/schemas/DepowerLimits'
+          - type: 'null'
+          description: Updated depower limits; omit to keep, {} to clear
         max_iter:
           anyOf:
           - type: integer

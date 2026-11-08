@@ -116,7 +116,9 @@ field; everything else has a default:
 | `depower` | `{"mode":"optimize"}` | whether depower is optimized and how, see [Depower](#depower--read-this-before-flying-a-returned-path) |
 | `min_turn_radius` | none | minimum physical turn radius [m] the path must respect, see [Minimum turn radius](#minimum-turn-radius--if-your-kite-cannot-turn-as-tightly-as-the-optimizers) |
 | `pattern_limits` | none | box on where the path may go, in degrees: `{azimuth_max, elevation_min, elevation_max, azimuth_amplitude_min}`, see [Pattern limits](#pattern-limits--keeping-the-optimizer-out-of-shapes-you-do-not-want) |
-| `angle_of_attack_limits` | none (0–14°) | bounds on the angle of attack in degrees, `{min, max, stall_margin}`, see [Angle-of-attack limits](#angle-of-attack-limits--when-the-rom-trims-outside-014) |
+| `angle_of_attack_limits` | the ROM's identified range | bounds on the angle of attack in degrees, `{min, max, stall_margin}`, see [Angle-of-attack limits](#angle-of-attack-limits--the-roms-identified-range-by-default) |
+| `steering_limits` | none | your steering actuator's `{max, rate}` (\|u_s\| and \|du_s/dt\| [1/s]), see [Actuator limits](#actuator-limits--if-your-kcu-steers-less-or-slower) |
+| `depower_limits` | none | bounds `{min, max}` [m] on the depower the optimizer may plan, see [Actuator limits](#actuator-limits--if-your-kcu-steers-less-or-slower) |
 
 `input_depower`, `reg_weight` and `detect_simple_bounds` are the complete set
 of solver knobs `InitParams` exposes; there is no generic overrides dict.
@@ -256,14 +258,15 @@ the limits as a whole, `{}` clears them. Purely shape limits — the kite model
 is unchanged — and the normal optimum (figures of ~25–35° half-width at 20–35°
 elevation) is well inside the defaults, so they only act on the bad basins.
 
-### Angle-of-attack limits — when the ROM trims outside 0–14°
+### Angle-of-attack limits — the ROM's identified range by default
 
-The optimizer keeps the angle of attack between 0° and 14° at every node by
-default. That box was set for the LEI-V3 ROMs, and the angle is each ROM's own:
-a ROM that measures it from another reference chord trims at other values for
-the same lift. A ROM whose depowered trim sits below 0° then cannot depower in
-strong wind, and the solve fails there (IPOPT reports local infeasibility, with
-the angle of attack on its 0° bound). Send the bounds the ROM needs:
+The optimizer keeps the angle of attack inside the range the ROM was identified
+on, `validity.angle_of_attack_deg` of the ROM file (LEI-V3: −7° to 7.27°, the
+stall less a 3° margin), at every node; a ROM file without that block falls
+back to 0–14°. The angle is each ROM's own, and a depowered kite in strong wind
+trims at low or negative angles: a floor at 0° keeps it from depowering further,
+and the solve fails there (IPOPT reports local infeasibility, with the angle of
+attack on its lower bound). To use other bounds, send them:
 
 ```json
 {"angle_of_attack_limits": {"min": -3, "stall_margin": 3}}
@@ -273,9 +276,34 @@ All fields in **degrees**, all optional (an omitted side keeps the default).
 `min` / `max` bound the angle at every node; `stall_margin` replaces `max` with
 the ROM's stall angle (`aerodynamics.params.angle_of_attack_stall`) minus the
 margin, so the ceiling follows the ROM in use (send `max` or `stall_margin`, not
-both). Both replies echo the limits in force (`angle_of_attack_limits`, `null` =
-defaults). `POST /step` accepts the struct too: omit = keep, a struct replaces
-the limits as a whole, `{}` returns to the defaults.
+both). Both replies echo the limits you sent (`angle_of_attack_limits`, `null` =
+the defaults). `POST /step` accepts the struct too: omit = keep, a struct
+replaces the limits as a whole, `{}` returns to the defaults.
+
+### Actuator limits — if your KCU steers less, or slower
+
+The optimizer's steering box is the system file's KCU range and slew rate,
+clipped to the steering the ROM was identified with (LEI-V3: |u_s| ≤ 0.357 and
+0.29 1/s, the 2019 flight), and its depower box is the ROM's identified band
+(LEI-V3: 1.5–2.6 m). A simulator whose kite steers less, or slower, gets paths
+it cannot fly; send its own limits:
+
+```json
+{"steering_limits": {"max": 0.32, "rate": 0.2},
+ "depower_limits": {"min": 1.57}}
+```
+
+`max` bounds |u_s| (the ROM's steering unit: steering-tape half-difference /
+1.4 m on the LEI-V3) and `rate` its slew rate [1/s]; `depower_limits` bounds the
+power-tape length l_dp [m], e.g. to the depowers your controller is calibrated
+for (an optimized depower's seed is moved inside). Both only NARROW the boxes:
+a wider value keeps the optimizer's own, and limits that do not overlap them
+are refused. All fields optional; the replies echo what you sent (`null` =
+none). `POST /step` accepts both: omit = keep, a struct replaces, `{}` clears.
+The kite-sized seed (`kite_sized_seed`) is still fitted with the system's own
+steering box. Tight steering at a short tether in strong wind can leave no
+feasible path at all: the optimizer then needs a bigger figure (`pattern_limits`)
+or a longer tether.
 
 The trajectory you send is only a starting shape — the optimizer reshapes the
 curve freely; a rough guess is fine.
@@ -405,16 +433,18 @@ Add `"wait": false` to get the old asynchronous behavior instead
   go plus an azimuth-amplitude floor; see the pattern-limits section above.
 - `AngleOfAttackLimits {min, max, stall_margin}` [deg], all optional —
   bounds on the angle of attack; see the angle-of-attack section above.
+- `SteeringLimits {max, rate}` and `DepowerLimits {min, max}` [m], all
+  optional — the client's actuator limits; see the actuator-limits section.
 - `InitParams {name, length, winch_params, inflow_conditions, trajectory,
   input_depower, reg_weight, detect_simple_bounds, depower, min_turn_radius,
-  pattern_limits, angle_of_attack_limits}` — the `/init` request and reply carry these fields (reply
+  pattern_limits, angle_of_attack_limits, steering_limits, depower_limits}` — the `/init` request and reply carry these fields (reply
   trajectory = fitted starting path, `inflow_conditions` echoed with the
   defaults filled in, `depower` echoed as mode + starting value). `length` is
   the initial tether length; the three solver knobs default to `1.6`, `1.0`
-  and `true`; `depower`, `min_turn_radius`, `pattern_limits` and
-  `angle_of_attack_limits` are optional.
+  and `true`; `depower`, `min_turn_radius`, `pattern_limits`,
+  `angle_of_attack_limits`, `steering_limits` and `depower_limits` are optional.
 - `StepParams {length, winch_params, trajectory, depower, min_turn_radius,
-  pattern_limits, angle_of_attack_limits}` — the `/step` request and reply, `length` being the
+  pattern_limits, angle_of_attack_limits, steering_limits, depower_limits}` — the `/step` request and reply, `length` being the
   current tether length; on the reply `depower` is the setting the optimized
   path assumes, `min_turn_radius` the limit and `pattern_limits` the box it
   was optimized under.

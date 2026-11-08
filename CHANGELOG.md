@@ -17,6 +17,19 @@
 - `rom_config_aerostructural2.yaml`, deleted on develop, is not restored by the
   branch.
 
+### Server: the ROM's angle-of-attack range by default, actuator limits
+
+- **The reel-out angle-of-attack box is the ROM's identified range**
+  (`validity.angle_of_attack_deg`; LEI-V3 -7 to 7.27 deg) when the client sends no
+  `angle_of_attack_limits`, instead of the generic 0-14 deg, whose floor kept a
+  depowered kite in strong wind from depowering (the 10 m/s Cabauw case failed with
+  alpha on 0 deg) and whose ceiling lay past the stall (10.27 deg). `{}` on `/step`
+  returns to this range. A ROM file without the block keeps 0-14 deg.
+- **`steering_limits {max, rate}` and `depower_limits {min, max}`** on `/init` and
+  `/step` (echoed): the client's actuator limits, which only narrow the optimizer's
+  boxes. V3Kite's KCU steers |u_s| <= 0.32 at 0.20 1/s, against the ROM's 0.357 and
+  0.29 1/s.
+
 ### Removed: the legacy integrator paths
 
 - `SystemModel.integrator` / `establish_ode_function` / `establish_algebraic` /

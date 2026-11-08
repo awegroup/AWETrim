@@ -36,10 +36,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import casadi as ca
 import numpy as np
+import yaml
 
 from awetrim.environment.wind_factory import create_wind_model
 from awetrim.environment.wind_profiles import wind_kwargs_from_inflow
@@ -241,6 +242,9 @@ class ReeloutSession:
         # Resolution of the degree-table replies: matches the client-sent
         # trajectory when there is one, else falls back to n_points.
         self._trajectory_points: Optional[int] = None
+        # The ROM's identified angle-of-attack range [rad], the box the
+        # optimizer uses when the client sends no angle_of_attack_limits.
+        self._aoa_default: Optional[Tuple[float, float]] = None
 
     # ------------------------------------------------------------------
     # /init
@@ -329,8 +333,17 @@ class ReeloutSession:
         )
         self._apply_min_turn_radius(sim_parameters, config.get("min_turn_radius"))
         self._apply_pattern_limits(sim_parameters, config.get("pattern_limits"))
+        aoa_default = self._rom_angle_of_attack_box(rom_path)
+        # Omitted = the defaults ({}), which are the ROM's identified range.
         self._apply_angle_of_attack_limits(
-            sim_parameters, config.get("angle_of_attack_limits"), system_model
+            sim_parameters, config.get("angle_of_attack_limits") or {},
+            system_model, aoa_default,
+        )
+        self._apply_steering_limits(
+            sim_parameters, config.get("steering_limits"), system_model
+        )
+        self._apply_depower_limits(
+            sim_parameters, config.get("depower_limits"), system_model, depower_mode
         )
 
         inflow = config.get("inflow_conditions")
@@ -390,6 +403,7 @@ class ReeloutSession:
             )
             self._seed_min_turn_radius = config.get("min_turn_radius")
             self._seed_pattern_limits = config.get("pattern_limits")
+            self._aoa_default = aoa_default
             if trajectory:
                 self._trajectory_points = len(trajectory["azimuth"])
             self.state = SessionState.READY
@@ -674,12 +688,16 @@ class ReeloutSession:
         sim_parameters: Dict[str, Any],
         limits: Optional[Dict[str, Any]],
         system_model: Any,
+        default_box: Optional[Tuple[float, float]] = None,
     ) -> None:
         """Map the degree-valued ``AngleOfAttackLimits`` struct onto the
         optimizer's ``opti_limits_override["angle_of_attack"]`` [rad].
 
         ``None`` (field omitted) leaves the current setting; a dict replaces
-        it as a whole (``{}`` returns to ``DEFAULT_OPTI_LIMITS``). A missing
+        it as a whole (``{}`` returns to the defaults). The defaults are
+        ``default_box`` [rad], the ROM's identified range
+        (``validity.angle_of_attack_deg``), when given, else
+        ``DEFAULT_OPTI_LIMITS``. A missing
         side falls back to the default; ``stall_margin`` sets the upper bound
         to the ROM's ``angle_of_attack_stall`` minus the margin. The request
         itself is kept as ``sim_parameters["angle_of_attack_limits_deg"]`` so
@@ -691,10 +709,15 @@ class ReeloutSession:
         override = dict(sim_parameters.get("opti_limits_override") or {})
         requested = {k: float(v) for k, v in limits.items() if v is not None}
         if not requested:
-            override.pop("angle_of_attack", None)
+            if default_box is None:
+                override.pop("angle_of_attack", None)
+            else:
+                override["angle_of_attack"] = [float(b) for b in default_box]
             sim_parameters.pop("angle_of_attack_limits_deg", None)
         else:
-            lb_default, ub_default = DEFAULT_OPTI_LIMITS["angle_of_attack"]
+            lb_default, ub_default = (
+                default_box or DEFAULT_OPTI_LIMITS["angle_of_attack"]
+            )
             lb = np.radians(requested["min"]) if "min" in requested else lb_default
             ub = np.radians(requested["max"]) if "max" in requested else ub_default
             if "stall_margin" in requested:
@@ -731,6 +754,126 @@ class ReeloutSession:
         sim_parameters = self.phase.pattern_config.get("sim_parameters", {})
         requested = sim_parameters.get("angle_of_attack_limits_deg")
         return dict(requested) if requested else None
+
+    @staticmethod
+    def _rom_angle_of_attack_box(
+        rom_path: Optional[Path],
+    ) -> Optional[Tuple[float, float]]:
+        """The ROM file's ``validity.angle_of_attack_deg`` [rad], if stated."""
+        if rom_path is None or not Path(rom_path).exists():
+            return None
+        with Path(rom_path).open("r", encoding="utf-8") as f:
+            band = ((yaml.safe_load(f) or {}).get("validity") or {}).get(
+                "angle_of_attack_deg"
+            )
+        if not band:
+            return None
+        return float(np.radians(min(band))), float(np.radians(max(band)))
+
+    @staticmethod
+    def _base_box(system_model: Any, name: str) -> Tuple[float, float]:
+        """The optimizer's own box for ``name``: the system file's (clipped to
+        the ROM's validity by the factory), else ``DEFAULT_OPTI_LIMITS``."""
+        hardware = getattr(system_model, "hardware_limits", None) or {}
+        lo, hi = hardware.get(name, DEFAULT_OPTI_LIMITS[name])
+        return float(lo), float(hi)
+
+    @staticmethod
+    def _narrow(
+        base: Tuple[float, float], lo: Optional[float], hi: Optional[float], name: str
+    ) -> List[float]:
+        """``base`` intersected with ``[lo, hi]`` (``None`` = that side open)."""
+        new_lo = base[0] if lo is None else max(base[0], float(lo))
+        new_hi = base[1] if hi is None else min(base[1], float(hi))
+        if new_hi <= new_lo:
+            raise ValueError(
+                f"{name} limits [{lo}, {hi}] do not overlap the optimizer's "
+                f"box [{base[0]:g}, {base[1]:g}]"
+            )
+        return [new_lo, new_hi]
+
+    def _apply_steering_limits(
+        self,
+        sim_parameters: Dict[str, Any],
+        limits: Optional[Dict[str, Any]],
+        system_model: Any,
+    ) -> None:
+        """Narrow the optimizer's ``input_steering`` and ``steering_rate``
+        boxes to the client's ``SteeringLimits``. ``None`` keeps the current
+        setting, ``{}`` clears it."""
+        if limits is None:
+            return
+        override = dict(sim_parameters.get("opti_limits_override") or {})
+        requested = {k: float(v) for k, v in limits.items() if v is not None}
+        for key in ("input_steering", "steering_rate"):
+            override.pop(key, None)
+        if "max" in requested:
+            m = requested["max"]
+            override["input_steering"] = self._narrow(
+                self._base_box(system_model, "input_steering"), -m, m, "steering"
+            )
+        if "rate" in requested:
+            r = requested["rate"]
+            override["steering_rate"] = self._narrow(
+                self._base_box(system_model, "steering_rate"), -r, r, "steering rate"
+            )
+        if requested:
+            sim_parameters["steering_limits_requested"] = requested
+        else:
+            sim_parameters.pop("steering_limits_requested", None)
+        self._store_override(sim_parameters, override)
+
+    def _apply_depower_limits(
+        self,
+        sim_parameters: Dict[str, Any],
+        limits: Optional[Dict[str, Any]],
+        system_model: Any,
+        depower_mode: str,
+    ) -> None:
+        """Narrow the optimizer's ``input_depower`` box to the client's
+        ``DepowerLimits`` [m]; an optimized depower's seed is moved inside.
+        ``None`` keeps the current setting, ``{}`` clears it."""
+        if limits is None:
+            return
+        override = dict(sim_parameters.get("opti_limits_override") or {})
+        requested = {k: float(v) for k, v in limits.items() if v is not None}
+        override.pop("input_depower", None)
+        if requested:
+            box = self._narrow(
+                self._base_box(system_model, "input_depower"),
+                requested.get("min"), requested.get("max"), "depower",
+            )
+            override["input_depower"] = box
+            sim_parameters["depower_limits_requested"] = requested
+            seed = sim_parameters.get("input_depower")
+            if depower_mode != "fixed" and seed is not None and np.ndim(seed) == 0:
+                sim_parameters["input_depower"] = float(np.clip(seed, *box))
+        else:
+            sim_parameters.pop("depower_limits_requested", None)
+        self._store_override(sim_parameters, override)
+
+    @staticmethod
+    def _store_override(
+        sim_parameters: Dict[str, Any], override: Dict[str, Any]
+    ) -> None:
+        if override:
+            sim_parameters["opti_limits_override"] = override
+        else:
+            sim_parameters.pop("opti_limits_override", None)
+
+    def _requested(self, key: str) -> Optional[Dict[str, Any]]:
+        if self.phase is None:
+            return None
+        requested = self.phase.pattern_config.get("sim_parameters", {}).get(key)
+        return dict(requested) if requested else None
+
+    def steering_limits(self) -> Optional[Dict[str, Any]]:
+        """The steering limits in force, as the client sent them."""
+        return self._requested("steering_limits_requested")
+
+    def depower_limits(self) -> Optional[Dict[str, Any]]:
+        """The depower limits in force [m], as the client sent them."""
+        return self._requested("depower_limits_requested")
 
     def pattern_limits(self) -> Optional[Dict[str, Any]]:
         """The pattern limits in force, as the degree-valued struct
@@ -958,6 +1101,8 @@ class ReeloutSession:
         min_turn_radius: Optional[float] = None,
         pattern_limits: Optional[Dict[str, Any]] = None,
         angle_of_attack_limits: Optional[Dict[str, Any]] = None,
+        steering_limits: Optional[Dict[str, Any]] = None,
+        depower_limits: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Validate, apply the updated inputs and transition to SOLVING."""
         with self._lock:
@@ -1006,7 +1151,15 @@ class ReeloutSession:
             self._apply_min_turn_radius(sim_parameters, min_turn_radius)
             self._apply_pattern_limits(sim_parameters, pattern_limits)
             self._apply_angle_of_attack_limits(
-                sim_parameters, angle_of_attack_limits, self.system_model
+                sim_parameters, angle_of_attack_limits, self.system_model,
+                self._aoa_default,
+            )
+            self._apply_steering_limits(
+                sim_parameters, steering_limits, self.system_model
+            )
+            self._apply_depower_limits(
+                sim_parameters, depower_limits, self.system_model,
+                self._depower_mode,
             )
             if min_turn_radius is not None:
                 self._seed_min_turn_radius = min_turn_radius
@@ -1044,11 +1197,14 @@ class ReeloutSession:
         min_turn_radius: Optional[float] = None,
         pattern_limits: Optional[Dict[str, Any]] = None,
         angle_of_attack_limits: Optional[Dict[str, Any]] = None,
+        steering_limits: Optional[Dict[str, Any]] = None,
+        depower_limits: Optional[Dict[str, Any]] = None,
     ) -> int:
         """Launch one warm-started re-optimization in a background thread."""
         step_index = self._prepare_step(
             distance_radial, winch_params, trajectory, inflow_conditions,
             depower, min_turn_radius, pattern_limits, angle_of_attack_limits,
+            steering_limits, depower_limits,
         )
         self._thread = threading.Thread(
             target=self._solve, args=(step_index, max_iter), daemon=True
@@ -1067,6 +1223,8 @@ class ReeloutSession:
         min_turn_radius: Optional[float] = None,
         pattern_limits: Optional[Dict[str, Any]] = None,
         angle_of_attack_limits: Optional[Dict[str, Any]] = None,
+        steering_limits: Optional[Dict[str, Any]] = None,
+        depower_limits: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """One warm-started re-optimization, solved in the calling thread.
 
@@ -1079,6 +1237,7 @@ class ReeloutSession:
         step_index = self._prepare_step(
             distance_radial, winch_params, trajectory, inflow_conditions,
             depower, min_turn_radius, pattern_limits, angle_of_attack_limits,
+            steering_limits, depower_limits,
         )
         self._solve(step_index, max_iter)
         with self._lock:
@@ -1096,6 +1255,8 @@ class ReeloutSession:
             "min_turn_radius": self.min_turn_radius(),
             "pattern_limits": self.pattern_limits(),
             "angle_of_attack_limits": self.angle_of_attack_limits(),
+            "steering_limits": self.steering_limits(),
+            "depower_limits": self.depower_limits(),
             "state": state,
             "step_index": step_index,
             "metrics": metrics,
@@ -1512,6 +1673,8 @@ class ReeloutSession:
             "min_turn_radius": self.min_turn_radius(),
             "pattern_limits": self.pattern_limits(),
             "angle_of_attack_limits": self.angle_of_attack_limits(),
+            "steering_limits": self.steering_limits(),
+            "depower_limits": self.depower_limits(),
             "kite_sized_seed": self._seed_sized,
             "state": self.state.value,
             "n_points": self._n_points,

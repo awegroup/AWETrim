@@ -233,3 +233,18 @@ def test_pattern_limits_struct_validates_and_is_optional():
         pattern_limits={"azimuth_max": 35.0},
     )
     assert step.pattern_limits.azimuth_max == pytest.approx(35.0)
+
+
+def test_actuator_limit_structs_validate():
+    from awetrim.server.schemas import DepowerLimits, SteeringLimits
+
+    assert SteeringLimits(max=0.32, rate=0.2).max == 0.32
+    with pytest.raises(ValidationError):
+        SteeringLimits(max=0.0)
+    with pytest.raises(ValidationError):
+        SteeringLimits(rate=-0.1)
+    assert DepowerLimits(min=1.57).max is None
+    with pytest.raises(ValidationError):
+        DepowerLimits(min=2.0, max=1.8)
+    with pytest.raises(ValidationError):
+        DepowerLimits(lower=1.6)  # unknown keys are refused

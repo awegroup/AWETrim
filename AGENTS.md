@@ -308,7 +308,15 @@ src/awetrim/
                          Optional angle_of_attack_limits {min, max,
                          stall_margin} [deg] (init/step; echoed) ->
                          opti_limits_override angle_of_attack; stall_margin
-                         = the ROM's angle_of_attack_stall minus it.
+                         = the ROM's angle_of_attack_stall minus it; omitted
+                         = the ROM's validity.angle_of_attack_deg (the
+                         generic 0-14 deg only for a ROM without it).
+                         Optional steering_limits {max, rate} and
+                         depower_limits {min, max} [m] (init/step; echoed)
+                         only NARROW the input_steering / steering_rate /
+                         input_depower boxes (hardware clipped to the ROM's
+                         validity, ReeloutSession._base_box): a client whose
+                         KCU steers less or slower gets flyable paths.
                          Launcher: examples/server/run_reelout_server.py
   flight_data/       ✅  reader of EKF-AWE output (load_flight -> FlightData); raw-log
                          processing and the EKF itself live in EKF-AWE

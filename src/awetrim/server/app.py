@@ -123,6 +123,12 @@ def create_app(
             angle_of_attack_limits=request.angle_of_attack_limits.model_dump()
             if request.angle_of_attack_limits is not None
             else None,
+            steering_limits=request.steering_limits.model_dump()
+            if request.steering_limits is not None
+            else None,
+            depower_limits=request.depower_limits.model_dump()
+            if request.depower_limits is not None
+            else None,
             max_iter=request.max_iter,
         )
         try:
