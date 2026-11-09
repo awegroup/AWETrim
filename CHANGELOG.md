@@ -12,8 +12,8 @@
   is not the panel count. Diagnostic only; the trims' attached/stalled branch
   choice already used the panel polars.
 - **The Billow driver's closing `alpha = ... (va vs mid-span chord)` line uses the
-  trim's apparent wind** (`body_aero.va`, as the wireframe driver does), not the
-  freestream frozen at `initialize`: on the LEI-V3 Billow example it printed
+  trim's apparent wind** (the result's `va_vel_world`, shared with the bridle-line
+  drag as `_trim_apparent_wind`), not the freestream frozen at `initialize`: on the LEI-V3 Billow example it printed
   -4.91 deg against the trim table's 7.23 deg. Print only.
 
 ### ROM: the turn-rate law as a steering law
