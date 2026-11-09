@@ -113,6 +113,19 @@ sweep:
         # Never stop on stall: the steering limit is read from what lies past it,
         # so these chains end at `max` or at a state that does not converge.
         max_stalled_fraction: 1.0
+      # The turn-rate law's b(u_p), c5, c6 (awetrim.identification.turn_law;
+      # --turn-law). At the centre v_tau / v_a is fixed per tape, so the chains
+      # cannot separate b from the gain: these anchors are re-solved tetherless
+      # at the centre at mass scale 0 and 1 (b per tape: the 0.10 m steering
+      # state at 5 m/s on every steering tape, and the 0.20 m one at 1.95 m), and
+      # the gravity anchor with gravity on at each [elevation, azimuth, course]
+      # [deg] (c5, c6: courses 0-270 at 30 deg, and 10 / 60 deg elevation).
+      turn_law:
+        inertia_anchors: [w5.0_steering_1.40/03, w5.0_steering_1.50/03, w5.0_steering_1.70/03,
+                          w5.0_steering_1.95/03, w5.0_steering_2.10/03, w5.0_steering_2.40/03]
+        gravity_anchors: [w5.0_steering_1.95/07]
+        gravity_states: [[10, 0, 90], [30, 0, 0], [30, 0, 90], [30, 0, 180], [30, 0, 270],
+                         [60, 0, 90]]
 
 fit:
   # The area the ROM's coefficients are normalised by [m2]: the EKF / flight
@@ -177,6 +190,13 @@ fit:
         # the ROM band (the optimiser's depower box is clipped to it)
         input_depower: [1.50, 2.60]
         min_tether_force_n: 602.0
+      # The turn law of --steering-law turn_rate (Cayon & Schmehl, in preparation,
+      # Eq. 33): w (v_a + b m v_tau) + b F_g,n + c5 F_g,chi + c6 F_g,r =
+      # a(u_p, u_s) v_a^2 u_s. b(u_p), c5, c6 are measured on the sweep's
+      # turn-law states (sweep: turn_law), a is fitted on the chains with them.
+      # The degree of b(u_p) in the tape:
+      turn_law:
+        inertia_degree: 1
       # The model tape that reproduces each flown phase (the fit does not read it): the
       # one that best zeroes the median tension and speed errors of the ROM's own solve,
       # logged steering in, 2019 training cycles. Written by

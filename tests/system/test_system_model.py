@@ -411,22 +411,11 @@ class TestSystemModelCasADiStructure:
 class TestSystemModelODEStructure:
     """Test ODE and algebraic function establishment."""
 
-    def test_establish_ode_function_method_exists(self, v3_system):
-        """establish_ode_function method exists and is callable."""
-        assert hasattr(v3_system, "establish_ode_function")
-        assert callable(v3_system.establish_ode_function)
-
     def test_establish_residual_creates_residual(self, v3_system):
         """establish_residual sets residual property."""
         v3_system.establish_residual()
         assert hasattr(v3_system, "residual")
         assert v3_system.residual is not None
-
-    def test_algebraic_function_returns_residual(self, v3_system):
-        """algebraic_function returns force residual."""
-        alg = v3_system.algebraic_function()
-        assert alg is not None
-
 
 # ============================================================================
 # DEEP COPY TESTS

@@ -59,6 +59,7 @@ from awetrim.kinematics.parametrized_patterns import (
     reelin_control_point_mask,
 )
 from awetrim.system.factory import create_system_model_from_yaml
+from awetrim.utils.time_scheme import left_step, trapezoid_increment, trapezoid_step
 from awetrim.timeseries import roll_assist
 from awetrim.timeseries.phase import Phase
 
@@ -93,6 +94,8 @@ KITE_DIR = None
 KITE_CONFIG_PATH = None
 CYCLE_CONFIG_PATH = None
 RESULTS_DIR = None
+# Kite (and tether) dynamics in the march and the NLP: --dynamic.
+QUASI_STEADY = True
 DEPOWER_BAND = None
 WIND_CONFIG = None
 
@@ -175,6 +178,7 @@ def march_with_roll_assist(system_model, pattern_config, *, run_plots=False,
             system_model=system_model,
             pattern_config=pattern_config,
             start_state=build_start_state(pattern_config),
+            quasi_steady=QUASI_STEADY,
         ),
         int(pattern_config["sim_parameters"]["n_points"]),
         scales=scales,
@@ -542,19 +546,27 @@ def _downsample_n_points(reelout_config, n_points):
     print(f"Downsampled cycle to n_points={int(n_points)}")
 
 
-def _closure_residual(result, periodic=False):
+def _closure_residual(result, periodic=False, time_scheme="euler"):
     """Radial closure (m) from the optimizer's own trajectory, or None.
 
-    ``periodic`` (periodic_wrap): the seam interval's continuity residual
-    |r[N-1] + v_r[N-1] dt_seam - r[0]|; otherwise |r[-1] - r[0]|.
+    ``periodic`` (periodic_wrap): the seam interval's continuity residual in
+    the NLP's own time scheme (euler: r[N-1] + v_r[N-1] dt; bdf2: the
+    trapezoidal step and increment, awetrim.utils.time_scheme) minus r[0];
+    otherwise |r[-1] - r[0]|.
     """
     traj = getattr(result, "optimized_trajectory", {}) or {}
     r = traj.get("distance_radial")
     if r is None or len(r) < 2:
         return None
     if periodic and {"s", "s_dot", "speed_radial"} <= set(traj):
-        dt = (1.0 - float(traj["s"][-1])) / max(float(traj["s_dot"][-1]), 1e-9)
-        return float(abs(r[-1] + float(traj["speed_radial"][-1]) * dt - r[0]))
+        ds = 1.0 - float(traj["s"][-1])
+        sd, v = traj["s_dot"], traj["speed_radial"]
+        if time_scheme == "bdf2":
+            dt = trapezoid_step(ds, float(sd[-1]), float(sd[0]))
+            dr = trapezoid_increment(dt, float(v[-1]), float(v[0]))
+        else:
+            dr = float(v[-1]) * left_step(ds, max(float(sd[-1]), 1e-9))
+        return float(abs(r[-1] + dr - r[0]))
     return float(abs(r[-1] - r[0]))
 
 
@@ -665,6 +677,12 @@ def main(
     wind_height: float = None,
     warm_start_csv=None,
     wind_config: str = None,
+    winch_inertia_mass: float = None,
+    winch_friction=None,
+    winch_drivetrain: bool = False,
+    dynamic: bool = False,
+    tether_inertia: bool = True,
+    n_points: int = None,
 ) -> int:
     """``config_path`` overrides the kite's seed YAML (a variant such as the
     same seed with ``winch_mode: force_law``); ``run_tag`` is appended to the
@@ -681,10 +699,17 @@ def main(
     model that cannot march the start shape (another ROM, say) would fail.
     The baseline is then simulated only for the comparison, and skipped if it
     cannot be trimmed."""
-    global WIND_CONFIG
+    global WIND_CONFIG, QUASI_STEADY, N_POINTS
+    if n_points:
+        # Node-grid resolution study: resample the cycle's grid (the spline
+        # shape is independent of it); the warm start must be on the same grid.
+        N_POINTS = int(n_points)
     configure_kite(kite or KITE_DIR)
     if wind_config:
         WIND_CONFIG = load_wind_config(wind_config)
+    QUASI_STEADY = not dynamic
+    if dynamic:
+        print("Dynamic model: kite accelerations (implicit Euler) in the march and the NLP")
     WIND_CONFIG = override_wind(WIND_CONFIG, wind_speed, wind_height)
     print(f"Kite: {KITE_NAME} ({KITE_CONFIG_PATH}); wind: {describe_wind()}")
     if stage_repeats:
@@ -714,6 +739,16 @@ def main(
     sim = reelout_config["sim_parameters"]
     # A seed or continuation file written before the key: every cycle has this rate.
     sim.setdefault("slow_path_rate", True)
+    if winch_inertia_mass is not None:
+        # Drum + drive inertia reflected onto the tether [kg] (opti_phase).
+        sim["winch_inertia_mass"] = float(winch_inertia_mass)
+    if winch_friction is not None:
+        # Drivetrain friction in the objective: True = system.yaml drums[0],
+        # or a tether-referred (F_c [N], c_v [N s/m]) pair.
+        sim["winch_friction"] = winch_friction
+    if winch_drivetrain:
+        # The system file's drum inertia + friction, in the march and the NLP.
+        sim["winch_drivetrain"] = True
     if N_POINTS:
         _downsample_n_points(reelout_config, N_POINTS)
 
@@ -722,7 +757,14 @@ def main(
     # in place, and the comparison plots need the original to compare against.
     seed_config = copy.deepcopy(reelout_config)
 
-    system_model = create_system_model_from_yaml(yaml_path=KITE_CONFIG_PATH)
+    # The ROM's tether block (lumped, with its inertia by default);
+    # --no-tether-inertia drops the tether's inertial load at the kite.
+    system_model = create_system_model_from_yaml(
+        yaml_path=KITE_CONFIG_PATH,
+        tether_config=(
+            None if tether_inertia else {"model": "rigid_lumped", "inertia": False}
+        ),
+    )
     system_model.wind = build_wind_model(**WIND_CONFIG)
 
     assist = 1.0
@@ -730,6 +772,7 @@ def main(
         system_model=system_model,
         pattern_config=reelout_config,
         start_state=build_start_state(reelout_config),
+        quasi_steady=QUASI_STEADY,
     )
     if warm_start_csv:
         import pandas as pd
@@ -862,7 +905,11 @@ def main(
                     aborted = True
                     break
                 result = stage_result
-                res = _closure_residual(result, bool(sim.get("periodic_wrap", False)))
+                res = _closure_residual(
+                    result,
+                    bool(sim.get("periodic_wrap", False)),
+                    sim.get("time_scheme", "euler" if QUASI_STEADY else "bdf2"),
+                )
                 print(
                     f"Stage {i + 1}{rep_tag} done. radial closure = "
                     f"{'n/a' if res is None else f'{res:.2f} m'}"
@@ -1017,7 +1064,52 @@ if __name__ == "__main__":
         help="YAML wind block replacing the profile's wind: (e.g. a jet or a "
         "veering wind); the seed must be generated at the same wind",
     )
+    parser.add_argument(
+        "--winch-inertia-mass",
+        type=float,
+        default=None,
+        help="Winch inertia as an equivalent tether mass J/r_drum^2 (kg); the "
+        "drive force T - m dv_r/dt is then held below max_tether_force",
+    )
+    parser.add_argument(
+        "--winch-friction",
+        default=None,
+        help="Charge drivetrain friction in the objective: 'system' for "
+        "system.yaml drums[0], or 'F_c,c_v' tether-referred (N, N s/m)",
+    )
+    parser.add_argument(
+        "--winch-drivetrain",
+        action="store_true",
+        help="Fly the system file's winch drivetrain (drum inertia + friction, "
+        "system.yaml drums[0]) in the forward simulation and the NLP",
+    )
+    parser.add_argument(
+        "--dynamic",
+        action="store_true",
+        help="Kite (and tether) accelerations in the forward march and the NLP "
+        "(implicit, sim_parameters.time_scheme: bdf2 by default) instead of quasi-steady",
+    )
+    parser.add_argument(
+        "--no-tether-inertia",
+        dest="tether_inertia",
+        action="store_false",
+        help="Drop the lumped tether's inertia at the kite (on by default: "
+        "centrifugal, Coriolis and turn terms; with --dynamic also its accelerations)",
+    )
+    parser.add_argument(
+        "--n-points",
+        type=int,
+        default=None,
+        help="Resample the cycle to this many nodes (resolution study); a "
+        "--warm-start must be on that grid",
+    )
     args = parser.parse_args()
+    if args.winch_friction is not None:
+        args.winch_friction = (
+            True
+            if args.winch_friction == "system"
+            else [float(x) for x in args.winch_friction.split(",")]
+        )
     exit_code = main(
         run_plots=args.plot,
         optimize=not args.no_optimize,
@@ -1031,6 +1123,12 @@ if __name__ == "__main__":
         wind_height=args.wind_height,
         warm_start_csv=args.warm_start,
         wind_config=args.wind_config,
+        winch_inertia_mass=args.winch_inertia_mass,
+        winch_friction=args.winch_friction,
+        winch_drivetrain=args.winch_drivetrain,
+        dynamic=args.dynamic,
+        tether_inertia=args.tether_inertia,
+        n_points=args.n_points,
     )
     if args.plot:
         import matplotlib.pyplot as plt

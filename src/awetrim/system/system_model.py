@@ -87,8 +87,6 @@ class SystemModel(KiteKinematics):
         self._qs_solver = None
         self._qs_vars = None
         self._qs_inputs = None
-        self.ode = None
-        self.algebraic = None
         if self.is_tether_rigid:
             self.default_unknown_vars = list(
                 self.tether.default_kite_state_unknowns()
@@ -99,6 +97,10 @@ class SystemModel(KiteKinematics):
                 "input_steering",
                 "length_tether",
             ]
+        if self.has_turn_rate_law:
+            # the lift's total roll about v_a is an unknown, closed by the
+            # lateral force balance (the turn law is the fourth residual row)
+            self.default_unknown_vars.append("angle_roll")
         self.derived_function_names = [
             "angle_of_attack",
             "tension_tether_ground",
@@ -186,6 +188,7 @@ class SystemModel(KiteKinematics):
             + self.expression("force_gravity")[2]
             + self.expression("drag_tether_at_kite")[2]
             + self.expression("force_gravity_tether_at_kite")[2]
+            + self.expression("force_inertia_tether_at_kite")[2]
         )
 
     @property
@@ -313,24 +316,25 @@ class SystemModel(KiteKinematics):
         """
         # LHS and RHS
         lhs = (self.kite.mass_wing + self.kite.mass_kcu) * self.acceleration
-        # Residual
-        # print(self.force_external)
-        # print(lhs)
-        return -lhs + self.force_external
+        residual = -lhs + self.force_external
+        if self.has_turn_rate_law:
+            # [chi, n, r, turn law]: the lateral row closes the roll unknown
+            # (angle_roll), the turn law ties the steering to the turn rate.
+            residual = ca.vertcat(residual, self.kite.turn_rate_residual_for(self))
+        return residual
 
-    def establish_ode_function(self):
-        dot_r = self.speed_radial
-        dot_beta = self.timeder_angle_elevation
-        dot_theta = self.timeder_angle_azimuth
-        dot_vt = self.acceleration_total[0]
-        dot_chi = self.acceleration_total[1]
-        dot_vr = self.acceleration_total[2]
-        dot_lt = self.timeder_length_tether
-        ode = ca.vertcat(dot_r, dot_beta, dot_theta, dot_vt, dot_chi, dot_vr, dot_lt)
-        self._ode = ode
+    @property
+    def has_turn_rate_law(self):
+        """True when the ROM's steering law is ``turn_rate`` (Kite.__init__):
+        then ``angle_roll`` is an unknown and the residual has four rows."""
+        return getattr(self.kite, "steering_law", "roll_gain") == "turn_rate"
 
-    def algebraic_function(self):
-        return self.force_residual
+    @property
+    def angle_roll(self):
+        """The lift's total roll about v_a [rad], the turn-rate law's unknown."""
+        if not self.has_turn_rate_law:
+            raise AttributeError("angle_roll is an unknown only with steering_law turn_rate")
+        return self.kite.angle_roll_variable
 
     def establish_residual(self):
         self.residual = self.force_residual
@@ -431,7 +435,8 @@ class SystemModel(KiteKinematics):
         # not used to select roots -- every flown reel-in state reads S > 0.
         # Only when the tangential speed is an unknown of a square system.
         self._qs_stability_function = None
-        if "speed_tangential" in unknown_vars and len(x) == int(g.numel()):
+        if ("speed_tangential" in unknown_vars and len(x) == int(g.numel())
+                and not self.has_turn_rate_law):
             frozen = (
                 (unknown_vars.index("input_steering"),)
                 if "input_steering" in unknown_vars else ()
@@ -513,7 +518,10 @@ class SystemModel(KiteKinematics):
             lbg = [0] * ng
             ubg = [0] * ng
 
-        x0 = [safe_value(state_dict.get(var, 1.0)) for var in unknown_vars]
+        # the roll's neutral guess is 0, not the generic 1 (rad)
+        x0 = [safe_value(state_dict.get(var, 0.0 if var == "angle_roll" else 1.0))
+              if not (var == "angle_roll" and state_dict.get(var) is None) else 0.0
+              for var in unknown_vars]
         # Tether-contributed initial guesses (Williams: tension_kite,
         # tether_length, azimuth_last, elevation_last). For tethers with no
         # extra decisions this is a no-op.
@@ -692,71 +700,6 @@ class SystemModel(KiteKinematics):
             self.input_depower,
             self.timeder_length_tether,
         )
-
-    def integrator(self, time_step, quasi_steady=True, inputs=None):
-        if quasi_steady:
-            self.timeder_speed_radial = 0
-            self.timeder_speed_tangential = 0
-        if self.ode is None:
-            self.establish_ode_function()
-        if self.algebraic is None:
-            self.establish_algebraic()
-
-        if quasi_steady:
-
-            p = ca.vertcat(
-                self.timeder_angle_course, self.input_depower, self.speed_radial
-            )
-
-            x = ca.vertcat(
-                self.distance_radial,
-                self.angle_elevation,
-                self.angle_azimuth,
-                self.angle_course,
-            )
-            ode = ca.vertcat(
-                self._ode[0],
-                self._ode[1],
-                self._ode[2],
-                self._ode[4],
-            )
-            if self.is_tether_rigid:
-                z = ca.vertcat(
-                    self.speed_tangential,
-                    self.input_steering,
-                    self.tension_tether_ground,
-                )
-            else:
-                z = ca.vertcat(
-                    self.speed_tangential,
-                    self.input_steering,
-                    self.length_tether,
-                )
-            alg = self.algebraic
-
-            dae = {"x": x, "p": p, "z": z, "ode": ode, "alg": alg}
-            # Create the integrator
-            opts = {
-                "abstol": 1e-6,
-                "reltol": 1e-6,
-                "max_num_steps": 20000,
-                "max_step_size": 0.01,  # Or even 1e-3 if very stiff
-            }
-
-            # intg = ca.integrator("intg", "idas", dae, opts)
-            intg = ca.integrator("intg", "idas", dae, 0, time_step, opts)
-            return intg
-
-        else:
-            p = self.input_vector
-            ode = {"x": self.state_vector, "p": p, "ode": self._ode}
-            return ca.integrator("intg", "cvodes", ode, 0, time_step)
-
-    def establish_algebraic(self):
-        """
-        Establish the algebraic equations for the kite system.
-        """
-        self.algebraic = self.algebraic_function()
 
     def extract_function(self, attribute_name):
         """Extract a CasADi function dynamically based on the attribute name."""

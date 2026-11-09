@@ -20,6 +20,23 @@ src/awetrim/
                          (steering_limit), from quasi-steady states
                          (rigid/flexible link, rigid/flexible lumped,
                           Williams discretised distributed-mass)
+                         + Tether.force_inertia_tether_at_kite_for: the
+                         straight tether's inertial load at the kite (lumped
+                         tethers, on by default, the tether block's
+                         `inertia: false` drops it, create_tether_from_config): (m_t/3) across,
+                         m_t along, with 2x the kite's Coriolis and 1/2 its
+                         centrifugal term; in force_tether_at_kite, and in
+                         the VSM quasi-steady trim's rigid_lumped tether load
+                         + winch.Drivetrain: drum inertia (tether-referred
+                         mass J (n/r)^2) + friction (F_c + k T) tanh(v/eps)
+                         + c_v v (drivetrain_friction_force; loss power
+                         drivetrain_loss_power = v F_f), all tether-referred.
+                         The force law sets the MOTOR force: Winch.
+                         radial_equation applies it to T - F_f - m dv/dt
+                         (speed_radial_rate: the drum's dv_r/dt from the
+                         caller's time scheme, utils/time_scheme; Drivetrain.
+                         motor_force(acceleration=...); ideal Drivetrain = law
+                         unchanged)
   aerodynamics/      ✅  VSM quasi-steady trim + KCU bluff-body drag
                          (kcu_drag.py, single-sourced, on by default in the
                           aerostructural path via is_with_kcu_drag)
@@ -103,6 +120,61 @@ src/awetrim/
                          Full-cycle seeds use it through
                          fit_periodic_cycle_config.py --size
   timeseries/        ✅  PhaseParameterized, ReeloutSimple, ReelinSimple, Cycle
+                         (dynamic march, quasi_steady=False: implicit. A
+                         dynamic node is a quasi-steady node, unknowns [T, u_s,
+                         s_dot, v_r], plus the inertia of the steps ending at
+                         it: the kinematics' s_ddot (in dot_vtau) and
+                         timeder_speed_radial (= dot_vr, its own symbol, named
+                         like the State field) are replaced by the time
+                         scheme's differences, for kite and drum alike.
+                         sim_parameters.time_scheme: euler (left step ds /
+                         s_dot_prev, explicit tether length, backward
+                         differences; first order) or bdf2 (trapezoidal step
+                         and tether length solved in the node, BDF2
+                         differences; second order); default bdf2 dynamic,
+                         euler quasi-steady. The kernels are
+                         utils/time_scheme.py, the one source for the march,
+                         the node solver, the NLP and the winch. The previous
+                         node's values are node-solver parameters
+                         (_n_previous_state / _drivetrain_p: euler 3 dynamic,
+                         2 with only drum inertia; bdf2 8); node 0 has none.
+                         The march is the only simulation (the legacy
+                         integrator path, phase_sim=False, was removed). The NLP takes
+                         the same scheme (opti_phase: node functions take
+                         s_ddot, dv_r/dt after distance_radial, fed by
+                         _rate / _dyn_args; continuity, energy, time and slew
+                         rates over _step; run_full_cycle_opti.py --dynamic).
+                         The march checks every attempt against the steering
+                         box, except a first attempt that continues the
+                         previous node's steering (STEERING_CONTINUATION_MAX):
+                         a tightening path, not a branch jump. A free_speed
+                         NLP bounds the motor force (T - F_f - m a) whenever
+                         the drivetrain is not ideal. A node where every attempt fails is diagnosed by
+                         least squares (_least_squares_node, its Jacobian
+                         built once per solver): a root IPOPT missed is taken,
+                         a fold (singular Jacobian, FOLD_SINGULAR_RATIO) is
+                         reported with the balance that runs out,
+                         phase.stop_reason. The dynamic-vs-quasi-steady
+                         study, compare_dynamic_quasi_steady_winch.py, is
+                         available on request)
+                         (winch drivetrain, PhaseParameterized.
+                         _resolve_drivetrain: sim_parameters.winch_drivetrain
+                         true = system.yaml drums[0] inertia + friction;
+                         winch_inertia_mass (True | kg), winch_friction (True
+                         | (F_c, c_v) | {coulomb, viscous}) and
+                         drivetrain_load_fraction (True | k) one by one,
+                         explicit keys win; default ideal = march and NLP
+                         unchanged. The forward march flies it (with inertia
+                         the node solver takes (v_r prev, 1/dt) as two more
+                         parameters, PhaseParameterized._drivetrain_p; every
+                         caller passes its p through it); the NLP's objective
+                         is then the SHAFT power T v - P_loss - d(m v^2/2),
+                         force_law puts the drum in the law row (backward
+                         difference, as the march), free_speed holds the
+                         motor force T - F_f - m a below max_tether_force
+                         (inertia only). run_full_cycle_opti.py
+                         --winch-drivetrain / --winch-inertia-mass /
+                         --winch-friction)
                          (opti_phase sim_parameters.periodic_wrap: the seam
                          interval node N-1 -> node 0 of a one-period periodic
                          spline gets the same continuity / rate / AoA rows,
@@ -243,7 +315,9 @@ src/awetrim/
   flight_data/       ✅  reader of EKF-AWE output (load_flight -> FlightData); raw-log
                          processing and the EKF itself live in EKF-AWE
   plotting/          ✅  shared plotting helpers — see src/awetrim/plotting/AGENTS.md
-  utils/             ✅  defaults, reference frames, control_metrics
+  utils/             ✅  defaults, reference frames, control_metrics,
+                         time_scheme (the march's / NLP's step and rate
+                         kernels, euler and bdf2, numpy or casadi)
                          (steering-reversal count / pairs outside a deadband,
                          seam pair counted on a periodic history)
   identification/    🟡  ROM aero-coefficient identification: the
@@ -254,7 +328,10 @@ src/awetrim/
                          theta_b / phi_a trim samples of paper App. D), tidy
                          dataset (aero_dataset.py, AS + EKF sources, shared schema),
                          BIC forward-stepwise polynomial fit with k-fold CV
-                         (aero_polynomial.py → rom_config "coeffs"), control
+                         (aero_polynomial.py → rom_config "coeffs"),
+                         turn_law.py (the turn-rate law's b(u_p), c5, c6 from
+                         the sweep's turn-law states: mass-0/1 pairs and
+                         gravity-on states of its anchors), control
                          conventions (controls.py), rigid_body_axes.py
                          (body axes anchored to the wing's CENTRE PANEL,
                          aircraft FRD sense; never inertia eigenvectors).
@@ -334,6 +411,28 @@ angles are taken in the paper's App. D apparent-wind frame, which
 Euler-angle frame with a mirrored yaw sign put the bridle pitch 2-3 deg off
 in sideslip, zero only at the centre-window trims; every flight calibration
 before that date absorbed it);
+`aerodynamics.steering_law` (default `roll_gain`, the above) or `turn_rate`: the
+turn-rate law of Cayon & Schmehl, "Quasi-steady equilibrium and turn-rate law of
+kites" (manuscript in preparation), Eq. 33 / App. A, divided by k2 and written with the ROM's
+weight vector, `w (v_a + b m v_tau) + b F_g,n + c5 F_g,chi + c6 F_g,r = a v_a^2 u_s`
+(w = -a_n / v_tau, `Kite.turn_rate_residual_for`), params `gain_turn_steering`
+(+ `_depower`, `_squared`, roll_gain's form; a = -k1/k2), `turn_inertia_coefficient`
+(+ `turn_inertia_coefficient_depower`; b = k3/k2 = k4/k2 [1/kg]),
+`turn_gravity_course_coefficient` / `turn_gravity_radial_coefficient` (c5, c6 = k5/k2,
+k6/k2) and `turn_density_reference` (b, c5, c6 scale with rho_ref / rho; k2 carries rho).
+The lift's total roll is then an unknown, `angle_roll` (`SystemModel.angle_roll`, in
+`default_unknown_vars`; State.angle_roll), closed by the lateral force row, and
+`force_residual` has a FOURTH row (the turn law); the phase forward march, the reel-out
+NLP (`opti_vars["angle_roll"]`) and the flight validator carry it; the Williams tether
+is not wired for it (raises). The sweep alone cannot separate a from b (v_tau / v_a is
+fixed per tape at the centre): b(u_p), c5, c6 are measured on the sweep's turn-law
+states (`identification.yaml` `sweep.turn_law`: anchors re-solved tetherless at mass
+scale 0 / 1 and with gravity off-centre; `run_identification_sweep.py --turn-law`, into
+`sweep/turn_law/trims.csv`; `awetrim.identification.turn_law`), then
+`identify_rom_aerostructural.py --steering-law turn_rate` fits a with them
+(`fit.turn_law.inertia_degree`; `--steering-only BASE_ROM` refits only the steering law);
+`check_window_position.py` checks the laws off-centre;
+`docs/identification/` Sect. "The turn-rate law";
 `aerodynamics.reference_area` [m2] states the area the coefficients are
 normalised by and overrides the system wing area (the LEI-V3 ROMs both use
 19.75 m2, the EKF area; system.yaml's projected 17.2119 m2 is geometry, not a
@@ -357,7 +456,7 @@ every node and then REPLACES the generic alpha box (no lower bound, no other
 upper bound). Quasi-steady roots are selected by being BELOW THE STALL (alpha <
 angle_of_attack_stall): the phase seed march prefers pre-stall roots
 (`seed_reject_post_stall`), and among those one inside the optimizer's steering
-box at node 0 and on retries (`seed_prefer_steering_box`: the node residual also
+box on every attempt (`seed_prefer_steering_box`: the node residual also
 has a low-lift root, tension at the winch minimum, needing several times the
 steering), and keeps simulating on the closest post-stall one
 when none exists; `setup_qs_solver` exposes `_qs_alpha_function` for other
@@ -424,6 +523,10 @@ Every governing equation should trace back to one of:
   — the shooting of `system/williams_tether.py` (`WilliamsTether`); its load placement
   (at each segment's centre, half to each end node, second order) is Nguyen & Oland
   (2026) *Aerospace* 13, 943, App. A, https://doi.org/10.3390/aerospace13100943
+- **Winch drivetrain (inertia, Coulomb + viscous friction):** Fechner (2016) PhD thesis,
+  TU Delft, Table 4.1 (the GS1 values, as V3Kite.jl / KiteUtils carry them); the motor-
+  force law and the tether's inertia at the kite (straight lumped tether) are derived in
+  `docs/winch/winch_model.pdf`
 
 ---
 
@@ -511,7 +614,7 @@ Notes
 
 Each kite under `data/<kite_name>/` should include at minimum the following files and folders so scripts and tools can locate inputs automatically:
 
-- `system.yaml` — hardware and system-level configuration (kite mass, KCU, tether properties, winch, mass/inertia). This is the primary source for `SystemModel` properties. The `SystemModel`'s point-mass wing is `wing.structure.mass` (canopy) PLUS `bridle.structure.mass` (since 2026-10-29; before, the bridle was missing from the trim); the geometry-derived wing/bridle fields are re-derived from `structure.yml` by `utils.system_yml_sync` (the flown files keep their as-flown wing mass and the EKF reference area 19.75 m2). **KCU mass is the single source of truth here** (`components.kite.control_system.structure.mass`, plus the separate `mass` of an optional onboard turbine, awesIO `control_system.turbine.structure` {`rotor_diameter`, `mass`, `position_KA`}); both the structural KCU node mass and the QSM `mass_kcu` are resolved from it through `utils.system_config.get_kcu_mass`, which adds the two -- never read `structure.mass` directly. **The winch drive envelope is the single source of truth here too** (`components.ground_station.drums[0]`: `min_tether_speed` / `max_tether_speed` / `max_winch_acceleration` / `max_tether_force`); `factory._extract_hardware_limits` maps it onto the optimizer's `speed_radial` bounds and the `winch_acceleration` slew limit, so cycle configs must not restate it.
+- `system.yaml` — hardware and system-level configuration (kite mass, KCU, tether properties, winch, mass/inertia). This is the primary source for `SystemModel` properties. The `SystemModel`'s point-mass wing is `wing.structure.mass` (canopy) PLUS `bridle.structure.mass` (since 2026-10-29; before, the bridle was missing from the trim); the geometry-derived wing/bridle fields are re-derived from `structure.yml` by `utils.system_yml_sync` (the flown files keep their as-flown wing mass and the EKF reference area 19.75 m2). **KCU mass is the single source of truth here** (`components.kite.control_system.structure.mass`, plus the separate `mass` of an optional onboard turbine, awesIO `control_system.turbine.structure` {`rotor_diameter`, `mass`, `position_KA`}); both the structural KCU node mass and the QSM `mass_kcu` are resolved from it through `utils.system_config.get_kcu_mass`, which adds the two -- never read `structure.mass` directly. **The winch drive envelope is the single source of truth here too** (`components.ground_station.drums[0]`: `min_tether_speed` / `max_tether_speed` / `max_winch_acceleration` / `max_tether_force`, and the tether-referred drivetrain `inertia_equivalent_mass` [kg] / `friction_coulomb` [N] / `friction_viscous` [N s/m] / `friction_load_fraction` [-] -> `limits["winch_inertia_mass"]` / `["winch_friction"]` / `["drivetrain_load_fraction"]`, flown only when sim_parameters ask; the LEI-V3 values are V3Kite.jl's GS1 drivetrain, `sim_settings_reelout.yaml`; awesIO's drum object does not define these keys yet, so loading warns); `factory._extract_hardware_limits` maps it onto the optimizer's `speed_radial` bounds and the `winch_acceleration` slew limit, so cycle configs must not restate it.
 - `structure.yml` — THE structural geometry (`aerostructural.case.DEFAULT_STRUC_GEOMETRY_FILENAME`), an awesIO structure document (`structure_schema.yml`, awesIO 0.1.0) read with `aerostructural.coupled.awesio_structure.load_structure`: the FULLY RESOLVED model (every node, incl. strut padding and canopy chord nodes), tubes on one-point bodies (Breukels law, pressure in Pa), canopy faces, the full bridle as segments (a pulley = two arm segments, each with its own `rest_length`; the rope is their sum) and masses by awesIO's rule (lines and fabric derived by the reader, pulleys and tubes as extra mass). Billow full reads it; the wireframe reduces it on the fly (`wireframe.reduce_fem`); the step-1 aerodynamics take the bridle and the mass/inertia from it. AWETrim's own columns on `segments`: `line` (the bridle line; `depower_tape` / `steering_tape` are actuated), `linktype`, `tape_width` (flat-tape drag width [m]; `diameter` stays the AREA-equivalent one used for mass and EA, `awetrim.aerodynamics.line_drag`); the top-level `awetrim` block names `kcu_point` and `pulley_mass`. Does **not** carry the KCU mass (`system.yaml` is its single source; `Structure.resolved(kcu_mass=...)`). A deformed results folder holds a snapshot under the same name, a WIREFRAME document (wing members as segments with AWETrim's `stiffness` / `damping` / `mass` columns); `case.find_struc_geometry` finds it. Until 2026-10-29 the geometry was `struc_geometry_FEM_full.yaml` and snapshots PSM-format `struc_geometry.yaml`: their reader and converter were removed after v1.0.0 (convert old files with v1.0.0: `python -m awetrim.aerostructural.coupled.awesio_structure OLD NEW`). Rest-length edits change a segment's `rest_length`; rewrite through `Structure.write` to refresh `metadata.connectivity_sha`.
 - `aero_geometry.yaml` — VSM aerodynamic geometry describing wing sections, paneling, and references to airfoil polars; may reference a subfolder with airfoil `.dat` or polar CSVs.
 - `as_config.yaml` — HOW the aerostructural problem is modelled and solved, one block per subsystem: `aerodynamics`, `structure` (`wireframe`, `billow`), `tether`, `coupling` (`trim`, `loop`, `load_transfer`), each with its model choices first and its solver settings after. Never the operating point (flight state, wind, atmosphere, tape command: the script's `Case`), output options, or the KCU point (moment reference, fixed node: `structure.yml`'s). `identification.yaml` overrides either block for its purpose (`sweep.overrides`; its flight state is `sweep.case`).

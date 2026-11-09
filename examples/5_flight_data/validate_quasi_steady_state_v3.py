@@ -314,6 +314,12 @@ for cfg, label in zip(aero_cfgs, aero_labels):
             "timeder_angle_course" if ARGS.steering == "measured" else "input_steering",
             "speed_tangential",
         ]
+    # steering_law turn_rate: the lift's roll is an unknown too (SystemModel)
+    turn_rate_law = kite_model.has_turn_rate_law
+    if turn_rate_law and label == "Williams":
+        raise NotImplementedError("steering_law turn_rate with the Williams tether is not wired yet")
+    if turn_rate_law:
+        unknown_vars.append("angle_roll")
 
     solver_options = {
         "ipopt": {
@@ -326,6 +332,8 @@ for cfg, label in zip(aero_cfgs, aero_labels):
 
     window_size = 50
     qs_guess = [1e5, 0, 60]
+    if turn_rate_law:
+        qs_guess.append(0.0)
 
     if label == "Williams":
         (qs_solver, williams_output_fun, williams_alpha_fun,

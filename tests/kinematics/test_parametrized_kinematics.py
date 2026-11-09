@@ -7,6 +7,7 @@ Consolidated from the three former files:
 """
 
 import casadi as ca
+import pytest
 
 from awetrim.kinematics.Kinematics import ParametrizedKinematics
 
@@ -120,7 +121,6 @@ def test_all_kinematics_equations():
     vk_manual = ca.norm_2(dR_ds_manual) * s_dot
     vtau_manual = ca.sqrt(vk_manual**2 - vr**2)
 
-    dr_ds2_manual = ca.gradient(dr_ds, s)
     dbeta_ds2_manual = (
         ca.gradient(dbeta_ds, s) + ca.gradient(dbeta_ds, r) * vr / s_dot
     )
@@ -138,7 +138,6 @@ def test_all_kinematics_equations():
             - dphi_ds**2 * dbeta_ds * ca.sin(beta_expr) * ca.cos(beta_expr)
         )
     )
-    dot_vr_manual = dr_ds2_manual * s_dot**2 + s_ddot * dr_ds
     dot_vtau_manual = sqrt_A_manual * (
         s_dot**2 * dr_ds + s_ddot * r
     ) + s_dot * r * dot_A_manual / (2 * sqrt_A_manual)
@@ -152,11 +151,9 @@ def test_all_kinematics_equations():
         "dR_ds":     (pk.dR_ds,     dR_ds_manual),
         "vk":        (pk.vk,        vk_manual),
         "vtau":      (pk.vtau,      vtau_manual),
-        "dr_ds2":    (pk.dr_ds2,    dr_ds2_manual),
         "dbeta_ds2": (pk.dbeta_ds2, dbeta_ds2_manual),
         "sqrt_A":    (pk.sqrt_A,    sqrt_A_manual),
         "dot_A":     (pk.dot_A,     dot_A_manual),
-        "dot_vr":    (pk.dot_vr,    dot_vr_manual),
         "dot_vtau":  (pk.dot_vtau,  dot_vtau_manual),
         "chi":       (pk.chi,       chi_manual),
         "dot_chi":   (pk.dot_chi,   dot_chi_manual),
@@ -265,3 +262,22 @@ def test_curvature_numerator_matches_kappa_times_dsigma_cubed():
     for vals in (_NUMERIC_VALS, (1.3, 120.0, -0.5, 0.7, 0.0), (2.0, 300.0, 2.0, 0.05, 0.1)):
         diff, kappa = f(*vals)
         assert abs(float(diff)) < 1e-9 * max(1.0, abs(float(kappa)))
+
+
+def test_dot_vr_is_the_phase_symbol():
+    """The reel acceleration is the phase's own ``timeder_speed_radial``
+    symbol, set by the time scheme: it cannot follow from the path, since v_r
+    is a state (the former d^2r/ds^2 term was identically zero)."""
+    s, r, vr, s_dot, s_ddot = (ca.MX.sym(n) for n in ("s", "r", "vr", "s_dot", "s_ddot"))
+    phase = DummyPhase(s, DummyKiteModel(r, vr), s_dot, s_ddot)
+    phase.timeder_speed_radial = ca.MX.sym("timeder_speed_radial")
+    pk = ParametrizedKinematics(DummyPattern(), phase)
+    assert pk.dot_vr is phase.timeder_speed_radial
+
+
+def test_dot_vr_without_the_phase_symbol_raises():
+    """The reel acceleration does not follow from the path; a phase without
+    its own symbol cannot ask the kinematics for it."""
+    pk, _ = _make_pk()
+    with pytest.raises(AttributeError, match="timeder_speed_radial"):
+        pk.dot_vr

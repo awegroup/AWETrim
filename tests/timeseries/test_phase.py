@@ -213,3 +213,14 @@ def test_relative_reg_weight_floors_a_smooth_start():
     opti.set_initial(x, [1.0, 1.0])
     weight = relative_reg_weight(opti, -x[0], ca.sumsqr(ca.diff(x)), 0.1)
     assert np.isfinite(weight) and weight > 0
+
+
+def test_the_integrator_path_is_gone():
+    """phase_sim=False ran the legacy integrator path, removed: the forward
+    march is the only simulation, and asking for the other one says so."""
+    import pytest
+
+    from awetrim.timeseries.phase import Phase
+
+    with pytest.raises(ValueError, match="integrator path"):
+        Phase._run_parametrized_phase(object(), "a", {}, phase_sym=False)

@@ -20,6 +20,156 @@
   (`periodic_wrap`) cycle's azimuth and elevation one sample fewer than its other
   series (the seam node was appended before the angles were evaluated).
 
+### ROM: the turn-rate law as a steering law
+
+- **`aerodynamics.steering_law: turn_rate`** puts the turn-rate law of Cayon & Schmehl,
+  *Quasi-steady equilibrium and turn-rate law of kites* (in preparation), Eq. (33) with
+  App. A, in the ROM: the steering sets the turn rate through the yaw-moment balance,
+  `w (v_a + b m v_tau) + b F_g,n + c5 F_g,chi + c6 F_g,r = a v_a^2 u_s`, and the lift's
+  roll is an unknown (`angle_roll`) closed by the lateral force balance. The default
+  stays `roll_gain`; its NLPs are unchanged.
+- **Why:** in the coupled model the steered kite without mass rolls by exactly zero
+  and turns at the same rate per unit `v_a` everywhere in the wind window; the roll the
+  roll gain is fitted on is the centripetal tilt, so a roll-gain ROM turns as
+  1 / (m v_tau) and carries the whole weight into the turn. The turn law predicts
+  off-centre coupled states within 1 % (roll gain: up to 13 %), half-mass within 0.5 %,
+  gravity-on states within 0.2-0.6 % (-4 % at course 270 deg), and on the 2019 flight
+  (cycles 60-67) correlates 0.961 against 0.906, with a gravity coefficient of 0.72
+  against 0.93 (flight 0.49) and reel-out tension / speed errors of +6 / +9 % against
+  +11 / +12 %. Its gain is ~20 % high at the flight's turn peaks.
+- **The sweep measures the law's b(u_p), c5, c6 itself** (`sweep.turn_law` in
+  `identification.yaml`, `run_identification_sweep.py --turn-law`, after the chains on a
+  full run, into `sweep/turn_law/`; `awetrim.identification.turn_law`), so they always
+  belong to the shapes a is fitted on; `identify_rom_aerostructural.py --steering-law
+  turn_rate` reads them (`fit.turn_law.inertia_degree`), `--steering-only BASE_ROM`;
+  `check_window_position.py` (window position, mass scale, `--gravity`) checks the laws;
+  `downloop_pattern.py --server-seed / --seed-config /
+  --rom-file / --results-dir`; the flight validator carries the roll unknown.
+
+### Removed: the legacy integrator paths
+
+- `SystemModel.integrator` / `establish_ode_function` / `establish_algebraic` /
+  `algebraic_function`, `PhaseParameterized.run_simulation` / `integrator` (the CasADi
+  integrator path, `Phase.run_simulation(phase_sim=False)`) and
+  `Kite.acceleration_external` / `acceleration_inertial` / `acceleration_total`. They
+  were unused and broken on `develop` (`acceleration_total` lived on `Kite`, which has no
+  `force_external`; the integrator path gave a 4-element parameter vector as its 2-state
+  initial value). The forward march (`run_simulation_phase`, `phase_sim=True`) is the
+  simulation, quasi-steady and dynamic; `phase_sim=False` now raises.
+
+### Tether: inertia of the lumped tether (on by default)
+
+- **The lumped tether carries its inertia** (`inertia: false` in a ROM's or
+  as_config's `tether` block, or `run_full_cycle_opti.py --no-tether-inertia`, drops
+  it): the inertial load of a straight, inextensible tether of mass
+  `m_t = rho A r` to the force at the kite, in the course frame:
+  `-(m_t/3)(v_tau_dot + 2 v_tau v_r / r)` tangentially, `-(m_t/3) v_tau w_z` in the
+  turn and `-m_t (v_r_dot - v_tau^2 / (2 r))` along the tether
+  (`Tether.force_inertia_tether_at_kite_for`). Across itself the tether acts as `m_t/3`
+  at the kite, along itself as `m_t`. Quasi-steady, its centrifugal, Coriolis and turn
+  terms remain; the dynamic march adds the accelerations. On by default, so
+  quasi-steady results shift by about 0.1-0.2 % (LEI-V3 at 9 m/s); not available on the
+  Williams tether.
+- **The aerostructural (VSM) quasi-steady trim carries it too** with the lumped tether
+  (`tether_model="rigid_lumped"`), following the tether's `inertia` switch, so both
+  models load the kite with the same tether. Identification sweeps re-run from now
+  on include it (the trimmed angle of attack moves by ~0.005 deg on the LEI-V3
+  single-state case); the stored sweep and ROM are unchanged until then.
+- The dynamic-vs-quasi-steady study (`compare_dynamic_quasi_steady_winch.py`, available
+  on request) now runs with and without it, with and without winch friction.
+
+### Dynamic march: implicit Euler, with the reel acceleration
+
+- **The dynamic forward march (`quasi_steady=False`) is now implicit (backward) Euler.**
+  A dynamic node solves the quasi-steady node's unknowns `[T, u_s, s_dot, v_r]` with
+  the inertia of the step ending at it: `s_ddot = (s_dot - s_dot_prev) / dt` and
+  `dv_r/dt = (v_r - v_r_prev) / dt`. The old explicit step (`s_ddot` solved, `s_dot`
+  stepped forward) oscillated with a growing amplitude at a cycle's node spacing
+  (dt about 0.4 s, longer than the kite's speed response) and broke the march; the
+  implicit one is stable at any spacing and costs what a quasi-steady node costs.
+- **The kite's radial acceleration was zero in dynamic runs**: the kinematics'
+  `dot_vr` keeps only `s_ddot * v_r / s_dot` (`dr_ds2` is identically zero). The
+  march now uses `dv_r/dt`, the same for the kite and the winch drum.
+- **Second-order march: `sim_parameters.time_scheme: bdf2`**, the default for dynamic
+  phases (quasi-steady keeps `euler`); the NLP uses the same scheme. The
+  step is `h = 2 ds / (s_dot_prev + s_dot)` and the tether length
+  `r = r_prev + h (v_r_prev + v_r) / 2`, both solved in the node, and the dynamic
+  march's (and the drum's) accelerations are variable-step BDF2 differences, which damp
+  the stiff drum mode as backward Euler does. On a 9 m/s LEI-V3 eight the dynamic
+  march's power error falls from +2.9 % (euler) to -0.3 % at 25 nodes and its tension
+  error from 148 to 44 N at 100 nodes, for 5-10 % more time; the euler "gain" of the
+  dynamic model over the quasi-steady one (+3 % at 25 nodes) was numerical, the
+  converged difference is -0.15 %.
+- **Steering-box continuation.** A first attempt beyond the box is kept when it
+  continues the previous node's steering (within 0.1): a path that tightens slowly
+  is not thrown onto another branch by the every-attempt check.
+- **The free-speed motor-force limit holds with friction alone** (on reel-in friction
+  adds to the motor force); before, the row came only with drum inertia.
+- **One drum-acceleration input:** `Drivetrain.motor_force(tension, v_r,
+  acceleration=...)` and `Winch.radial_equation(..., speed_radial_rate=...)`; the
+  `speed_radial_prev` / `inv_time_step` pair is gone. `ParametrizedKinematics.dot_vr` raises for a phase
+  without the `timeder_speed_radial` symbol (the reel acceleration does not follow
+  from the path). `Drivetrain.loss_power` calls
+  `drivetrain_loss_power`.
+- The rigid warm start serves dynamic phases too (same node layout); the unused
+  `_quasi_steady_start_state` is removed. `run_full_cycle_opti.py`'s radial-closure
+  check uses the run's time scheme.
+- **The reel acceleration is its own kinematics symbol** (`timeder_speed_radial`,
+  `ParametrizedKinematics.dot_vr`), set by the time scheme in the march and the NLP
+  instead of overriding the shared kite model, so quantities that depend on it are
+  derived from the recorded states after a dynamic march. The time differences live in
+  one module, `awetrim.utils.time_scheme`. The integrator path
+  (`run_simulation`, `phase_sim=False`) refuses a dynamic phase.
+- **The cycle NLP can be dynamic too** (`quasi_steady=False`, `run_full_cycle_opti.py
+  --dynamic`): the node functions take `s_ddot` and `dv_r/dt` as two more inputs, fed
+  with the same backward differences as the march (node 0's predecessor is node N-1
+  on a periodic wrap). No rows or decisions are added; quasi-steady, the NLP is
+  unchanged. The tension bound then holds with the kite's and the drum's inertia in.
+- **The march tells a fold from a solver failure.** When every attempt at a node
+  fails, a least-squares solve from the guess either finds a root IPOPT missed (taken
+  only if it passes the same steering-box and stall rules as a first attempt; a root
+  on another branch stops the march, `stop_reason` kind `other_branch`) or stalls where the Jacobian goes singular: a fold,
+  reported with the balance that runs out ("the kite cannot follow the path here")
+  and kept in `phase.stop_reason`.
+- **Dynamic runs reject post-stall roots again.** The node's angle of attack still
+  held `s_ddot`, so its function could not be built and the march's stall check was
+  silently off in dynamic runs; the implicit `s_ddot` now goes into it as into the
+  force balance, and the march warns whenever that function cannot be built.
+- **The march checks every node attempt against the steering box**, not only node 0
+  and retries: from the previous node's values a first attempt can converge on the
+  other (high-steering, low-lift) root, which the dynamic 9 m/s cycle did at its
+  reel-out transition (u_s 0.85, the physical root at -0.10). Applies to the
+  quasi-steady march too.
+- **Node 0 is the quasi-steady solve**, so a dynamic run no longer starts from a
+  separate quasi-steady start state, which on a cycle starting in reel-in landed on
+  another root.
+- `TimeSeries.to_dataframe` derives the `State` fields the march leaves unset
+  (`speed_tangential`, the angles) instead of returning them all-NaN.
+- A study comparing the full dynamic model with the quasi-steady one, drivetrain
+  friction in both (`compare_dynamic_quasi_steady_winch.py`, available on request). A dynamic kite with the drum's inertia cannot follow an eight
+  sized at the quasi-steady turn limit (margin 1.2; it flies at 1.6), and on the
+  9 m/s cycle optimum it jumps to the low-lift root at the reel-out transition,
+  which the march still accepts.
+
+### Winch: drivetrain inertia and friction, simulated and optimised
+
+- **`awetrim.system.winch.Drivetrain`**: the drum between the tether and the motor,
+  tether-referred: inertia `m = J (n / r_drum)^2` and friction
+  `F_f = (F_c + k T) tanh(v / eps) + c_v v`. The winch force law now sets the MOTOR
+  force, as a torque-controlled machine does, so the kite feels
+  `T = F_law(v) + F_f(v) + m dv/dt`. The ideal drivetrain (the default) leaves every
+  run unchanged.
+- **The forward simulation flies it**, without optimising: an implicit Euler step of the
+  drum in each node's law row, the drum's previous state passed to the node solver.
+- **The cycle NLP uses the same model.** Its objective is the shaft power
+  `T v - P_loss - d(m v^2 / 2)`; `force_law` gets the drum in its law row, `free_speed`
+  holds the motor force below `max_tether_force`. Drivetrain friction in the objective
+  comes from `feat/winch-drivetrain-losses`.
+- **LEI-V3 values**: V3Kite.jl's GS1 drivetrain (`sim_settings_reelout.yaml`):
+  0.204 kg m2 motor side, i.e. 300.7 kg at the tether, and 122 N + 30.6 N s/m.
+  Switched on by `sim_parameters.winch_drivetrain` (or `run_full_cycle_opti.py
+  --winch-drivetrain`), or part by part.
+
 ### Tether: second-order load placement in `WilliamsTether`
 
 - **Each segment's load now acts at its centre and goes half to each end node**

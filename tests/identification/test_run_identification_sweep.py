@@ -193,3 +193,19 @@ def test_steering_chains_can_run_past_the_stall_stop_of_the_depower_chains(sweep
 
     del spec["steering"]["max_stalled_fraction"]
     assert sweep.build_chains(spec, 1.9)[1].max_stalled_fraction == 0.2
+
+
+def test_turn_law_jobs_pair_every_anchor_and_add_gravity_states(sweep):
+    jobs = sweep.turn_law_jobs({
+        "inertia_anchors": ["a/03", "g/07"],
+        "gravity_anchors": ["g/07"],
+        "gravity_states": [[30, 0, 0], [60, 0, 90]],
+    })
+    calm = [(base, scale) for base, _, scale, gravity in jobs if not gravity]
+    assert calm == [("a/03", 1.0), ("a/03", 0.0), ("g/07", 1.0), ("g/07", 0.0)]
+    windy = [(base, state, scale) for base, state, scale, gravity in jobs if gravity]
+    assert windy == [("g/07", (30.0, 0.0, 0.0), 1.0), ("g/07", (60.0, 0.0, 90.0), 1.0)]
+
+
+def test_window_wind_keeps_the_component_along_the_tether(sweep):
+    assert sweep.window_wind(5.0, 60.0, 0.0) * np.cos(np.radians(60.0)) == pytest.approx(5.0)
