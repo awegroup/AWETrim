@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Aerostructural: the stall mask reads the panel polars
+
+- **`check_panel_stall` compares panel i with PANEL i's polar** (VSM's
+  `panel.panel_polar_data`) instead of section i's: a wing has one section more
+  than panels, so the logged `STALL` line and `tracking/stall_mask` were shifted
+  by half a panel and asymmetric on a symmetric wing (LEI-V3 PSM example: tips
+  logged as [133, 134], are [0, 1, 133, 134]). It now raises when the polar count
+  is not the panel count. Diagnostic only; the trims' attached/stalled branch
+  choice already used the panel polars.
+
 ### ROM: the turn-rate law as a steering law
 
 - **`aerodynamics.steering_law: turn_rate`** puts the turn-rate law of Cayon & Schmehl,

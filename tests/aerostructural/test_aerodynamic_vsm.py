@@ -364,3 +364,47 @@ def test_bridle_line_specs_index_the_body_line_system(relative):
         np.testing.assert_array_equal(got[0], want[0])
         np.testing.assert_array_equal(got[1], want[1])
         assert got[2] == want[2]
+
+
+def _polar_with_onset(onset_deg: float) -> np.ndarray:
+    """A [alpha, Cl, Cd, Cm] table whose first Cl peak is at ``onset_deg``."""
+    alpha = np.deg2rad(np.arange(-10.0, 31.0, 0.5))
+    onset = np.deg2rad(onset_deg)
+    cl = np.where(alpha <= onset, 2 * np.pi * alpha, 2 * np.pi * onset - 2.0 * (alpha - onset))
+    return np.column_stack([alpha, cl, np.full_like(alpha, 0.01), np.zeros_like(alpha)])
+
+
+def test_stall_mask_of_a_symmetric_wing_is_symmetric():
+    """Panel i is compared with PANEL i's polar: a mirror-symmetric alpha on
+    mirror-symmetric panel polars flags both tips alike."""
+
+    class Panel:
+        def __init__(self, onset_deg):
+            self.panel_polar_data = _polar_with_onset(onset_deg)
+
+    class Body:
+        panels = [Panel(o) for o in (12.5, 11.5, 12.0, 11.5, 12.5)]
+
+    alpha = np.deg2rad([13.8, 11.7, 5.0, 11.7, 13.8])
+    polars = aerodynamic_vsm._panel_polars(Body())
+    mask = aerodynamic_vsm.check_panel_stall(alpha, polars)
+    assert mask.tolist() == [True, True, False, True, True]
+    np.testing.assert_array_equal(mask, mask[::-1])
+
+
+def test_stall_mask_refuses_section_polars():
+    """Section polars (one more than panels) are not the panels' polars."""
+    sections = [_polar_with_onset(o) for o in (14.0, 12.0, 12.0, 14.0)]
+    with pytest.raises(ValueError, match="one polar per panel"):
+        aerodynamic_vsm.check_panel_stall(np.zeros(3), sections)
+
+
+def test_panel_polars_missing_on_a_body_without_tables():
+    class Panel:
+        panel_polar_data = None
+
+    class Body:
+        panels = [Panel(), Panel()]
+
+    assert aerodynamic_vsm._panel_polars(Body()) is None
+    assert aerodynamic_vsm._panel_polars(object()) is None
