@@ -223,6 +223,15 @@ def _alpha_stall_from_polar(polar_data: np.ndarray) -> float:
     return math.inf
 
 
+def _panel_polars(body_aero) -> list | None:
+    """VSM's per-panel polar tables, or ``None`` when a panel has none."""
+    panels = getattr(body_aero, "panels", None) or ()
+    polars = [getattr(panel, "panel_polar_data", None) for panel in panels]
+    if not polars or any(polar is None for polar in polars):
+        return None
+    return polars
+
+
 def check_panel_stall(
     alpha_at_ac: np.ndarray,
     panel_polar_data: list,
@@ -231,18 +240,28 @@ def check_panel_stall(
 
     Args:
         alpha_at_ac: Local angle of attack per panel [rad], shape (n_panels,).
-        panel_polar_data: List of polar arrays (one per panel), each shaped
-            (N, 4) with columns [alpha_rad, Cl, Cd, Cm].
+        panel_polar_data: List of polar arrays, ONE PER PANEL (VSM's
+            ``panel.panel_polar_data``), each shaped (N, 4) with columns
+            [alpha_rad, Cl, Cd, Cm]. Not the section polars: a wing has one
+            section more than panels, and panel i lies between sections i and
+            i+1, so pairing panel i with section i shifts the mask by half a
+            panel (asymmetric on a symmetric wing).
 
     Returns:
         stall_mask: Boolean array of shape (n_panels,); True where panel stalls.
+
+    Raises:
+        ValueError: when the number of polars is not the number of panels.
     """
     alpha = np.ravel(alpha_at_ac)
     n = len(alpha)
+    if len(panel_polar_data) != n:
+        raise ValueError(
+            f"check_panel_stall needs one polar per panel: {len(panel_polar_data)} "
+            f"polars for {n} panels (section polars have one more)"
+        )
     stall_mask = np.zeros(n, dtype=bool)
     for i, polar in enumerate(panel_polar_data):
-        if i >= n:
-            break
         alpha_stall = _alpha_stall_from_polar(polar)
         stall_mask[i] = alpha[i] > alpha_stall
     return stall_mask
@@ -1005,10 +1024,12 @@ def run_vsm_package(
     if is_with_plot:
         plot_vsm_geometry(body_aero)
 
-    # Stall detection: compare local AoA against each panel's polar Cl-peak angle.
+    # Stall detection: compare local AoA against each panel's polar Cl-peak
+    # angle -- the PANEL polars, not initial_polar_data (one per section).
     alpha_at_ac = results.get("alpha_at_ac")
-    if alpha_at_ac is not None and initial_polar_data:
-        stall_mask = check_panel_stall(alpha_at_ac, initial_polar_data)
+    panel_polars = _panel_polars(body_aero)
+    if alpha_at_ac is not None and initial_polar_data and panel_polars is not None:
+        stall_mask = check_panel_stall(alpha_at_ac, panel_polars)
         results["stall_mask"] = stall_mask
         n_stalled = int(stall_mask.sum())
         if n_stalled > 0:

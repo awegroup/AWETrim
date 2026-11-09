@@ -47,12 +47,10 @@ AZIMUTH_DEG = 0.0  # phi, tether away from the downwind direction
 COURSE_DEG = 90.0  # chi
 TETHER_LENGTH_M = 300.0  # r
 REEL_OUT_SPEED_MS = 1.5  # v_r, positive = reeling out
-# At the reference height of the kite's wind model. 6 m/s puts the LEI-V3 at
-# an apparent wind of about 22 m/s and a tether force above 4000 N at the
-# default state: inside the load range the Billow tube law is calibrated on,
-# and about twice the load below which the centre-bay trailing edge of the
-# Billow canopy loses its symmetric equilibrium (an unsteered case then
-# converges asymmetric). Keep it equal in both scripts to compare.
+# At the reference height of the kite's wind model. 6 m/s puts the LEI-V3
+# wireframe at an apparent wind of about 20 m/s and a tether force of about
+# 3000 N at the default state; why the Billow run needs this load is stated
+# in run_simulation_BILLOW.py. Keep it equal in both scripts to compare.
 WIND_SPEED_MS = 6.0
 WITH_GRAVITY = False
 

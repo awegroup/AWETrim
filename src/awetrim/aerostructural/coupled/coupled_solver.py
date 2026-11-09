@@ -314,6 +314,19 @@ def _rotation_from_euler_deg(angle_deg):
     return np.asarray(basis, dtype=float).T
 
 
+def _trim_apparent_wind(results_aero, vel_app) -> np.ndarray:
+    """The trim's apparent wind (VSM frame), ``vel_app`` when it has none.
+
+    ``va_vel_world`` is the apparent wind in the VSM frame despite its name
+    (see :func:`_bridle_line_drag`); ``vel_app`` is the freestream frozen at
+    ``initialize``, the fallback for a result that lacks it.
+    """
+    va = np.asarray(results_aero.get("va_vel_world", vel_app), dtype=float)
+    if va.shape != (3,) or not np.all(np.isfinite(va)) or np.linalg.norm(va) <= 0.0:
+        va = np.asarray(vel_app, dtype=float)
+    return va
+
+
 def _bridle_line_drag(
     config, struc_nodes, bridle_connectivity_arr, bridle_diameter_arr,
     results_aero, vel_app,
@@ -349,9 +362,7 @@ def _bridle_line_drag(
     """
     if not config["is_with_aero_bridle"]:
         return np.zeros((len(struc_nodes), 3))
-    va = np.asarray(results_aero.get("va_vel_world", vel_app), dtype=float)
-    if va.shape != (3,) or not np.all(np.isfinite(va)) or np.linalg.norm(va) <= 0.0:
-        va = np.asarray(vel_app, dtype=float)
+    va = _trim_apparent_wind(results_aero, vel_app)
     return aerodynamic_bridle_line_drag.main(
         struc_nodes,
         bridle_connectivity_arr,
@@ -1458,7 +1469,11 @@ def main(
     ######################################################################
     # print out the geometric angle of attack of the mid panel
     mid_idx = len(body_aero.panels) // 2
-    angle = aerodynamic_vsm.mid_span_chord_angle_of_attack(body_aero, vel_app)
+    # At the trim's apparent wind, not vel_app (the freestream frozen at
+    # initialize), as the wireframe driver prints it.
+    angle = aerodynamic_vsm.mid_span_chord_angle_of_attack(
+        body_aero, _trim_apparent_wind(results_aero, vel_app)
+    )
 
     print(f"alpha = {np.degrees(angle):.2f}° (va vs mid-span chord)")
     print(
