@@ -366,6 +366,15 @@ class PhaseParameterized(TimeSeries):
 
         if km_copy.is_tether_rigid:
             unknown_vars[0] = "tension_tether_ground"
+        # steering_law turn_rate: the lift's roll is a node unknown too (the
+        # last entry of z, after speed_radial), closed by the lateral balance
+        turn_rate_law = km_copy.has_turn_rate_law
+        if turn_rate_law and use_williams:
+            raise NotImplementedError(
+                "steering_law turn_rate with the Williams tether is not wired yet"
+            )
+        if turn_rate_law:
+            unknown_vars.append("angle_roll")
 
         # grid and solver
         N = int(self.pattern_config["sim_parameters"]["n_points"])
@@ -438,13 +447,15 @@ class PhaseParameterized(TimeSeries):
         s_dot_guess = state_obj.s_dot if state_obj.s_dot is not None else 2.0
         if use_williams:
             s_dot_guess = max(s_dot_guess, 0.1)
-        # z = [tension_tether_ground, input_steering, s_dot, speed_radial]
+        # z = [tension_tether_ground, input_steering, s_dot, speed_radial(, angle_roll)]
         z = ca.vertcat(
             state_obj.tension_tether_ground,
             state_obj.input_steering,
             s_dot_guess,
             state_obj.speed_radial,
         )
+        if turn_rate_law:
+            z = ca.vertcat(z, state_obj.angle_roll or 0.0)
         # x = [s, distance_radial, input_depower, wind_speed_ref]
         x = ca.vertcat(
             s_grid[0],
@@ -722,8 +733,12 @@ class PhaseParameterized(TimeSeries):
                     "solver_retry_speed_radial", speed_radial, offsets=(1.5, -1.5)
                 )
 
+                roll_seed = (
+                    [_finite_or(z_arr[4], 0.0)] if turn_rate_law and z_arr.size > 4 else []
+                )
+
                 def _assemble(first_var, rate, radial):
-                    return ca.vertcat(float(first_var), steering, rate, radial)
+                    return ca.vertcat(float(first_var), steering, rate, radial, *roll_seed)
 
                 guesses += _tiered_seeds(
                     first_var_candidates,
@@ -1179,6 +1194,7 @@ class PhaseParameterized(TimeSeries):
                     distance_radial=float(x[1]),
                     speed_radial=float(z[3]),
                     input_depower=float(x[2]),
+                    angle_roll=float(z[4]) if turn_rate_law else None,
                 )
             if bdf2:
                 v1, sd1, v2, sd2, h_prev, ds_step, active, order2 = drum_state
@@ -1441,6 +1457,8 @@ class PhaseParameterized(TimeSeries):
             )
         ):
             seed_keys.add("input_depower")
+        if self.kite_model.has_turn_rate_law:
+            seed_keys.add("angle_roll")
         if seed_keys <= set(warm_traj):
             self.states = []
             print(
@@ -1747,6 +1765,15 @@ class PhaseParameterized(TimeSeries):
             "distance_radial": distance_scaled * R_SCALE,  # physical radius r
             "tension_tether_ground": tension_scaled * T_SCALE,  # physical tension T
         }
+        # steering_law turn_rate: the lift's roll about v_a is a per-node
+        # decision, closed by the lateral force row (the turn law is row 3)
+        turn_rate_law = km_copy.has_turn_rate_law
+        if turn_rate_law:
+            opti_vars["angle_roll"] = opti.variable(N)
+
+        def _roll_at(i):
+            """The node's roll decision, as extra Function arguments ([] off)."""
+            return [opti_vars["angle_roll"][i]] if turn_rate_law else []
         if optimize_depower_profile:
             # Per-node power-tape length l_dp; O(1), no scaling needed. Bounds
             # come from DEFAULT_OPTI_LIMITS["input_depower"] via the generic
@@ -1829,6 +1856,8 @@ class PhaseParameterized(TimeSeries):
                 _warm_hist("tension_tether_ground"), N
             ),
         }
+        if turn_rate_law:
+            warm_starts["angle_roll"] = _fit_len(_warm_hist("angle_roll"), N)
         if optimize_depower_profile:
             # Seed from the (constant) depower used in the warm-start simulation.
             warm_starts["input_depower"] = _fit_len(_warm_hist("input_depower"), N)
@@ -1955,6 +1984,7 @@ class PhaseParameterized(TimeSeries):
         dynamic = not self.quasi_steady
         dyn_syms = [self.s_ddot, self.timeder_speed_radial] if dynamic else []
         km_copy.establish_residual()
+        _roll_in = [km_copy.angle_roll] if turn_rate_law else []
         flat_syms = [ca.vertcat(*opti_params.values())] if opti_params else []
         if not "input_depower" in opti_params:
             flat_syms.append(
@@ -1970,6 +2000,7 @@ class PhaseParameterized(TimeSeries):
                 km_copy.tension_tether_ground,
                 km_copy.speed_radial,
                 km_copy.distance_radial,
+                *_roll_in,
             ]
             + dyn_syms
             + flat_syms,
@@ -1984,6 +2015,7 @@ class PhaseParameterized(TimeSeries):
                 km_copy.tension_tether_ground,
                 km_copy.speed_radial,
                 km_copy.distance_radial,
+                *_roll_in,
             ]
             + dyn_syms
             + flat_syms,
@@ -2015,6 +2047,7 @@ class PhaseParameterized(TimeSeries):
                 km_copy.tension_tether_ground,
                 km_copy.speed_radial,
                 km_copy.distance_radial,
+                *_roll_in,
             ]
             + dyn_syms
             + flat_syms,
@@ -2071,6 +2104,7 @@ class PhaseParameterized(TimeSeries):
             km_copy.tension_tether_ground,
             km_copy.speed_radial,
             km_copy.distance_radial,
+            *_roll_in,
         ] + dyn_syms
 
         def _node_functions(k):
@@ -2714,6 +2748,7 @@ class PhaseParameterized(TimeSeries):
                 T_i,
                 opti_vars["speed_radial"][i],
                 opti_vars["distance_radial"][i],
+                *_roll_at(i),
                 *dyn_i,
                 *node_syms,
             )
@@ -2721,6 +2756,11 @@ class PhaseParameterized(TimeSeries):
             opti.subject_to(res_i[1] / S_res[1] == 0)
             opti.subject_to(res_i[2] / S_res[2] == 0)
             _rep_trim += [res_i[j] / S_res[j] for j in range(3)]
+            if turn_rate_law:
+                # the turn law, in newtons like the force rows (Kite.
+                # turn_rate_residual_for scales it by the kite mass)
+                opti.subject_to(res_i[3] / S_res[0] == 0)
+                _rep_trim.append(res_i[3] / S_res[0])
 
             # Left-rule dt_i = Δs_i / s_dot[i], guarded to avoid blow-up
             if i < N - 1:
@@ -2775,6 +2815,7 @@ class PhaseParameterized(TimeSeries):
                     T_i,
                     opti_vars["speed_radial"][i],
                     opti_vars["distance_radial"][i],
+                    *_roll_at(i),
                     *dyn_i,
                     *node_syms,
                 )
@@ -2805,6 +2846,7 @@ class PhaseParameterized(TimeSeries):
                     T_i,
                     opti_vars["speed_radial"][i],
                     opti_vars["distance_radial"][i],
+                    *_roll_at(i),
                     *dyn_i,
                     *node_syms,
                 )
@@ -2883,6 +2925,7 @@ class PhaseParameterized(TimeSeries):
                 T_last,
                 opti_vars["speed_radial"][i_last],
                 opti_vars["distance_radial"][i_last],
+                *_roll_at(i_last),
                 *_dyn_args(i_last),
                 *_node_syms(i_last),
             )
@@ -3514,6 +3557,8 @@ class PhaseParameterized(TimeSeries):
             tension_ground = _scheme_subs(tension_ground)
         if not use_williams:
             z = ca.vertcat(z, km_copy.speed_radial)
+            if km_copy.has_turn_rate_law:
+                z = ca.vertcat(z, km_copy.angle_roll)
         if use_williams:
             z = ca.vertcat(
                 z,

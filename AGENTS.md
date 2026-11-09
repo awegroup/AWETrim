@@ -316,7 +316,10 @@ src/awetrim/
                          theta_b / phi_a trim samples of paper App. D), tidy
                          dataset (aero_dataset.py, AS + EKF sources, shared schema),
                          BIC forward-stepwise polynomial fit with k-fold CV
-                         (aero_polynomial.py → rom_config "coeffs"), control
+                         (aero_polynomial.py → rom_config "coeffs"),
+                         turn_law.py (the turn-rate law's b(u_p), c5, c6 from
+                         the sweep's turn-law states: mass-0/1 pairs and
+                         gravity-on states of its anchors), control
                          conventions (controls.py), rigid_body_axes.py
                          (body axes anchored to the wing's CENTRE PANEL,
                          aircraft FRD sense; never inertia eigenvectors).
@@ -396,6 +399,28 @@ angles are taken in the paper's App. D apparent-wind frame, which
 Euler-angle frame with a mirrored yaw sign put the bridle pitch 2-3 deg off
 in sideslip, zero only at the centre-window trims; every flight calibration
 before that date absorbed it);
+`aerodynamics.steering_law` (default `roll_gain`, the above) or `turn_rate`: the
+turn-rate law of Cayon & Schmehl, "Quasi-steady equilibrium and turn-rate law of
+kites" (manuscript in preparation), Eq. 33 / App. A, divided by k2 and written with the ROM's
+weight vector, `w (v_a + b m v_tau) + b F_g,n + c5 F_g,chi + c6 F_g,r = a v_a^2 u_s`
+(w = -a_n / v_tau, `Kite.turn_rate_residual_for`), params `gain_turn_steering`
+(+ `_depower`, `_squared`, roll_gain's form; a = -k1/k2), `turn_inertia_coefficient`
+(+ `turn_inertia_coefficient_depower`; b = k3/k2 = k4/k2 [1/kg]),
+`turn_gravity_course_coefficient` / `turn_gravity_radial_coefficient` (c5, c6 = k5/k2,
+k6/k2) and `turn_density_reference` (b, c5, c6 scale with rho_ref / rho; k2 carries rho).
+The lift's total roll is then an unknown, `angle_roll` (`SystemModel.angle_roll`, in
+`default_unknown_vars`; State.angle_roll), closed by the lateral force row, and
+`force_residual` has a FOURTH row (the turn law); the phase forward march, the reel-out
+NLP (`opti_vars["angle_roll"]`) and the flight validator carry it; the Williams tether
+is not wired for it (raises). The sweep alone cannot separate a from b (v_tau / v_a is
+fixed per tape at the centre): b(u_p), c5, c6 are measured on the sweep's turn-law
+states (`identification.yaml` `sweep.turn_law`: anchors re-solved tetherless at mass
+scale 0 / 1 and with gravity off-centre; `run_identification_sweep.py --turn-law`, into
+`sweep/turn_law/trims.csv`; `awetrim.identification.turn_law`), then
+`identify_rom_aerostructural.py --steering-law turn_rate` fits a with them
+(`fit.turn_law.inertia_degree`; `--steering-only BASE_ROM` refits only the steering law);
+`check_window_position.py` checks the laws off-centre;
+`docs/identification/` Sect. "The turn-rate law";
 `aerodynamics.reference_area` [m2] states the area the coefficients are
 normalised by and overrides the system wing area (the LEI-V3 ROMs both use
 19.75 m2, the EKF area; system.yaml's projected 17.2119 m2 is geometry, not a
