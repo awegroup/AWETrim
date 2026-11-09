@@ -97,6 +97,41 @@ def test_with_positions_moves_points_and_bodies(structure):
     assert structure.document is not moved.document  # a copy
 
 
+def test_a_deformed_copy_keeps_the_built_fabric_mass(structure):
+    """Moving points does not move fabric: a copy whose canopy spans less
+    corner-quad area (as a billowed snapshot does) keeps every node's mass."""
+    squeezed = structure.positions * [0.9, 1.0, 1.0]  # every chord 10 % shorter
+    moved = structure.with_positions(squeezed)
+    np.testing.assert_allclose(moved.masses(), structure.masses(), rtol=0, atol=1e-12)
+    # the area rule alone would have made the fabric lighter
+    bare = copy.deepcopy(moved.document)
+    column = bare["canopy_faces"]["headers"].index("mass")
+    for key in ("headers", "units"):
+        bare["canopy_faces"][key].pop(column)
+    for row in bare["canopy_faces"]["data"]:
+        row.pop(column)
+    assert awesio_structure.nodal_masses(bare).sum() < structure.masses().sum() - 0.1
+
+
+def test_a_stated_face_mass_survives_a_second_move(structure):
+    once = structure.with_positions(structure.positions * [0.9, 1.0, 1.0])
+    twice = once.with_positions(structure.positions * [0.8, 1.0, 1.0])
+    np.testing.assert_allclose(
+        awesio_structure.canopy_face_masses(twice.document),
+        awesio_structure.canopy_face_masses(structure.document),
+    )
+    assert twice.document["canopy_faces"]["headers"].count("mass") == 1
+
+
+def test_a_moved_structure_validates_against_the_schema(structure, tmp_path):
+    validator = pytest.importorskip("awesio.validator")
+    path = tmp_path / "structure.yml"
+    structure.with_positions(structure.positions * [0.9, 1.0, 1.0]).write(path)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        validator.validate(path)
+
+
 def test_with_rest_lengths_changes_only_the_named_segments(structure):
     tape = next(e for e in structure.bridle if e["name"] == "depower_tape")
     name = tape["segments"][0]

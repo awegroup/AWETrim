@@ -49,8 +49,11 @@ How our model maps onto the schema:
 What awesIO leaves to a tool is carried as columns of our own on ``segments``:
 ``line`` (the ``bridle_lines`` row, which also marks the depower and steering
 tapes), ``linktype`` (what the line does in compression) and ``tape_width``
-(the drag width of a flat tape; ``diameter`` stays the area-equivalent one), and
-as the top-level ``awetrim`` block (the KCU point).
+(the drag width of a flat tape; ``diameter`` stays the area-equivalent one), as
+``mass`` on ``canopy_faces`` (the face's fabric mass, written by
+``Structure.with_positions`` so a deformed document keeps the built fabric mass;
+absent on a built document, whose faces follow the area rule), and as the
+top-level ``awetrim`` block (the KCU point).
 """
 
 from __future__ import annotations
@@ -152,17 +155,49 @@ def kcu_point(document: dict) -> str:
     return name
 
 
+def canopy_face_masses(document: dict) -> np.ndarray:
+    """Fabric mass of every ``canopy_faces`` row [kg], in row order.
+
+    A face's own ``mass`` column (AWETrim's, kg) when it has one, else awesIO's
+    rule: the face area on the document's positions x the wing's areal density
+    (0 for a wing without a canopy material). The column is what keeps the
+    fabric mass of a DEFORMED document the built one: a billowed or wrinkled
+    canopy spans less corner-quad area than the fabric it is made of (LEI-V3
+    Billow example: 1.8 % less, 74 g), so the area rule would make it lighter.
+    :meth:`Structure.with_positions` writes the column before it moves the
+    points.
+    """
+    points = _rows(document["points"])
+    index = {p["name"]: i for i, p in enumerate(points)}
+    pos = np.array([p["pos_ENU"] for p in points], dtype=float)
+    materials = {m["name"]: m for m in _rows(document.get("materials"))}
+    canopy = {w["name"]: w.get("canopy_material") for w in _rows(document.get("wings"))}
+    masses = []
+    for face in _rows(document.get("canopy_faces")):
+        stated = face.get("mass")
+        material = canopy.get(face["wing"])
+        if stated is not None:
+            masses.append(float(stated))
+        elif material is None:
+            masses.append(0.0)
+        else:
+            corners = [index[p] for p in face["points"]]
+            areal = float(materials[material]["parameters"]["areal_density"])
+            masses.append(_quad_area(pos[corners]) * areal)
+    return np.asarray(masses, dtype=float)
+
+
 def nodal_masses(document: dict) -> np.ndarray:
     """Mass of every point, by awesIO's rule, in ``points`` row order [kg].
 
     The point's extra mass, half of each segment it ends (density x
     pi d^2/4 x rest_length), an equal share of each canopy face it is a corner
-    of (area x the wing's areal density) and, for a point riding on a body, that
-    body's extra mass. Every body here carries exactly one point, at its origin.
+    of (:func:`canopy_face_masses`: the face's ``mass`` column, else area x the
+    wing's areal density) and, for a point riding on a body, that body's extra
+    mass. Every body here carries exactly one point, at its origin.
     """
     points = _rows(document["points"])
     index = {p["name"]: i for i, p in enumerate(points)}
-    pos = np.array([p["pos_ENU"] for p in points], dtype=float)
     mass = np.array([float(p.get("extra_mass") or 0.0) for p in points])
     materials = {m["name"]: m for m in _rows(document.get("materials"))}
     for seg in _rows(document["segments"]):
@@ -170,15 +205,10 @@ def nodal_masses(document: dict) -> np.ndarray:
         m = density * np.pi * (float(seg["diameter"]) / 2.0) ** 2 * float(seg["rest_length"])
         for p in seg["points"]:
             mass[index[p]] += m / 2.0
-    canopy = {w["name"]: w.get("canopy_material") for w in _rows(document.get("wings"))}
-    for face in _rows(document.get("canopy_faces")):
-        material = canopy.get(face["wing"])
-        if material is None:
-            continue
+    for face, face_mass in zip(_rows(document.get("canopy_faces")), canopy_face_masses(document)):
         corners = [index[p] for p in face["points"]]
-        areal = float(materials[material]["parameters"]["areal_density"])
         for c in corners:
-            mass[c] += _quad_area(pos[corners]) * areal / len(corners)
+            mass[c] += face_mass / len(corners)
     riders = {}
     for i, p in enumerate(points):
         if p["body"] is not None:
@@ -569,9 +599,22 @@ class Structure:
 
     # -- edited copies ----------------------------------------------------
     def with_positions(self, positions) -> "Structure":
-        """A copy with every point (and the body it rides on) moved to ``positions``."""
+        """A copy with every point (and the body it rides on) moved to ``positions``.
+
+        Moving points does not move fabric: before the points move, each canopy
+        face's mass on the current positions is written to its ``mass`` column
+        (kept where it is already there), so a deformed copy carries the
+        fabric mass of the shape it was made from (:func:`canopy_face_masses`).
+        """
         positions = np.asarray(positions, dtype=float)
         document = copy.deepcopy(self.document)
+        faces = document.get("canopy_faces")
+        if faces and faces.get("data") and "mass" not in faces["headers"]:
+            face_masses = canopy_face_masses(document)
+            faces["headers"].append("mass")
+            faces["units"].append("kg")
+            for row, m in zip(faces["data"], face_masses):
+                row.append(float(m))
         column = document["points"]["headers"].index("pos_ENU")
         for row, pos in zip(document["points"]["data"], positions):
             row[column] = [float(v) for v in pos + self.origin]
