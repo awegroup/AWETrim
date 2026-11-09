@@ -103,6 +103,9 @@ def load_cycle_config_from_yaml(yaml_path):
         "n_points": sim_params.get("n_points", 200),
         "input_depower": sim_params.get("input_depower", 0.0),
     }
+    # Every other key the file states (param_step_bound, stall_margin_deg, ...)
+    # passes through as written; before, they were dropped without a word.
+    sim_parameters.update({k: v for k, v in sim_params.items() if k not in sim_parameters})
 
     # Assemble REELOUT_CONFIG
     REELOUT_CONFIG = {

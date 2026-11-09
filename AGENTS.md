@@ -120,6 +120,11 @@ src/awetrim/
                          Full-cycle seeds use it through
                          fit_periodic_cycle_config.py --size
   timeseries/        ✅  PhaseParameterized, ReeloutSimple, ReelinSimple, Cycle
+                         (phase.py: Phase.run_simulation_opti(resume_tolerance=)
+                         keeps a nearly feasible failed iterate for a resume;
+                         run_simulation_opti_recentred re-solves while the step
+                         box param_step_bound binds; step_box_active and
+                         trajectory_mean_power are the shared helpers)
                          (dynamic march, quasi_steady=False: implicit. A
                          dynamic node is a quasi-steady node, unknowns [T, u_s,
                          s_dot, v_r], plus the inertia of the steps ending at
@@ -316,6 +321,8 @@ src/awetrim/
                          processing and the EKF itself live in EKF-AWE
   plotting/          ✅  shared plotting helpers — see src/awetrim/plotting/AGENTS.md
   utils/             ✅  defaults, reference frames, control_metrics,
+                         utils.load_cycle_config_from_yaml (passes every
+                         sim_parameters key through, e.g. param_step_bound),
                          time_scheme (the march's / NLP's step and rate
                          kernels, euler and bdf2, numpy or casadi)
                          (steering-reversal count / pairs outside a deadband,
@@ -383,8 +390,8 @@ commit bad8a9b).
 
 Full-cycle optimisation scripts (`optimization/cycle/`): `fit_periodic_cycle_config.py`
 (`--size` fits the path to the turns the kite holds at the wind, SIZE_MARGINS 1.4-2.0, first complete march inside the steering limit at the kite's own gain)
-+ `run_cycle_power_curve.py` (the two scripts over a range of winds: outward from a start wind, cold until a wind stalls, then `--continue-from` the last converged one; resumes)
-+ `run_full_cycle_opti.py` (multi-lobe cycle; closed through the `periodic_wrap` seam, the closing stage uses the one-sided `close_radial_cycle` pin; step boxes ±0.15 rad / ±50 m in the closing stage, 4x that in the power stage and polish; `--step-scale` scales the latter; the closing stage holds the depower profile, except on a `--continue-from` run, where it anchors it with `depower_anchor_weight` 0.05 so a wind continuation can depower into the rated region; the power stages carry the smoothness term at `REG_FRACTION` 0.1 of the objective, without which the reel-in of a kite steering at its band zigzags. Roll-gain assist (`awetrim.timeseries.roll_assist`, used by both scripts and the server's cold solve): when the seed does not trim at the kite's roll gain, it is marched at 1.25-2 x k(u_p) (`Kite.gain_roll_scale`, not a ROM parameter) and the optimizer inserts continuation stages that halve the excess back to 1 (midpoint retry on failure) before the power stages, so a kite with little roll authority (the bare LEI-V3 ROM, x1.75 at 6 m/s) still starts at the reel-in top). Studies
++ `run_cycle_power_curve.py` (the two scripts over a range of winds: outward from a start wind, the start wind cold, every other wind `--continue-from` the last converged one, a cold solve as the fallback; `--sequential`; resumes)
++ `run_full_cycle_opti.py` (multi-lobe cycle; a cold solve first runs every stage on a coarse grid (`--coarse-points`, default 2 x M, off for a continuation), then the full grid from that optimum (`_resample_trajectory`); `--continue-from` seeds stage 1 with the continued run's trajectory (no march); a power or polish stage that stalls resumes from its last iterate (`Phase.run_simulation_opti(resume_tolerance=...)`, `MAX_RESUMES`), then halves its box (`MAX_BOX_HALVINGS`), and an optimum on the box edge is re-solved with the box re-centred (`MAX_RECENTRES`, < 0.1 % gain stops); exit code 2 when a stage still fails; closed through the `periodic_wrap` seam, the closing stage uses the one-sided `close_radial_cycle` pin; step boxes ±0.15 rad / ±50 m in the closing stage, 4x that in the power stage and polish; `--step-scale` scales the latter; the closing stage holds the depower profile, except on a `--continue-from` run, where it anchors it with `depower_anchor_weight` 0.05 so a wind continuation can depower into the rated region; the power stages carry the smoothness term at `REG_FRACTION` 0.1 of the objective, without which the reel-in of a kite steering at its band zigzags. Roll-gain assist (`awetrim.timeseries.roll_assist`, used by both scripts and the server's cold solve): when the seed does not trim at the kite's roll gain, it is marched at 1.25-2 x k(u_p) (`Kite.gain_roll_scale`, not a ROM parameter; it scales the turn law's gain a too) and the optimizer inserts continuation stages that halve the excess back to 1 (midpoint retry on failure) before the power stages, so a kite with little roll authority (the bare LEI-V3 ROM, x1.75 at 6 m/s) still starts at the reel-in top). Studies
 built on them live in `optimization/studies/` (see its README), e.g.
 `run_uploop_eight_opti.py` + `plot_uploop_eight_comparison.py` (ONE slanted up-loop figure eight per period: low lobe
 + crossings reel out, high arc reels in; `periodic_wrap`, `free_speed`, free
@@ -411,7 +418,9 @@ angles are taken in the paper's App. D apparent-wind frame, which
 Euler-angle frame with a mirrored yaw sign put the bridle pitch 2-3 deg off
 in sideslip, zero only at the centre-window trims; every flight calibration
 before that date absorbed it);
-`aerodynamics.steering_law` (default `roll_gain`, the above) or `turn_rate`: the
+`aerodynamics.steering_law` (code default `roll_gain`, the above) or `turn_rate` (what the
+LEI-V3's `rom_config_aerostructural.yaml` flies since 2026-11-09, the roll gain kept in the
+file; it became the default once every optimisation example converged with it cold): the
 turn-rate law of Cayon & Schmehl, "Quasi-steady equilibrium and turn-rate law of
 kites" (manuscript in preparation), Eq. 33 / App. A, divided by k2 and written with the ROM's
 weight vector, `w (v_a + b m v_tau) + b F_g,n + c5 F_g,chi + c6 F_g,r = a v_a^2 u_s`

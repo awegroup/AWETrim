@@ -61,7 +61,7 @@ from awetrim.kinematics.parametrized_patterns import (
 from awetrim.system.factory import create_system_model_from_yaml
 from awetrim.utils.time_scheme import left_step, trapezoid_increment, trapezoid_step
 from awetrim.timeseries import roll_assist
-from awetrim.timeseries.phase import Phase
+from awetrim.timeseries.phase import Phase, step_box_active, trajectory_mean_power
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -209,6 +209,85 @@ def _retry_continuation(stages, i) -> bool:
     stages.insert(i, dict(stage, roll_scale=mid,
                           label=f"roll-gain continuation | k(u_p) x {mid:g} (step halved)"))
     print(f"    continuation step failed; retrying from the midpoint x {mid:g}")
+    return True
+
+
+#: Times a failed power stage is retried with its step box halved.
+MAX_BOX_HALVINGS = 2
+#: A stalled power stage whose last iterate is this close to feasible (IPOPT
+#: inf_pr on the hand-scaled rows) is resumed from it, at most MAX_RESUMES times.
+RESUME_TOLERANCE = 0.05
+MAX_RESUMES = 2
+#: An optimum on the step box's edge is solved again with the box re-centred,
+#: at most MAX_RECENTRES times, until the pass gains less than RECENTRE_MIN_GAIN.
+MAX_RECENTRES = 3
+RECENTRE_MIN_GAIN = 1e-3
+
+
+def _trajectory_mean_power(trajectory):
+    """Cycle-mean power [W] of an optimized trajectory (awetrim.timeseries.phase)."""
+    return trajectory_mean_power(trajectory)
+
+
+def _resume_stalled(stage, cycle) -> bool:
+    """True when a failed stage left a nearly feasible iterate behind
+    (Phase.run_simulation_opti's resume_tolerance) and may run again from it.
+
+    A stall -- the iteration limit reached while still climbing the flat power
+    ridge with tiny accepted steps -- is not a wrong region: the next solve,
+    from that iterate with a fresh box, barrier and quasi-Newton memory, goes
+    on where it stopped (the turn-rate ROM at 7 m/s stopped at a trim residual
+    of 6.5e-3). Restarting from the previous optimum instead repeats the same
+    crawl."""
+    if not getattr(cycle, "adopted_failed_iterate", False):
+        return False
+    if stage.get("resumes", 0) >= MAX_RESUMES:
+        return False
+    stage["resumes"] = stage.get("resumes", 0) + 1
+    print(f"    stage stalled near feasibility; resuming from its last iterate "
+          f"({stage['resumes']}/{MAX_RESUMES}), step box re-centred")
+    return True
+
+
+def _recentre_box(stage, previous_power, power) -> bool:
+    """True when an optimum on the step box's edge should be solved again with
+    the box re-centred on it: the box, not the optimum, stopped the move. Not
+    after MAX_RECENTRES passes, nor once a re-centred pass gained less than
+    RECENTRE_MIN_GAIN of the power (the box only touched)."""
+    if stage.get("recentres", 0) >= MAX_RECENTRES:
+        return False
+    if previous_power is not None and power is not None:
+        gain = (power - previous_power) / max(abs(previous_power), 1e-9)
+        if gain < RECENTRE_MIN_GAIN:
+            print(f"    step box active, but the re-centred pass gained {gain:.2%}: done")
+            return False
+    stage["recentres"] = stage.get("recentres", 0) + 1
+    print(f"    step box active at the optimum; solving again with the box re-centred "
+          f"({stage['recentres']}/{MAX_RECENTRES})")
+    return True
+
+
+def _retry_halved_box(stages, i) -> bool:
+    """Halve the step box of a failed power stage ``i`` and run it again.
+
+    The box bounds how far one solve may move the path. A box too wide for the
+    kite lets one IPOPT step tear the figure eight apart, and the iterate ends
+    where the kite cannot trim (restoration, iteration limit); the same stage
+    from the same point converges with a smaller box (the turn-rate ROM at
+    6 m/s: +-0.6 rad failed, +-0.3 converged). The wide box stays the first try,
+    since a binding box costs power. The closing stage keeps its own box
+    (``scale_box: False``)."""
+    stage = stages[i]
+    if not stage.get("step_bounds") or stage.get("scale_box", True) is False:
+        return False
+    if stage.get("box_halvings", 0) >= MAX_BOX_HALVINGS:
+        return False
+    # the stage's own box, restored for re-centred passes once a halved one converged
+    stage.setdefault("step_bounds_full", dict(stage["step_bounds"]))
+    stage["step_bounds"] = {k: 0.5 * float(v) for k, v in stage["step_bounds"].items()}
+    stage["box_halvings"] = stage.get("box_halvings", 0) + 1
+    print(f"    stage failed; retrying it with the step box halved "
+          f"({stage['box_halvings']}/{MAX_BOX_HALVINGS}): {stage['step_bounds']}")
     return True
 
 
@@ -546,6 +625,26 @@ def _downsample_n_points(reelout_config, n_points):
     print(f"Downsampled cycle to n_points={int(n_points)}")
 
 
+def _resample_trajectory(trajectory, sim):
+    """A stored trajectory on this run's node grid (``sim['n_points']`` nodes
+    from ``start_angle`` to ``end_angle``, the seam excluded), each column
+    interpolated in s -- the coarse pass of --coarse-points hands its optimum
+    to the full grid this way. Unchanged when it is already on the grid."""
+    n = int(sim["n_points"])
+    s_old = np.asarray(trajectory.get("s", []), dtype=float)
+    if len(s_old) == n or len(s_old) < 2:
+        return trajectory
+    start, end = float(sim["start_angle"]), float(sim["end_angle"])
+    s_new = start + (end - start) * np.arange(n) / n
+    # a closed cycle interpolates across the seam (towards node 0), an open one clamps
+    period = {"period": end - start} if sim.get("periodic_wrap") else {}
+    print(f"Warm start resampled from {len(s_old)} to {n} nodes")
+    out = {name: np.interp(s_new, s_old, np.asarray(values, dtype=float), **period)
+           for name, values in trajectory.items() if len(values) == len(s_old)}
+    out["s"] = s_new
+    return out
+
+
 def _closure_residual(result, periodic=False, time_scheme="euler"):
     """Radial closure (m) from the optimizer's own trajectory, or None.
 
@@ -643,25 +742,10 @@ def _expand_step_bounds(step_bounds, path_parameters):
 
 
 def _step_box_active(before, after, step_bounds):
-    """True when any parameter moved to (>= 98% of) its per-solve box edge.
-
-    ``step_bounds`` values may be scalars or per-element vectors (see
-    ``_expand_step_bounds``); elements with a zero delta are ignored.
-    """
-    for name, delta in step_bounds.items():
-        if name not in before or name not in after:
-            continue
-        moved = np.abs(
-            np.asarray(after[name], dtype=float).ravel()
-            - np.asarray(before[name], dtype=float).ravel()
-        )
-        deltas = np.asarray(delta, dtype=float).ravel()
-        if deltas.size == 1:
-            deltas = np.full(moved.size, deltas[0])
-        live = deltas > 0
-        if np.any(moved[live] >= 0.98 * deltas[live]):
-            return True
-    return False
+    """True when any parameter moved to (>= 98% of) its per-solve box edge
+    (awetrim.timeseries.phase.step_box_active; per-element deltas from
+    ``_expand_step_bounds``, zero deltas ignored)."""
+    return step_box_active(before, after, step_bounds)
 
 
 def main(
@@ -700,10 +784,11 @@ def main(
     The baseline is then simulated only for the comparison, and skipped if it
     cannot be trimmed."""
     global WIND_CONFIG, QUASI_STEADY, N_POINTS
-    if n_points:
-        # Node-grid resolution study: resample the cycle's grid (the spline
-        # shape is independent of it); the warm start must be on the same grid.
-        N_POINTS = int(n_points)
+    # Node-grid resolution (resolution studies, the --coarse-points pass):
+    # resample the cycle's grid (the spline shape is independent of it); a
+    # warm-start trajectory on another grid is interpolated onto it. Set on
+    # every call, so a second main() in one process does not inherit the first's.
+    N_POINTS = int(n_points) if n_points else None
     configure_kite(kite or KITE_DIR)
     if wind_config:
         WIND_CONFIG = load_wind_config(wind_config)
@@ -778,9 +863,10 @@ def main(
         import pandas as pd
 
         trajectory = pd.read_csv(warm_start_csv)
-        cycle._warm_start_trajectory = {
-            name: trajectory[name].to_numpy(dtype=float) for name in trajectory.columns
-        }
+        cycle._warm_start_trajectory = _resample_trajectory(
+            {name: trajectory[name].to_numpy(dtype=float) for name in trajectory.columns},
+            reelout_config["sim_parameters"],
+        )
         cycle._warm_start_source = "optimum"
         print(f"Warm start: stage 1 seeded from {warm_start_csv} ({len(trajectory)} nodes)")
 
@@ -859,10 +945,19 @@ def main(
             # trajectories (the ridge is flat in shape and steering; without
             # it the reel-in of a kite steering at its band zigzags).
             sim["reg_fraction"] = REG_FRACTION if target == "power" else 0.0
+            # IPOPT's acceptable-point objective change (Phase.run_opti; 1e-4 default)
+            sim["acceptable_obj_change_tol"] = float(stage.get("acceptable_obj_change_tol", 1e-4))
             repeats = int(stage.get("repeat", 1))
             trust_weight = float(stage.get("trust_region_weight", 0.0))
             warm_start = bool(stage.get("warm_start", False))
-            for rep in range(repeats):
+            # Power and polish stages re-run themselves from where they stopped:
+            # a stall near feasibility resumes from its last iterate, and an
+            # optimum on the step box's edge is solved again with the box
+            # re-centred on it (_recentre_or_resume). The closing stage keeps
+            # its single tight solve.
+            recentre = bool(step_bounds) and stage.get("scale_box", True) is not False
+            rep, previous_power = 0, None
+            while rep < repeats:
                 rep_tag = f" (pass {rep + 1}/{repeats})" if repeats > 1 else ""
                 print(
                     f"\n=== Stage {i + 1}/{len(stages)}: {stage['label']}{rep_tag} ===\n"
@@ -880,9 +975,10 @@ def main(
                     stage_result = cycle.run_simulation_opti(
                         optimization_params=stage["params"],
                         target=target,
-                        max_iter=MAX_ITER,
+                        max_iter=int(stage.get("max_iter") or MAX_ITER),
                         trust_region_weight=trust_weight,
                         warm_start=warm_start,
+                        resume_tolerance=RESUME_TOLERANCE if recentre else None,
                     )
                 except RuntimeError as exc:
                     if _retry_continuation(stages, i):
@@ -898,7 +994,11 @@ def main(
                     aborted = True
                     break
                 if stage_result is None:
-                    if _retry_continuation(stages, i):
+                    if recentre and _resume_stalled(stage, cycle):
+                        repeats += 1
+                        rep += 1
+                        continue
+                    if _retry_continuation(stages, i) or _retry_halved_box(stages, i):
                         retry = True
                         break
                     print(f"Stage {i + 1} failed; stopping (keeping last good config).")
@@ -931,7 +1031,18 @@ def main(
                 # re-centers the box like the old sequential scheme did).
                 after = _param_snapshot(cycle.pattern_config, step_bounds)
                 box_active = _step_box_active(before, after, expanded_bounds)
-                if box_active and rep == repeats - 1:
+                power = _trajectory_mean_power(result.optimized_trajectory)
+                if power is not None:
+                    print(f"    mean power {power / 1e3:.3f} kW")
+                last = rep == repeats - 1
+                if box_active and last and recentre and _recentre_box(stage, previous_power, power):
+                    repeats += 1
+                    if "step_bounds_full" in stage:
+                        # a halved box got the stage through; the re-centred passes
+                        # move from a converged point and get the full box back
+                        stage["step_bounds"] = step_bounds = stage.pop("step_bounds_full")
+                        print(f"    full step box restored: {step_bounds}")
+                elif box_active and last:
                     print(
                         "    ** WARNING: backstop step box active at the stage "
                         "optimum -- widen step_bounds or add a repeat pass **"
@@ -942,6 +1053,8 @@ def main(
                         "skipping remaining passes"
                     )
                     break
+                previous_power = power
+                rep += 1
             if retry:
                 i -= 1  # the inserted midpoint step runs next
                 continue
@@ -983,6 +1096,12 @@ def main(
         except Exception as exc:
             print(f"(cycle comparison plots unavailable: {exc})")
 
+    if optimize and aborted:
+        # The last good stage's result is written, but it is not the optimum:
+        # a caller (run_cycle_power_curve.py) must not count it as converged.
+        print("Full cycle optimization INCOMPLETE: a stage failed; the files hold "
+              "the last good stage's result")
+        return 2
     print("Full cycle optimization complete")
     return 0
 
@@ -1101,34 +1220,136 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="Resample the cycle to this many nodes (resolution study); a "
-        "--warm-start must be on that grid",
+        "--warm-start on another grid is interpolated onto it",
+    )
+    parser.add_argument(
+        "--coarse-points",
+        type=int,
+        default=None,
+        help="Solve the stages first on this many nodes, then on the full grid "
+        "from that result: the coarse pass finds the pattern (cheap iterations), "
+        "the fine pass refines it. Default: 2 x M (2 nodes per spline control "
+        "interval) for a cold solve, off with --continue-from / --warm-start; 0 "
+        "switches it off. LEI-V3, turn law: 5.5 m/s failed cold on the full grid "
+        "alone and converged with it in 312 s",
+    )
+    parser.add_argument(
+        "--stage-max-iter",
+        type=int,
+        default=None,
+        help="IPOPT iteration cap of the power and polish stages (default "
+        "MAX_ITER); a stage stalled at the cap resumes from its last iterate "
+        "(--max-resumes), so a small cap restarts a crawl sooner",
+    )
+    parser.add_argument(
+        "--max-resumes",
+        type=int,
+        default=None,
+        help=f"Resumes of a stalled power or polish stage (default {MAX_RESUMES})",
+    )
+    parser.add_argument(
+        "--shape-obj-tol",
+        type=float,
+        default=None,
+        help="IPOPT acceptable_obj_change_tol of the shape stage (default 1e-4)",
+    )
+    parser.add_argument(
+        "--polish-obj-tol",
+        type=float,
+        default=None,
+        help="IPOPT acceptable_obj_change_tol of the polish stage (default 1e-4): "
+        "a larger value ends the polish once it only adds fractions of a percent",
     )
     args = parser.parse_args()
+    if args.shape_obj_tol:
+        STAGES[1]["acceptable_obj_change_tol"] = float(args.shape_obj_tol)
+    if args.polish_obj_tol:
+        STAGES[2]["acceptable_obj_change_tol"] = float(args.polish_obj_tol)
+    if args.stage_max_iter:
+        for stage in STAGES:
+            if stage.get("scale_box", True) is not False:
+                stage["max_iter"] = int(args.stage_max_iter)
+        print(f"Power and polish stages capped at {args.stage_max_iter} iterations")
+    if args.max_resumes is not None:
+        MAX_RESUMES = int(args.max_resumes)
     if args.winch_friction is not None:
         args.winch_friction = (
             True
             if args.winch_friction == "system"
             else [float(x) for x in args.winch_friction.split(",")]
         )
-    exit_code = main(
-        run_plots=args.plot,
-        optimize=not args.no_optimize,
+    warm_start = args.warm_start
+    if warm_start is None and args.continue_from:
+        # The continued run's trajectory seeds stage 1 directly: re-marching
+        # its optimal path at another wind with the seed's force law is what
+        # fails (no root at a node, both steering laws), while the trajectory
+        # itself is a complete, feasible starting point on the same grid.
+        sibling = Path(args.continue_from).with_suffix(".csv")
+        if sibling.is_file():
+            warm_start = str(sibling)
+            print(f"--continue-from: its trajectory {sibling.name} seeds stage 1")
+    common = dict(
         kite=args.kite,
-        config_path=args.continue_from or args.config,
-        run_tag=args.tag,
-        skip_validation=args.continue_from is not None,
         stage_repeats=args.stage_repeats,
-        step_scale=args.step_scale,
         wind_speed=args.wind_speed,
         wind_height=args.wind_height,
-        warm_start_csv=args.warm_start,
         wind_config=args.wind_config,
         winch_inertia_mass=args.winch_inertia_mass,
         winch_friction=args.winch_friction,
         winch_drivetrain=args.winch_drivetrain,
         dynamic=args.dynamic,
         tether_inertia=args.tether_inertia,
-        n_points=args.n_points,
+    )
+    config_path = args.continue_from or args.config
+    skip_validation = args.continue_from is not None
+    if args.coarse_points is None and not args.no_optimize:
+        # Default: a cold solve takes the coarse pass, a continued one does not
+        # (it starts next to its optimum; the coarse round only adds work).
+        # The coarse grid has 2 nodes per spline control interval.
+        if args.continue_from or args.warm_start:
+            args.coarse_points = 0
+        else:
+            configure_kite(args.kite or KITE_DIR)
+            M = int(load_reelout_config(config_path or CYCLE_CONFIG_PATH)["path_parameters"]["M"])
+            args.coarse_points = 2 * M
+            print(f"Cold solve: coarse pass on {args.coarse_points} nodes (2 x M; --coarse-points 0 "
+                  "switches it off)")
+    if args.coarse_points and not args.no_optimize:
+        # Coarse-to-fine: every stage first on a coarse grid (cheap iterations,
+        # it finds the pattern), then the full grid continues from its optimum
+        # and trajectory -- a refinement from a closed, trimmed point.
+        coarse_tag = f"{args.tag}_coarse" if args.tag else "coarse"
+        print(f"=== Coarse pass: {args.coarse_points} nodes ===")
+        coarse_code = main(
+            run_plots=False, optimize=True, config_path=config_path, run_tag=coarse_tag,
+            skip_validation=skip_validation, step_scale=args.step_scale,
+            warm_start_csv=warm_start, n_points=args.coarse_points, **common,
+        )
+        # appended, not with_suffix: the tag holds dots (wind_5.5at6m, z0_0.0002)
+        coarse = f"{RESULTS_DIR / f'full_cycle_optimized_{wind_tag()}_{coarse_tag}'}"
+        if coarse_code == 0 and Path(coarse + ".yaml").is_file():
+            full_n = args.n_points or int(
+                load_reelout_config(config_path or CYCLE_CONFIG_PATH)["sim_parameters"]["n_points"])
+            print(f"=== Fine pass: {full_n} nodes, from the coarse optimum ===")
+            config_path, skip_validation = coarse + ".yaml", True
+            warm_start, n_points = coarse + ".csv", full_n
+        else:
+            print("Coarse pass did not converge; solving the full grid from the start")
+            n_points = args.n_points
+        # step_scale already scaled the module's stage boxes in the coarse pass
+        step_scale = None
+    else:
+        n_points, step_scale = args.n_points, args.step_scale
+    exit_code = main(
+        run_plots=args.plot,
+        optimize=not args.no_optimize,
+        config_path=config_path,
+        run_tag=args.tag,
+        skip_validation=skip_validation,
+        step_scale=step_scale,
+        warm_start_csv=warm_start,
+        n_points=n_points,
+        **common,
     )
     if args.plot:
         import matplotlib.pyplot as plt

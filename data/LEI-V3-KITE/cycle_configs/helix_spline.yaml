@@ -30,6 +30,10 @@ reelout:
     end_angle: 6.283185307179586
     n_points: 200
     input_depower: 1.940  # model tape (identification.yaml flight_match)
+    # Step box on the path's control points [rad] per solve (see downloop_spline.yaml).
+    param_step_bound:
+      C_phi: 0.3
+      C_beta: 0.3
 
 
 # Reel-in Phase Configuration

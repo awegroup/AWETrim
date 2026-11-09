@@ -163,7 +163,8 @@ def main(run_plots=False):
     # plt.figure()
     # plt.plot(t, np.degrees(aoa))
     # plt.show()
-    solution = reelout.run_simulation_opti(optimization_params=optimization_params)
+    # re-solved while the step box (param_step_bound) binds at the optimum
+    solution = reelout.run_simulation_opti_recentred(optimization_params=optimization_params)
     if solution is None:
         raise SystemExit("The optimization did not converge; nothing written.")
     depower_prefix = "depower_" if "input_depower" in optimization_params else ""

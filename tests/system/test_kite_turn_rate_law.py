@@ -141,3 +141,12 @@ def test_turn_gain_depends_on_depower_and_steering_squared():
     gain = model.kite.gain_turn_steering_for(model)
     assert ca.depends_on(gain, model.input_depower)
     assert ca.depends_on(gain, model.input_steering)
+
+
+def test_steering_authority_scale_acts_on_the_turn_gain():
+    model = _model(gain_turn_steering_depower=[0.1], gain_turn_steering_squared=[-1.0])
+    base = model.kite.gain_turn_steering_for(model)
+    model.kite.gain_roll_scale = 1.5
+    scaled = model.kite.gain_turn_steering_for(model)
+    (b, s), _ = _numeric(model, [base, scaled])
+    assert s[0] == pytest.approx(1.5 * b[0])

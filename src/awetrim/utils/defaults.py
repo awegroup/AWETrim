@@ -132,6 +132,10 @@ DEFAULT_OPTI_LIMITS = {
     # half-difference; 2019 V3 u_s = -kcu/100). The 2019 flight max deflection
     # kcu +-35 is +-0.35 (0.49 m of tape).
     "input_steering": (-0.35, 0.35),
+    # The lift's total roll about v_a [rad], a decision with steering_law
+    # turn_rate only: the node solves' DEFAULT_BOUNDS range, so the NLP cannot
+    # roll the lift past the horizontal.
+    "angle_roll": (-np.pi / 2, np.pi / 2),
     "s_dot": (0.0, 40),  # Range for s_dot: 0 to 30
     "s_ddot": (-100, 100),  # Range for s_ddot: -100 to 100
     "s": (0, 300),  # Range for s: 0 to 10

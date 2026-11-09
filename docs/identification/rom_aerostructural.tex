@@ -194,10 +194,11 @@ identification never does).
 \end{equation}
 with $\theta_0$, $\theta_1$, $k_{\phi,s}$ the ROM parameters
 \code{angle\_pitch\_tether\_0}, \code{slope\_angle\_pitch\_tether\_depower},
-\code{gain\_roll\_steering}. This is the ROM's default steering law,
+\code{gain\_roll\_steering}. This is the code's default steering law,
 \code{aerodynamics.steering\_law: roll\_gain}: the steering sets the wing's roll and
 the turn rate follows from the lateral force balance. The alternative,
-\code{steering\_law: turn\_rate}, is Sect.~\ref{sec:turn-law}.
+\code{steering\_law: turn\_rate}, is Sect.~\ref{sec:turn-law}; it is what the LEI-V3's
+shipped ROM flies, with the roll gain kept in the file.
 
 \subsection{The turn-rate law}
 \label{sec:turn-law}
