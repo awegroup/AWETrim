@@ -1,11 +1,13 @@
 """Mean cycle power over a range of winds, each wind one full-cycle optimization.
 
-Goes outward from a start wind, upward and downward at the same time. Each wind
-is solved cold (``fit_periodic_cycle_config.py --size``, then
-``run_full_cycle_opti.py``) until one stalls; from there on in that direction
-every wind continues from the last converged one (``--continue-from``), a step
-that does not converge ends the direction. A start wind that does not converge
-ends the run: pick another with ``--start-wind``.
+Goes outward from a start wind, upward and downward at the same time (or one
+after the other, ``--sequential``). The start wind is solved cold
+(``fit_periodic_cycle_config.py --size``, then ``run_full_cycle_opti.py``, with
+its coarse pass); every further wind continues from the last converged one
+(``--continue-from``: about twice as fast as a cold solve, at the same power),
+falling back on a cold solve when the continuation fails. A wind that fails both
+ends the direction; a start wind that does not converge ends the run: pick
+another with ``--start-wind``.
 
 Finished winds are kept in ``power_curve.json``, so running the same command again
 resumes. Writes ``power_curve.csv`` and ``power_curve.png`` as it goes, the logs
@@ -37,7 +39,9 @@ from cycle_kites import DEFAULT_KITE, resolve_kite  # noqa: E402
 
 FIT_SCRIPT = _here.with_name("fit_periodic_cycle_config.py")
 OPTI_SCRIPT = _here.with_name("run_full_cycle_opti.py")
-POWER_LINE = re.compile(r"average power\s+(-?[\d.]+) kW\s+(-?[\d.]+) kW")
+# "average power  <seed> kW  <optimized> kW"; a continuation has no baseline
+# march, its seed column reads n/a
+POWER_LINE = re.compile(r"average power\s+(?:-?[\d.]+ kW|n/a)\s+(-?[\d.]+) kW")
 
 
 def parse_winds(text):
@@ -60,27 +64,22 @@ def outward_winds(winds, start):
 
 
 def walk_direction(winds, last_good, results, solve_cold, solve_continued):
-    """Solve ``winds`` in order: cold until one stalls, then each from the last
-    converged one, stopping at the first continuation that fails. Rows already
-    in ``results`` (keyed by wind, in the same schema) are kept, and steer the
-    walk the way they would have. ``solve_*`` return a row."""
-    stalled = False
+    """Solve ``winds`` in order, each continued from the last converged one
+    (its trajectory seeds the solve: about twice as fast as a cold solve, at
+    the same power); a continuation that fails falls back on a cold solve
+    (seed fit + run_full_cycle_opti.py, with its coarse pass), and a wind that
+    fails both ends the direction. Rows already in ``results`` (keyed by
+    wind, in the same schema) are kept and steer the walk the way they would
+    have: a stored failed continuation goes on to its cold fallback, a stored
+    failed cold solve ends the direction. ``solve_*`` return a row."""
     for wind in winds:
         row = results.get(wind)
-        if row is None and not stalled:
+        if row is None:
+            row = solve_continued(wind, last_good)
+            results[wind] = row
+        if not row["ok"] and row["method"] == "continued":
             row = solve_cold(wind)
             results[wind] = row
-        if row is not None and row["ok"]:
-            stalled = stalled or row["method"] == "continued"
-            last_good = row
-            continue
-        stalled = True
-        if row is not None and row["method"] == "continued":
-            return
-        if last_good is None:
-            return
-        row = solve_continued(wind, last_good)
-        results[wind] = row
         if not row["ok"]:
             return
         last_good = row
@@ -119,7 +118,7 @@ class PowerCurve:
         powers = POWER_LINE.findall(text)
         configs = list(self.results_dir.glob(f"full_cycle_optimized_*_{tag}.yaml"))
         if code == 0 and powers and configs:
-            row.update(ok=True, power_kw=float(powers[-1][1]), config=str(configs[0]))
+            row.update(ok=True, power_kw=float(powers[-1]), config=str(configs[0]))
         return row
 
     def _record(self, row, started):
@@ -210,7 +209,7 @@ class PowerCurve:
         fig.savefig(self.output_dir / "power_curve.png", dpi=150)
         plt.close(fig)
 
-    def run(self, winds, start):
+    def run(self, winds, start, sequential=False):
         first, above, below = outward_winds(winds, start)
         row = self.results.get(first)
         if row is None:
@@ -218,20 +217,26 @@ class PowerCurve:
         if not row["ok"]:
             print(f"The start wind {first:g} m/s did not converge; pick another with --start-wind")
             return 1
-        threads = [
-            threading.Thread(
-                target=walk_direction,
-                args=(direction, row, self.results, self.solve_cold, self.solve_continued),
-            )
-            for direction in (above, below)
-        ]
+        if sequential:
+            # one solve at a time (clean timings, half the memory)
+            for direction in (above, below):
+                walk_direction(direction, row, self.results, self.solve_cold, self.solve_continued)
+            threads = []
+        else:
+            threads = [
+                threading.Thread(
+                    target=walk_direction,
+                    args=(direction, row, self.results, self.solve_cold, self.solve_continued),
+                )
+                for direction in (above, below)
+            ]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
         missing = [f"{wind:g}" for wind in winds if wind not in self.results]
         if missing:
-            print("Not attempted, past a failed continuation: " + ", ".join(missing))
+            print("Not attempted, past a wind that failed both ways: " + ", ".join(missing))
         return 0
 
 
@@ -255,11 +260,14 @@ def main():
         help="Wind to start from (the nearest listed one); default the kite profile's",
     )
     parser.add_argument("--output-dir", default=None, help="Default results/<kite>/optimization/power_curve")
+    parser.add_argument("--sequential", action="store_true",
+                        help="Walk up, then down, one solve at a time (default: both at once)")
     args = parser.parse_args()
     start = args.start_wind
     if start is None:
         start = float(resolve_kite(args.kite)["wind"]["speed_wind_ref"])
-    return PowerCurve(args.kite, args.output_dir).run(parse_winds(args.winds), start)
+    return PowerCurve(args.kite, args.output_dir).run(parse_winds(args.winds), start,
+                                                      sequential=args.sequential)
 
 
 if __name__ == "__main__":

@@ -401,10 +401,18 @@ class Wing:
         return aero_forces
 
     def gain_turn_steering_for(self, model):
-        """a(u_p, u_s) [rad/m per u_s] of the turn law, :func:`roll_gain`'s form."""
-        return roll_gain(self.gain_turn_steering, self.gain_turn_steering_depower,
+        """a(u_p, u_s) [rad/m per u_s] of the turn law, :func:`roll_gain`'s form.
+
+        ``gain_roll_scale`` scales it too: the steering-authority assist of the
+        full-cycle optimizer and the server's cold solve (timeseries.roll_assist)
+        then acts on whichever steering law the ROM flies (before, it scaled the
+        roll gain alone and left a turn-law march where it failed)."""
+        gain = roll_gain(self.gain_turn_steering, self.gain_turn_steering_depower,
                          self.gain_turn_steering_squared,
                          model.input_depower, model.input_steering)
+        if self.gain_roll_scale != 1.0:
+            gain = self.gain_roll_scale * gain
+        return gain
 
     @staticmethod
     def turn_rate_for(model):
@@ -572,11 +580,11 @@ class Kite(Wing):
             c if isinstance(c, (ca.MX, ca.SX)) else float(c)
             for c in (self.aero_params.get("gain_roll_steering_squared") or [])
         ]
-        # Scale on the WHOLE k(u_p), not a ROM parameter: 1 except during the
-        # roll-gain continuation of the full-cycle optimizer, which marches a
-        # seed the kite cannot turn through at an assisted gain and steps it
-        # back to 1 (examples/4_trajectory_optimization/cycle/
-        # run_full_cycle_opti.march_with_roll_assist).
+        # Scale on the WHOLE k(u_p) (or, with steering_law turn_rate, on the
+        # turn law's a(u_p, u_s)), not a ROM parameter: 1 except during the
+        # steering-authority continuation of the full-cycle optimizer, which
+        # marches a seed the kite cannot turn through at an assisted gain and
+        # steps it back to 1 (timeseries.roll_assist).
         self.gain_roll_scale = 1.0
         # Sideslip -> aerodynamic roll, phi_a,w += gain_roll_sideslip * beta_a
         # [rad per rad], beta_a = angle_sideslip_for(model): the restoring roll
