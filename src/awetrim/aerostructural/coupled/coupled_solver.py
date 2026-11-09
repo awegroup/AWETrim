@@ -1458,7 +1458,9 @@ def main(
     ######################################################################
     # print out the geometric angle of attack of the mid panel
     mid_idx = len(body_aero.panels) // 2
-    angle = aerodynamic_vsm.mid_span_chord_angle_of_attack(body_aero, vel_app)
+    # The trim's apparent wind, as the wireframe driver prints it: vel_app is
+    # the freestream frozen at initialize (see _bridle_line_drag).
+    angle = aerodynamic_vsm.mid_span_chord_angle_of_attack(body_aero, body_aero.va)
 
     print(f"alpha = {np.degrees(angle):.2f}° (va vs mid-span chord)")
     print(
