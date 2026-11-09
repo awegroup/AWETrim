@@ -256,7 +256,15 @@ the steered kite rolls by exactly zero, so the roll $\phi_{a,w}$ that the roll g
 identified on is entirely the tilt that supplies the centripetal force, and its turn rate
 per unit $v_a$ is the same at every position in the wind window (within
 \SI{0.6}{\percent}): the steering sets the turn through the yaw moment, as
-Eq.~\eqref{eq:turn-law} states. At the centre of the window, where the identification
+Eq.~\eqref{eq:turn-law} states. The roll gain is therefore not an aerodynamic
+property: the roll is whatever tilt of the lift supplies $m v_\tau\dot\chi$, set by the
+kite's mass and ground speed as much as by the steering, and a gain fitted at the centre
+of the window carries the mass and the $v_\tau/v_a$ of its states to every other state.
+The turn-rate law keeps the two apart: the steering acts through the aerodynamic yaw
+moment, $a=-k_1/k_2$, the steering moment over the aerodynamic yaw damping, a property
+of the wing; the mass enters explicitly, as the inertial share of the damping
+($b\,m\,v_\tau$) and the weight's yaw moment ($b$, $c_5$, $c_6$); and the roll follows
+from the lateral force balance, as in the coupled model. At the centre of the window, where the identification
 sweep runs, $v_\tau/v_a$ is fixed per tape, so the two laws cannot be told apart there;
 they differ wherever the ground speed departs from the airspeed, that is off-centre and
 under gravity, which is everywhere in flight.
