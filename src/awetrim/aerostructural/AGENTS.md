@@ -1285,7 +1285,14 @@ through `Structure.write`): `build_deformed_struc_geometry(structure, nodes,
 bridle_rest_lengths)` returns a `Structure` (`with_positions` +
 `with_rest_lengths`), and since every segment has its own `rest_length` the
 `bridle_connection_rest_lengths` block survives only in the wireframe's
-in-memory PSM dict.
+in-memory PSM dict. `with_positions` first writes each canopy face's fabric
+mass to a `mass` column on `canopy_faces` (2026-11-09): awesIO's rule takes the
+fabric from the face area on the CURRENT positions, and a billowed Billow
+snapshot spans 1.8 % less corner-quad area than the built canopy (LEI-V3
+example, 74 g), so without the column its mass no longer matched
+`system.yaml` and step 1's `SHAPE = "billow"` refused it
+(`awesio_structure.canopy_face_masses`). Snapshots written before then still
+lack the column; re-run the case to refresh one.
 
 **Trim-state history / unloaded-branch reference (2026-09-10).** The coupled
 solver's meta now carries `opt_x_history` — the trim state

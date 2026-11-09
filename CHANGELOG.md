@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Structure: a deformed snapshot keeps the built fabric mass
+
+- **`Structure.with_positions` writes each canopy face's fabric mass to a `mass`
+  column on `canopy_faces`** before it moves the points, and the awesIO mass rule
+  (`awesio_structure.nodal_masses`, through the new `canopy_face_masses`) uses that
+  column where it is present. The rule took the fabric as face area x areal density
+  on the document's own positions, so a billowed Billow snapshot (1.8 % less
+  corner-quad area on the LEI-V3 PSM case) weighed 74 g less than the kite, and
+  step 1's `SHAPE = "billow"` refused it ("Trim mass 21.9848 kg ... differs from the
+  structure aggregate's 21.9104 kg"). The built `structure.yml` is unchanged (no
+  column, area rule); snapshots written before this lack the column until their
+  case is re-run.
+
 ### ROM: the turn-rate law as a steering law
 
 - **`aerodynamics.steering_law: turn_rate`** puts the turn-rate law of Cayon & Schmehl,
