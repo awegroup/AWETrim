@@ -311,6 +311,14 @@ class Phase:
 
         pattern_config_opti = copy.deepcopy(self.pattern_config)
         start_state_opti = copy.deepcopy(start_state)
+        # A scalar depower decision is put in the system model's own depower
+        # symbol while the NLP is built, and taken out again afterwards: the
+        # NLP holds its expressions by then, and a model left with the decision
+        # in it gives every later expression (the forward simulation's alpha,
+        # C_L, C_D, ... in TimeSeries.return_variable) an input no state has.
+        depower_swapped = "input_depower" in self._opti_params
+        if depower_swapped:
+            depower_symbol = self.system_model.input_depower
         for var_name, mx in self._opti_params.items():
             for entry in ["path_parameters", "radial_parameters", "sim_parameters"]:
                 if var_name in pattern_config_opti.get(entry, {}):
@@ -318,30 +326,34 @@ class Phase:
             if var_name == "input_depower":
                 self.system_model.input_depower = mx
 
-        self._phase = PhaseParameterized(
-            self.system_model,
-            quasi_steady=self.quasi_steady,
-            pattern_config=self.pattern_config,
-            pattern_config_opti=pattern_config_opti,
-        )
-        # Stored warm-start trajectory, if any: the previous NLP optimum
-        # (exact pass-to-pass warm start for staged solves) or a forward
-        # simulation the caller flagged with ``run_simulation(...,
-        # seed_warm_start=True)``. opti_phase validates the grid per variable,
-        # skips its own forward march when every seed is covered, and falls
-        # back to the march where absent or mismatched.
-        self._phase.warm_start_trajectory = getattr(
-            self, "_warm_start_trajectory", None
-        )
-        self._phase.warm_start_is_optimum = (
-            getattr(self, "_warm_start_source", None) == "optimum"
-        )
-        self._opti, self._opti_vars, self._objective = self._phase.opti_phase(
-            start_state=start_state,
-            opti=self._opti if hasattr(self, "_opti") else None,
-            start_state_opti=start_state_opti,
-            opti_params=getattr(self, "_opti_params", None),
-        )
+        try:
+            self._phase = PhaseParameterized(
+                self.system_model,
+                quasi_steady=self.quasi_steady,
+                pattern_config=self.pattern_config,
+                pattern_config_opti=pattern_config_opti,
+            )
+            # Stored warm-start trajectory, if any: the previous NLP optimum
+            # (exact pass-to-pass warm start for staged solves) or a forward
+            # simulation the caller flagged with ``run_simulation(...,
+            # seed_warm_start=True)``. opti_phase validates the grid per
+            # variable, skips its own forward march when every seed is covered,
+            # and falls back to the march where absent or mismatched.
+            self._phase.warm_start_trajectory = getattr(
+                self, "_warm_start_trajectory", None
+            )
+            self._phase.warm_start_is_optimum = (
+                getattr(self, "_warm_start_source", None) == "optimum"
+            )
+            self._opti, self._opti_vars, self._objective = self._phase.opti_phase(
+                start_state=start_state,
+                opti=self._opti if hasattr(self, "_opti") else None,
+                start_state_opti=start_state_opti,
+                opti_params=getattr(self, "_opti_params", None),
+            )
+        finally:
+            if depower_swapped:
+                self.system_model.input_depower = depower_symbol
         return self._phase
 
     def get_opti_components(
@@ -822,6 +834,10 @@ class Phase:
             "distance_radial",
             "tension_tether_ground",
             "input_depower",
+            # turn-rate law: the lift's roll is a per-node decision too, and a
+            # stored optimum without it cannot seed the next stage on its own
+            # (opti_phase then marches the force law for a warm start)
+            "angle_roll",
         ):
             var = opti_vars.get(key)
             if var is None:
@@ -833,7 +849,36 @@ class Phase:
             if n_points is not None:
                 values = values[:n_points]
             trajectory[key] = values
+        alpha = self._optimized_angle_of_attack(solution, n_points)
+        if alpha is not None:
+            trajectory["angle_of_attack"] = alpha
         return trajectory
+
+    def _optimized_angle_of_attack(
+        self, solution: Any, n_points: Optional[int]
+    ) -> Optional[np.ndarray]:
+        """The NLP's per-node angle of attack [rad] at the solution.
+
+        Read from the angle-of-attack row group of the constraint report (the
+        expressions the alpha bounds are written on): one per interval node,
+        plus the seam node under ``periodic_wrap``. Without the seam the last
+        node has no row and is NaN, so the array still has ``n_points``
+        entries. None when the report or its value is unavailable.
+        """
+        report = (getattr(self, "_constraint_report", None) or {}).get("angle_of_attack")
+        if not report or "expr" not in report:
+            return None
+        try:
+            values = np.asarray(solution.value(report["expr"]), dtype=float).ravel()
+        except Exception:
+            return None
+        if n_points is None:
+            return values
+        if values.size == n_points:
+            return values
+        if values.size == n_points - 1:
+            return np.append(values, np.nan)
+        return None
 
     def run_opti(
         self,

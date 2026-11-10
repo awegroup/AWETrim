@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Trajectory optimisation: the optimum's angle of attack is recorded
+
+- **A scalar depower decision is taken out of the system model after the NLP is
+  built** (`Phase.initialize_phase`). It was left in the model's depower symbol, so
+  after `run_simulation_opti` every expression of the forward simulation took an NLP
+  variable as input: the reel-out examples' timeseries CSVs had alpha, C_L, C_D,
+  attitude and course rate all NaN (`TimeSeries.to_dataframe` skips what it cannot
+  evaluate). Same optimum, the columns are filled (LEI-V3 helix: 26.96 kW either way).
+- **The optimizer's per-node trajectory carries `angle_of_attack`** (from the NLP's
+  own alpha rows, NaN at the last node without the periodic seam) **and, under the
+  turn-rate law, `angle_roll`**. The full-cycle comparison figure now draws the
+  optimised alpha (only the seed's was drawn) and the trajectory CSV has both
+  columns. Without the roll a stored optimum did not cover every decision, so each
+  staged solve re-marched the force law for its warm start; it is now seeded from
+  the previous optimum (LEI-V3 6 m/s cycle: 6 times instead of 0, 3 min 14 s
+  instead of 3 min 40 s).
+- `downloop_pattern.py --rom-file` reads a relative path against the working
+  directory (it was read against the kite folder); the cycle seed's feasibility
+  report gives the alpha bounds in degrees; `opti_failed_iterate.png` is
+  git-ignored.
+
 ### Server: ROM forces at one state and the power-tape match to another model
 
 - `POST /aero_forces` (stateless) returns the ROM's lift and drag at one power tape
