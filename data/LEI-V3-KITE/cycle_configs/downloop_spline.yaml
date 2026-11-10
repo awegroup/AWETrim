@@ -30,6 +30,13 @@ reelout:
     end_angle: 1
     n_points: 100
     input_depower: 1.595  # model tape (identification.yaml flight_match)
+    # Step box on the path's control points [rad] per solve: without it one IPOPT
+    # step along the flat power ridge can tear the figure eight apart and strand
+    # the iterate where the kite cannot trim (the turn-rate law did not recover;
+    # the roll gain did, at a worse optimum: 17.4 kW against 19.2 kW boxed).
+    param_step_bound:
+      C_phi: 0.3
+      C_beta: 0.3
 
 
 # Reel-in Phase Configuration

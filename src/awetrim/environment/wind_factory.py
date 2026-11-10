@@ -52,6 +52,8 @@ def create_wind_model(
     jet_amplitude: float = 0.0,
     jet_height: Optional[float] = None,
     jet_width: Optional[float] = None,
+    veer_rate: float = 0.0,
+    height_direction_ref: Optional[float] = None,
 ) -> Wind:
     """Build a fully numeric :class:`Wind` model.
 
@@ -70,6 +72,10 @@ def create_wind_model(
         jet_amplitude: Gaussian jet peak speed [m/s] (``jet`` only).
         jet_height: height of the jet peak [m] (``jet`` only).
         jet_width: standard deviation of the jet [m] (``jet`` only).
+        veer_rate: turn of the direction with height [rad/m]; positive =
+            veering (clockwise with height). 0 = constant direction.
+        height_direction_ref: height [m] at which the direction equals
+            ``direction_wind`` (default ``z_ref``).
     """
     if model_type in _ANALYTIC_MODELS:
         if U_ref is None:
@@ -91,6 +97,8 @@ def create_wind_model(
             jet_amplitude=jet_amplitude,
             jet_height=jet_height,
             jet_width=jet_width,
+            veer_rate=veer_rate,
+            height_direction_ref=height_direction_ref,
         )
         wind.height_ref = z_ref
         wind.speed_wind_ref = U_ref
@@ -114,6 +122,8 @@ def create_wind_model(
             tabulated_heights=heights,
             tabulated_speeds=speeds,
             direction_wind=direction_wind,
+            veer_rate=veer_rate,
+            height_direction_ref=height_direction_ref,
         )
 
     raise ValueError(

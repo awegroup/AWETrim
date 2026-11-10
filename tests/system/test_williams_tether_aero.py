@@ -180,3 +180,31 @@ def test_kite_drag_share_converges_at_second_order():
             )
         share = tension * abs(np.sin(x[0] - elevation)) / q_total
         assert share == pytest.approx(0.25 - 1.0 / (8.0 * n**2), rel=2e-3)
+
+
+def test_veering_wind_turns_segment_drag_sideways():
+    """A veering wind pushes the segments out of the kite's vertical plane.
+
+    The kite sits in the x-z plane with no rotation, so without veer the
+    apparent wind (and the drag) has no y component; with veer the segments
+    below the reference height see the wind turned anticlockwise (backed, +y)
+    and those above it turned clockwise (-y).
+    """
+    from awetrim.environment.Wind import Wind
+
+    tether = WilliamsTether(diameter=0.01, density=950.0, n_elements=10, elastic=False)
+    straight = Wind(wind_model="uniform", direction_wind=0.0, speed_wind_ref=12.0)
+    veering = Wind(
+        wind_model="uniform",
+        direction_wind=0.0,
+        speed_wind_ref=12.0,
+        veer_rate=np.radians(0.2),
+        height_direction_ref=100.0,
+    )
+    res0 = _evaluate_shape(tether, _Env(rho=1.225, g=9.81, wind=straight), omega=[0, 0, 0])
+    res1 = _evaluate_shape(tether, _Env(rho=1.225, g=9.81, wind=veering), omega=[0, 0, 0])
+
+    assert np.allclose(res0["drag_per_segment"][:, 1], 0.0, atol=1e-9)
+    y = res1["drag_per_segment"][:, 1]
+    assert y[0] > 0.0  # bottom segment, below 100 m: backed wind
+    assert y[-1] < 0.0  # top segment, above 100 m: veered wind

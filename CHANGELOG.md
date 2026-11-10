@@ -30,6 +30,99 @@
   boxes. V3Kite's KCU steers |u_s| <= 0.32 at 0.20 1/s, against the ROM's 0.357 and
   0.29 1/s.
 
+### The LEI-V3 ROM's depower box starts at 1.7 m
+
+- `validity.input_depower` of `rom_config_aerostructural.yaml` (and its source,
+  `identification.yaml` `fit.fidelities.wireframe.validity`) is now [1.7, 2.6] m, previously [1.5, 2.6] m.
+  The 2025 flights show the kite stalling already at 1.7 m of power tape. The
+  simulations the ROM is fitted to do not reproduce that stall, so the optimiser does not fly
+  more powered than that. The fit itself (band 1.5-2.6 m) is unchanged.
+- Low-wind optima that sat on the old 1.5 m floor move to 1.7 m. On the V3Kite sanity set
+  (RobustKiteControllers.jl), this keeps the KCU off its steering limit at 4 m/s.
+  Cabauw 4 m/s goes from a power ratio of 0.41 (failed) to 1.06.
+
+### The turn-rate law is the LEI-V3 default; robust trajectory optimisation
+
+- **`data/LEI-V3-KITE/rom_config_aerostructural.yaml` flies `steering_law: turn_rate`**:
+  the turn law refitted on the regenerated sweep and its turn-law states
+  (`identify_rom_aerostructural.py --steering-only --steering-law turn_rate`); lift, drag,
+  bridle pitch and stall are the 2026-11-05 identification's, and the roll gain stays in
+  the file (`steering_law: roll_gain` flies it).
+- It became the default only once every optimisation example converged with it from a
+  cold start, as it does with the roll gain. What made the difference, for both laws:
+  - **Coarse-to-fine cycles** (`run_full_cycle_opti.py --coarse-points N`, default 2 x M
+    for a cold solve, off when continuing): all stages first on a coarse grid, then the
+    full grid from that optimum, the trajectory resampled in s. LEI-V3, turn law: 5.5 m/s
+    failed cold on the full grid alone (1130 s) and converged with it (7.74 kW, 312 s);
+    7 m/s 562 s against 829 s. Neutral for the roll gain.
+  - **Continuation from a neighbouring wind without a march**: `--continue-from` seeds
+    stage 1 with the continued run's trajectory (its `.csv`). Re-marching an optimal path
+    at another wind with the seed's force law found no root at a node, for both laws.
+  - **A stalled stage resumes from where it stopped**: `Phase.run_simulation_opti(
+    resume_tolerance=...)` keeps a failed solve's last iterate when it is nearly feasible;
+    the cycle's power and polish stages run again from it (`MAX_RESUMES`), then halve their
+    step box (`MAX_BOX_HALVINGS`), and an optimum on the box edge is solved again with the
+    box re-centred (`MAX_RECENTRES`, until a pass gains < 0.1 %).
+  - **Reel-out patterns**: a +-0.3 rad step box on the path (`param_step_bound` in
+    `downloop_spline.yaml` / `helix_spline.yaml`) and `Phase.run_simulation_opti_recentred`
+    (re-solve while the box binds). Without the box one step can tear the figure eight
+    apart; the roll gain survived that at a worse optimum (17.4 against 19.6 kW).
+- **The power curve continues from the start** (`run_cycle_power_curve.py`): the start
+  wind cold, every other wind from the last converged one, a cold solve as the fallback,
+  a wind failing both ends the direction; `--sequential` walks one solve at a time.
+- Fixes: `load_cycle_config_from_yaml` dropped every `sim_parameters` key it did not list
+  (a reel-out `param_step_bound` never reached the NLP); `run_full_cycle_opti.py` returns 2
+  when a stage failed (the power curve counted a stage-1 result as converged); the power
+  curve read a continuation (seed power `n/a`) as failed; the steering-authority assist
+  (`Kite.gain_roll_scale`) now scales the turn law's gain too; `angle_roll` has its bound
+  in `DEFAULT_OPTI_LIMITS`. New tuning options: `--stage-max-iter`, `--max-resumes`,
+  `--shape-obj-tol`, `--polish-obj-tol` (a cap of 400 and a looser objective tolerance
+  were tested and are not the defaults).
+
+### Wind: direction turning with height (veer)
+
+- **`Wind(veer_rate=..., height_direction_ref=...)`** turns the wind direction
+  linearly with height (`profile_laws.veer_law`; positive = veering, clockwise with
+  height as in the Northern-Hemisphere Ekman layer). `direction_wind` is the direction
+  at `height_direction_ref` (default `height_ref`) and stays the reference of every
+  wind frame. The kite and the lumped tether see the veer through `velocity_wind_W`;
+  the Williams tether turns each segment's wind. `veer_rate = 0`, the default, builds
+  the same expressions as before. Both factories and the YAML `wind:` section accept
+  the two keys.
+- **`--wind-config FILE`** on `fit_periodic_cycle_config.py` and
+  `run_full_cycle_opti.py` replaces the kite profile's wind block, so one kite's cycle
+  can be solved in several winds. The output tag names a jet (`_jet<A>at<h>m`) and a
+  veer (`_veer<deg/m>dpm`).
+- Fix: `cycle_comparison_plots.series_from_optimizer_result` gave a closed
+  (`periodic_wrap`) cycle's azimuth and elevation one sample fewer than its other
+  series (the seam node was appended before the angles were evaluated).
+
+### ROM: the turn-rate law as a steering law
+
+- **`aerodynamics.steering_law: turn_rate`** puts the turn-rate law of Cayon & Schmehl,
+  *Quasi-steady equilibrium and turn-rate law of kites* (in preparation), Eq. (33) with
+  App. A, in the ROM: the steering sets the turn rate through the yaw-moment balance,
+  `w (v_a + b m v_tau) + b F_g,n + c5 F_g,chi + c6 F_g,r = a v_a^2 u_s`, and the lift's
+  roll is an unknown (`angle_roll`) closed by the lateral force balance. The default
+  stays `roll_gain`; its NLPs are unchanged.
+- **Why:** in the coupled model the steered kite without mass rolls by exactly zero
+  and turns at the same rate per unit `v_a` everywhere in the wind window; the roll the
+  roll gain is fitted on is the centripetal tilt, so a roll-gain ROM turns as
+  1 / (m v_tau) and carries the whole weight into the turn. The turn law predicts
+  off-centre coupled states within 1 % (roll gain: up to 13 %), half-mass within 0.5 %,
+  gravity-on states within 0.2-0.6 % (-4 % at course 270 deg), and on the 2019 flight
+  (cycles 60-67) correlates 0.961 against 0.906, with a gravity coefficient of 0.72
+  against 0.93 (flight 0.49) and reel-out tension / speed errors of +6 / +9 % against
+  +11 / +12 %. Its gain is ~20 % high at the flight's turn peaks.
+- **The sweep measures the law's b(u_p), c5, c6 itself** (`sweep.turn_law` in
+  `identification.yaml`, `run_identification_sweep.py --turn-law`, after the chains on a
+  full run, into `sweep/turn_law/`; `awetrim.identification.turn_law`), so they always
+  belong to the shapes a is fitted on; `identify_rom_aerostructural.py --steering-law
+  turn_rate` reads them (`fit.turn_law.inertia_degree`), `--steering-only BASE_ROM`;
+  `check_window_position.py` (window position, mass scale, `--gravity`) checks the laws;
+  `downloop_pattern.py --server-seed / --seed-config /
+  --rom-file / --results-dir`; the flight validator carries the roll unknown.
+
 ### Removed: the legacy integrator paths
 
 - `SystemModel.integrator` / `establish_ode_function` / `establish_algebraic` /

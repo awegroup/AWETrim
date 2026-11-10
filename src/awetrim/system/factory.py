@@ -85,7 +85,8 @@ def create_wind_model_from_config(wind_cfg):
     Keys: ``model`` (or ``model_type``; any value in
     :data:`awetrim.environment.profile_laws.ALL_MODELS`, default ``uniform``),
     ``z0``, ``alpha``, ``jet_amplitude``/``jet_height``/``jet_width``,
-    ``tabulated_heights``/``tabulated_speeds``, ``direction_wind`` (default 0)
+    ``tabulated_heights``/``tabulated_speeds``, ``direction_wind`` (default 0),
+    ``veer_rate`` [rad/m] / ``height_direction_ref`` (default no veer)
     and exactly one amplitude:
 
     - ``speed_wind_ref`` (+ optional ``height_ref``, default 6 m),
@@ -110,6 +111,8 @@ def create_wind_model_from_config(wind_cfg):
         tabulated_speeds=wind_cfg.get("tabulated_speeds"),
         direction_wind=wind_cfg.get("direction_wind", 0),
         speed_wind_ref=wind_cfg.get("speed_wind_ref"),
+        veer_rate=wind_cfg.get("veer_rate", 0.0),
+        height_direction_ref=wind_cfg.get("height_direction_ref"),
     )
     if "height_ref" in wind_cfg:
         wind_model.height_ref = float(wind_cfg["height_ref"])

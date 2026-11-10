@@ -55,6 +55,37 @@ def relative_reg_weight(opti, objective, reg, fraction):
     return fraction * objective0 / reg0
 
 
+def trajectory_mean_power(trajectory) -> Optional[float]:
+    """Mean power [W] of an optimized trajectory: tension x reel speed over the
+    time the path parameter takes (dt = ds / s_dot, trapezoidal). None when
+    the trajectory lacks a column."""
+    try:
+        s = np.asarray(trajectory["s"], dtype=float)
+        s_dot = np.asarray(trajectory["s_dot"], dtype=float)
+        power = (np.asarray(trajectory["tension_tether_ground"], dtype=float)
+                 * np.asarray(trajectory["speed_radial"], dtype=float))
+        time = np.concatenate([[0.0], np.cumsum(np.diff(s) / (0.5 * (s_dot[1:] + s_dot[:-1])))])
+        return float(np.trapezoid(power, time) / time[-1])
+    except Exception:
+        return None
+
+
+def step_box_active(before, after, step_bounds, fraction=0.98) -> bool:
+    """True when a parameter moved to ``fraction`` of its per-solve step box
+    (``sim_parameters.param_step_bound``: a scalar or per-element delta;
+    elements with a zero delta are frozen and ignored)."""
+    for name, delta in (step_bounds or {}).items():
+        if name not in before or name not in after:
+            continue
+        moved = np.abs(np.asarray(after[name], dtype=float).ravel()
+                       - np.asarray(before[name], dtype=float).ravel())
+        delta = np.broadcast_to(np.asarray(delta, dtype=float).ravel(), moved.shape)
+        free = delta > 0
+        if np.any(moved[free] >= fraction * delta[free]):
+            return True
+    return False
+
+
 @dataclass
 class SimulationResult:
     """Container for simulation results and optimization outputs."""
@@ -380,6 +411,7 @@ class Phase:
         warm_start: bool = False,
         trust_region_weight: float = 0.0,
         max_iter: Optional[int] = None,
+        resume_tolerance: Optional[float] = None,
     ) -> Optional[SimulationResult]:
         """Run optimization and return results.
 
@@ -398,6 +430,11 @@ class Phase:
                 optimized parameters to their current (previous-iterate) config
                 values, normalized by each parameter's bound width. Keeps a
                 block-coordinate step from leaving the productive region.
+            resume_tolerance: when the solve fails but its last iterate's primal
+                infeasibility (IPOPT inf_pr) is at most this, the iterate is
+                written back like a solution (``adopted_failed_iterate`` True) so
+                the caller can run the stage again from it. The return value is
+                still None. None (default): a failed solve leaves the phase as is.
 
         Returns:
             SimulationResult object or None if optimization failed
@@ -481,14 +518,118 @@ class Phase:
         if objective_dict.get("depower_anchor") is not None:
             total_objective = total_objective + objective_dict["depower_anchor"]
 
+        self._failed_iterate = None
+        self.adopted_failed_iterate = False
         solution = self.run_opti(
             opti, total_objective, warm_start=warm_start, max_iter=max_iter
         )
         if solution is None:
+            # A stalled solve (iteration limit, a restoration that does not
+            # come back) often stops at a nearly feasible point. With a
+            # ``resume_tolerance``, such an iterate is written back like a
+            # solution -- parameters, depower profile, start state, warm start
+            # -- so the caller can run the stage again from it instead of from
+            # the previous optimum. The return value stays None: not converged.
+            inf_pr = getattr(self, "_failed_iterate_inf_pr", float("inf"))
+            if (
+                resume_tolerance is not None
+                and self._failed_iterate is not None
+                and np.isfinite(inf_pr)
+                and inf_pr <= float(resume_tolerance)
+            ):
+                iterate = self._failed_iterate
+                for var_name, mx in self._opti_params.items():
+                    value = iterate.value(mx)
+                    for entry in ("path_parameters", "radial_parameters", "sim_parameters"):
+                        if var_name in self.pattern_config.get(entry, {}):
+                            self.pattern_config[entry][var_name] = value
+                            break
+                self._store_iterate(iterate, opti_vars)
+                self.adopted_failed_iterate = True
+                print(f"Last iterate kept for a resume (primal infeasibility {inf_pr:.2e} "
+                      f"<= {float(resume_tolerance):g})")
             return None
 
         self._print_constraint_report(solution.value, self._constraint_report)
+        optimized_trajectory = self._store_iterate(solution, opti_vars)
+        # Path-geometry diagnostics from the NLP's own expressions: the per-node
+        # physical turn radius r/|kappa| [m] as an extra trajectory column and
+        # the tightest radius over the sub-sampled path. Best-effort, like the
+        # trajectory extraction itself; ``turn_radius_min`` is None if unavailable.
+        turn_radius_min: Optional[float] = None
+        if optimized_trajectory:
+            n_points = len(optimized_trajectory.get("s", []))
+            expr = objective_dict.get("turn_radius")
+            if expr is not None:
+                try:
+                    values = np.asarray(solution.value(expr), dtype=float).ravel()
+                    optimized_trajectory["turn_radius"] = (
+                        values[:n_points] if n_points else values
+                    )
+                except Exception:
+                    pass
+            try:
+                turn_radius_min = float(
+                    solution.value(objective_dict["turn_radius_min"])
+                )
+            except Exception:
+                turn_radius_min = None
 
+        return SimulationResult(
+            solution=solution,
+            optimized_config=self.pattern_config,
+            final_distance=objective_dict.get("distance_radial_final", 0.0),
+            phase_variables=opti_vars,
+            optimized_trajectory=optimized_trajectory,
+            energy_objective=objective_dict.get("energy", 0.0),
+            total_time=objective_dict.get("total_time", 0.0),
+            turn_radius_min=turn_radius_min,
+        )
+
+    def run_simulation_opti_recentred(
+        self,
+        max_recentres: int = 3,
+        min_gain: float = 1e-3,
+        **kwargs,
+    ) -> Optional[SimulationResult]:
+        """:meth:`run_simulation_opti`, solved again while the step box
+        (``sim_parameters.param_step_bound``) binds at the optimum.
+
+        The box bounds one solve's move of the path; an optimum on its edge
+        lies where the box, not the optimum, stopped it. Each further solve
+        starts from the previous optimum with the box re-centred on it, until
+        the box is inactive, a solve gains less than ``min_gain`` of the mean
+        power, or after ``max_recentres`` re-centred solves. Returns the last
+        converged result (None when the first solve fails)."""
+        bounds = (self.pattern_config.get("sim_parameters", {}) or {}).get("param_step_bound") or {}
+        result, previous_power = None, None
+        for recentre in range(int(max_recentres) + 1):
+            before = {name: np.asarray(self._param_reference(name), dtype=float)
+                      for name in bounds if self._param_reference(name) is not None}
+            solved = self.run_simulation_opti(**kwargs)
+            if solved is None:
+                return result
+            result = solved
+            after = {name: np.asarray(self._param_reference(name), dtype=float) for name in before}
+            power = trajectory_mean_power(result.optimized_trajectory)
+            if not step_box_active(before, after, bounds):
+                return result
+            if previous_power is not None and power is not None and (
+                    power - previous_power) < min_gain * max(abs(previous_power), 1e-9):
+                print("Step box active, but the re-centred solve gained "
+                      f"{(power - previous_power) / max(abs(previous_power), 1e-9):.2%}: done")
+                return result
+            if recentre < max_recentres:
+                print(f"Step box active at the optimum; solving again with it re-centred "
+                      f"({recentre + 1}/{max_recentres})"
+                      + (f", mean power {power / 1e3:.3f} kW" if power is not None else ""))
+            previous_power = power
+        return result
+
+    def _store_iterate(self, solution, opti_vars) -> Optional[Dict[str, Any]]:
+        """Write an NLP point (a solution, or ``opti.debug`` for a kept failed
+        iterate) back into the phase: the depower profile, the start state and
+        the warm-start trajectory of the next solve. Returns the trajectory."""
         # When the depower input is optimized as a per-node profile, persist the
         # optimized l_dp(s) into sim_parameters["input_depower_profile"] (length
         # n_points + 1, the s-grid). The follow-on run_simulation() and the saved
@@ -518,47 +659,14 @@ class Phase:
         # NaN) once the winch/depower have moved a lot.
         self._update_start_state_from_solution(solution, opti_vars)
 
-        optimized_trajectory = self._extract_optimized_trajectory(solution, opti_vars)
-        # Path-geometry diagnostics from the NLP's own expressions: the per-node
-        # physical turn radius r/|kappa| [m] as an extra trajectory column and
-        # the tightest radius over the sub-sampled path. Best-effort, like the
-        # trajectory extraction itself; ``turn_radius_min`` is None if unavailable.
-        turn_radius_min: Optional[float] = None
-        if optimized_trajectory:
-            n_points = len(optimized_trajectory.get("s", []))
-            expr = objective_dict.get("turn_radius")
-            if expr is not None:
-                try:
-                    values = np.asarray(solution.value(expr), dtype=float).ravel()
-                    optimized_trajectory["turn_radius"] = (
-                        values[:n_points] if n_points else values
-                    )
-                except Exception:
-                    pass
-            try:
-                turn_radius_min = float(
-                    solution.value(objective_dict["turn_radius_min"])
-                )
-            except Exception:
-                turn_radius_min = None
-        if optimized_trajectory:
-            # Seed the next staged solve from this optimum (see
-            # initialize_phase): exact warm start, no warm-start forward
-            # march, and no force-law re-simulation failure between passes in
-            # free_speed winch mode.
-            self._warm_start_trajectory = optimized_trajectory
+        trajectory = self._extract_optimized_trajectory(solution, opti_vars)
+        if trajectory:
+            # Seed the next staged solve from this point (see initialize_phase):
+            # exact warm start, no warm-start forward march, and no force-law
+            # re-simulation failure between passes in free_speed winch mode.
+            self._warm_start_trajectory = trajectory
             self._warm_start_source = "optimum"
-
-        return SimulationResult(
-            solution=solution,
-            optimized_config=self.pattern_config,
-            final_distance=objective_dict.get("distance_radial_final", 0.0),
-            phase_variables=opti_vars,
-            optimized_trajectory=optimized_trajectory,
-            energy_objective=objective_dict.get("energy", 0.0),
-            total_time=objective_dict.get("total_time", 0.0),
-            turn_radius_min=turn_radius_min,
-        )
+        return trajectory
 
     def _param_reference(self, name: str) -> Any:
         """Current (previous-iterate) config value for an optimized parameter."""
@@ -772,7 +880,12 @@ class Phase:
             "acceptable_iter": 5,
             "acceptable_tol": 1.0,
             "acceptable_constr_viol_tol": 1e-4,
-            "acceptable_obj_change_tol": 1e-4,
+            # sim_parameters.acceptable_obj_change_tol: a staged caller may stop
+            # a feasible stage earlier once its objective barely moves (e.g. a
+            # polish that only adds fractions of a percent).
+            "acceptable_obj_change_tol": float(
+                sim_parameters.get("acceptable_obj_change_tol", 1e-4)
+            ),
             # "constr_viol_tol": 1e-6,
             "dual_inf_tol": 1e-4,
             "hessian_approximation": "limited-memory",
@@ -914,6 +1027,16 @@ class Phase:
                 except Exception:
                     pass
             print("Optimization failed:", exc)
+            # The last iterate and its primal infeasibility, for a caller that
+            # resumes a stalled solve from where it stopped
+            # (run_simulation_opti(resume_tolerance=...)).
+            self._failed_iterate = opti.debug
+            try:
+                self._failed_iterate_inf_pr = float(
+                    opti.debug.stats()["iterations"]["inf_pr"][-1]
+                )
+            except Exception:
+                self._failed_iterate_inf_pr = float("inf")
             self._plot_failed_iterate(opti)
             # WHERE the failed iterate is infeasible, constraint group by group.
             self._print_constraint_report(

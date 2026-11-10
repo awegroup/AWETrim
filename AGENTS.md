@@ -129,6 +129,11 @@ src/awetrim/
                          Full-cycle seeds use it through
                          fit_periodic_cycle_config.py --size
   timeseries/        ✅  PhaseParameterized, ReeloutSimple, ReelinSimple, Cycle
+                         (phase.py: Phase.run_simulation_opti(resume_tolerance=)
+                         keeps a nearly feasible failed iterate for a resume;
+                         run_simulation_opti_recentred re-solves while the step
+                         box param_step_bound binds; step_box_active and
+                         trajectory_mean_power are the shared helpers)
                          (dynamic march, quasi_steady=False: implicit. A
                          dynamic node is a quasi-steady node, unknowns [T, u_s,
                          s_dot, v_r], plus the inertia of the steps ending at
@@ -256,7 +261,19 @@ src/awetrim/
                          scale_height?} is set, then lift/drag, KCU drag and the
                          lumped tether drag use it at z = r sin(beta)
                          (SystemModel.air_density) and the Williams tether
-                         per node (air_density_at_height)
+                         per node (air_density_at_height).
+                         Veer: Wind(veer_rate [rad/m], height_direction_ref
+                         [m], default height_ref) turns the direction with
+                         height, profile_laws.veer_law (linear; positive =
+                         veering, clockwise with height). velocity_wind_W uses
+                         direction_wind_at_height, so the kite and the lumped
+                         tether see it; the Williams tether turns each
+                         segment's wind by direction_offset_at_height.
+                         direction_wind stays every frame's reference (the
+                         direction at height_direction_ref); veer_rate 0 =
+                         expressions unchanged. Cycle scripts:
+                         --wind-config FILE (cycle_kites.load_wind_config)
+                         replaces the profile's wind block
   server/            ✅  REST API for reelout trajectory optimization
                          (FastAPI, optional [server] extra; endpoints
                          /init /status /step /trajectory /reset, plus the
@@ -322,6 +339,8 @@ src/awetrim/
                          processing and the EKF itself live in EKF-AWE
   plotting/          ✅  shared plotting helpers — see src/awetrim/plotting/AGENTS.md
   utils/             ✅  defaults, reference frames, control_metrics,
+                         utils.load_cycle_config_from_yaml (passes every
+                         sim_parameters key through, e.g. param_step_bound),
                          time_scheme (the march's / NLP's step and rate
                          kernels, euler and bdf2, numpy or casadi)
                          (steering-reversal count / pairs outside a deadband,
@@ -334,7 +353,10 @@ src/awetrim/
                          theta_b / phi_a trim samples of paper App. D), tidy
                          dataset (aero_dataset.py, AS + EKF sources, shared schema),
                          BIC forward-stepwise polynomial fit with k-fold CV
-                         (aero_polynomial.py → rom_config "coeffs"), control
+                         (aero_polynomial.py → rom_config "coeffs"),
+                         turn_law.py (the turn-rate law's b(u_p), c5, c6 from
+                         the sweep's turn-law states: mass-0/1 pairs and
+                         gravity-on states of its anchors), control
                          conventions (controls.py), rigid_body_axes.py
                          (body axes anchored to the wing's CENTRE PANEL,
                          aircraft FRD sense; never inertia eigenvectors).
@@ -353,7 +375,8 @@ strut-lever load transfer (`fidelity: wireframe` of `identification.yaml`):
 `examples/3_rom_identification/run_identification_sweep.py` then
 `identify_rom_aerostructural.py`, both reading `data/<kite>/identification.yaml`,
 writing under `results/<kite>/identification/<fidelity>/`; band 1.50-2.60 m (fitted
-from 1.40 m), every state settled on the realistic stall branch marched DOWN, stall
+from 1.40 m; the optimiser's box `validity.input_depower` starts at 1.70 m, where the 2025
+flights already stall and the simulations do not), every state settled on the realistic stall branch marched DOWN, stall
 10.27 deg measured from that branch's onset, optimiser's upper alpha 7.27 deg
 (`validity.angle_of_attack_deg`, the stall less `fit.stall_margin_deg`),
 tension floor `validity.min_tether_force_n` 602 N, roll gain k(u_p) quadratic;
@@ -386,8 +409,8 @@ commit bad8a9b).
 
 Full-cycle optimisation scripts (`optimization/cycle/`): `fit_periodic_cycle_config.py`
 (`--size` fits the path to the turns the kite holds at the wind, SIZE_MARGINS 1.4-2.0, first complete march inside the steering limit at the kite's own gain)
-+ `run_cycle_power_curve.py` (the two scripts over a range of winds: outward from a start wind, cold until a wind stalls, then `--continue-from` the last converged one; resumes)
-+ `run_full_cycle_opti.py` (multi-lobe cycle; closed through the `periodic_wrap` seam, the closing stage uses the one-sided `close_radial_cycle` pin; step boxes ±0.15 rad / ±50 m in the closing stage, 4x that in the power stage and polish; `--step-scale` scales the latter; the closing stage holds the depower profile, except on a `--continue-from` run, where it anchors it with `depower_anchor_weight` 0.05 so a wind continuation can depower into the rated region; the power stages carry the smoothness term at `REG_FRACTION` 0.1 of the objective, without which the reel-in of a kite steering at its band zigzags. Roll-gain assist (`awetrim.timeseries.roll_assist`, used by both scripts and the server's cold solve): when the seed does not trim at the kite's roll gain, it is marched at 1.25-2 x k(u_p) (`Kite.gain_roll_scale`, not a ROM parameter) and the optimizer inserts continuation stages that halve the excess back to 1 (midpoint retry on failure) before the power stages, so a kite with little roll authority (the bare LEI-V3 ROM, x1.75 at 6 m/s) still starts at the reel-in top). Studies
++ `run_cycle_power_curve.py` (the two scripts over a range of winds: outward from a start wind, the start wind cold, every other wind `--continue-from` the last converged one, a cold solve as the fallback; `--sequential`; resumes)
++ `run_full_cycle_opti.py` (multi-lobe cycle; a cold solve first runs every stage on a coarse grid (`--coarse-points`, default 2 x M, off for a continuation), then the full grid from that optimum (`_resample_trajectory`); `--continue-from` seeds stage 1 with the continued run's trajectory (no march); a power or polish stage that stalls resumes from its last iterate (`Phase.run_simulation_opti(resume_tolerance=...)`, `MAX_RESUMES`), then halves its box (`MAX_BOX_HALVINGS`), and an optimum on the box edge is re-solved with the box re-centred (`MAX_RECENTRES`, < 0.1 % gain stops); exit code 2 when a stage still fails; closed through the `periodic_wrap` seam, the closing stage uses the one-sided `close_radial_cycle` pin; step boxes ±0.15 rad / ±50 m in the closing stage, 4x that in the power stage and polish; `--step-scale` scales the latter; the closing stage holds the depower profile, except on a `--continue-from` run, where it anchors it with `depower_anchor_weight` 0.05 so a wind continuation can depower into the rated region; the power stages carry the smoothness term at `REG_FRACTION` 0.1 of the objective, without which the reel-in of a kite steering at its band zigzags. Roll-gain assist (`awetrim.timeseries.roll_assist`, used by both scripts and the server's cold solve): when the seed does not trim at the kite's roll gain, it is marched at 1.25-2 x k(u_p) (`Kite.gain_roll_scale`, not a ROM parameter; it scales the turn law's gain a too) and the optimizer inserts continuation stages that halve the excess back to 1 (midpoint retry on failure) before the power stages, so a kite with little roll authority (the bare LEI-V3 ROM, x1.75 at 6 m/s) still starts at the reel-in top). Studies
 built on them live in `optimization/studies/` (see its README), e.g.
 `run_uploop_eight_opti.py` + `plot_uploop_eight_comparison.py` (ONE slanted up-loop figure eight per period: low lobe
 + crossings reel out, high arc reels in; `periodic_wrap`, `free_speed`, free
@@ -414,6 +437,30 @@ angles are taken in the paper's App. D apparent-wind frame, which
 Euler-angle frame with a mirrored yaw sign put the bridle pitch 2-3 deg off
 in sideslip, zero only at the centre-window trims; every flight calibration
 before that date absorbed it);
+`aerodynamics.steering_law` (code default `roll_gain`, the above) or `turn_rate` (what the
+LEI-V3's `rom_config_aerostructural.yaml` flies since 2026-11-09, the roll gain kept in the
+file; it became the default once every optimisation example converged with it cold): the
+turn-rate law of Cayon & Schmehl, "Quasi-steady equilibrium and turn-rate law of
+kites" (manuscript in preparation), Eq. 33 / App. A, divided by k2 and written with the ROM's
+weight vector, `w (v_a + b m v_tau) + b F_g,n + c5 F_g,chi + c6 F_g,r = a v_a^2 u_s`
+(w = -a_n / v_tau, `Kite.turn_rate_residual_for`), params `gain_turn_steering`
+(+ `_depower`, `_squared`, roll_gain's form; a = -k1/k2), `turn_inertia_coefficient`
+(+ `turn_inertia_coefficient_depower`; b = k3/k2 = k4/k2 [1/kg]),
+`turn_gravity_course_coefficient` / `turn_gravity_radial_coefficient` (c5, c6 = k5/k2,
+k6/k2) and `turn_density_reference` (b, c5, c6 scale with rho_ref / rho; k2 carries rho).
+The lift's total roll is then an unknown, `angle_roll` (`SystemModel.angle_roll`, in
+`default_unknown_vars`; State.angle_roll), closed by the lateral force row, and
+`force_residual` has a FOURTH row (the turn law); the phase forward march, the reel-out
+NLP (`opti_vars["angle_roll"]`) and the flight validator carry it; the Williams tether
+is not wired for it (raises). The sweep alone cannot separate a from b (v_tau / v_a is
+fixed per tape at the centre): b(u_p), c5, c6 are measured on the sweep's turn-law
+states (`identification.yaml` `sweep.turn_law`: anchors re-solved tetherless at mass
+scale 0 / 1 and with gravity off-centre; `run_identification_sweep.py --turn-law`, into
+`sweep/turn_law/trims.csv`; `awetrim.identification.turn_law`), then
+`identify_rom_aerostructural.py --steering-law turn_rate` fits a with them
+(`fit.turn_law.inertia_degree`; `--steering-only BASE_ROM` refits only the steering law);
+`check_window_position.py` checks the laws off-centre;
+`docs/identification/` Sect. "The turn-rate law";
 `aerodynamics.reference_area` [m2] states the area the coefficients are
 normalised by and overrides the system wing area (the LEI-V3 ROMs both use
 19.75 m2, the EKF area; system.yaml's projected 17.2119 m2 is geometry, not a
