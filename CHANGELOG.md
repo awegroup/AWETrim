@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### The LEI-V3 ROM's depower box starts at 1.7 m
+
+- `validity.input_depower` of `rom_config_aerostructural.yaml` (and its source,
+  `identification.yaml` `fit.fidelities.wireframe.validity`) is now [1.7, 2.6] m, previously [1.5, 2.6] m.
+  The 2025 flights show the kite stalling already at 1.7 m of power tape. The
+  simulations the ROM is fitted to do not reproduce that stall, so the optimiser does not fly
+  more powered than that. The fit itself (band 1.5-2.6 m) is unchanged.
+- Low-wind optima that sat on the old 1.5 m floor move to 1.7 m. On the V3Kite sanity set
+  (RobustKiteControllers.jl), this keeps the KCU off its steering limit at 4 m/s.
+  Cabauw 4 m/s goes from a power ratio of 0.41 (failed) to 1.06.
+
 ### The turn-rate law is the LEI-V3 default; robust trajectory optimisation
 
 - **`data/LEI-V3-KITE/rom_config_aerostructural.yaml` flies `steering_law: turn_rate`**:

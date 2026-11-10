@@ -187,8 +187,10 @@ fit:
       # 2 x 22.2 kg x g; the 2019 file's flown KCU is 22.0 kg, i.e. 597 N --
       # the 1 % is inside the margin's own precision).
       validity:
-        # the ROM band (the optimiser's depower box is clipped to it)
-        input_depower: [1.50, 2.60]
+        # the optimiser's depower box is clipped to it. Powered end 1.70 m, not
+        # the 1.50 m the ROM was fitted to: the 2025 flights show the kite
+        # stalling already at 1.70 m, which the simulations do not reproduce
+        input_depower: [1.70, 2.60]
         min_tether_force_n: 602.0
       # The turn law of --steering-law turn_rate (Cayon & Schmehl, in preparation,
       # Eq. 33): w (v_a + b m v_tau) + b F_g,n + c5 F_g,chi + c6 F_g,r =

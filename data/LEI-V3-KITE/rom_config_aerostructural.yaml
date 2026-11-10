@@ -33,8 +33,10 @@ validity:
   angle_of_attack_deg:
   - -7.0
   - 7.27
+  # powered end 1.7 m, not the 1.5 m of the fit: the 2025 flights stall already at
+  # 1.7 m, which the simulations do not reproduce (identification.yaml)
   input_depower:
-  - 1.5
+  - 1.7
   - 2.6
   input_steering_abs_max: 0.3571
   min_tether_force_n: 602.0

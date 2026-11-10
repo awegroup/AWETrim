@@ -357,7 +357,8 @@ strut-lever load transfer (`fidelity: wireframe` of `identification.yaml`):
 `examples/3_rom_identification/run_identification_sweep.py` then
 `identify_rom_aerostructural.py`, both reading `data/<kite>/identification.yaml`,
 writing under `results/<kite>/identification/<fidelity>/`; band 1.50-2.60 m (fitted
-from 1.40 m), every state settled on the realistic stall branch marched DOWN, stall
+from 1.40 m; the optimiser's box `validity.input_depower` starts at 1.70 m, where the 2025
+flights already stall and the simulations do not), every state settled on the realistic stall branch marched DOWN, stall
 10.27 deg measured from that branch's onset, optimiser's upper alpha 7.27 deg
 (`validity.angle_of_attack_deg`, the stall less `fit.stall_margin_deg`),
 tension floor `validity.min_tether_force_n` 602 N, roll gain k(u_p) quadratic;
