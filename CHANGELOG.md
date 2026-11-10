@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+### Server: ROM forces at one state and the power-tape match to another model
+
+- `POST /aero_forces` (stateless) returns the ROM's lift and drag at one power tape
+  and apparent wind, at a given angle of attack or the ROM's gravity-free trim
+  (`awetrim.system.rom_forces.rom_aero_forces`).
+- `rom_forces.match_input_depower` is its inverse: the ROM tape that pulls a given
+  resultant (default) or lift inside the ROM's depower band.
+  `examples/server/identify_depower_offset.py` uses it to fit the tape map
+  `client tape = ROM tape + offset` from another model's forces (e.g.
+  RobustKiteControllers' `validate_lift_drag.jl`) and reports the L/D left at matched
+  force. V3Kite against the 2026-11-05 LEI-V3 ROM: -0.372 m (std 0.010 m, 4 points),
+  gain 0.977, L/D 6 % higher.
+- `rom_config_aerostructural2.yaml`, deleted on develop, is not restored by the
+  branch.
+
+### Server: the ROM's angle-of-attack range by default, actuator limits
+
+- **The reel-out angle-of-attack box is the ROM's identified range**
+  (`validity.angle_of_attack_deg`; LEI-V3 -7 to 7.27 deg) when the client sends no
+  `angle_of_attack_limits`, instead of the generic 0-14 deg, whose floor kept a
+  depowered kite in strong wind from depowering (the 10 m/s Cabauw case failed with
+  alpha on 0 deg) and whose ceiling lay past the stall (10.27 deg). `{}` on `/step`
+  returns to this range. A ROM file without the block keeps 0-14 deg.
+- **`steering_limits {max, rate}` and `depower_limits {min, max}`** on `/init` and
+  `/step` (echoed): the client's actuator limits, which only narrow the optimizer's
+  boxes. V3Kite's KCU steers |u_s| <= 0.32 at 0.20 1/s, against the ROM's 0.357 and
+  0.29 1/s.
+
 ### The LEI-V3 ROM's depower box starts at 1.7 m
 
 - `validity.input_depower` of `rom_config_aerostructural.yaml` (and its source,

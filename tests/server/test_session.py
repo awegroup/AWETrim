@@ -1145,3 +1145,87 @@ def test_failed_continuation_fails_the_step_and_restores_the_gain(
         sess.step_blocking()
     assert kite.gain_roll_scale == 1.0
     assert sess.successful_steps == 0
+
+
+# --- the ROM's angle-of-attack range and the actuator limits -----------------
+
+
+def test_rom_angle_of_attack_box_reads_the_validity_block(tmp_path):
+    rom = tmp_path / "rom.yaml"
+    rom.write_text("validity:\n  angle_of_attack_deg: [-7.0, 7.27]\n")
+    box = ReeloutSession._rom_angle_of_attack_box(rom)
+    assert box == pytest.approx((np.radians(-7.0), np.radians(7.27)))
+    (tmp_path / "bare.yaml").write_text("aerodynamics: {}\n")
+    assert ReeloutSession._rom_angle_of_attack_box(tmp_path / "bare.yaml") is None
+    assert ReeloutSession._rom_angle_of_attack_box(None) is None
+
+
+def test_angle_of_attack_defaults_are_the_rom_range():
+    box = (np.radians(-7.0), np.radians(7.27))
+    sim = {}
+    ReeloutSession._apply_angle_of_attack_limits(sim, {}, None, box)
+    assert sim["opti_limits_override"]["angle_of_attack"] == pytest.approx(list(box))
+    assert "angle_of_attack_limits_deg" not in sim  # nothing the client sent
+    ReeloutSession._apply_angle_of_attack_limits(sim, {"min": -3.0}, None, box)
+    assert sim["opti_limits_override"]["angle_of_attack"] == pytest.approx(
+        [np.radians(-3.0), box[1]]  # the open side keeps the ROM's
+    )
+    sim = {}
+    ReeloutSession._apply_angle_of_attack_limits(sim, {}, None, None)
+    assert "opti_limits_override" not in sim  # no ROM range: the generic box
+
+
+def _actuated_model():
+    return SimpleNamespace(hardware_limits={
+        "input_steering": (-0.357, 0.357),
+        "steering_rate": (-0.29, 0.29),
+        "input_depower": (1.5, 2.6),
+    })
+
+
+def test_steering_limits_only_narrow_the_box():
+    sess, model, sim = ReeloutSession(), _actuated_model(), {}
+    sess._apply_steering_limits(sim, {"max": 0.32, "rate": 0.2}, model)
+    assert sim["opti_limits_override"]["input_steering"] == pytest.approx([-0.32, 0.32])
+    assert sim["opti_limits_override"]["steering_rate"] == pytest.approx([-0.2, 0.2])
+    assert sim["steering_limits_requested"] == {"max": 0.32, "rate": 0.2}
+    sess._apply_steering_limits(sim, {"max": 0.5}, model)  # wider: the box holds
+    assert sim["opti_limits_override"]["input_steering"] == pytest.approx([-0.357, 0.357])
+    assert "steering_rate" not in sim["opti_limits_override"]  # replaced as a whole
+    sess._apply_steering_limits(sim, None, model)  # omitted: kept
+    assert sim["steering_limits_requested"] == {"max": 0.5}
+    sess._apply_steering_limits(sim, {}, model)  # cleared
+    assert "opti_limits_override" not in sim
+    assert "steering_limits_requested" not in sim
+
+
+def test_depower_limits_narrow_the_band_and_move_the_seed():
+    sess, model = ReeloutSession(), _actuated_model()
+    sim = {"input_depower": 1.5}
+    sess._apply_depower_limits(sim, {"min": 1.57}, model, "optimize")
+    assert sim["opti_limits_override"]["input_depower"] == pytest.approx([1.57, 2.6])
+    assert sim["input_depower"] == pytest.approx(1.57)
+    sim = {"input_depower": 1.5}
+    sess._apply_depower_limits(sim, {"min": 1.57}, model, "fixed")
+    assert sim["input_depower"] == 1.5  # a fixed depower is the client's
+    with pytest.raises(ValueError, match="do not overlap"):
+        sess._apply_depower_limits({}, {"min": 2.7}, model, "optimize")
+
+
+def test_actuator_limits_round_trip_init_step_and_replies(patched_session):
+    sess, config = patched_session
+    sess.init(dict(config, steering_limits={"max": 0.3}, depower_limits={"max": 2.2}))
+    reply = sess.init_reply()
+    assert reply["steering_limits"] == {"max": 0.3}
+    assert reply["depower_limits"] == {"max": 2.2}
+
+    phase = sess.phase
+    phase.results.append(_fake_result())
+    phase.release.set()
+    reply = sess.step_blocking()  # omitted -> kept
+    assert reply["steering_limits"] == {"max": 0.3}
+
+    phase.results.append(_fake_result())
+    phase.release.set()
+    reply = sess.step_blocking(steering_limits={}, depower_limits={})
+    assert reply["steering_limits"] is None and reply["depower_limits"] is None

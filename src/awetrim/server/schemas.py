@@ -522,6 +522,48 @@ class AngleOfAttackLimits(BaseModel):
         return self
 
 
+class SteeringLimits(BaseModel):
+    """Optional limits of the client's steering actuator.
+
+    In the ROM's steering unit u_s (LEI-V3: steering-tape half-difference /
+    1.4 m). They can only NARROW the optimizer's box (the system file's KCU
+    range clipped to the ROM's validity), so a client whose KCU steers less,
+    or slower, than the ROM was identified with gets paths it can fly. On
+    /step the struct replaces the session's limits as a whole (``{}`` returns
+    to the defaults).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    max: Optional[float] = Field(
+        default=None, gt=0, le=1,
+        description="|u_s| stays <= this at every node",
+    )
+    rate: Optional[float] = Field(
+        default=None, gt=0,
+        description="|d u_s / dt| stays <= this [1/s] at every node",
+    )
+
+
+class DepowerLimits(BaseModel):
+    """Optional bounds on the depower input l_dp [m] the optimizer may plan.
+
+    Like :class:`SteeringLimits` they only narrow the box (the ROM's validity
+    band), e.g. to the depowers the client's controller is calibrated for.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    min: Optional[float] = Field(default=None, description="l_dp >= this [m]")
+    max: Optional[float] = Field(default=None, description="l_dp <= this [m]")
+
+    @model_validator(mode="after")
+    def _check_bounds(self):
+        if self.min is not None and self.max is not None and self.max <= self.min:
+            raise ValueError("max must be greater than min")
+        return self
+
+
 class InitRequest(BaseModel):
     # Unknown keys are rejected: a client still sending a removed name (e.g.
     # the old "distance_radial") gets a 422 instead of a silently ignored field.
@@ -609,8 +651,18 @@ class InitRequest(BaseModel):
     angle_of_attack_limits: Optional[AngleOfAttackLimits] = Field(
         default=None,
         description="Optional bounds on the angle of attack [deg], or a "
-        "margin below the ROM's stall angle; omitted = the default box "
-        "0-14 deg.",
+        "margin below the ROM's stall angle; omitted = the ROM's identified "
+        "range (validity.angle_of_attack_deg), else the box 0-14 deg.",
+    )
+    steering_limits: Optional[SteeringLimits] = Field(
+        default=None,
+        description="Optional limits of the client's steering actuator "
+        "(|u_s| and its rate); they only narrow the optimizer's box.",
+    )
+    depower_limits: Optional[DepowerLimits] = Field(
+        default=None,
+        description="Optional bounds on the planned depower l_dp [m]; they "
+        "only narrow the ROM's validity band.",
     )
     kite_sized_seed: bool = Field(
         default=True,
@@ -663,6 +715,14 @@ class StepRequest(BaseModel):
         default=None,
         description="Updated angle-of-attack limits for this and later steps; "
         "omit to keep the current ones, send {} to return to the defaults",
+    )
+    steering_limits: Optional[SteeringLimits] = Field(
+        default=None,
+        description="Updated steering limits; omit to keep, {} to clear",
+    )
+    depower_limits: Optional[DepowerLimits] = Field(
+        default=None,
+        description="Updated depower limits; omit to keep, {} to clear",
     )
     max_iter: Optional[int] = Field(default=None, ge=1)
     wait: bool = Field(
@@ -750,6 +810,12 @@ class InitReply(BaseModel):
         description="Angle-of-attack limits in force [deg] (null = the "
         "default box)",
     )
+    steering_limits: Optional[SteeringLimits] = Field(
+        default=None, description="Steering limits in force (null = none)",
+    )
+    depower_limits: Optional[DepowerLimits] = Field(
+        default=None, description="Depower limits in force [m] (null = none)",
+    )
     kite_sized_seed: Optional[bool] = Field(
         default=None,
         description="Whether the starting eight was refitted to the kite's "
@@ -786,6 +852,14 @@ class StepReply(BaseModel):
         description="Angle-of-attack limits the path was optimized under "
         "[deg] (null = the default box)",
     )
+    steering_limits: Optional[SteeringLimits] = Field(
+        default=None,
+        description="Steering limits the path was optimized under (null = none)",
+    )
+    depower_limits: Optional[DepowerLimits] = Field(
+        default=None,
+        description="Depower limits the path was optimized under [m] (null = none)",
+    )
     state: str
     step_index: int
     metrics: SolveMetrics
@@ -818,3 +892,79 @@ class TrajectoryResponse(BaseModel):
     optimized_parameters: dict
     timeseries: Optional[Dict[str, List[Optional[float]]]] = None
     energy_metrics: Optional[dict] = None
+
+
+# ---------------------------------------------------------------------------
+# /aero_forces — ROM lift and drag at one state (stateless)
+# ---------------------------------------------------------------------------
+class AeroForcesRequest(BaseModel):
+    """One ROM evaluation at a power tape and apparent wind speed.
+
+    Independent of the optimization session: the kite comes from the system
+    and ROM files named here, not from ``/init``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    input_depower: float = Field(
+        description="Power-tape length l_dp (u_p) [m]"
+    )
+    speed_apparent_wind: float = Field(
+        gt=0, description="Apparent wind speed v_a [m/s]"
+    )
+    angle_of_attack: Optional[float] = Field(
+        default=None,
+        description="Wing angle of attack [DEGREES]; omitted = the ROM's "
+        "gravity-free trim at this tape (the centre-window state the ROM was "
+        "identified on)",
+    )
+    input_steering: float = Field(
+        default=0.0,
+        description="Standardised steering u_s; enters only the coefficients",
+    )
+    rho: Optional[float] = Field(
+        default=None, gt=0, description="Air density [kg/m^3]; default the kite's"
+    )
+    system_config_path: Optional[str] = None
+    rom_config_path: Optional[str] = Field(
+        default=None,
+        description="ROM to evaluate instead of the system file's default; "
+        "resolved as in /init",
+    )
+
+
+class AeroForcesReply(BaseModel):
+    """ROM forces [N] and coefficients; angles in DEGREES.
+
+    Lift is perpendicular to the apparent wind, drag along it. ``lift``/
+    ``drag`` are the wing's (bridle lines included); ``*_kcu`` the KCU's when
+    the ROM keeps it out of C_D (else zero); ``*_total`` their sums.
+    """
+
+    angle_of_attack: float
+    angle_pitch_bridle: Optional[float] = None
+    angle_pitch_tether: Optional[float] = None
+    trimmed: bool
+    lift_coefficient: float
+    drag_coefficient: float
+    lift: float
+    drag: float
+    lift_kcu: float
+    drag_kcu: float
+    lift_total: float
+    drag_total: float
+    reference_area: float
+    rho: float
+    kcu_drag_in_coefficients: bool
+    rom_config: Optional[str] = Field(
+        default=None, description="The ROM file evaluated"
+    )
+    input_depower_validity: Optional[List[float]] = Field(
+        default=None, description="The ROM's validity band of u_p [m]"
+    )
+    angle_of_attack_validity: Optional[List[float]] = Field(
+        default=None, description="The ROM's validity band of alpha [deg]"
+    )
+    within_validity: bool = Field(
+        description="u_p and alpha both inside the ROM's stated bands"
+    )

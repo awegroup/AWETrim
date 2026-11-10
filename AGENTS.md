@@ -20,6 +20,15 @@ src/awetrim/
                          (steering_limit), from quasi-steady states
                          (rigid/flexible link, rigid/flexible lumped,
                           Williams discretised distributed-mass)
+                         + rom_forces.py: ROM lift/drag at one (u_p, v_a),
+                         at a given alpha or the gravity-free trim
+                         (served by /aero_forces); match_input_depower is
+                         its inverse (the ROM tape that pulls a given
+                         resultant or lift), used by
+                         examples/server/identify_depower_offset.py to map
+                         another model's power tape onto the ROM's;
+                         Wing.aerodynamic_force_coefficients_at is the one
+                         place the ROM coefficient terms are evaluated
                          + Tether.force_inertia_tether_at_kite_for: the
                          straight tether's inertial load at the kite (lumped
                          tethers, on by default, the tether block's
@@ -267,7 +276,8 @@ src/awetrim/
                          replaces the profile's wind block
   server/            ✅  REST API for reelout trajectory optimization
                          (FastAPI, optional [server] extra; endpoints
-                         /init /status /step /trajectory /reset; one
+                         /init /status /step /trajectory /reset, plus the
+                         stateless /aero_forces (aero_forces.py); one
                          warm-started re-solve per /step for co-simulation
                          clients, e.g. an external kite simulator; the cold
                          first solve uses timeseries.roll_assist, so a ROM
@@ -315,7 +325,15 @@ src/awetrim/
                          Optional angle_of_attack_limits {min, max,
                          stall_margin} [deg] (init/step; echoed) ->
                          opti_limits_override angle_of_attack; stall_margin
-                         = the ROM's angle_of_attack_stall minus it.
+                         = the ROM's angle_of_attack_stall minus it; omitted
+                         = the ROM's validity.angle_of_attack_deg (the
+                         generic 0-14 deg only for a ROM without it).
+                         Optional steering_limits {max, rate} and
+                         depower_limits {min, max} [m] (init/step; echoed)
+                         only NARROW the input_steering / steering_rate /
+                         input_depower boxes (hardware clipped to the ROM's
+                         validity, ReeloutSession._base_box): a client whose
+                         KCU steers less or slower gets flyable paths.
                          Launcher: examples/server/run_reelout_server.py
   flight_data/       ✅  reader of EKF-AWE output (load_flight -> FlightData); raw-log
                          processing and the EKF itself live in EKF-AWE
