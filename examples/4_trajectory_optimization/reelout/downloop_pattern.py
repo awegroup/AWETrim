@@ -245,7 +245,8 @@ if __name__ == "__main__":
     parser.add_argument("--rom", choices=sorted(ROM_CONFIGS), default=None)
     parser.add_argument("--system", choices=sorted(SYSTEM_CONFIGS), default="optimisation")
     parser.add_argument("--rom-file", type=Path, default=None,
-                        help="any ROM file (wins over --rom)")
+                        help="any ROM file, relative to the working directory "
+                        "(wins over --rom)")
     parser.add_argument("--results-dir", type=Path, default=None)
     parser.add_argument("--seed-config", type=Path, default=None,
                         help="seed with a previous run's optimised config (its reelout "
@@ -266,7 +267,9 @@ if __name__ == "__main__":
         plt.switch_backend("Agg")
     main(run_plots=not args.no_show, rom=args.rom, system=args.system,
          up_band=args.up_band, stall_margin_deg=args.stall_margin,
-         rom_file=args.rom_file, results_dir=args.results_dir,
+         # absolute: a relative ROM path would be read against the kite folder
+         rom_file=args.rom_file.resolve() if args.rom_file else None,
+         results_dir=args.results_dir,
          server_seed=args.server_seed,
          seed_config=args.seed_config)
     if not args.no_show:

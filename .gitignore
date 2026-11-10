@@ -1,5 +1,7 @@
 # User defined files and folders
 results/
+# Phase.run_simulation_opti's plot of a failed NLP iterate (working directory)
+opti_failed_iterate.png
 data/LEI-V9-KITE/
 flight_logs/
 processed_data/

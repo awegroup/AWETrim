@@ -84,6 +84,43 @@ def test_extract_optimized_trajectory_skips_missing_and_unevaluable():
     assert "input_depower" not in traj
 
 
+def test_extract_optimized_trajectory_keeps_the_turn_law_roll():
+    """Under the turn-rate law the roll is a per-node decision: a stored
+    optimum carries it, so the next stage is seeded without a forward march."""
+    n = 4
+    phase = _phase(n)
+    opti_vars = {"s_dot": np.full(n, 2.0), "angle_roll": np.linspace(-0.2, 0.2, n)}
+    traj = phase._extract_optimized_trajectory(_FakeSolution(), opti_vars)
+    assert np.allclose(traj["angle_roll"], np.linspace(-0.2, 0.2, n))
+
+
+def test_extract_optimized_trajectory_reads_alpha_from_the_constraint_report():
+    """The per-node angle of attack is read from the NLP's own alpha rows;
+    without the periodic seam the last node has no row and is NaN."""
+    n = 5
+    phase = _phase(n)
+    opti_vars = {"s_dot": np.full(n, 2.0)}
+
+    phase._constraint_report = {"angle_of_attack": {"expr": np.linspace(0.01, 0.05, n)}}
+    traj = phase._extract_optimized_trajectory(_FakeSolution(), opti_vars)
+    assert np.allclose(traj["angle_of_attack"], np.linspace(0.01, 0.05, n))
+
+    phase._constraint_report = {"angle_of_attack": {"expr": np.linspace(0.01, 0.04, n - 1)}}
+    traj = phase._extract_optimized_trajectory(_FakeSolution(), opti_vars)
+    assert traj["angle_of_attack"].size == n
+    assert np.allclose(traj["angle_of_attack"][:-1], np.linspace(0.01, 0.04, n - 1))
+    assert np.isnan(traj["angle_of_attack"][-1])
+
+
+def test_extract_optimized_trajectory_without_alpha_rows_has_no_alpha():
+    n = 4
+    phase = _phase(n)
+    opti_vars = {"s_dot": np.full(n, 2.0)}
+    assert "angle_of_attack" not in phase._extract_optimized_trajectory(_FakeSolution(), opti_vars)
+    phase._constraint_report = {"angle_of_attack": {"expr": np.zeros(n + 3)}}  # no node match
+    assert "angle_of_attack" not in phase._extract_optimized_trajectory(_FakeSolution(), opti_vars)
+
+
 def test_extract_optimized_trajectory_without_n_points_keeps_full_length():
     # No n_points -> no trimming; arrays come back at their native length.
     phase = Phase(system_model=None, pattern_config={})
@@ -224,3 +261,82 @@ def test_the_integrator_path_is_gone():
 
     with pytest.raises(ValueError, match="integrator path"):
         Phase._run_parametrized_phase(object(), "a", {}, phase_sym=False)
+
+
+class _DepowerModel:
+    """System-model stand-in holding only the depower symbol the NLP swaps."""
+
+    def __init__(self, symbol):
+        self.input_depower = symbol
+
+
+def _stub_nlp_build(monkeypatch, fail=False):
+    """Replace PhaseParameterized with a stub whose ``opti_phase`` records the
+    depower symbol the system model holds while the NLP is built."""
+    import awetrim.timeseries.phase as phase_module
+
+    seen = {}
+
+    class _StubPhaseParameterized:
+        def __init__(self, system_model, **kwargs):
+            self.system_model = system_model
+
+        def opti_phase(self, **kwargs):
+            seen["during_build"] = self.system_model.input_depower
+            if fail:
+                raise RuntimeError("NLP build failed")
+            return None, {}, {}
+
+    monkeypatch.setattr(phase_module, "PhaseParameterized", _StubPhaseParameterized)
+    return seen
+
+
+def test_depower_decision_is_taken_out_of_the_model_after_the_nlp_build(monkeypatch):
+    """A scalar depower decision sits in the model's depower symbol while the
+    NLP is built and is replaced by the original afterwards, so the forward
+    simulation after the solve evaluates alpha, C_L, C_D on the state again."""
+    import casadi as ca
+
+    seen = _stub_nlp_build(monkeypatch)
+    original = ca.MX.sym("input_depower")
+    model = _DepowerModel(original)
+    phase = Phase(system_model=model, pattern_config={"sim_parameters": {}})
+    opti = ca.Opti()
+    decision = opti.variable()
+    phase._opti, phase._opti_params = opti, {"input_depower": decision}
+
+    phase.initialize_phase()
+
+    assert seen["during_build"] is decision
+    assert model.input_depower is original
+
+
+def test_depower_symbol_is_restored_when_the_nlp_build_raises(monkeypatch):
+    import casadi as ca
+
+    _stub_nlp_build(monkeypatch, fail=True)
+    original = ca.MX.sym("input_depower")
+    model = _DepowerModel(original)
+    phase = Phase(system_model=model, pattern_config={"sim_parameters": {}})
+    opti = ca.Opti()
+    phase._opti, phase._opti_params = opti, {"input_depower": opti.variable()}
+
+    with pytest.raises(RuntimeError, match="NLP build failed"):
+        phase.initialize_phase()
+    assert model.input_depower is original
+
+
+def test_model_is_untouched_without_a_depower_decision(monkeypatch):
+    import casadi as ca
+
+    seen = _stub_nlp_build(monkeypatch)
+    original = ca.MX.sym("input_depower")
+    model = _DepowerModel(original)
+    phase = Phase(system_model=model, pattern_config={"sim_parameters": {}})
+    opti = ca.Opti()
+    phase._opti, phase._opti_params = opti, {"C_phi": opti.variable(4)}
+
+    phase.initialize_phase()
+
+    assert seen["during_build"] is original
+    assert model.input_depower is original

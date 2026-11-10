@@ -240,8 +240,9 @@ def load_rom_depower_validity(
 def intersect_steering_validity(hardware_limits: dict, abs_max: float | None) -> dict:
     """Clip the optimizer's ``input_steering`` box to the ROM's
     ``validity.input_steering_abs_max``, the largest |u_s| the steering chains
-    were identified on (LEI-V3: 0.20 m of tape, 0.143, inside the KCU's
-    0.35). Override through ``sim_parameters["opti_limits_override"]``.
+    were identified on (LEI-V3: 0.50 m of tape, 0.357, just outside the
+    KCU's 0.35, so the KCU's range is the box). Override through
+    ``sim_parameters["opti_limits_override"]``.
     """
     if abs_max is None:
         return hardware_limits

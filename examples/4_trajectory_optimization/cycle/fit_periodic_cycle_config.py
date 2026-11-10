@@ -1427,15 +1427,16 @@ def _feasibility_report(phase, system_model, config, artificial=None):
     elif m["aoa_n_viol"]:
         ok = False
         print(
-            f"[FAIL] angle of attack outside [{m['aoa_lb']}, {m['aoa_ub']}] rad "
-            f"at {m['aoa_n_viol']} node(s) "
-            f"(min {m['aoa_min']:.3f}, max {m['aoa_max']:.3f}):"
+            f"[FAIL] angle of attack outside [{np.degrees(m['aoa_lb']):.2f}, "
+            f"{np.degrees(m['aoa_ub']):.2f}] deg at {m['aoa_n_viol']} node(s) "
+            f"(min {np.degrees(m['aoa_min']):.2f}, max {np.degrees(m['aoa_max']):.2f}):"
         )
         _describe(m["aoa_ranges"])
     else:
         print(
-            f"[ok]   angle of attack within [{m['aoa_lb']}, {m['aoa_ub']}] rad "
-            f"(min {m['aoa_min']:.3f}, max {m['aoa_max']:.3f})"
+            f"[ok]   angle of attack within [{np.degrees(m['aoa_lb']):.2f}, "
+            f"{np.degrees(m['aoa_ub']):.2f}] deg "
+            f"(min {np.degrees(m['aoa_min']):.2f}, max {np.degrees(m['aoa_max']):.2f})"
         )
 
     print(
