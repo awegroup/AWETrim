@@ -461,7 +461,7 @@ def test_aero_forces_on_the_lei_v3_rom():
     client = TestClient(create_app())
     reply = client.post(
         "/aero_forces",
-        json={"input_depower": 1.58, "speed_apparent_wind": 15.3},
+        json={"input_depower": 1.8, "speed_apparent_wind": 15.3},
     )
     assert reply.status_code == 200, reply.text
     body = reply.json()
@@ -482,7 +482,7 @@ def test_aero_forces_on_the_lei_v3_rom():
     fixed = client.post(
         "/aero_forces",
         json={
-            "input_depower": 1.58,
+            "input_depower": 1.8,
             "speed_apparent_wind": 15.3,
             "angle_of_attack": body["angle_of_attack"],
             "rom_config_path": "rom_config_aerostructural.yaml",
