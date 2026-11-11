@@ -77,7 +77,9 @@ ROM_PATH = None
 if ARGS.rom is not None:
     ROM_PATH = (
         LEI_V3_SYSTEM_FLOWN_CONFIG.parent / ROM_CONFIGS[ARGS.rom]
-        if ARGS.rom in ROM_CONFIGS else Path(ARGS.rom)
+        # a path is read against the working directory (the factory would
+        # read a relative one against the system file's folder)
+        if ARGS.rom in ROM_CONFIGS else Path(ARGS.rom).resolve()
     )
 ROM_LABEL = ARGS.rom if ARGS.rom in ROM_CONFIGS else (
     Path(ARGS.rom).stem if ARGS.rom else "system_default")
@@ -949,47 +951,28 @@ for label, solutions_df in all_solutions.items():
         np.mean(solutions_df["angle_of_attack"][~mask_pow]) * 180 / np.pi,
     )
 
-    mask = mask_pow
-    total_power = (
-        sum(
-            solutions_df["tension_tether_ground"][mask]
-            * solutions_df["speed_radial"][mask]
-            * dt
-        )
-        / total_time
-    )
-    measured_power = (
-        sum(
-            flight_data["ground_tether_force"][mask]
-            * flight_data["tether_reelout_speed"][mask]
-            * dt
-        )
-        / total_time
-    )
-    print("Estimated power KCU reelout: ", total_power, "W")
-    print("Measured power reelout: ", measured_power, "W")
+    # Both powers over the samples the ROM solved: a failed node is NaN, and
+    # the measured sum over every sample would not compare with the rest.
+    solved = np.isfinite(solutions_df["tension_tether_ground"])
+
+    def phase_power(mask):
+        m = mask & solved
+        estimated = np.sum(
+            solutions_df["tension_tether_ground"][m] * solutions_df["speed_radial"][m] * dt
+        ) / total_time
+        measured = np.sum(
+            flight_data["ground_tether_force"][m] * flight_data["tether_reelout_speed"][m] * dt
+        ) / total_time
+        return estimated, measured, int(m.sum()), int(mask.sum())
 
     mask_dep = (flight_data.tether_reelout_speed < -0.5) & (
         flight_data.input_depower >= powered_depower_threshold
     )
-    total_power_dep = (
-        sum(
-            solutions_df["tension_tether_ground"][mask_dep]
-            * solutions_df["speed_radial"][mask_dep]
-            * dt
-        )
-        / total_time
-    )
-    measured_power_dep = (
-        sum(
-            flight_data["ground_tether_force"][mask_dep]
-            * flight_data["tether_reelout_speed"][mask_dep]
-            * dt
-        )
-        / total_time
-    )
-    print("Estimated power KCU depower: ", total_power_dep, "W")
-    print("Measured power depower: ", measured_power_dep, "W")
+    for name, mask in (("reelout", mask_pow), ("depower", mask_dep)):
+        estimated, measured, n_solved, n_phase = phase_power(mask)
+        print(f"Estimated power KCU {name}: ", estimated, "W")
+        print(f"Measured power {name}: ", measured, "W")
+        print(f"  (over the {n_solved} of {n_phase} samples the ROM solved)")
 
 
 from awetrim.utils.color_palette import set_plot_style_no_latex
