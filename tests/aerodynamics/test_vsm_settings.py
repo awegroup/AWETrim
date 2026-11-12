@@ -52,3 +52,25 @@ def test_body_kwargs_place_the_stations():
     kwargs = vsm_body_kwargs()
     assert kwargs["aerodynamic_center_location"] == 0.25
     assert kwargs["control_point_location"] == 0.75
+
+
+# --------------------------------------------- the ML airfoil models' folder
+def test_ml_models_dir_from_config_wins_over_the_environment(monkeypatch):
+    monkeypatch.setenv(vsm_settings.ML_MODELS_DIR_ENV, "/from/env")
+    assert vsm_settings.ml_models_dir({"ml_models_dir": "/from/config"}) == "/from/config"
+    assert vsm_settings.ml_models_dir({}) == "/from/env"
+    assert vsm_settings.ml_models_dir(None) == "/from/env"
+
+
+def test_no_ml_models_dir_leaves_the_body_kwargs_unchanged(monkeypatch):
+    monkeypatch.delenv(vsm_settings.ML_MODELS_DIR_ENV, raising=False)
+    assert vsm_settings.ml_models_dir({}) is None
+    assert vsm_settings.vsm_body_kwargs_for({}) == vsm_settings.vsm_body_kwargs()
+
+
+def test_ml_models_dir_reaches_body_instantiation(monkeypatch):
+    """masure_regression needs the folder in BodyAerodynamics.instantiate."""
+    monkeypatch.delenv(vsm_settings.ML_MODELS_DIR_ENV, raising=False)
+    kwargs = vsm_settings.vsm_body_kwargs_for({"ml_models_dir": "/models"})
+    assert kwargs["ml_models_dir"] == "/models"
+    assert {k: v for k, v in kwargs.items() if k != "ml_models_dir"} == vsm_settings.vsm_body_kwargs()

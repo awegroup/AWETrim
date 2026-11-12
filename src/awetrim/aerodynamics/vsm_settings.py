@@ -115,3 +115,31 @@ def vsm_body_kwargs(**overrides: Any) -> dict[str, Any]:
     from VSM.core.BodyAerodynamics import BodyAerodynamics
 
     return _supported(BodyAerodynamics.instantiate, {**VSM_BODY_DEFAULTS, **overrides})
+
+
+#: Environment variable naming the folder of VSM's machine-learned airfoil
+#: models (``masure_regression``: ``ET_re1e6.pkl`` ... from Zenodo record
+#: 16925759), for machines where the path must not live in a kite's as_config.
+ML_MODELS_DIR_ENV = "AWETRIM_ML_MODELS_DIR"
+
+
+def ml_models_dir(aero_config: dict | None = None) -> str | None:
+    """The folder VSM loads ``masure_regression`` models from, or None.
+
+    ``aerodynamics.ml_models_dir`` (as_config) wins over the
+    ``AWETRIM_ML_MODELS_DIR`` environment variable. Without either, an aero
+    geometry with ``masure_regression`` airfoils fails in VSM as before
+    ("ml_models_dir must be provided"); every other airfoil type ignores it.
+    """
+    import os
+
+    value = (aero_config or {}).get("ml_models_dir") or os.environ.get(ML_MODELS_DIR_ENV)
+    return str(value) if value else None
+
+
+def vsm_body_kwargs_for(aero_config: dict | None = None, **overrides: Any) -> dict[str, Any]:
+    """``vsm_body_kwargs`` plus the ML-model folder when one is configured."""
+    folder = ml_models_dir(aero_config)
+    if folder is not None:
+        overrides = {"ml_models_dir": folder, **overrides}
+    return vsm_body_kwargs(**overrides)

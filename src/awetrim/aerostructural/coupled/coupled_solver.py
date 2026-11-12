@@ -31,6 +31,7 @@ from ..billow import structural_billow
 from ..wireframe import structural_wireframe
 from ..convergence import remaining_drift  # noqa: F401  (re-exported)
 from ..convergence import (
+    actuation_record,
     check_convergence,
     force_settle_state,
     relative_residual_norm,
@@ -1491,6 +1492,23 @@ def main(
     # speed needs: opt_x[0] is the tangential (kite) speed and opt_x[4] the
     # course rate, the same entries vsm_quasi_steady reports them as.
     _opt_x = np.asarray(results_aero.get("opt_x", []), dtype=float).ravel()
+    actuation = actuation_record(
+        power_tape_final_extension=power_tape_final_extension,
+        power_tape_reached=(
+            _current_power_tape_length(
+                config, power_tape_index, psystem, billow_structure, kite_connectivity_arr
+            )
+            - initial_length_power_tape
+            if initial_length_power_tape is not None
+            else float("nan")
+        ),
+        steering_tape_final_extension=(
+            steering_tape_final_extension if is_steering_active else None
+        ),
+        steering_walk_finished=is_steering_finalized,
+        steering_half_difference=steering_half_difference,
+        exit_reason=exit_reason,
+    )
     meta = {
         "speed_tangential": float(_opt_x[0]) if _opt_x.size else float("nan"),
         "roll_body_deg": float(_opt_x[1]) if _opt_x.size > 1 else float("nan"),
@@ -1524,6 +1542,10 @@ def main(
         # measures, and the gate in whichever one residual_tol_is_relative
         # says, so a stored run states what "converged" meant.
         "exit_reason": exit_reason,
+        # The commanded tapes against what the walk reached: a run that ends
+        # (max_iter, stagnated) before its walk has arrived is a result at
+        # ANOTHER command, and says so (convergence.actuation_record).
+        **actuation,
         "trim_inexact": bool(results_aero.get("trim_inexact", False)),
         "residual_final_n": float(f_residual_norm_n),
         "residual_relative": float(f_residual_relative),

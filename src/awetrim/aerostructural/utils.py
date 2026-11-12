@@ -27,14 +27,30 @@ def load_yaml(path: Path) -> dict:
     """
     Read a YAML file and return the parsed data as a Python dict.
 
+    UTF-8 is expected. A file that is not valid UTF-8 is read as Windows-1252
+    (cp1252) with a warning: SurfplanAdapter writes its ``aero_geometry.yaml``
+    in the Windows code page, so a comment character such as an en dash made
+    this reader fail while VSM, which opens the same file in the locale's
+    encoding, read it on Windows only.
+
     Args:
         path (Path): The path to the YAML file.
 
     Returns:
         dict: The parsed data from the YAML file.
     """
-    with path.open("r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    path = Path(path)
+    raw = path.read_bytes()
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        text = raw.decode("cp1252")
+        logging.warning(
+            "%s is not UTF-8; read as Windows-1252 (cp1252). Re-save it as UTF-8: "
+            "VSM opens it in the locale's encoding and fails off Windows.",
+            path,
+        )
+    return yaml.safe_load(text)
 
 
 #: Optional block of per-CONNECTION bridle rest lengths in a PSM-format dict

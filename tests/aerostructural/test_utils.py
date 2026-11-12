@@ -319,3 +319,28 @@ def test_printing_rest_lengths_reports_every_line(capsys):
     out = capsys.readouterr().out
     for name in {e["name"] for e in structure.bridle}:
         assert name in out
+
+
+# ============================================================================
+# load_yaml
+# ============================================================================
+
+
+def test_load_yaml_reads_utf8(tmp_path):
+    from awetrim.aerostructural.utils import load_yaml
+
+    path = tmp_path / "utf8.yaml"
+    path.write_text("# en dash – in a comment\nkey: 1\n", encoding="utf-8")
+    assert load_yaml(path) == {"key": 1}
+
+
+def test_load_yaml_falls_back_to_cp1252(tmp_path, caplog):
+    """SurfplanAdapter writes aero_geometry.yaml in the Windows code page; an en
+    dash (0x96) in a comment must not stop the reader."""
+    from awetrim.aerostructural.utils import load_yaml
+
+    path = tmp_path / "cp1252.yaml"
+    path.write_bytes("# tip – fold\nkey: [1, 2]\n".encode("cp1252"))
+    with caplog.at_level("WARNING"):
+        assert load_yaml(str(path)) == {"key": [1, 2]}
+    assert "cp1252" in caplog.text
