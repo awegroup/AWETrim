@@ -112,6 +112,12 @@ DEFAULTS: dict[str, Any] = {
     # structural/elements/inflatable.py and the hanging-kite validation, which
     # implies a factor well below one).
     "tube_stiffness_factor": 1.0,
+    # Tubes thinner than ``tube_fit_min_diameter`` [m] take the fit at that
+    # diameter, scaled by (d / d_min)^3 (see tube_law). The Breukels fit is
+    # stated for roughly 0.1-0.3 m tubes; below ~0.083 m its limiting moment
+    # falls as the pressure rises, and at low pressure its initial stiffness
+    # turns negative. None = the fit at every diameter.
+    "tube_fit_min_diameter": None,
     "tube_axial_stiffness": None,  # [N]  None -> derived from the fitted EI_0
     "tube_shear_stiffness": None,  # [N]  None -> derived from the fitted GJ_0
     "junction_frame": "strut",
@@ -647,6 +653,40 @@ def _tube_stiffnesses(laws, diameters: Array, settings) -> tuple[Array, Array]:
     return axial, shear
 
 
+def tube_law(diameter: float, pressure: float, min_diameter: float | None = None):
+    """The inflatable-tube law of one tube: the Breukels fit, extrapolated below ``min_diameter``.
+
+    With ``min_diameter`` None, or a tube at least that thick, this is
+    ``InflatableTubeLaw.from_fit``. A thinner tube takes the fit at
+    ``min_diameter`` and the same pressure, with ``bending_stiffness``,
+    ``moment_max`` and ``torsion_c1`` scaled by ``(d / min_diameter)^3``, the
+    scaling of a thin-walled tube's section stiffness (``EI ~ r^3 t``) and of an
+    inflated beam's wrinkling moment (``~ p r^3``). The curve keeps the
+    reference diameter's shape (``curvature_scale`` unchanged) and joins the fit
+    at ``min_diameter``. ``curvature_collapse`` is only reported, and it keeps
+    the reference value.
+
+    This is a stopgap. Below about 0.083 m the fit's limiting moment falls with
+    pressure, and at low pressure its initial slope is negative and
+    ``from_fit`` raises. The extrapolation stays positive and rises with
+    pressure; a tube law validated for small tubes would replace it.
+    """
+    diameter = float(diameter)
+    if min_diameter is not None and float(min_diameter) <= 0.0:
+        raise ValueError(f"tube_fit_min_diameter must be positive (got {min_diameter})")
+    if min_diameter is None or diameter >= float(min_diameter):
+        return InflatableTubeLaw.from_fit(diameter, float(pressure))
+    reference = InflatableTubeLaw.from_fit(float(min_diameter), float(pressure))
+    scale = (diameter / float(min_diameter)) ** 3
+    return dataclasses.replace(
+        reference,
+        diameter=diameter,
+        moment_max=reference.moment_max * scale,
+        bending_stiffness=reference.bending_stiffness * scale,
+        torsion_c1=reference.torsion_c1 * scale,
+    )
+
+
 def scale_tube_laws(laws, factor: float):
     """Multiply the whole moment-curvature curve, initial slope included.
 
@@ -893,14 +933,14 @@ def tube_axial_stiffness(diameters, pressure, config=None) -> Array:
     """Axial stiffness ``EA`` [N] Billow gives inflatable tubes of ``diameters``.
 
     The same law and the same derivation :func:`instantiate` uses for the
-    beams (fit at ``pressure``, scaled by ``tube_stiffness_factor``, ``EA``
+    beams (``tube_law`` at ``pressure``, scaled by ``tube_stiffness_factor``, ``EA``
     from the fitted initial slope unless ``tube_axial_stiffness`` overrides
     it), for a model that keeps only the tubes' axial stiffness.
     """
     settings = resolve_config((config or {}).get("structural_billow"))
     diameters = np.atleast_1d(np.asarray(diameters, dtype=float))
     laws = scale_tube_laws(
-        [InflatableTubeLaw.from_fit(float(d), float(pressure)) for d in diameters],
+        [tube_law(d, pressure, settings["tube_fit_min_diameter"]) for d in diameters],
         float(settings["tube_stiffness_factor"]),
     )
     axial, _shear = _tube_stiffnesses(laws, diameters, settings)
@@ -976,7 +1016,7 @@ def instantiate(
     pressures = damping[beam_elements]  # ... and pressure in c_arr
     laws = scale_tube_laws(
         [
-            InflatableTubeLaw.from_fit(float(diameter), float(pressure))
+            tube_law(diameter, pressure, settings["tube_fit_min_diameter"])
             for diameter, pressure in zip(diameters, pressures)
         ],
         float(settings["tube_stiffness_factor"]),

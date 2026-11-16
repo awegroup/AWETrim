@@ -262,6 +262,55 @@ def test_tube_stiffness_factor_scales_the_curve_without_reshaping_it(toy_geometr
     )
 
 
+def test_tube_law_is_the_fit_at_and_above_the_minimum_diameter():
+    for d in (0.1, 0.15):
+        expected = sb.InflatableTubeLaw.from_fit(d, 0.55)
+        assert sb.tube_law(d, 0.55, 0.1) == expected
+    assert sb.tube_law(0.0774, 0.55) == sb.InflatableTubeLaw.from_fit(0.0774, 0.55)
+
+
+def test_tube_law_scales_the_reference_curve_with_the_cube_of_the_diameter():
+    reference = sb.InflatableTubeLaw.from_fit(0.1, 0.55)
+    small = sb.tube_law(0.07, 0.55, 0.1)
+    scale = 0.7**3
+    assert small.diameter == 0.07
+    assert small.bending_stiffness == pytest.approx(scale * reference.bending_stiffness)
+    assert small.moment_max == pytest.approx(scale * reference.moment_max)
+    assert small.torsion_c1 == pytest.approx(scale * reference.torsion_c1)
+    assert small.torsion_c2 == reference.torsion_c2
+    assert small.curvature_scale == pytest.approx(reference.curvature_scale)
+
+
+def test_tube_law_extrapolation_holds_where_the_fit_fails():
+    """Below ~0.083 m the fit's M_max falls with pressure, and at low pressure
+    its initial slope turns negative (from_fit raises); the extrapolation
+    stays positive and rises with pressure."""
+    with pytest.raises(ValueError):
+        sb.InflatableTubeLaw.from_fit(0.0717, 0.3)
+    fit = [sb.InflatableTubeLaw.from_fit(0.0774, p).moment_max for p in (0.3, 0.55)]
+    assert fit[1] < fit[0]
+    laws = [sb.tube_law(0.0717, p, 0.1) for p in (0.3, 0.55, 0.69)]
+    assert all(law.bending_stiffness > 0 and law.moment_max > 0 for law in laws)
+    assert laws[0].moment_max < laws[1].moment_max < laws[2].moment_max
+    assert laws[0].bending_stiffness < laws[1].bending_stiffness < laws[2].bending_stiffness
+
+
+@pytest.mark.parametrize("min_diameter", [0.0, -0.1])
+def test_tube_law_rejects_a_non_positive_minimum_diameter(min_diameter):
+    with pytest.raises(ValueError, match="tube_fit_min_diameter"):
+        sb.tube_law(0.15, 0.55, min_diameter)
+
+
+def test_tube_fit_min_diameter_reaches_the_beams(toy_geometry):
+    """The toy tubes are 0.1 m at 0.3 bar; a 0.15 m minimum extrapolates them."""
+    assert sb.DEFAULTS["tube_fit_min_diameter"] is None
+    law = build(toy_geometry, tube_fit_min_diameter=0.15).tube_laws[0]
+    reference = sb.InflatableTubeLaw.from_fit(0.15, 0.3)
+    assert law.bending_stiffness == pytest.approx(
+        (0.1 / 0.15) ** 3 * reference.bending_stiffness
+    )
+
+
 def test_canopy_thickness_only_splits_the_stiffness_product(toy_geometry):
     """E*t is the physical quantity; how it is split into E and t is free."""
     expected = sb.DEFAULTS["canopy_stiffness"]

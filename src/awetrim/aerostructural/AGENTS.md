@@ -578,6 +578,15 @@ Node positions are updated as `nodes += factor * (solved_nodes - nodes)` where `
 | bridle `noncompressive` | `CableKernel` tension-only cables |
 | canopy grid springs | **dropped**, replaced by wrinkling CST membrane triangles |
 
+Tube laws come from `structural_billow.tube_law(d, p, tube_fit_min_diameter)`:
+Billow's Breukels fit (`InflatableTubeLaw.from_fit`), stated for roughly
+0.1-0.3 m tubes. Below ~0.083 m its limiting moment falls as the pressure rises,
+and at low pressure its initial slope is negative and `from_fit` raises. With
+`structure.billow.tube_fit_min_diameter` set (default null = off), a thinner
+tube takes the fit at that diameter scaled by (d / d_min)^3. This is a stopgap
+until a tube law validated for small tubes exists (Billow issue). The LEI-V3
+leaves it off; 10 of its 97 tubes are 0.080-0.099 m.
+
 On the LEI-V3 `struc_geometry_FEM_full.yaml`: 268 nodes / 1098 DOF, 47 cables,
 20 pulleys, 97 tubes, 378 membrane triangles, 693 canopy springs replaced.
 Build ~0.9 s, structural solve ~2 s per coupled iteration (the VSM trim is
