@@ -117,6 +117,10 @@ structure:
     # Scales the whole fitted moment-curvature curve, initial slope included.
     # The hanging-kite validation implies a factor well below one.
     tube_stiffness_factor: !!float 1.0
+    # Tubes thinner than this [m] take the fit at it, scaled by (d/d_min)^3
+    # (the Breukels fit is stated for ~0.1-0.3 m; below ~0.083 m it turns
+    # unphysical). null = the fit at every diameter.
+    tube_fit_min_diameter: null
     junction_frame: !!str 'strut'        # who owns the LE/strut joint frame
     # -- bridle relaxation --
     # The YAML stores measured rest lengths against measured node positions and

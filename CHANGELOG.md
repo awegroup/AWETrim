@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+### Billow: extrapolation of the tube law below its range (2026-11-16)
+
+- **`structure.billow.tube_fit_min_diameter`** (new, default null = unchanged):
+  tubes thinner than it take Billow's Breukels fit at that diameter, scaled by
+  (d / d_min)^3 on `EI_0`, `M_max` and the torsion amplitude
+  (`structural_billow.tube_law`). The fit is stated for roughly 0.1-0.3 m tubes.
+  Below ~0.083 m its limiting moment falls as the pressure rises, and at low
+  pressure `from_fit` raises on a negative initial slope, so a small kite (the
+  Hydra: 46 of 63 tubes below 0.1 m) ran at one pressure only. This is a stopgap
+  agreed with the group until a tube law validated for small tubes exists (#73;
+  Billow issue). LEI-V3: off.
+
 ### Server: ROM forces at one state and the power-tape match to another model
 
 - `POST /aero_forces` (stateless) returns the ROM's lift and drag at one power tape
