@@ -912,6 +912,16 @@ def main(
     tracking_data["trim_state"][0] = np.ravel(results_aero["opt_x"])[:5]
     tracking_data["steering_half_difference"][0] = steering_half_difference
 
+    # Opt-in (quasi_steady_trim.gamma_continuation): every loop trim starts from
+    # the previous iteration's converged circulation, as the wireframe driver's
+    # loop always has (coupled_solver_qsm, since 2026-08-18). Without it each
+    # trim starts from a cold VSM solve, which picks the stall branch of a panel
+    # near its fold afresh every iteration: on a kite with two trim roots there
+    # the loop cycles between them and never converges.
+    gamma_continuation = bool(
+        aerodynamic_vsm.trim_settings(config).get("gamma_continuation", False)
+    )
+
     # # TODO: debuggin here
     # # print out the cp locations as % of le to te for debugging purposes
     # alpha_arr = np.array(results_aero["alpha_at_ac"]).ravel()
@@ -1149,6 +1159,11 @@ def main(
                     struc_nodes=struc_nodes,
                     bridle_line_specs=bridle_line_specs,
                     config=config,
+                    gamma_seed=(
+                        results_aero.get("gamma_distribution")
+                        if gamma_continuation
+                        else None
+                    ),
                 )
             )
             end_time_aero_model = time.time()
