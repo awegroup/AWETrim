@@ -1,10 +1,10 @@
+import argparse
 import json
 from pathlib import Path
 
 import numpy as np
 
 from awetrim import SystemModel
-from awetrim.identification.controls import flight_depower_match
 from awetrim.environment.wind_factory import create_wind_model
 from awetrim.system.kite import Kite
 from awetrim.system.tether import RigidLumpedTether
@@ -14,18 +14,22 @@ from awetrim.kinematics.parametrized_patterns import (
     make_bspline_path_parameters_from_named_curve,
 )
 from awetrim.timeseries.seed_sizing import SEED_TURN_MARGINS, size_reelout_seed
-from awetrim.utils.config_paths import (
-    LEI_V3_HELIX_SPLINE_CONFIG,
-    LEI_V3_SYSTEM_CONFIG,
-)
 from awetrim.utils.utils import load_cycle_config_from_yaml
+from reelout_kites import (
+    DEFAULT_KITE,
+    apply_flight_depower,
+    kite_dir,
+    pattern_config_path,
+    seed_overrides,
+)
 
 """
 Reelout pattern simulation using YAML configuration files.
 
-Configuration is split into two YAML files:
-- System properties: data/LEI-V3-KITE/lei_v3_system_config.yaml
-- Cycle parameters: data/LEI-V3-KITE/cycle_configs/helix_spline.yaml
+Everything about the kite comes from its data folder (``--kite``, default
+LEI-V3-KITE; see reelout_kites.py):
+- System properties: data/<kite>/system.yaml
+- Cycle parameters: data/<kite>/cycle_configs/helix_spline.yaml
 
 To modify parameters:
 1. Edit the YAML files directly, or
@@ -35,13 +39,10 @@ To modify parameters:
 # ---------------------------------------------------------------------------
 # Configuration files
 # ---------------------------------------------------------------------------
-KITE_CONFIG_PATH = LEI_V3_SYSTEM_CONFIG
-CYCLE_CONFIG_PATH = LEI_V3_HELIX_SPLINE_CONFIG
+CYCLE_CONFIG_FILENAME = "helix_spline.yaml"
 
 SAVE_TIMESERIES = True
 SEED_MARGIN = SEED_TURN_MARGINS[-1]  # over the steering-limited turn radius
-
-RESULTS_DIR = Path("results") / KITE_CONFIG_PATH.parent.name / "optimization" / "helix"
 
 # ---------------------------------------------------------------------------
 # Initial path guess
@@ -63,31 +64,26 @@ INITIAL_GUESS = {
     "downloops": True,
 }
 
-# CYCLE_CONFIG_PATH = Path(
-#     "results/optimized_configs/helix/depower_helix_optimized_config_wind_6_z0_0.03_logarithmic_spline.yaml"
-# )
 
-# Load configurations from YAML
-REELOUT_CONFIG, REELIN_CONFIG = load_cycle_config_from_yaml(CYCLE_CONFIG_PATH)
 
-if REGENERATE_INITIAL_GUESS:
-    REELOUT_CONFIG["path_parameters"] = make_bspline_path_parameters_from_named_curve(
-        spline_type="periodic",
-        r0=REELOUT_CONFIG["path_parameters"]["r0"],
-        **INITIAL_GUESS,
-    )
-    REELOUT_CONFIG["sim_parameters"]["start_angle"] = INITIAL_GUESS["s_init"]
-    REELOUT_CONFIG["sim_parameters"]["end_angle"] = INITIAL_GUESS["s_final"]
+def load_reelout_config(folder):
+    """The kite's helix phase config with the seed regenerated (INITIAL_GUESS at
+    the config's r0, overridden by its ``example: seed_curve:``) and the seed
+    depower."""
+    config_path = pattern_config_path(folder, CYCLE_CONFIG_FILENAME)
+    reelout_config, _ = load_cycle_config_from_yaml(config_path)
+    if REGENERATE_INITIAL_GUESS:
+        guess = {"r0": reelout_config["path_parameters"]["r0"], **INITIAL_GUESS,
+                 **seed_overrides(config_path)}
+        reelout_config["path_parameters"] = make_bspline_path_parameters_from_named_curve(
+            spline_type="periodic", **guess)
+        reelout_config["sim_parameters"]["start_angle"] = guess["s_init"]
+        reelout_config["sim_parameters"]["end_angle"] = guess["s_final"]
+    # the kite's matched reel-out tape (identification.yaml flight_match), if any
+    apply_flight_depower(folder, reelout_config["sim_parameters"])
+    return reelout_config
 
-# REELOUT_CONFIG["path_parameters"]["beta0"] += 0.1
-# REELOUT_CONFIG["path_parameters"]["beta_amp0"] = 0.18
-# REELOUT_CONFIG["path_parameters"]["az_amp0"] = 0.3536
-# # REELOUT_CONFIG["path_parameters"]["kappa"] = 1
-# REELOUT_CONFIG["path_parameters"]["kbeta"] = 0
-# the kite's matched reel-out tape (identification.yaml flight_match)
-REELOUT_CONFIG["sim_parameters"]["input_depower"] = flight_depower_match(
-    KITE_CONFIG_PATH.parent, 2019
-)[0]
+
 WIND_CONFIG = {
     "speed_wind_at_100": 10,
     "z0": 0.03,
@@ -100,9 +96,6 @@ START_STATE = {
     "input_steering": 0,
     "tension_tether_ground": 8.4e5,  # Initial guess for tension (N)
     "speed_radial": 0,  # Positive for reel-out
-    "distance_radial": REELOUT_CONFIG["path_parameters"][
-        "r0"
-    ],  # Start at the specified radius
 }
 
 
@@ -126,9 +119,14 @@ def build_wind_model(
     )
 
 
-def main(run_plots=False):
-
-    system_model = create_system_model_from_yaml(yaml_path=KITE_CONFIG_PATH)
+def main(run_plots=False, kite=None):
+    """``kite``: a folder under data/ or a path to one (default LEI-V3-KITE);
+    results go to results/<kite>/optimization/helix."""
+    folder = kite_dir(kite)
+    results_dir = Path("results") / folder.name / "optimization" / "helix"
+    REELOUT_CONFIG = load_reelout_config(folder)
+    START_STATE["distance_radial"] = REELOUT_CONFIG["path_parameters"]["r0"]
+    system_model = create_system_model_from_yaml(yaml_path=folder / "system.yaml")
 
     wind_model = build_wind_model(**WIND_CONFIG)
     system_model.wind = wind_model
@@ -170,13 +168,13 @@ def main(run_plots=False):
     depower_prefix = "depower_" if "input_depower" in optimization_params else ""
     filename = f"{depower_prefix}helix_optimized_config_wind_{WIND_CONFIG['speed_wind_at_100']}_z0_{WIND_CONFIG['z0']}_{WIND_CONFIG['model_type']}_spline.yaml"
 
-    solution.save_config_to_yaml(RESULTS_DIR / filename)
+    solution.save_config_to_yaml(results_dir / filename)
     phase, _ = reelout.run_simulation(run_plots=True, axes=axes, phase_sim=True)
     print(phase.energy_metrics())
 
     if SAVE_TIMESERIES:
         phase.save_timeseries_csv(
-            RESULTS_DIR / filename.replace(".yaml", "_timeseries.csv")
+            results_dir / filename.replace(".yaml", "_timeseries.csv")
         )
 
     return reelout
@@ -185,5 +183,14 @@ def main(run_plots=False):
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
-    main(run_plots=True)
-    plt.show()
+    parser = argparse.ArgumentParser(description="Helix reel-out optimisation")
+    parser.add_argument("--kite", default=DEFAULT_KITE,
+                        help="folder under data/ (or a path to one) holding system.yaml and "
+                        f"cycle_configs/{CYCLE_CONFIG_FILENAME} (default {DEFAULT_KITE})")
+    parser.add_argument("--no-show", action="store_true")
+    args = parser.parse_args()
+    if args.no_show:
+        plt.switch_backend("Agg")
+    main(run_plots=not args.no_show, kite=args.kite)
+    if not args.no_show:
+        plt.show()

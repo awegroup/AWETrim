@@ -22,6 +22,17 @@ parameters from `data/<kite>/cycle_configs/*.yaml`. The path patterns themselves
 Each pattern script builds a `Phase`, simulates the loop, saves the timeseries
 (JSON) and produces trajectory/power plots.
 
+`downloop_pattern.py` and `helix_pattern.py` take `--kite K` (a folder under
+`data/` or a path to one, default `LEI-V3-KITE`) and `--no-show`; they read
+`system.yaml`, the ROM it selects and `cycle_configs/downloop_spline.yaml` /
+`helix_spline.yaml` from that folder, and write to
+`results/<kite>/optimization/{downloops,helix}`. The seed flies the reel-out tape
+of the kite's `identification.yaml` `flight_match` when it records one, else the
+config's own `input_depower`; an optional top-level `example: seed_curve:` block
+in the config overrides the script's seed figure (`r0`, `az_amp0`, ...), which
+is then fitted to the turns the kite holds. See
+[`reelout_kites.py`](reelout/reelout_kites.py).
+
 ## `cycle/` — full pumping cycle
 
 | Script | What it does |

@@ -6,7 +6,6 @@ from pathlib import Path
 import numpy as np
 
 from awetrim import SystemModel
-from awetrim.identification.controls import flight_depower_match
 from awetrim.environment.wind_factory import create_wind_model
 from awetrim.system.kite import Kite
 from awetrim.system.tether import RigidLumpedTether
@@ -16,21 +15,24 @@ from awetrim.system.factory import create_system_model_from_yaml
 from awetrim.kinematics.parametrized_patterns import (
     make_bspline_path_parameters_from_named_curve,
 )
-from awetrim.utils.config_paths import (
-    LEI_V3_DOWNLOOP_SPLINE_CONFIG,
-    LEI_V3_ROM_AEROSTRUCTURAL_CONFIG,
-    LEI_V3_ROM_AEROSTRUCTURAL_FLIGHT_CONFIG,
-    LEI_V3_SYSTEM_CONFIG,
-    LEI_V3_SYSTEM_FLOWN_2019_CONFIG,
-)
 from awetrim.utils.utils import load_cycle_config_from_yaml
+from reelout_kites import (
+    DEFAULT_KITE,
+    FILE_ALIASES,
+    apply_flight_depower,
+    kite_dir,
+    kite_file,
+    pattern_config_path,
+    seed_overrides,
+)
 
 """
 Reelout pattern simulation using YAML configuration files.
 
-Configuration is split into two YAML files:
-- System properties: data/LEI-V3-KITE/lei_v3_system_config.yaml
-- Cycle parameters: data/LEI-V3-KITE/cycle_configs/downloop_spline.yaml
+Everything about the kite comes from its data folder (``--kite``, default
+LEI-V3-KITE; see reelout_kites.py):
+- System properties: data/<kite>/system.yaml (``--system``)
+- Cycle parameters: data/<kite>/cycle_configs/downloop_spline.yaml
 
 To modify parameters:
 1. Edit the YAML files directly, or
@@ -40,24 +42,9 @@ To modify parameters:
 # ---------------------------------------------------------------------------
 # Configuration files
 # ---------------------------------------------------------------------------
-KITE_CONFIG_PATH = LEI_V3_SYSTEM_CONFIG
-CYCLE_CONFIG_PATH = LEI_V3_DOWNLOOP_SPLINE_CONFIG
+CYCLE_CONFIG_FILENAME = "downloop_spline.yaml"
 
 SAVE_TIMESERIES = True
-
-RESULTS_DIR = (
-    Path("results") / KITE_CONFIG_PATH.parent.name / "optimization" / "downloops"
-)
-#: --rom choices (default: the one the system file selects).
-ROM_CONFIGS = {
-    "aerostructural": LEI_V3_ROM_AEROSTRUCTURAL_CONFIG,
-    "aerostructural_flight": LEI_V3_ROM_AEROSTRUCTURAL_FLIGHT_CONFIG,
-}
-#: --system choices: the optimisation hardware or the 2019 flown one.
-SYSTEM_CONFIGS = {
-    "optimisation": LEI_V3_SYSTEM_CONFIG,
-    "flown_2019": LEI_V3_SYSTEM_FLOWN_2019_CONFIG,
-}
 
 # ---------------------------------------------------------------------------
 # Initial path guess
@@ -81,31 +68,30 @@ INITIAL_GUESS = {
     "downloops": True,  # downloop direction
 }
 
-# CYCLE_CONFIG_PATH = Path(
-#     "results/optimized_configs/downloops/depower_downloop_optimized_config_wind_12_z0_0.03_logarithmic_spline.yaml"
-# )
-
-# Load configurations from YAML
-REELOUT_CONFIG, REELIN_CONFIG = load_cycle_config_from_yaml(CYCLE_CONFIG_PATH)
 INITIAL_GUESS_R0 = 300.0  # [m] the radius that figure is sized for
 SERVER_SEED_R0 = 200.0  # [m] --server-seed: examples/server/client_example.py's length
 
-if REGENERATE_INITIAL_GUESS:
-    REELOUT_CONFIG["path_parameters"] = make_bspline_path_parameters_from_named_curve(
-        spline_type="periodic",
-        r0=INITIAL_GUESS_R0,
-        **INITIAL_GUESS,
-    )
-    REELOUT_CONFIG["sim_parameters"]["start_angle"] = INITIAL_GUESS["s_init"]
-    REELOUT_CONFIG["sim_parameters"]["end_angle"] = INITIAL_GUESS["s_final"]
 
-REELOUT_CONFIG["sim_parameters"]["n_points"] = 100
-# the kite's matched reel-out tape (identification.yaml flight_match)
-REELOUT_CONFIG["sim_parameters"]["input_depower"] = flight_depower_match(
-    KITE_CONFIG_PATH.parent, 2019
-)[0]
-REELOUT_CONFIG["sim_parameters"]["reg_weight"] = 1.0
-REELOUT_CONFIG["sim_parameters"]["detect_simple_bounds"] = True
+def load_reelout_config(folder):
+    """The kite's downloop phase config with the seed regenerated (INITIAL_GUESS,
+    overridden by the config's ``example: seed_curve:``) and the seed depower."""
+    config_path = pattern_config_path(folder, CYCLE_CONFIG_FILENAME)
+    reelout_config, _ = load_cycle_config_from_yaml(config_path)
+    if REGENERATE_INITIAL_GUESS:
+        guess = {"r0": INITIAL_GUESS_R0, **INITIAL_GUESS, **seed_overrides(config_path)}
+        reelout_config["path_parameters"] = make_bspline_path_parameters_from_named_curve(
+            spline_type="periodic", **guess)
+        reelout_config["sim_parameters"]["start_angle"] = guess["s_init"]
+        reelout_config["sim_parameters"]["end_angle"] = guess["s_final"]
+    sim = reelout_config["sim_parameters"]
+    sim["n_points"] = 100
+    # the kite's matched reel-out tape (identification.yaml flight_match), if any
+    apply_flight_depower(folder, sim)
+    sim["reg_weight"] = 1.0
+    sim["detect_simple_bounds"] = True
+    return reelout_config
+
+
 WIND_CONFIG = {
     "speed_wind_at_100": 8,
     "z0": 0.03,
@@ -118,9 +104,6 @@ START_STATE = {
     "input_steering": 0,
     "tension_tether_ground": 8.4e5,  # Initial guess for tension (N)
     "speed_radial": 1,  # Positive for reel-out
-    "distance_radial": REELOUT_CONFIG["path_parameters"][
-        "r0"
-    ],  # Start at the specified radius
 }
 
 
@@ -143,23 +126,26 @@ def build_wind_model(speed_wind_at_100=8, z0=0.01, model_type="uniform", **profi
 
 def main(run_plots=False, rom=None, system="optimisation", results_dir=None,
          up_band=None, stall_margin_deg=None, rom_file=None, server_seed=False,
-         seed_config=None):
-    """``rom``/``system``: keys of ROM_CONFIGS / SYSTEM_CONFIGS (None = the
-    system file's own ROM); results go to ``results_dir`` (default
-    RESULTS_DIR, or RESULTS_DIR/<system>_<rom> when either is given)."""
+         seed_config=None, kite=None):
+    """``kite``: a folder under data/ or a path to one (default LEI-V3-KITE).
+    ``rom``/``system``: an alias of reelout_kites.FILE_ALIASES or a file in
+    the kite folder (rom None = the system file's own ROM); results go to
+    ``results_dir`` (default results/<kite>/optimization/downloops, in a
+    <system>_<rom> subfolder when either is given)."""
+    folder = kite_dir(kite)
     if results_dir is None:
-        results_dir = (
-            RESULTS_DIR / f"{system}_{rom or 'default'}"
-            if rom is not None or system != "optimisation" else RESULTS_DIR
-        )
-    reelout_config, start_state = REELOUT_CONFIG, dict(START_STATE)
+        results_dir = Path("results") / folder.name / "optimization" / "downloops"
+        if rom is not None or system != "optimisation":
+            results_dir = results_dir / f"{system}_{rom or 'default'}"
+    reelout_config, start_state = load_reelout_config(folder), dict(START_STATE)
+    start_state["distance_radial"] = reelout_config["path_parameters"]["r0"]
     if server_seed:
         # The reel-out server's default seed: its InitialGuess eight (smaller and
         # higher than INITIAL_GUESS) at the client example's 200 m tether.
         from awetrim.server.schemas import InitialGuess
 
         guess = InitialGuess().model_dump()
-        reelout_config = copy.deepcopy(REELOUT_CONFIG)
+        reelout_config = copy.deepcopy(reelout_config)
         reelout_config["path_parameters"] = make_bspline_path_parameters_from_named_curve(
             spline_type="periodic", r0=SERVER_SEED_R0, **guess)
         reelout_config["sim_parameters"]["start_angle"] = guess["s_init"]
@@ -181,9 +167,9 @@ def main(run_plots=False, rom=None, system="optimisation", results_dir=None,
         # Keep alpha this far below the ROM's stall angle at every node.
         reelout_config["sim_parameters"]["stall_margin_deg"] = float(stall_margin_deg)
     system_model = create_system_model_from_yaml(
-        yaml_path=SYSTEM_CONFIGS[system],
+        yaml_path=kite_file(folder, system),
         aero_yaml_path=(rom_file if rom_file is not None
-                        else ROM_CONFIGS[rom] if rom is not None else None),
+                        else kite_file(folder, rom) if rom is not None else None),
     )
 
     wind_model = build_wind_model(**WIND_CONFIG)
@@ -231,7 +217,8 @@ def main(run_plots=False, rom=None, system="optimisation", results_dir=None,
         metrics = {k: (float(v) if np.isscalar(v) else v)
                    for k, v in dict(phase.energy_metrics()).items()}
         (results_dir / filename.replace(".yaml", "_metrics.json")).write_text(
-            json.dumps({"rom": rom, "system": system, **metrics}, indent=2, default=str),
+            json.dumps({"kite": folder.name, "rom": rom, "system": system, **metrics},
+                       indent=2, default=str),
             encoding="utf-8",
         )
 
@@ -241,9 +228,16 @@ def main(run_plots=False, rom=None, system="optimisation", results_dir=None,
 if __name__ == "__main__":
     import matplotlib.pyplot as plt
 
-    parser = argparse.ArgumentParser(description="LEI-V3 downloop reel-out optimisation")
-    parser.add_argument("--rom", choices=sorted(ROM_CONFIGS), default=None)
-    parser.add_argument("--system", choices=sorted(SYSTEM_CONFIGS), default="optimisation")
+    parser = argparse.ArgumentParser(description="Downloop reel-out optimisation")
+    parser.add_argument("--kite", default=DEFAULT_KITE,
+                        help="folder under data/ (or a path to one) holding system.yaml and "
+                        f"cycle_configs/{CYCLE_CONFIG_FILENAME} (default {DEFAULT_KITE})")
+    parser.add_argument("--rom", default=None,
+                        help="ROM config: a file in the kite folder, or aerostructural / "
+                        "aerostructural_flight (default: the one system.yaml selects)")
+    parser.add_argument("--system", default="optimisation",
+                        help="system file: a file in the kite folder, or optimisation "
+                        "(system.yaml, default) / flown_2019")
     parser.add_argument("--rom-file", type=Path, default=None,
                         help="any ROM file (wins over --rom)")
     parser.add_argument("--results-dir", type=Path, default=None)
@@ -268,6 +262,6 @@ if __name__ == "__main__":
          up_band=args.up_band, stall_margin_deg=args.stall_margin,
          rom_file=args.rom_file, results_dir=args.results_dir,
          server_seed=args.server_seed,
-         seed_config=args.seed_config)
+         seed_config=args.seed_config, kite=args.kite)
     if not args.no_show:
         plt.show()
