@@ -271,3 +271,83 @@ def test_the_lei_v3_as_config_ships_the_force_settle_rule():
         "aero_structural_solver"
     ]
     assert solver["force_settle_rtol"] == pytest.approx(1e-4)
+
+
+# ------------------------------------------- stagnation: a slow decay is not a stall
+def _stagnation(history, **config):
+    """check_convergence on the last entry of a relative-residual history."""
+    solver = {"residual_tol_relative": 1e-4, "stagnation_tol_relative": 4e-5,
+              "n_max_constant_residual_force": 10, "max_iter": 200, **config}
+    force = 1000.0
+    last = history[-1]
+    _, _, is_stagnated = check_convergence(
+        iteration=len(history) - 1,
+        residual=np.asarray([0.0, 0.0, last * force]),
+        residual_norm_history=history,
+        aero_forces_vsm_format=np.zeros((1, 3)),
+        solver_config=solver,
+        is_run_only_1_time_step=False,
+        force_reference=force,
+    )
+    return is_stagnated
+
+
+def test_a_residual_decaying_just_above_the_gate_is_not_stagnated():
+    """A new SurfPlan kite's depower runs (2026-11-12): just above the 1e-4 gate, falling
+    3 % per iteration. The span over the window is under 4e-5, but the residual is
+    still converging."""
+    history = list(1.05e-4 * 0.97 ** (np.arange(25) - 24))  # ends at 1.05e-4
+    assert history[-1] > 1e-4
+    assert max(history[-11:]) - min(history[-11:]) < 4e-5
+    assert _stagnation(history) is False
+    assert _stagnation(history, stagnation_min_decrease=0.0) is True  # the old rule
+
+
+def test_a_flat_residual_above_the_gate_is_stagnated():
+    history = list(1.5e-4 + 1e-7 * np.sin(np.arange(25)))
+    assert _stagnation(history) is True
+
+
+def test_a_slowly_growing_residual_is_stagnated():
+    history = list(0.8e-4 * 1.02 ** np.arange(25))
+    assert max(history[-11:]) - min(history[-11:]) < 4e-5
+    assert _stagnation(history) is True
+
+
+# ------------------------------------------- the actuation record (commanded vs reached)
+def test_an_unfinished_depower_walk_is_recorded_and_warned(caplog):
+    """A new SurfPlan kite (2026-11-12): asked +0.2 m of depower, ended stagnated at +0.1 m."""
+    from awetrim.aerostructural.convergence import actuation_record
+
+    with caplog.at_level("WARNING"):
+        record = actuation_record(
+            power_tape_final_extension=0.2, power_tape_reached=0.1,
+            steering_tape_final_extension=None, steering_walk_finished=True,
+            steering_half_difference=float("nan"), exit_reason="stagnated",
+        )
+    assert record == {
+        "power_tape_extension_commanded": 0.2, "power_tape_extension_reached": 0.1,
+        "steering_tape_extension_commanded": 0.0, "actuation_complete": False,
+    }
+    assert "NOT finished" in caplog.text and "+0.100 m of +0.200 m" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "commanded, reached, steering, finished, complete",
+    [
+        (None, 0.0, None, True, True),  # no command
+        (0.2, 0.2, None, True, True),  # depower arrived
+        (-0.2, float("nan"), None, True, True),  # the backend could not be asked
+        (0.0, 0.0, 0.1, False, False),  # steering walk unfinished
+        (0.0, 0.0, 0.1, True, True),
+    ],
+)
+def test_actuation_record_completeness(commanded, reached, steering, finished, complete):
+    from awetrim.aerostructural.convergence import actuation_record
+
+    record = actuation_record(
+        power_tape_final_extension=commanded, power_tape_reached=reached,
+        steering_tape_final_extension=steering, steering_walk_finished=finished,
+        steering_half_difference=0.05, exit_reason="max_iter",
+    )
+    assert record["actuation_complete"] is complete

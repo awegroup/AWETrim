@@ -217,6 +217,58 @@ def test_a_failed_casadi_trim_raises(lei_v3, monkeypatch, max_nfev):
         _run_package(lei_v3, max_nfev)
 
 
+def _run_package_with(lei_v3, trim):
+    v = lei_v3["values"]
+    body = copy.deepcopy(lei_v3["body"])
+    le, te = _le_te(body)
+    _, _, results = aerodynamic_vsm.run_vsm_package(
+        body_aero=body, solver=_solver(av=False), system_model=lei_v3["system_model"],
+        center_of_gravity=v["center_of_gravity"], le_arr=le, te_arr=te,
+        reference_point=v["reference_point"], current_guess=v["x_guess"],
+        initial_polar_data=[s.polar_data for s in body.wings[0].sections],
+        aero_input_type="reuse_initial_polar_data",
+        config={"quasi_steady_trim": trim, "is_with_kcu_drag": False},
+    )
+    return results
+
+
+@pytest.mark.parametrize("max_nfev", [None, 8])
+def test_opt_in_fallback_takes_a_converged_least_squares_trim(lei_v3, monkeypatch, max_nfev):
+    """quasi_steady_trim.casadi_fallback: a failed Newton is retried with the
+    least-squares trim, UNCAPPED whatever max_nfev says, and kept when it converges."""
+
+    def failed(**kwargs):
+        return {"converged": False, "casadi_trim": {"passes": [{"residual": 1.0}]}}, kwargs["body_aero"]
+
+    calls = []
+    original = aerodynamic_vsm.solve_quasi_steady_state
+
+    def least_squares(**kwargs):
+        calls.append(kwargs["max_nfev"])
+        return original(**kwargs)
+
+    monkeypatch.setattr(aerodynamic_vsm, "_solve_trim_casadi", failed)
+    monkeypatch.setattr(aerodynamic_vsm, "solve_quasi_steady_state", least_squares)
+    trim = {"solver": "casadi", "casadi_fallback": True, **({} if max_nfev is None else {"max_nfev": max_nfev})}
+    results = _run_package_with(lei_v3, trim)
+    assert calls == [None]
+    assert results["success"] and results["trim_fallback"] == "least_squares"
+    assert not results.get("trim_truncated")
+
+
+def test_opt_in_fallback_that_does_not_converge_raises(lei_v3, monkeypatch):
+    def failed(**kwargs):
+        return {"converged": False, "casadi_trim": {"passes": [{"residual": 1.0}]}}, kwargs["body_aero"]
+
+    def unconverged(**kwargs):
+        return {"success": False}, kwargs["body_aero"]
+
+    monkeypatch.setattr(aerodynamic_vsm, "_solve_trim_casadi", failed)
+    monkeypatch.setattr(aerodynamic_vsm, "solve_quasi_steady_state", unconverged)
+    with pytest.raises(aerodynamic_vsm.CasadiTrimFailed, match="did not converge"):
+        _run_package_with(lei_v3, {"solver": "casadi", "casadi_fallback": True})
+
+
 def _scripted_stop(monkeypatch, residual, **fields):
     """A real trim, then reported as Newton stopping at ``residual``."""
     original = aerodynamic_vsm._solve_trim_casadi
@@ -364,3 +416,91 @@ def test_bridle_line_specs_index_the_body_line_system(relative):
         np.testing.assert_array_equal(got[0], want[0])
         np.testing.assert_array_equal(got[1], want[1])
         assert got[2] == want[2]
+
+
+# ---------------------------------------------------------------------------
+# _follow_file_section_order: the polars follow the file's section order
+# ---------------------------------------------------------------------------
+
+
+def _write_wing(path, les, thicknesses):
+    """A 5-section wing file, Breukels polars, one thickness per section so each
+    section's polar is recognisable; TE = LE + 1 m in x."""
+    import yaml
+
+    sections = [[i + 1, *le, le[0] + 1.0, le[1], le[2]] for i, le in enumerate(les)]
+    airfoils = [[i + 1, "breukels_regression", {"t": t, "kappa": 0.08}]
+                for i, t in enumerate(thicknesses)]
+    path.write_text(yaml.safe_dump({
+        "wing_sections": {"headers": ["airfoil_id", "LE_x", "LE_y", "LE_z", "TE_x", "TE_y", "TE_z"],
+                          "data": sections},
+        "wing_airfoils": {"alpha_range": [-10, 25, 1], "reynolds": 1e6,
+                          "headers": ["airfoil_id", "type", "info_dict"], "data": airfoils},
+    }), encoding="utf-8")
+    return path
+
+
+def _body(path):
+    from VSM.core.BodyAerodynamics import BodyAerodynamics
+
+    return BodyAerodynamics.instantiate(n_panels=4, file_path=str(path),
+                                        spanwise_panel_distribution="unchanged")
+
+
+THICKNESSES = [0.06, 0.08, 0.10, 0.12, 0.14]
+
+
+def _thickness_order(body):
+    """Which file section each refined section's polar belongs to (by its CL at 5 deg)."""
+    from VSM.core.AirfoilAerodynamics import AirfoilAerodynamics
+
+    reference = [AirfoilAerodynamics.from_yaml_entry("breukels_regression", {"t": t, "kappa": 0.08},
+                                                     [-10, 25, 1]) for t in THICKNESSES]
+    order = []
+    for section in body.wings[0].refine_aerodynamic_mesh():
+        polar = np.asarray(section.polar_data)
+        cl = np.interp(np.deg2rad(5.0), polar[:, 0], polar[:, 1])
+        order.append(int(np.argmin([abs(cl - np.interp(np.deg2rad(5.0), r.alpha, r.CL))
+                                    for r in reference])))
+    return order
+
+
+def test_curled_tip_polars_follow_the_file_order(tmp_path):
+    """The outermost section lies 5 cm INBOARD of its neighbour (a curled LEI tip):
+    VSM's nearest-neighbour chain swaps the two, the file order does not."""
+    from awetrim.aerostructural.aerodynamic_vsm import _follow_file_section_order
+
+    les = [(0.0, 1.95, -0.5), (0.0, 2.0, 0.0), (0.0, 1.0, 0.5), (0.0, -1.0, 0.5), (0.0, -2.0, 0.0)]
+    path = _write_wing(tmp_path / "curled.yaml", les, THICKNESSES)
+    body = _body(path)
+    assert _thickness_order(body)[:2] == [1, 0]  # VSM's own chain: swapped
+
+    body = _body(path)
+    assert _follow_file_section_order(body, path) is True
+    assert _thickness_order(body) == [0, 1, 2, 3, 4]
+    assert body.wings[0].preserve_section_order
+
+
+def test_an_ordered_file_is_left_as_it_is(tmp_path):
+    from awetrim.aerostructural.aerodynamic_vsm import _follow_file_section_order
+
+    les = [(0.0, 2.0, 0.0), (0.0, 1.0, 0.5), (0.0, 0.0, 0.6), (0.0, -1.0, 0.5), (0.0, -2.0, 0.0)]
+    path = _write_wing(tmp_path / "ordered.yaml", les, THICKNESSES)
+    body = _body(path)
+    before = [np.asarray(s.LE_point).copy() for s in body.wings[0].sections]
+    assert _follow_file_section_order(body, path) is False
+    assert all(np.allclose(a, b.LE_point) for a, b in zip(before, body.wings[0].sections))
+    assert _thickness_order(body) == [0, 1, 2, 3, 4]
+
+
+def test_a_file_that_folds_keeps_vsms_order(tmp_path):
+    """A file whose own order reverses the lifting line (unordered input) is not
+    imposed: VSM's sort exists for it."""
+    from awetrim.aerostructural.aerodynamic_vsm import _follow_file_section_order
+
+    les = [(0.0, 2.0, 0.0), (0.0, -1.0, 0.5), (0.0, 1.0, 0.5), (0.0, 0.0, 0.6), (0.0, -2.0, 0.0)]
+    path = _write_wing(tmp_path / "unordered.yaml", les, THICKNESSES)
+    body = _body(path)
+    order = _thickness_order(body)
+    assert _follow_file_section_order(body, path) is False
+    assert _thickness_order(body) == order

@@ -507,6 +507,14 @@ def trim_summary(case: Mapping[str, Any]) -> list[tuple[str, str, float | str, s
     for label, key in (("Depower tape length", "depower"), ("Steering half-difference", "steering")):
         if key in tapes:
             rows.append(("Actuation", label, _float(tapes[key]), "m"))
+    # A walk that ended before its command (max_iter / stagnated mid-walk) is a
+    # result at ANOTHER command: say so next to the tapes (convergence.actuation_record).
+    if meta.get("actuation_complete") is not None and not bool(meta.get("actuation_complete")):
+        rows.append((
+            "Actuation", "Commanded depower extension NOT reached",
+            f"{_float(meta.get('power_tape_extension_reached')):+.3f} of "
+            f"{_float(meta.get('power_tape_extension_commanded')):+.3f}", "m",
+        ))
 
     residual = _float(meta.get("residual_force_n"))
     if not np.isfinite(residual) and "residual_norm" in case["tracking"]:

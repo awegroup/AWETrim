@@ -172,7 +172,7 @@ src/awetrim/aerostructural/
                                    trim's opt_x, which is the last
                                    per-iteration increment)
   tracking.py                      setup_tracking_arrays, update_tracking_arrays
-  utils.py                         rotate_geometry, calculate_cg, calculate_inertia, load_yaml,
+  utils.py                         rotate_geometry, calculate_cg, calculate_inertia, load_yaml (UTF-8, else cp1252 with a warning),
                                    resolve_kcu_mass (system.yaml, then config
                                    kcu.mass / kcu_mass), resolve_structure (any
                                    structure -> Structure.resolved with that KCU
@@ -478,6 +478,12 @@ structure.yml (awesIO; coupled/awesio_structure.load_structure → Structure)
 
 aero_geometry.yaml
   └─ aerodynamic_vsm.initialize() → (body_aero, vsm_solver, initial_polar_data)
+       (sections in the FILE's order, +y first, via _follow_file_section_order:
+        VSM's nearest-neighbour chain swaps a curled tip whose outermost section
+        lies inboard of its neighbour, and initial_polar_data is handed back with
+        the structure's edges every iteration; a file that folds keeps VSM's
+        order. aerodynamics.ml_models_dir / AWETRIM_ML_MODELS_DIR reach
+        instantiate for masure_regression airfoils.)
 
 Fixed-point loop (wireframe/coupling.WireframeQsmCoupler.solve,
                   wireframe/coupled_solver_qsm.main, or coupled/coupled_solver.main):
@@ -1172,6 +1178,7 @@ aero_structural_solver:
   max_iter: 100
   residual_tol_relative: 1.0e-4   # THE gate (LEI-V3 as_config since 2026-10-12), see below
   stagnation_tol_relative: 4.0e-5
+  stagnation_min_decrease: 0.1    # a window must ALSO not have fallen this much to be stagnated; 0 = span rule alone
   force_settle_rtol: 1.0e-4       # tether force must ALSO have settled; 0 = off
   # tol / stagnation_tol [N]: legacy absolute gate, live only when
   # residual_tol_relative is absent (set it with set_absolute_residual_gate)
@@ -1354,6 +1361,17 @@ the config). Every iteration's relative residual is stored as
 Billow driver's meta adds `exit_reason` (converged | stagnated | diverged |
 stopped | max_iter), `residual_final_n`, `residual_relative`,
 `tether_force_resultant`, `residual_tol_active`, `residual_tol_is_relative`.
+Both drivers' meta add the actuation record (`convergence.actuation_record`,
+2026-11-12): `power_tape_extension_commanded` / `_reached`,
+`steering_tape_extension_commanded`, `actuation_complete`. The tape walk steps
+only from a converged state, so a run that ends (max_iter, stagnated) mid-walk is
+a result at ANOTHER command: `actuation_complete` is False, a warning names both
+tapes, and `case_view.trim_summary` adds "Commanded depower extension NOT
+reached". The stagnation exit (`check_convergence`) needs the span under
+`stagnation_tol` AND a fall under `stagnation_min_decrease` (default 0.1) over the
+window: a residual decaying 3-6 % per iteration just above the gate is converging
+(seen on a new SurfPlan kite, where it was cut off as "not converged"); 0 = the span rule
+alone.
 
 `resolve_residual_tolerances` decides which is live and returns the tolerance
 in the active unit, so the convergence test, the stagnation window, the
@@ -1486,6 +1504,10 @@ stands, with the predictor as one retry if Newton fails on it. A trim that still
 fails raises ``CasadiTrimFailed`` (``run_vsm_package``): no ``least_squares`` rescue
 (capped at ``max_nfev`` it returned its seed, so only the structure moved) and not
 the direct-solve fallback, whose result the strut-lever load transfer cannot use.
+Opt-in (``quasi_steady_trim.casadi_fallback``, default false, 2026-11-12): the
+``least_squares`` trim UNCAPPED from the same guess, kept only if it converges
+(``trim_fallback: least_squares``; anything it raises is re-raised as
+``CasadiTrimFailed``, never the direct-solve fallback).
 Newton stopping just short of the root (``CASADI_INEXACT_RESIDUAL``, off the bounds,
 finite forces: cycling on a polar corner) is taken as a step, flagged
 ``trim_inexact``; the loop only ends on such a trim below ``CASADI_FINAL_RESIDUAL``

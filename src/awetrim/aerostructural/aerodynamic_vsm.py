@@ -33,6 +33,7 @@ from awetrim.aerodynamics.vsm_settings import (
     VSM_SOLVER_DEFAULTS,
     make_vsm_solver,
     vsm_body_kwargs,
+    vsm_body_kwargs_for,
 )
 from VSM.plot_geometry_matplotlib import plot_geometry
 from awetrim.aerodynamics.kcu_drag import KcuDragModel
@@ -526,6 +527,68 @@ def _solve_trim_casadi(
     return results, body
 
 
+def _follow_file_section_order(body_aero, aero_geometry_path) -> bool:
+    """Put the instantiated wing's sections back in the aero file's order.
+
+    ``BodyAerodynamics.instantiate`` chains the file's sections nearest-neighbour
+    from the outermost one. On a curled LEI tip whose outermost section lies
+    INBOARD of its neighbour (by 1 cm on the kite that showed it) that chain swaps the two, and
+    ``initial_polar_data`` -- the refined sections' polars, which every coupled
+    iteration hands back to ``update_from_points`` with the STRUCTURE's edges, in
+    their own +y -> -y order -- then assigns each tip section the other's polar.
+    The sort also warns of a lifting line that "doubles back", which the solved
+    mesh does not.
+
+    The file order (oriented +y end first, as the sort and the structure's ribs)
+    is taken when it is itself a clean lifting line (no quarter-chord reversal)
+    and every file section matches one instantiated section; otherwise VSM's own
+    order stands (unordered user input). The wing then keeps its order
+    (``preserve_section_order``). Returns True when the order changed. A file
+    already in that order (the LEI-V3's) is left exactly as it was.
+    """
+    from awetrim.aerostructural.utils import load_yaml
+
+    wing = body_aero.wings[0]
+    try:
+        sections = load_yaml(Path(aero_geometry_path))["wing_sections"]
+        headers = sections["headers"]
+        le_cols = [headers.index(f"LE_{axis}") for axis in "xyz"]
+        te_cols = [headers.index(f"TE_{axis}") for axis in "xyz"]
+        file_le = np.array([[float(row[c]) for c in le_cols] for row in sections["data"]])
+        file_te = np.array([[float(row[c]) for c in te_cols] for row in sections["data"]])
+    except (OSError, KeyError, TypeError, ValueError) as err:
+        logging.debug("section order: aero file not read (%s); VSM's order kept", err)
+        return False
+    n = len(file_le)
+    if n < 3 or n != len(wing.sections):
+        return False
+    if file_le[0, 1] < file_le[-1, 1]:  # the +y end first
+        file_le, file_te = file_le[::-1], file_te[::-1]
+    quarter_chord = file_le + 0.25 * (file_te - file_le)
+    steps = np.diff(quarter_chord, axis=0)
+    if np.any(np.sum(steps[1:] * steps[:-1], axis=1) < 0.0):
+        return False  # the file itself folds: not an order to impose
+    current = np.array([section.LE_point for section in wing.sections], dtype=float)
+    match = [int(np.argmin(np.linalg.norm(current - point, axis=1))) for point in file_le]
+    if sorted(match) != list(range(n)):
+        return False
+    changed = match != list(range(n))
+    if changed:
+        wing.sections = [wing.sections[i] for i in match]
+    wing.preserve_section_order = True
+    if changed:
+        body_aero._build_panels()
+        logging.info(
+            "aero sections reordered to the file's order (VSM's nearest-neighbour "
+            "chain had moved sections %s): a tip whose outermost section lies "
+            "inboard of its neighbour. A 'Wing sections double back' warning "
+            "VSM logged while building referred to its own chain; the rebuilt "
+            "mesh is checked again",
+            [i for i, m in enumerate(match) if m != i],
+        )
+    return changed
+
+
 def initialize(
     aero_geometry_path,
     config,
@@ -551,8 +614,12 @@ def initialize(
         spanwise_panel_distribution=config["aerodynamic"][
             "spanwise_panel_distribution"
         ],
-        **vsm_body_kwargs(),
+        # + the ML airfoil models' folder when configured (masure_regression)
+        **vsm_body_kwargs_for(config["aerodynamic"]),
     )
+    # The polars must follow the file's (= the structure's) section order, not
+    # VSM's nearest-neighbour chain, which swaps a curled tip's sections.
+    _follow_file_section_order(body_aero, aero_geometry_path)
     # The bridle lines come from the structure (VSM's own bridle_path parse
     # reads only the retired format). The drag law reads one diameter per
     # segment, and the structure stores flat tapes as an AREA-equivalent
@@ -842,6 +909,14 @@ def run_vsm_package(
     # Newton tolerance of the CasADi trim on its stacked (nondimensional)
     # residual; the NumPy trims' inner loop uses the solver's allowed_error.
     trim_casadi_tolerance = float(qs_cfg.get("casadi_tolerance", 1e-8))
+    # Opt-in rescue (quasi_steady_trim.casadi_fallback, default off): a CasADi
+    # trim that fails (not even near its root) is retried with the least-squares
+    # trim, UNCAPPED, from the same guess, and accepted only if that one
+    # converges -- a genuine trim, never a truncated step (an untrimmed state
+    # must not pass as a trim). Off, a failed Newton raises CasadiTrimFailed as
+    # before. Seen on a new SurfPlan kite (2026-11-12): Newton stuck at
+    # |r| 0.05-1 on a polar corner or a branch change ended the whole run.
+    trim_casadi_fallback = bool(qs_cfg.get("casadi_fallback", False))
 
     # Tether in the trim (opt-in). The default trim is TETHERLESS: its residuals
     # are the tangential force balance only, so the tether is implicitly
@@ -876,7 +951,7 @@ def run_vsm_package(
             "'least_squares'."
         )
 
-    def least_squares_trim(body):
+    def least_squares_trim(body, max_nfev=trim_max_nfev):
         if include_tether_in_trim:
             return solve_vsm_qs_trim_with_williams_tether(
                 kcu_drag=kcu_drag,
@@ -897,7 +972,7 @@ def run_vsm_package(
                 # (qs_cm ~ 3e-2 observed) and burns minutes per aero call; the
                 # fixed per-solve seed removes both while staying FD-smooth.
                 gamma_seed=gamma_seed,
-                max_nfev=trim_max_nfev,
+                max_nfev=max_nfev,
             )
         return solve_quasi_steady_state(
             kcu_drag=kcu_drag,
@@ -910,7 +985,7 @@ def run_vsm_package(
             bounds_lower=bounds_lower,
             bounds_upper=bounds_upper,
             include_gravity=include_gravity,
-            max_nfev=trim_max_nfev,
+            max_nfev=max_nfev,
         )
 
     # Primary path: quasi-steady trim solve.
@@ -947,10 +1022,26 @@ def run_vsm_package(
                 results["success"] = True
                 results["trim_inexact"] = True
             if not results["success"]:
-                raise CasadiTrimFailed(
+                message = (
                     f"CasADi trim did not converge: {(results.get('casadi_trim') or {}).get('passes')}, "
                     f"on bounds {results.get('at_bound')}, x {results.get('opt_x')}"
                 )
+                if not trim_casadi_fallback:
+                    raise CasadiTrimFailed(message)
+                logging.warning("%s -- retrying with the least-squares trim", message)
+                casadi_failure = results
+                try:
+                    results, body_aero = least_squares_trim(
+                        copy.deepcopy(body_fallback), max_nfev=None
+                    )
+                except Exception as err:  # never into the direct-solve fallback below
+                    raise CasadiTrimFailed(
+                        message + f"; the least-squares fallback raised {err!r}"
+                    ) from err
+                if not results.get("success", False):
+                    raise CasadiTrimFailed(message + "; the least-squares fallback did not converge")
+                results["trim_fallback"] = "least_squares"
+                results["casadi_trim_failed"] = casadi_failure.get("casadi_trim")
         else:
             results, body_aero = least_squares_trim(body_aero)
         if (

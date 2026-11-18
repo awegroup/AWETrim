@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+### Aerostructural: robustness on a new kite (2026-11-12)
+
+Bringing a new SurfPlan-built kite through steps 1-2 exposed general weaknesses;
+the full test suite passes unchanged. Only the stagnation default changes behaviour:
+a run that used to stop as stagnated while its residual still fell now continues.
+
+- **Tip polars follow the file's section order** (`aerodynamic_vsm.initialize`,
+  `_follow_file_section_order`). VSM's instantiation chains the aero file's sections
+  nearest-neighbour from the outermost; on a curled tip whose outermost section lies
+  inboard of its neighbour it swapped the two, and `initial_polar_data` -- handed back
+  with the structure's edges every coupled iteration -- gave each tip section the
+  other's polar. The file order (+y first) is taken when it is a clean lifting line; an
+  unordered file keeps VSM's order. LEI-V3: unchanged.
+- **`load_yaml` reads a non-UTF-8 file as cp1252** with a warning (SurfplanAdapter
+  writes `aero_geometry.yaml` in the Windows code page; the wireframe driver failed on
+  a comment's en dash while VSM, reading in the locale's encoding, passed on Windows
+  only). `VsmAdapter` reads through it too.
+- **The stagnation exit no longer cuts a slowly converging run**
+  (`convergence.check_convergence`): a window whose span is under the stagnation
+  tolerance is stagnated only if the residual has not fallen by
+  `stagnation_min_decrease` (new, default 0.1) over it. A residual decaying 3-6 % per
+  iteration just above the gate was ended "not converged" while converging. 0 restores
+  the span rule alone.
+- **An unfinished tape walk says so.** Both drivers record
+  `power_tape_extension_commanded` / `_reached`, `steering_tape_extension_commanded`
+  and `actuation_complete` in the meta (`convergence.actuation_record`) and warn when a
+  run ends (max_iter, stagnated) before its walk arrived; the summary table adds a
+  "Commanded depower extension NOT reached" row. Before, such a run reported the tape
+  it had reached as its result, exit code 0.
+- **Opt-in least-squares rescue of a failed CasADi trim**
+  (`quasi_steady_trim.casadi_fallback`, default false): the least-squares trim, uncapped,
+  from the same guess, accepted only if it converges (flagged `trim_fallback`). Off, a
+  failed Newton raises `CasadiTrimFailed` as before.
+- **VSM's ML airfoil models can be used**: `aerodynamics.ml_models_dir` or the
+  `AWETRIM_ML_MODELS_DIR` environment variable reaches `BodyAerodynamics.instantiate`
+  (`vsm_settings.ml_models_dir`, `vsm_body_kwargs_for`), so an aero geometry may use
+  `masure_regression` airfoils (the group's recommended LEI model, Zenodo 16925759).
+
 ### Server: ROM forces at one state and the power-tape match to another model
 
 - `POST /aero_forces` (stateless) returns the ROM's lift and drag at one power tape

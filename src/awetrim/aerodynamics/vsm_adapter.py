@@ -198,10 +198,11 @@ class VSMAeroModelAdapter:
         """Instantiate a VSM ``BodyAerodynamics`` from ``aero_geometry.yaml``."""
         from VSM.core.BodyAerodynamics import BodyAerodynamics
 
-        from awetrim.aerodynamics.vsm_settings import vsm_body_kwargs
+        from awetrim.aerodynamics.vsm_settings import vsm_body_kwargs_for
+        from awetrim.aerostructural.utils import load_yaml
 
-        with open(self.aero_geometry_path, "r", encoding="utf-8") as f:
-            body_config = yaml.safe_load(f)
+        # UTF-8, or a SurfplanAdapter file in the Windows code page (load_yaml)
+        body_config = load_yaml(Path(self.aero_geometry_path))
 
         self._resolve_csv_paths(body_config)
 
@@ -216,7 +217,8 @@ class VSMAeroModelAdapter:
                 n_panels=self.n_panels,
                 file_path=tmp_path,
                 spanwise_panel_distribution=self.spanwise_panel_distribution,
-                **vsm_body_kwargs(),
+                # + the ML airfoil models' folder, from AWETRIM_ML_MODELS_DIR
+                **vsm_body_kwargs_for(None),
             )
         finally:
             Path(tmp_path).unlink(missing_ok=True)

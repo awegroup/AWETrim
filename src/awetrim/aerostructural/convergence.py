@@ -55,6 +55,9 @@ import numpy as np
 # Dimensionless defaults for the coupled loop (see module docstring).
 DEFAULT_RESIDUAL_TOL_RELATIVE = 1.0e-4
 DEFAULT_STAGNATION_TOL_RELATIVE = 4.0e-5
+#: Relative fall of the residual over the stagnation window below which a
+#: window whose span is under the stagnation tolerance counts as stagnated.
+DEFAULT_STAGNATION_MIN_DECREASE = 0.1
 
 #: Below this the normalising force carries no information and the ratio is
 #: reported as NaN rather than exploding.
@@ -343,7 +346,18 @@ def check_convergence(
         )
         if window_vals.size > 0 and np.isfinite(window_vals).all():
             residual_span = float(np.max(window_vals) - np.min(window_vals))
-            if residual_span < stagnation_tol:
+            # A small span alone is not a stall: a residual decaying steadily
+            # just above the gate (5-6 % per iteration at 1e-4 on a new SurfPlan kite,
+            # 2026-11-12) moves less than the span tolerance over the window and
+            # was cut off as "not converged" while converging. Only a window
+            # that has not fallen by stagnation_min_decrease is stagnated
+            # (0 = the span rule alone, as before).
+            first = float(window_vals[0])
+            decrease = (first - float(window_vals[-1])) / first if first > 0 else 0.0
+            min_decrease = float(
+                solver_config.get("stagnation_min_decrease", DEFAULT_STAGNATION_MIN_DECREASE)
+            )
+            if residual_span < stagnation_tol and (min_decrease <= 0.0 or decrease < min_decrease):
                 is_stagnated = True
     elif iteration > solver_config["max_iter"]:
         logging.info(
@@ -360,8 +374,67 @@ def check_convergence(
     return is_convergence, should_break, is_stagnated
 
 
+#: Tape walk tolerance [m]: a walk this close to its command has arrived.
+ACTUATION_REACHED_TOL_M = 1e-6
+
+
+def actuation_record(
+    *,
+    power_tape_final_extension,
+    power_tape_reached,
+    steering_tape_final_extension,
+    steering_walk_finished,
+    steering_half_difference,
+    exit_reason,
+):
+    """The commanded tape changes against what the walk reached, for the meta.
+
+    The walk steps a tape only from a converged state, so a run that ends on
+    max_iter or the stagnation exit mid-walk used to report a result at a tape
+    it was never asked for, with nothing saying so (a new SurfPlan kite, 2026-11-12:
+    asked +0.2 m of depower, ended at +0.1 m). ``actuation_complete`` is False
+    then and a warning names both values. A command of None/0 is complete by
+    definition; ``power_tape_reached`` NaN (the backend cannot be asked) is
+    not judged.
+    """
+    commanded = float(power_tape_final_extension or 0.0)
+    reached = float(power_tape_reached)
+    depower_done = (
+        not np.isfinite(reached)
+        or abs(commanded) <= ACTUATION_REACHED_TOL_M and abs(reached) <= ACTUATION_REACHED_TOL_M
+        or abs(commanded - reached) <= ACTUATION_REACHED_TOL_M
+    )
+    steering_commanded = (
+        float(steering_tape_final_extension) if steering_tape_final_extension else 0.0
+    )
+    steering_done = abs(steering_commanded) <= ACTUATION_REACHED_TOL_M or bool(steering_walk_finished)
+    complete = bool(depower_done and steering_done)
+    if not complete:
+        logging.warning(
+            "actuation walk NOT finished (exit: %s): depower tape %+.3f m of %+.3f m "
+            "commanded; steering %s -- this result is at another command",
+            exit_reason,
+            reached,
+            commanded,
+            "finished" if steering_done else (
+                f"half-difference {float(steering_half_difference):+.3f} m of "
+                f"{steering_commanded:+.3f} m commanded"
+            ),
+        )
+    return {
+        "power_tape_extension_commanded": commanded,
+        "power_tape_extension_reached": reached,
+        "steering_tape_extension_commanded": steering_commanded,
+        "actuation_complete": complete,
+    }
+
+
+
 __all__ = [
+    "ACTUATION_REACHED_TOL_M",
+    "actuation_record",
     "DEFAULT_RESIDUAL_TOL_RELATIVE",
+    "DEFAULT_STAGNATION_MIN_DECREASE",
     "DEFAULT_STAGNATION_TOL_RELATIVE",
     "check_convergence",
     "compute_adaptive_dt",

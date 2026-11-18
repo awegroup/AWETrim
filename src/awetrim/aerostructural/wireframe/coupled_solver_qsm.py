@@ -31,6 +31,7 @@ from .actuation import (
     update_steering_tape_actuation_progressive,
 )
 from ..convergence import (
+    actuation_record,
     remaining_drift,
     check_convergence,
     force_settle_state,
@@ -370,6 +371,9 @@ def main(
     max_bridle_elongation = float("nan")
     is_actuation_finalized = True
     is_steering_finalized = True
+    # What the tape walks have reached, for the meta's actuation record.
+    delta_power_tape = 0.0
+    delta_steering = 0.0
     struc_nodes_prev = None  # Initialize previous points for tracking
     #: Set below from the handover: with it, iteration 0 is relaxed against the
     #: shape that was handed over instead of accepting the structural step
@@ -1732,6 +1736,14 @@ def main(
     elif stop_reason is not None:
         exit_reason = "stopped"
 
+    actuation = actuation_record(
+        power_tape_final_extension=power_tape_final_extension,
+        power_tape_reached=delta_power_tape,
+        steering_tape_final_extension=steering_tape_final_extension,
+        steering_walk_finished=is_steering_finalized,
+        steering_half_difference=delta_steering,
+        exit_reason=exit_reason,
+    )
     meta = {
         "total_time_s": time.time() - start_time,
         "n_iter": i + 2,  # +2: 1 for pre-loop initial state + (i+1) loop entries
@@ -1743,6 +1755,9 @@ def main(
         # Why the loop ended, the same values as the Billow driver:
         # converged | stagnated | diverged | stopped | max_iter.
         "exit_reason": exit_reason,
+        # The commanded tapes against what the walk reached (shared with the
+        # Billow driver: convergence.actuation_record).
+        **actuation,
         # The nodal force residual the run ENDED on, and the threshold it was
         # tested against. Reporting only; the criterion itself is unchanged
         # (check_convergence still owns it). A continuation needs this per

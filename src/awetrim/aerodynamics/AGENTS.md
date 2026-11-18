@@ -51,6 +51,11 @@ stated: `VSM_SOLVER_DEFAULTS` (Solver kwargs) and `VSM_BODY_DEFAULTS`
 `make_vsm_solver(**overrides)` / `BodyAerodynamics.instantiate(...,
 **vsm_body_kwargs())`, never a bare `Solver()`, whose defaults follow the
 installed VSM (develop: `is_aoa_corrected=True`, automatic relaxation).
+`ml_models_dir(aero_config)` is the folder of VSM's machine-learned airfoil
+models (`masure_regression`, Zenodo 16925759): as_config
+`aerodynamics.ml_models_dir`, else the `AWETRIM_ML_MODELS_DIR` environment
+variable, else None; `vsm_body_kwargs_for(aero_config)` adds it to
+`vsm_body_kwargs()` (used by `aerodynamic_vsm.initialize` and `VsmAdapter`).
 The model (VSM v2.3.0, PRs #166/#167): 3/4-chord VSM circulation with the force
 directions from the quarter-chord flow (`is_aoa_corrected=True`, since
 2026-11-03; verified against the Trefftz-plane induced drag on inviscid

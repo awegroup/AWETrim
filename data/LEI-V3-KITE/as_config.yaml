@@ -52,6 +52,10 @@ aerodynamics:
   # Panel load onto the ribs: strut_lever is exact in force and moment,
   # bilinear (the code default) loses 2-6 % of the moment.
   load_transfer: !!str 'strut_lever'
+  # Folder of VSM's machine-learned airfoil models, for an aero geometry with
+  # masure_regression airfoils (ET_re*.pkl, Zenodo record 16925759). Machine-
+  # specific: prefer the AWETRIM_ML_MODELS_DIR environment variable.
+  # ml_models_dir: !!str '/path/to/ml_models'
 
   # -- solver --
   # Panels per structural section: on the FEM geometry's 27 sections, 5 =
@@ -223,6 +227,10 @@ coupling:
     # (standalone single-solve scripts want that; this cap is only sound
     # inside the coupled loop's warm restarts).
     max_nfev: !!int 8
+    # casadi only: a failed Newton (not even near its root) is retried with the
+    # least-squares trim, UNCAPPED, from the same guess, and kept only if that
+    # converges (results flag trim_fallback). false = CasadiTrimFailed, as before.
+    casadi_fallback: !!bool false
 
     # Search bounds for quasi-steady variables [physical units as noted]
     # These define the feasible region for the optimizer to explore.
@@ -257,6 +265,10 @@ coupling:
     # (convergence.resolve_residual_tolerances).
     residual_tol_relative: !!float 1.0e-4
     stagnation_tol_relative: !!float 4.0e-5 # residual span over n_max_constant_residual_force iterations below this = stagnated
+    # ... and only if the residual has not fallen by this fraction over that window:
+    # a residual decaying 3-6 % per iteration just above the gate is converging,
+    # not stagnated (2026-11-12). 0 = the span rule alone, as before.
+    stagnation_min_decrease: !!float 0.1
     # Second exit condition (both drivers, convergence.force_settle_state): the
     # tether force must also have settled, at least 5 iterations since the last
     # tape or stiffness change, with its spread or estimated remaining change
