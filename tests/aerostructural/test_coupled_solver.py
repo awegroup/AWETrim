@@ -300,11 +300,11 @@ def _results_aero():
     }
 
 
-def _run_scripted_loop(monkeypatch, residuals_n, solver_settings):
+def _run_scripted_loop(monkeypatch, residuals_n, solver_settings, aero=None, trim=None):
     structure = _ScriptedWireframe(residuals_n)
     monkeypatch.setattr(
         driver.aerodynamic_vsm, "run_vsm_package",
-        lambda **kwargs: (np.zeros((1, 3)), kwargs["body_aero"], _results_aero()),
+        aero or (lambda **kwargs: (np.zeros((1, 3)), kwargs["body_aero"], _results_aero())),
     )
     monkeypatch.setattr(driver._STRUC_TO_AERO_MAPPER, "map", lambda *a, **k: _Mapped())
     monkeypatch.setattr(
@@ -336,6 +336,7 @@ def _run_scripted_loop(monkeypatch, residuals_n, solver_settings):
             "is_with_aitken_relaxation": False,
             **solver_settings,
         },
+        **({} if trim is None else {"quasi_steady_trim": trim}),
     }
     tracking_data, meta = driver.main(
         m_arr=np.ones(_N_NODES),
@@ -440,3 +441,39 @@ def test_an_early_residual_dip_is_held_until_the_force_has_settled(monkeypatch):
     assert meta_on["force_settle_rtol"] == pytest.approx(1e-4)
     assert meta_on["force_remaining_relative"] <= 1e-4
     assert np.isnan(meta_off["force_remaining_relative"])
+
+
+class _RecordingAero:
+    """run_vsm_package stand-in: records each call's gamma_seed and returns a
+    circulation that names the call, so a seed can be traced to its source."""
+
+    def __init__(self):
+        self.seeds = []
+
+    def __call__(self, **kwargs):
+        self.seeds.append(kwargs.get("gamma_seed"))
+        results = _results_aero()
+        results["gamma_distribution"] = np.full(1, float(len(self.seeds)))
+        return np.zeros((1, 3)), kwargs["body_aero"], results
+
+
+def test_gamma_continuation_seeds_each_loop_trim_with_the_previous_circulation(monkeypatch):
+    aero = _RecordingAero()
+    _run_scripted_loop(
+        monkeypatch, [50.0, 1.0, 0.1], {"residual_tol_relative": 1e-4},
+        aero=aero, trim={"gamma_continuation": True},
+    )
+    # Call 1 is the pre-loop trim (cold); call k+1 is seeded with call k's circulation.
+    assert len(aero.seeds) >= 3
+    assert aero.seeds[0] is None
+    for k, seed in enumerate(aero.seeds[1:], start=1):
+        np.testing.assert_array_equal(seed, [float(k)])
+
+
+def test_without_gamma_continuation_every_loop_trim_starts_cold(monkeypatch):
+    aero = _RecordingAero()
+    _run_scripted_loop(
+        monkeypatch, [50.0, 1.0, 0.1], {"residual_tol_relative": 1e-4}, aero=aero
+    )
+    assert len(aero.seeds) >= 3
+    assert all(seed is None for seed in aero.seeds)

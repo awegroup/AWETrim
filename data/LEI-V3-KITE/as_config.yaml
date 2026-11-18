@@ -223,6 +223,12 @@ coupling:
     # (standalone single-solve scripts want that; this cap is only sound
     # inside the coupled loop's warm restarts).
     max_nfev: !!int 8
+    # Billow loop (coupled/coupled_solver.py) only: start every loop trim from the
+    # previous iteration's converged circulation, as the wireframe loop always
+    # does. false = each trim starts from a cold VSM solve, as before; near a
+    # panel's stall fold that re-picks its branch every iteration and the loop
+    # can cycle between two trim roots (Genetrix Hydra, 2026-11-17).
+    gamma_continuation: !!bool false
 
     # Search bounds for quasi-steady variables [physical units as noted]
     # These define the feasible region for the optimizer to explore.

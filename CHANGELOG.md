@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Aerostructural: warm circulation in the Billow coupled loop (opt-in)
+
+- `quasi_steady_trim.gamma_continuation` (as_config `coupling.trim`, default
+  false = unchanged): the Billow loop (`coupled/coupled_solver.py`) seeds every
+  loop trim with the previous iteration's converged circulation, as the
+  wireframe loop always has. Without it each trim starts cold and a panel on
+  its stall fold can switch branch every iteration, so the loop cycles and
+  never converges (Genetrix Hydra step-3 sweep: three states, all converge
+  seeded).
+
 ### Server: ROM forces at one state and the power-tape match to another model
 
 - `POST /aero_forces` (stateless) returns the ROM's lift and drag at one power tape

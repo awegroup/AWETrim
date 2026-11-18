@@ -547,6 +547,19 @@ whole coupled run, so every solve after the first warm starts from the last
 answer. That is the only good initial guess the loop has; resetting to the built
 geometry each iteration throws it away.
 
+The circulation is warm started too, but not in both loops alike. The wireframe
+loop (`coupled_solver_qsm`) has handed every trim the previous iteration's
+`gamma_distribution` as `gamma_seed` since 2026-08-18. The Billow loop
+(`coupled/coupled_solver.py`) does so only with
+`quasi_steady_trim.gamma_continuation: true` (opt-in, 2026-11-17; default
+false = a cold VSM solve per trim, unchanged). Near a panel's stall fold the
+trim has two roots (pre- and post-stall circulation on that panel), and the
+cold solve re-picks one every iteration: on the Genetrix Hydra the loop then
+cycled between them (period 5-7) and ran to `max_iter` on three sweep states
+(6 m/s 1.85 m, 5 m/s 2.05 m and steered); seeded, all three hold one branch
+and converge. Whether it should become the default is open (it would change
+stored Billow results).
+
 There is no time step any more. `dt` was the kinetic-damping solver's
 continuation parameter, and energy minimisation has no such parameter --
 stiffness is just a coefficient of the objective. The adaptive-dt schedule and
